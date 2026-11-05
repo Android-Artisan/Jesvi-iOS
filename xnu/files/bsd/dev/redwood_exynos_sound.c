@@ -74,6 +74,8 @@ extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size
 #define PLL_CON5_AUD0           0x0114U         /* K 15:0 */
 #define MUX_UAIF2               0x1014U
 #define DIV_AUDIF               0x1800U
+#define MUX_AUD_CNT             0x1000U         /* SELECT bit 0: 0 DIV_CLK_AUD_AUDIF, 1 PLL_AUD1 (exynos9830 cmucal) */
+#define DIV_AUD_CNT             0x180cU         /* DIVRATIO 8:0: the CNT clock, which paces the SIFS (abox "cnt") */
 #define DIV_BUS                 0x1804U
 #define DIV_BUSP                0x1808U
 #define DIV_SCLK                0x1828U
@@ -728,6 +730,39 @@ aud_clocks(void)
 	return true;
 }
 
+static uint32_t snd_sifs_cnt;           /* snd_sifs_cnt=V: SIFS0's count as given (0: computed as Samsung's driver does) */
+
+/*
+ * The SIFS's count (ABOX_SPUS_CTRL_SIFS_CNT, 0x290 + 4n, 23:0): how many CNT-clock cycles per sample period it takes
+ * its next sample from the chain. Samsung's driver (abox_cmpnt.c set_cnt_val, sifsx_cnt_val) writes
+ *   round(cnt_hz * n / (channels * rate)) - 1,  n = 2 * (32 / physical width)
+ * for every stream; left at 0 nothing paces the SIFS, UAIF2 is never fed (STATUS 0) and RDMA3 waits with PROGRESS set
+ * and 0 frames read -- what this phone did (2026-11-06). Here SIFS0 (the mixer) runs 32-bit stereo at 48 kHz.
+ */
+static uint32_t
+sifs_count(void)
+{
+	uint32_t mux = rd(cmu, MUX_AUD_CNT) & 1, div = rd(cmu, DIV_AUD_CNT) & 0x1ff;
+	uint32_t audif_div = rd(cmu, DIV_AUDIF) & 0x1ff;
+	uint64_t audif_hz = 1179648000ULL / (audif_div + 1), cnt_hz, n = 2 * (32 / 32), d = 2 * 48000ULL, v;
+
+	if (mux != 0) {
+		/* PLL_AUD1's rate is not known here: the CNT clock is moved to AUDIF, whose rate is */
+		wr(cmu, MUX_AUD_CNT, rd(cmu, MUX_AUD_CNT) & ~1U);
+		IOSleep(1);
+		mux = rd(cmu, MUX_AUD_CNT) & 1;
+	}
+	cnt_hz = audif_hz / (div + 1);
+	v = (cnt_hz * n + d / 2) / d - 1;
+	snd_log("snd: SIFS count: CNT clock mux %u div %u -> %llu Hz (AUDIF %llu Hz); 32-bit stereo 48 kHz: count %llu%s\n",
+	    mux, div, cnt_hz, audif_hz, v, snd_sifs_cnt ? " (overridden by snd_sifs_cnt)" : "");
+	return snd_sifs_cnt ? snd_sifs_cnt : (uint32_t)(v & 0xffffff);
+}
+
+static uint32_t snd_sblimit;            /* snd_sblimit=V: RDMA3 SBANK_LIMIT (+0x20, v3 field 13:4), as calliope sets it */
+static uint32_t snd_burst = 4;          /* snd_burst=N: RDMA3 CTRL0 BURST_LEN (22:19); Scion's S9 runs 8 */
+static uint32_t snd_bufupd;             /* snd_bufupd=1: RDMA3 CTRL0 BUF_UPDATE (bit 5), as calliope sets it on the S9 */
+static uint32_t snd_sifs1;              /* snd_sifs1=1: chain 3 out to SIFS1 and UAIF2 from it, not SIFS0 (the mixer) */
 static void
 abox_route(void)
 {
@@ -736,7 +771,13 @@ abox_route(void)
 	snd_log("snd: ABOX IP %#x version %#x; SysMMU CTRL %#x CTRL_VM %#x CFG %#x STATUS %#x VERSION %#x\n",
 	    rd(abox, ABOX_IP_INDEX), rd(abox, ABOX_VERSION), rd(mmu, MMU_CTRL), rd(mmu, MMU_CTRL_VM), rd(mmu, MMU_CFG),
 	    rd(mmu, MMU_STATUS), rd(mmu, MMU_VERSION));
-	if ((rd(mmu, MMU_CTRL) & 1) || (rd(mmu, MMU_CTRL_VM) & 1)) {
+	/*
+	 * Translating when any of bits 0-2 is set: Linux's CTRL_ENABLE is 0x5 and CTRL_BLOCK 0x7, and the boot leaves 0x4
+	 * (bit 2 alone: translating) -- read on the S20 (x1slte) and on the S9 (Scion's hakios.exynos_abox.c, step 7). The
+	 * old test of bit 0 alone took 0x4 for off: RDMA3's physical ring was then an IOVA nothing mapped, and the DMA
+	 * read 0 frames.
+	 */
+	if ((rd(mmu, MMU_CTRL) & 0x7) || (rd(mmu, MMU_CTRL_VM) & 1)) {
 		wr(mmu, MMU_CTRL_VM, 0);
 		wr(mmu, MMU_CTRL, 0);
 		snd_log("snd: SysMMU was on: off (CTRL %#x CTRL_VM %#x)\n", rd(mmu, MMU_CTRL), rd(mmu, MMU_CTRL_VM));
@@ -746,7 +787,8 @@ abox_route(void)
 	wait_bits(abox, ABOX_SYSPOWER_STATUS, 1, 1, 10000);
 
 	/* RDMA3 -> chain 3 -> SIFS0 (the mixer, 32-bit stereo) -> UAIF2 */
-	upd(abox, ABOX_SPUS_CTRL_FC0, 0xffU << (8 * RDMA_ID), 0x02U << (8 * RDMA_ID));
+	/* OUT 4:1 is SIFSn + 1: 1 the mixer (SIFS0), 2 SIFS1 */
+	upd(abox, ABOX_SPUS_CTRL_FC0, 0xffU << (8 * RDMA_ID), (snd_sifs1 ? 0x04U : 0x02U) << (8 * RDMA_ID));
 	upd(abox, ABOX_SPUS_CTRL1, 0x1f, ABOX_FORMAT(32, 2));
 	if (rd(abox, ABOX_SPUS_SBANK_RDMA(RDMA_ID)) == 0) {
 		wr(abox, ABOX_SPUS_SBANK_RDMA(RDMA_ID), (512U << 16) | 0x000);
@@ -754,8 +796,11 @@ abox_route(void)
 	if (rd(abox, ABOX_SPUS_SBANK_MIXP) == 0) {
 		wr(abox, ABOX_SPUS_SBANK_MIXP, (512U << 16) | 0x200);
 	}
-	wr(abox, ABOX_SIFS_CNT0, 0);
-	upd(abox, ABOX_ROUTE_CTRL0, 0xfU << (4 * UAIF_ID), 1U << (4 * UAIF_ID));
+	wr(abox, ABOX_SIFS_CNT0, sifs_count());
+	if (snd_sifs1) {
+		wr(abox, ABOX_SIFS_CNT0 + 4, sifs_count());     /* SIFS1's count */
+	}
+	upd(abox, ABOX_ROUTE_CTRL0, 0xfU << (4 * UAIF_ID), (snd_sifs1 ? 2U : 1U) << (4 * UAIF_ID));
 
 	/*
 	 * UAIF2's bit clock past the ABOX's own Q-channel: Samsung's driver disables it when the interface's BCLK
@@ -790,7 +835,12 @@ abox_route(void)
 	}
 
 	/* RDMA3: our ring, 16-bit stereo */
-	wr(abox, RDMA(RDMA_CTRL0), ABOX_FORMAT(16, 2) << 8 | 4U << 19);
+	wr(abox, RDMA(RDMA_CTRL0), ABOX_FORMAT(16, 2) << 8 | (snd_burst & 0xfU) << 19 | (snd_bufupd ? 1U << 5 : 0));
+	if (snd_sblimit) {
+		wr(abox, RDMA(0x20), snd_sblimit);
+	}
+	snd_log("snd: x1slte knobs: snd_burst=%u snd_bufupd=%u snd_sifs1=%u snd_sblimit=%#x (reads %#x)\n", snd_burst, snd_bufupd,
+	    snd_sifs1, snd_sblimit, rd(abox, RDMA(0x20)));
 	wr(abox, RDMA(RDMA_BUF_STR), (uint32_t)buf_phys);
 	wr(abox, RDMA(RDMA_BUF_END), (uint32_t)buf_phys + BUF_BYTES);
 	wr(abox, RDMA(RDMA_BUF_OFFSET), PERIOD_BYTES);
@@ -1077,6 +1127,12 @@ redwood_exynos_sound_init(void)
 		return;
 	}
 	PE_parse_boot_argn("snd_below", &snd_below, sizeof(snd_below));
+	/* x1slte experiments, after Scion's S9 ABOX (hakios.exynos_abox.c: RDMA0 CTRL0 0x400921 there, SIFS1 not the mixer) */
+	PE_parse_boot_argn("snd_burst", &snd_burst, sizeof(snd_burst));
+	PE_parse_boot_argn("snd_bufupd", &snd_bufupd, sizeof(snd_bufupd));
+	PE_parse_boot_argn("snd_sifs1", &snd_sifs1, sizeof(snd_sifs1));
+	PE_parse_boot_argn("snd_sifs_cnt", &snd_sifs_cnt, sizeof(snd_sifs_cnt));
+	PE_parse_boot_argn("snd_sblimit", &snd_sblimit, sizeof(snd_sblimit));
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	if (snd_gain > REDWOOD_GUARD_MAX_GAIN) {
