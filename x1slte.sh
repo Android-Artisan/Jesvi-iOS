@@ -174,9 +174,19 @@ out[0x3400000:0x3400000 + len(rd)] = rd
 open('out/x1slte-recovery.img', 'wb').write(out)
 print('pack: out/x1slte-recovery.img (%d bytes)' % len(out))
 PY
+	# An AVB hash footer, as TWRP's recovery has: this phone's sboot looks for one on recovery and drops to Download
+	# Mode without it (2026-11-05), even with vbmeta's verification off (flags 3). Signed like TWRP's, with AOSP's
+	# public test key (external/avb/test/data/testkey_rsa4096.pem); the key matters not, the footer's presence does.
+	local avb=$HOME/ios-port-research/tools/bin/avbtool.py key=$HOME/ios-port-research/tools/dl/avb/testkey_rsa4096.pem
+	[ -f "$avb" ] && [ -f "$key" ] || die "avbtool.py or testkey_rsa4096.pem missing (ios-port-research/tools)"
+	python3 -I "$avb" add_hash_footer --image out/x1slte-recovery.img --partition_size 69009408 \
+		--partition_name recovery --algorithm SHA256_RSA4096 --key "$key" --rollback_index 1
+	python3 -I "$avb" info_image --image out/x1slte-recovery.img | sed -n '1,4p;/Algorithm/p;/Partition Name/p'
 }
 
 adb_root() {
+	# TWRP: the state is "recovery" (wait-for-device would wait for Android forever) and adbd is root already
+	[ "$(adb get-state 2>/dev/null)" = recovery ] && [ "$(adb shell id -u | tr -d '\r')" = 0 ] && return 0
 	adb wait-for-device
 	adb root > /dev/null
 	sleep 2
