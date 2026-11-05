@@ -215,7 +215,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/camera_avtest.m
 		# (the microphone as an application records: allowed to, by an entitlement, if ldid is there)
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/record_test src/record_test.c &&
-			{ ${LDID:-ldid} -Ssrc/record_test.entitlements obj/record_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/record_test.entitlements obj/record_test 2>/dev/null ||
 			  echo "build.sh: no ldid: record_test is unsigned, and the system may not let it record"; }
 		$DYN -o obj/cpu_test src/cpu_test.c
 		$DYN -framework CoreFoundation -framework IOSurface -o obj/cow_test src/cow_test.c
@@ -262,7 +262,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework Foundation -framework UIKit -framework QuartzCore \
 			-framework Metal -framework IOSurface -framework IOKit -lobjc \
 			-o obj/RedwoodTriangle src/triangle_app.m &&
-			{ ${LDID:-ldid} -Ssrc/triangle_app.entitlements obj/RedwoodTriangle 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/triangle_app.entitlements obj/RedwoodTriangle 2>/dev/null ||
 			  echo "build.sh: no ldid: RedwoodTriangle is unsigned, which still runs (AMFI here accepts everything) but holds no entitlements"; }
 		# what the device ANSWERS when an application asks what it supports
 		# (src/metal_caps.m). It takes the device from MTLCreateSystemDefaultDevice() so
@@ -290,23 +290,23 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc
 		# signature is what makes one (bsd/kern/kern_minimac.c): sign the stub, or com.apple.BlueTool
 		# takes the kernel down at ~30 s ("unexpected exec of non-platform binary").
-		{ ${LDID:-ldid} -S obj/bluetool_stub 2>/dev/null || codesign -s - -f obj/bluetool_stub 2>/dev/null; } ||
+		{ ${LDID:-ldid} -Cadhoc -S obj/bluetool_stub 2>/dev/null || codesign -s - -f obj/bluetool_stub 2>/dev/null; } ||
 			echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
 		# (the account database answers only a client with the entitlements its own daemons hold: src/store_test.m)
 		$DYN -fobjc-arc -framework Foundation -framework Accounts -o obj/store_test src/store_test.m &&
-			{ ${LDID:-ldid} -Ssrc/store_test.entitlements obj/store_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/store_test.entitlements obj/store_test 2>/dev/null ||
 			  echo "build.sh: no ldid: store_test is unsigned, and accountsd will not show it the accounts"; }
 		# (with an entitlement for "battery_test open URL", if ldid is there: src/battery_test.c)
 		$DYN -framework CoreFoundation -framework IOKit -lsqlite3 -o obj/battery_test src/battery_test.c &&
-			{ ${LDID:-ldid} -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
 			  echo "build.sh: no ldid: battery_test is unsigned, and SpringBoard will not open URLs for it"; }
 		# (the keychain answers only a program that has a keychain access group: signed with one, if ldid is there)
 		$DYN -framework CoreFoundation -framework Security -o obj/keychain_test src/keychain_test.c &&
-			{ ${LDID:-ldid} -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/keychain_test.entitlements obj/keychain_test 2>/dev/null ||
 			  echo "build.sh: no ldid: keychain_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# (and wifid's way of keeping a network's password, by wifid's name: src/wifipw_test.c)
 		$DYN -framework CoreFoundation -framework Security -o obj/wifipw_test src/wifipw_test.c &&
-			{ ${LDID:-ldid} -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
+			{ ${LDID:-ldid} -Cadhoc -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
 			  echo "build.sh: no ldid: wifipw_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# our library for inside stock iOS programs (the jobs in INJECT are started with it)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
@@ -678,7 +678,7 @@ done
 # is what makes one (bsd/kern/kern_minimac.c). Sign the BlueTool stand-in here, where every build
 # path passes (macOS copies the program from prebuilt/userland and never compiles it).
 if [ -f root/bin/bluetool_stub ]; then
-	{ ${LDID:-ldid} -S root/bin/bluetool_stub 2>/dev/null ||
+	{ ${LDID:-ldid} -Cadhoc -S root/bin/bluetool_stub 2>/dev/null ||
 	  codesign -s - -f root/bin/bluetool_stub 2>/dev/null; } ||
 		echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
 fi

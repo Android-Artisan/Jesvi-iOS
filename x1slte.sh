@@ -65,7 +65,11 @@ cmd_kernel() {
 	[ "$KERNEL_BUILD" -nt out/.kernel-start ] || echo "kernel: nothing changed, not relinked"
 	strings "$KERNEL_BUILD" | grep 'gic: v2' > /dev/null || die "kernel is not GICv2 (GIC_V2 not exported?)"
 	cp "$KERNEL_BUILD" out/mach.x1slte
-	[ "$(wc -c < out/mach.x1slte)" -le $((0x1400000)) ] || die "kernel larger than its 20 MiB slot"
+	# The loader reads the kernel into a 16 MiB window (xnuloader DOWNLOAD_MAX_SIZE: 0xF0000000 up to the display at
+	# 0xF1000000): a larger file loses its tail, which is __LINKEDIT (seen 2026-11-05: 16918224 bytes, 141 KB of symbols
+	# lost). The local symbols go (strip -x): about 14.7 MB, the global symbols kept for backtraces.
+	/usr/bin/xcrun strip -x out/mach.x1slte
+	[ "$(wc -c < out/mach.x1slte)" -le $((0x1000000)) ] || die "kernel larger than the loader's 16 MiB read window"
 	xnu/export.sh || echo "kernel: xnu/export.sh failed (needs GNU cp: brew install coreutils); xnu/ overlay not refreshed from xnu-src/"
 	echo "kernel: out/mach.x1slte ($(wc -c < out/mach.x1slte) bytes)"
 }
