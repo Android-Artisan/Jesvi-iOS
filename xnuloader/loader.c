@@ -40,8 +40,23 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define RESIDENT_RD_RESERVE 0x30000000ULL         /* RAM that must remain for the kernel itself */
 #define PAGE_SIZE_MAX       0x4000ULL
 
+/*
+ * x1slte (SM-G980F): the log goes into super's free tail, not into recovery. sboot hung at the Samsung logo on cold
+ * starts after runs had written their log into recovery (twice, 2026-11-05; a fresh flash of recovery cured it), so
+ * nothing at runtime writes recovery any more. -DLOG_IN_RECOVERY=1 brings back y2s's place.
+ */
+#ifndef SUPER_TAIL_START
+#define SUPER_TAIL_START 0x1E8B04000ULL
+#endif
+#if LOG_IN_RECOVERY
 #define LOG_PARTITION       u"recovery"   /* y2s has no logdump: park the log in the recovery image */
+#define LOG_PARTITION_ASCII "recovery"
 #define LOG_OFFSET          0x01000000ULL /* 16 MB into recovery: clear of the UEFI image (0) and the kernel (32 MB) */
+#else
+#define LOG_PARTITION       u"super"
+#define LOG_PARTITION_ASCII "super"
+#define LOG_OFFSET          SUPER_TAIL_START /* super's free tail (1.2 GB past its last logical partition): 8 MB */
+#endif
 #define CHECKPOINT_SELFTEST 999
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
@@ -415,8 +430,8 @@ write_logs(const char *klog, uint64_t klog_len)
 			put_char(klog[i]);
 		}
 		print("\n== END OF LOG ==\n");
-		print(stored ? "log: saved to recovery+%x before it was shown: the phone may be reset now\n" :
-		    "log: NOT SAVED to recovery+%x (see above): only this screen has it\n", LOG_OFFSET);
+		print(stored ? "log: saved to " LOG_PARTITION_ASCII "+%x before it was shown: the phone may be reset now\n" :
+		    "log: NOT SAVED to " LOG_PARTITION_ASCII "+%x (see above): only this screen has it\n", LOG_OFFSET);
 	}
 }
 
@@ -455,7 +470,7 @@ store_logs(efi_block_io *bio, const char *klog, uint64_t klog_len)
 			same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, len) == 0;
 		}
 	}
-	print("log: %d bytes written to recovery+%x (%x), read back %s (%x)\n", len, LOG_OFFSET, ws,
+	print("log: %d bytes written to " LOG_PARTITION_ASCII "+%x (%x), read back %s (%x)\n", len, LOG_OFFSET, ws,
 	    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
 	compose_logs(klog, klog_len);
 	return !EFI_ERROR(ws);
@@ -4309,6 +4324,40 @@ fb_command(char *cmd)
 			/* the firmware's memory map into the log (then "oem log" and fetch it) */
 			print_memory_map();
 			fb_reply("OKAY", "");
+		} else if (starts_with(cmd, "oem read ")) {
+			/* "oem read PART HEXOFFSET HEXLEN": a piece of a partition into the stage; then "upload" (diagnostics) */
+			const char *a = cmd + 9;
+			char part[40];
+			int n = 0;
+			uint64_t off, len;
+			uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
+			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
+
+			while (*a == ' ') {
+				a++;
+			}
+			while (*a && *a != ' ' && n < (int)sizeof(part) - 1) {
+				part[n++] = *a++;
+			}
+			part[n] = 0;
+			while (*a == ' ') {
+				a++;
+			}
+			off = parse_number(a, 16);      /* (lower-case hex) */
+			while (*a && *a != ' ') {
+				a++;
+			}
+			while (*a == ' ') {
+				a++;
+			}
+			len = parse_number(a, 16);
+			if (len == 0 || len > limit || !read_partition_into(part, off, buf, len)) {
+				fb_reply("FAIL", "oem read PART HEXOFFSET HEXLEN: no such partition, a bad offset, or too long");
+			} else {
+				staged_data = (const char *)buf;
+				staged_len = len;
+				fb_reply("OKAY", "");
+			}
 		} else if (starts_with(cmd, "oem lastlog")) {
 			/* the last run's log as it was saved in the partition; then "upload" (fastboot get_staged) */
 			fb_reply(stage_last_log() ? "OKAY" : "FAIL", "");
@@ -4907,7 +4956,7 @@ stage_last_log(void)
 {
 	uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
 
-	if (!read_partition_into("recovery", LOG_OFFSET, buf, 8ULL << 20)) {
+	if (!read_partition_into(LOG_PARTITION_ASCII, LOG_OFFSET, buf, 8ULL << 20)) {
 		return 0;
 	}
 	staged_data = (const char *)buf;
@@ -5047,11 +5096,53 @@ log_access(void)
  * The y2s loader: the menu at power-on, and again whenever iOS comes back. "Boot iOS" by itself after
  * 3 s at power-on; after a run, the menu waits.
  */
+
+/*
+ * x1slte: sboot starts recovery (this loader) only while misc's bootloader message says "boot-recovery"; after a reset
+ * it fell back to boot and hung at the Samsung logo (2026-11-05). The loader puts the command back at every start, so
+ * any reset or crash comes back here. Only the message's command field (misc's first 32 bytes) is written, read back.
+ * Android: the stock misc (ios-port-research/device/misc/misc-stock-android.img) through Download Mode.
+ */
+static void
+misc_keep_recovery(void)
+{
+	static uint8_t blk[4096] __attribute__((aligned(4096)));
+	static const char cmd[] = "boot-recovery";
+	efi_block_io *bio = find_partition_ascii("misc");
+	uint64_t bs;
+
+	if (bio == NULL || bio->media == NULL || (bs = bio->media->block_size) == 0 || bs > sizeof(blk)) {
+		print("misc: no partition (or an odd block size): the boot-recovery flag is not kept\n");
+		return;
+	}
+	if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, 0, bs, blk))) {
+		print("misc: not read\n");
+		return;
+	}
+	if (memcmp(blk, cmd, sizeof(cmd)) == 0) {
+		print("misc: boot-recovery is set\n");
+		return;
+	}
+	memset(blk, 0, 32);
+	memcpy(blk, cmd, sizeof(cmd));
+	if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id, 0, bs, blk))) {
+		print("misc: boot-recovery could not be written\n");
+		return;
+	}
+	if (bio->flush_blocks != NULL) {
+		bio->flush_blocks(bio);
+	}
+	memset(blk, 0, 32);
+	(void)bio->read_blocks(bio, bio->media->media_id, 0, bs, blk);
+	print("misc: boot-recovery %s\n", memcmp(blk, cmd, sizeof(cmd)) == 0 ? "written and read back" : "written, but reads back otherwise");
+}
 static void
 y2s_menu_loop(void)
 {
 	const char *banner = "";
 	int wait = 3;
+
+	misc_keep_recovery();
 
 	for (;;) {
 		int choice;
