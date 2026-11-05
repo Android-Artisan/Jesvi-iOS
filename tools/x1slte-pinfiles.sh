@@ -91,7 +91,12 @@ cmd_write_root() {
 	local size; size=$(wc -c < "$f")
 	[ "$size" -le "$ROOT_UD_LEN" ] || die "$f ($size B) is larger than system.img ($ROOT_UD_LEN B)"
 	echo "write-root: $f ($((size >> 20)) MiB) into /data/darwin/system.img in place"
-	adb exec-in "dd of=/data/darwin/system.img bs=4M conv=notrunc,fsync 2>/dev/null" < "$f"
+	# Not a pipe into dd: TWRP's toybox dd, reading a pipe, wrote the short last block's tail but left the 2 MiB
+	# before it as zeros (seen 2026-11-05). So the file goes over whole first, then dd copies file to file.
+	local tmp=/data/darwin/.incoming
+	adb push "$f" "$tmp" >/dev/null || die "push failed"
+	sh_ "dd if=$tmp of=/data/darwin/system.img bs=1048576 conv=notrunc,fsync 2>&1 | tail -1"
+	sh_ "rm -f $tmp"
 	local here there
 	here=$(shasum -a 256 < "$f" | cut -d' ' -f1)
 	there=$(sh_ "head -c $size /data/darwin/system.img | sha256sum" | cut -d' ' -f1)
