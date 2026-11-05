@@ -1824,6 +1824,222 @@ static const struct bdevsw ufs_root_bdevsw = {
 	.d_type     = D_DISK,
 };
 
+/*
+ * x1slte (SM-G980F): /dev/ufs_var and /dev/rufs_var, the ufs_win window of userdata (the pinned /data/darwin/var.img)
+ * as a disk of its own, block 0 at the window's start, for iOS's /private/var (userland/src/init.c). Every access
+ * goes through ufs_read, ufs_write and ufs_write_direct at the window's offset, so the write window's bounds
+ * (ufs_write_first/end) still decide what is written.
+ */
+static uint64_t ufs_var_off, ufs_var_size;     /* bytes, inside the partition ufs_write_part */
+static uint32_t ufs_var_bsize = 4096;
+static bool ufs_var_on;
+
+static int
+ufs_var_open(dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	return (!ufs_var_on || minor(dev) != 0 || ufs_write_part < 0) ? ENXIO : 0;
+}
+
+static int
+ufs_var_cclose(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	ufs_write_restore();            /* (the unit's write cache into the flash) */
+	return 0;
+}
+
+static void
+ufs_var_strategy(buf_t bp)
+{
+	uint64_t offset = (uint64_t)buf_blkno(bp) * ufs_var_bsize, len = buf_count(bp);
+	caddr_t va = NULL;
+	int error;
+
+	if (!ufs_var_on || ufs_write_part < 0) {
+		buf_seterror(bp, ENXIO);
+		buf_biodone(bp);
+		return;
+	}
+	if (offset >= ufs_var_size) {
+		buf_seterror(bp, offset == ufs_var_size ? 0 : EINVAL);
+		buf_setresid(bp, buf_count(bp));
+		buf_biodone(bp);
+		return;
+	}
+	if (offset + len > ufs_var_size) {
+		len = ufs_var_size - offset;
+	}
+	if (buf_map(bp, &va) != 0 || va == NULL) {
+		buf_seterror(bp, ENOMEM);
+		buf_biodone(bp);
+		return;
+	}
+	if (buf_flags(bp) & B_READ) {
+		error = ufs_read((uint32_t)ufs_write_part, ufs_var_off + offset, (uint8_t *)va, len);
+	} else {
+		error = ufs_write_direct((uint32_t)ufs_write_part, ufs_var_off + offset, (const uint8_t *)va, len);
+	}
+	buf_unmap(bp);
+	buf_setresid(bp, (uint32_t)(buf_count(bp) - (error ? 0 : len)));
+	if (error) {
+		buf_seterror(bp, error);
+	}
+	buf_biodone(bp);
+}
+
+static int
+ufs_var_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int fflag, __unused proc_t p)
+{
+	if (!ufs_var_on || ufs_write_part < 0) {
+		return ENXIO;
+	}
+	switch (cmd) {
+	case DKIOCGETBLOCKSIZE:
+		*(uint32_t *)data = ufs_var_bsize;
+		return 0;
+	case DKIOCSETBLOCKSIZE:
+		if (*(uint32_t *)data < 512 || *(uint32_t *)data > 4096 || (*(uint32_t *)data & (*(uint32_t *)data - 1)) != 0) {
+			return EINVAL;
+		}
+		ufs_var_bsize = *(uint32_t *)data;
+		return 0;
+	case DKIOCGETPHYSICALBLOCKSIZE:
+		*(uint32_t *)data = 4096;
+		return 0;
+	case DKIOCGETBLOCKCOUNT:
+		*(uint64_t *)data = ufs_var_size / ufs_var_bsize;
+		return 0;
+	case DKIOCISWRITABLE:
+		*(uint32_t *)data = 1;
+		return 0;
+	case DKIOCGETMAXBLOCKCOUNTREAD:
+	case DKIOCGETMAXBLOCKCOUNTWRITE:
+		*(uint64_t *)data = ufs_buffer_size / ufs_var_bsize;
+		return 0;
+	case DKIOCSYNCHRONIZE:
+		return ufshc_sync(ufs_lun[ufs_write_part]);
+	case DKIOCGETFEATURES:
+		*(uint32_t *)data = 0;
+		return 0;
+	default:
+		return ENOTTY;
+	}
+}
+
+static int
+ufs_var_psize(__unused dev_t dev)
+{
+	return (int)ufs_var_bsize;
+}
+
+/* reads and writes of /dev/rufs_var: through a bounce buffer and uiomove, as ufs_cread/ufs_cwrite (PAN) */
+static int
+ufs_var_crw(struct uio *uio, bool write)
+{
+	uint8_t *bounce;
+	int error = 0;
+
+	if (!ufs_var_on || ufs_write_part < 0) {
+		return ENXIO;
+	}
+	if (uio_offset(uio) < 0 || (write && ((uint64_t)uio_offset(uio) % 4096 != 0 || (uint64_t)uio_resid(uio) % 4096 != 0))) {
+		return EINVAL;
+	}
+	bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
+	if (bounce == NULL) {
+		return ENOMEM;
+	}
+	while (error == 0 && uio_resid(uio) > 0 && (uint64_t)uio_offset(uio) < ufs_var_size) {
+		uint64_t at = (uint64_t)uio_offset(uio), want = (uint64_t)uio_resid(uio);
+
+		if (want > ufs_buffer_size) {
+			want = ufs_buffer_size;
+		}
+		if (want > ufs_var_size - at) {
+			want = ufs_var_size - at;
+		}
+		if (write) {
+			error = uiomove((caddr_t)bounce, (int)want, uio);
+			if (error == 0) {
+				error = ufs_write((uint32_t)ufs_write_part, ufs_var_off + at, bounce, want);
+				if (error != 0) {
+					uio_setoffset(uio, (off_t)at);
+					uio_setresid(uio, uio_resid(uio) + (user_ssize_t)want);
+				}
+			}
+		} else {
+			error = ufs_read((uint32_t)ufs_write_part, ufs_var_off + at, bounce, want);
+			if (error == 0) {
+				error = uiomove((caddr_t)bounce, (int)want, uio);
+			}
+		}
+	}
+	kfree_data(bounce, ufs_buffer_size);
+	return error;
+}
+
+static int
+ufs_var_cread(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	return ufs_var_crw(uio, false);
+}
+
+static int
+ufs_var_cwrite(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	return ufs_var_crw(uio, true);
+}
+
+static const struct bdevsw ufs_var_bdevsw = {
+	.d_open     = ufs_var_open,
+	.d_close    = ufs_close,
+	.d_strategy = ufs_var_strategy,
+	.d_ioctl    = ufs_var_ioctl,
+	.d_dump     = eno_dump,
+	.d_psize    = ufs_var_psize,
+	.d_type     = D_DISK,
+};
+
+static const struct cdevsw ufs_var_cdevsw = {
+	.d_open       = ufs_var_open,
+	.d_close      = ufs_var_cclose,
+	.d_read       = ufs_var_cread,
+	.d_write      = ufs_var_cwrite,
+	.d_ioctl      = ufs_var_ioctl,
+	.d_stop       = eno_stop,
+	.d_reset      = eno_reset,
+	.d_ttys       = NULL,
+	.d_select     = eno_select,
+	.d_mmap       = eno_mmap,
+	.d_strategy   = eno_strat,
+	.d_reserved_1 = eno_getc,
+	.d_reserved_2 = eno_putc,
+	.d_type       = D_DISK,
+};
+
+/* the window as /dev/ufs_var and /dev/rufs_var (from the ufs_win branch of the write set-up) */
+static void
+ufs_var_publish(uint64_t first_block, uint64_t blocks)
+{
+	int bmaj, cmaj;
+
+	if (ufs_var_on) {
+		return;
+	}
+	bmaj = bdevsw_add(-1, &ufs_var_bdevsw);
+	cmaj = bmaj < 0 ? -1 : cdevsw_add(-1, &ufs_var_cdevsw);
+	if (bmaj < 0 || cmaj < 0) {
+		ufs_log("ufs: var: no device numbers for /dev/ufs_var\n");
+		return;
+	}
+	ufs_var_off = first_block * 4096;
+	ufs_var_size = blocks * 4096;
+	ufs_var_on = true;
+	(void)devfs_make_node(makedev(bmaj, 0), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "ufs_var");
+	(void)devfs_make_node(makedev(cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufs_var");
+	ufs_log("ufs: var: /dev/ufs_var and /dev/rufs_var are userdata blocks %llu..%llu (%llu MB)\n", first_block,
+	    first_block + blocks, (blocks * 4096) >> 20);
+}
+
 void redwood_ufs_init(void);
 dev_t redwood_ufs_root(void);
 
@@ -2113,6 +2329,7 @@ redwood_ufs_init(void)
 			ufs_write_part = (int)i;
 			ufs_write_first = win_first;
 			ufs_write_end = win_first + win_blocks;
+			ufs_var_publish(win_first, win_blocks);
 			ufs_log("ufs: userdata takes writes only in blocks %llu..%llu (%llu MB, ufs_win); "
 			    "everything else of the storage is read only\n", win_first, win_first + win_blocks, (win_blocks * 4096) >> 20);
 		} else {

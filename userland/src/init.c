@@ -833,8 +833,44 @@ read_whole(const char *path, char *buf, size_t size)
 #ifndef EEXIST
 #define EEXIST 17
 #endif
-#define HFS_DEVICE      "/dev/ufs_userdata"
-#define HFS_RAW         "/dev/rufs_userdata"
+/*
+ * x1slte (SM-G980F): userdata is Android's, so the kernel offers only a window of it (ufs_win=, the pinned
+ * /data/darwin/var.img) as a disk of its own, /dev/ufs_var and /dev/rufs_var. Those when they exist; the S20+'s
+ * whole userdata otherwise.
+ */
+static const char *HFS_DEVICE = "/dev/ufs_userdata";
+static const char *HFS_RAW = "/dev/rufs_userdata";
+
+static void
+hfs_pick_device(void)
+{
+	int fd = open("/dev/rufs_var", O_RDONLY, 0);
+
+	if (fd >= 0) {
+		close(fd);
+		HFS_DEVICE = "/dev/ufs_var";
+		HFS_RAW = "/dev/rufs_var";
+	}
+}
+
+/* the device's size in bytes (DKIOCGETBLOCKSIZE x DKIOCGETBLOCKCOUNT), 0 if it does not say */
+static unsigned long long
+hfs_device_bytes(void)
+{
+	unsigned int bsize = 0;
+	unsigned long long count = 0;
+	int fd = open(HFS_RAW, O_RDONLY, 0);
+
+	if (fd < 0) {
+		return 0;
+	}
+	if (mini_syscall(SYS_ioctl, fd, 0x40046418L /* DKIOCGETBLOCKSIZE */, (long)&bsize, 0, 0, 0) != 0 ||
+	    mini_syscall(SYS_ioctl, fd, 0x40086419L /* DKIOCGETBLOCKCOUNT */, (long)&count, 0, 0, 0) != 0) {
+		bsize = 0;
+	}
+	close(fd);
+	return (unsigned long long)bsize * count;
+}
 
 struct hfs_args {                       /* struct hfs_mount_args (bsd/hfs/hfs_mount.h), as mount_hfs passes it */
 	const char *fspec;
@@ -906,9 +942,10 @@ hfs_format(void)
 	}
 	block = kit_u32(kit + 8);
 	entries = kit_u32(kit + 12);
-	if (block != 4096 || kit_u64(kit + 16) != 116253523968ULL || 32 + (size_t)entries * 16 > (size_t)got ||
+	if (block != 4096 || kit_u64(kit + 16) != hfs_device_bytes() || 32 + (size_t)entries * 16 > (size_t)got ||
 	    kit_crc(kit + 32, (size_t)got - 32) != kit_u32(kit + 24)) {
-		printf("  the format kit is not one for this phone's userdata, or is damaged\n");
+		printf("  the format kit (%llu bytes) is not one for %s (%llu bytes), or is damaged\n", kit_u64(kit + 16),
+		    HFS_RAW, hfs_device_bytes());
 		return 0;
 	}
 	zeros = mmap(NULL, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -990,6 +1027,8 @@ static int
 mount_data_volume(void)
 {
 	const char *wanted = boot_arg("var_hfs");
+
+	hfs_pick_device();
 	struct hfs_args args = {
 		.fspec = HFS_DEVICE, .hfs_uid = ~0u, .hfs_gid = ~0u, .hfs_mask = 0xffff, .hfs_encoding = ~0u,
 	};

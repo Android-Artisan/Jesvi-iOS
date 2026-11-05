@@ -104,13 +104,28 @@ import sys
 embed, payload, at, limit = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 img = bytearray(open(embed, 'rb').read())
 p = open(payload, 'rb').read()
-assert img[at:at + 4] == b'XNUP', 'no XNUP payload at the expected offset of %s' % embed
+assert img[at:at + 4] == b'XNUP' or img[at:at + limit] == b'\xff' * limit, 'no XNUP payload (and no erased slot) at the expected offset of %s' % embed
 assert len(p) <= limit, 'payload too large'
 img[at:at + limit] = b'\xff' * limit      # the FD's erased fill
 img[at:at + len(p)] = p
 open(embed, 'wb').write(img)
 PY
 	echo "payload: cmdline '$cmdline' spliced into $EMBED"
+}
+
+cmd_embed() {
+	local src=${1:-$HOME/ios-port-research/build/uefi/Mu-x1slte.img}
+	[ -f "$src" ] || die "no $src: download the x1slte-uefi artifact of github.com/jesvi-eulah/g980f-uefi"
+	mkdir -p out
+	python3 - "$src" "$PAYLOAD_AT" "$PAYLOAD_MAX" <<'PY'
+import struct, sys
+img = open(sys.argv[1], 'rb').read(); at, limit = int(sys.argv[2]), int(sys.argv[3])
+assert img[:8] == b'ANDROID!' and struct.unpack('<I', img[36:40])[0] == 2048, 'not a page-2048 Android boot image'
+assert img[0x870 + 0x28:0x870 + 0x2c] == b'_FVH', 'no firmware volume at page + 112'
+assert img[at:at + limit] in (b'\xff' * limit,) or img[at:at + 4] == b'XNUP', 'the payload slot (FD + 0x100000) is in use'
+PY
+	cp "$src" "$EMBED"
+	echo "embed: $EMBED from $src"
 }
 
 cmd_cmdline() {
@@ -407,6 +422,7 @@ hlogo) cmd_hlogo ;;
 ureboot) cmd_ureboot ;;
 standalone) cmd_standalone ;;
 kernel) cmd_kernel ;;
+embed) cmd_embed "${2:-}" ;;
 payload) cmd_payload "${2:-}" ;;
 cmdline) cmd_cmdline ;;
 pack) cmd_pack ;;
