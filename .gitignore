@@ -110,3 +110,5 @@ __pycache__/
 !/userland/mkjobs.py
 !/userland/mkeagl.py
 !/userland/libmini/
+!/x1slte.sh
+!/x1slte.cmdline

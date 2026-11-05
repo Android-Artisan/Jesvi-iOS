@@ -143,6 +143,8 @@ stage1() {
 		link /bin/tcsh host/bin/tcsh
 		# GNU nproc, which the makefiles call, without needing coreutils
 		printf '#!/bin/sh\nexec /usr/sbin/sysctl -n hw.ncpu\n' > host/bin/nproc && chmod +x host/bin/nproc
+		# XNU's dSYM step runs `env python` for its lldb macros; macOS has only python3
+		link /usr/bin/python3 host/bin/python
 	fi
 	# mig: Apple's own does not build on glibc; this is a port that does
 	if [ ! -x host/bin/migcom ] || [ ! -x host/bin/mig ]; then
