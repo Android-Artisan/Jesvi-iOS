@@ -95,3 +95,18 @@ __pycache__/
 /xnuloader/identity.h
 !/xnuloader/im4p.py
 !/xnuloader/mkidentity.sh
+
+# y2sios overlay and the x1slte (SM-G980F) port
+!/common/
+!/uefi-y2s/
+!/reference/
+!/m2m.cmdline
+!/y2s.sh
+!/userland/build-gpu-y2s.sh
+!/userland/rc.*
+!/userland/*.plist
+!/userland/m2m.tour
+!/userland/hfs-kit.bin
+!/userland/mkjobs.py
+!/userland/mkeagl.py
+!/userland/libmini/
