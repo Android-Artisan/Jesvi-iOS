@@ -207,13 +207,37 @@ d[576:576 + 32] = h.digest().ljust(32, b'\0')
 open(p, 'wb').write(d)
 print('pack: DTB section is the Samsung DT table (%d bytes), header id updated' % len(dtbh))
 PY
-	# An AVB hash footer, as TWRP's recovery has: this phone's sboot looks for one on recovery and drops to Download
-	# Mode without it (2026-11-05), even with vbmeta's verification off (flags 3). Signed like TWRP's, with AOSP's
-	# public test key (external/avb/test/data/testkey_rsa4096.pem); the key matters not, the footer's presence does.
+	# An AVB hash footer, as TWRP's recovery has: this phone's sboot drops to Download Mode without one (2026-11-05),
+	# even with vbmeta's verification off (flags 3), and hangs at the Samsung logo when the hash does not match what is
+	# on the flash. The loader writes its log into recovery (16 MiB) after every run, and uflash writes around it, so the
+	# hash covers only the boot image (shim + UEFI + payload), which nothing changes at runtime; the kernel (32 MiB),
+	# root.apfs (52 MiB) and the log lie outside the hashed range. Signed like TWRP's, with AOSP's public test key
+	# (external/avb/test/data/testkey_rsa4096.pem): the key matters not, the footer does.
 	local avb=$HOME/ios-port-research/tools/bin/avbtool.py key=$HOME/ios-port-research/tools/dl/avb/testkey_rsa4096.pem
 	[ -f "$avb" ] && [ -f "$key" ] || die "avbtool.py or testkey_rsa4096.pem missing (ios-port-research/tools)"
-	python3 -I "$avb" add_hash_footer --image out/x1slte-recovery.img --partition_size 69009408 \
+	python3 - out/x1slte-recovery.img out/.avb-head.img <<'PY'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+ps = struct.unpack('<I', d[36:40])[0]; pg = lambda n: (n + ps - 1) // ps * ps
+ks, rs, ss = (struct.unpack('<I', d[o:o + 4])[0] for o in (8, 16, 24))
+rec, dsz = struct.unpack('<I', d[1632:1636])[0], struct.unpack('<I', d[1648:1652])[0]
+n = ps + pg(ks) + pg(rs) + pg(ss) + pg(rec) + pg(dsz)          # the boot image, as sboot reads it
+n = (n + 4095) // 4096 * 4096
+assert n < 0x1000000, n
+open(sys.argv[2], 'wb').write(d[:n])
+print('pack: AVB hash over the boot image only: %d bytes' % n)
+PY
+	python3 -I "$avb" add_hash_footer --image out/.avb-head.img --partition_size 69009408 \
 		--partition_name recovery --algorithm SHA256_RSA4096 --key "$key" --rollback_index 1
+	python3 - out/.avb-head.img out/x1slte-recovery.img <<'PY'
+import sys
+h = bytearray(open(sys.argv[1], 'rb').read()); d = open(sys.argv[2], 'rb').read()
+assert len(h) == 69009408
+vb_end = 0x1000000                      # the head image plus its vbmeta lie well inside the first 16 MiB
+h[0x2000000:len(d)] = d[0x2000000:]     # the kernel and root.apfs, outside the hashed range
+open(sys.argv[2], 'wb').write(h)
+PY
+	rm -f out/.avb-head.img
 	python3 -I "$avb" info_image --image out/x1slte-recovery.img | sed -n '1,4p;/Algorithm/p;/Partition Name/p'
 }
 
@@ -381,6 +405,10 @@ cmd_loop() {
 }
 
 cmd_uboot() {
+	# NOTE (x1slte, 2026-11-05): after Log access the loader starts the kernel with the USB device controller still
+	# running, and the kernel then shows nothing (no console) -- the first run, from the menu's countdown, did. y2sios's
+	# own loop restarts cold after uflash (ureboot); prefer that. Kept for when the loader stops USB before a run.
+	echo "uboot: prefer ./x1slte.sh ureboot (a cold start; the menu then boots iOS)" >&2
 	fb_wait
 	"$FASTBOOT" oem boot > /dev/null 2>&1 || true
 	echo "uboot: iOS is starting"
