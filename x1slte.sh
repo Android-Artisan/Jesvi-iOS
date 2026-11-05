@@ -87,6 +87,9 @@ cmd_payload() {
 	[ -n "${ROOT_UD_OFF:-}" ] && [ -n "${ROOT_UD_LEN:-}" ] ||
 		die "ROOT_UD_OFF/ROOT_UD_LEN are empty in common/devices/x1slte.conf: create /data/darwin/system.img with tools/phone/pinfile first"
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_UD_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_UD_LEN")
+	# the loader for this phone: super's real tail, and userdata writable only in system.img's extent (x1slte.sh uroot)
+	GIC_V2=1 SUPER_TAIL_START="$SUPER_TAIL_START" USERDATA_WIN_OFF="$(printf '0x%x' "$ROOT_UD_OFF")" \
+		USERDATA_WIN_LEN="$(printf '0x%x' "$ROOT_UD_LEN")" xnuloader/build.sh > /dev/null
 	# the placeholders of x1slte.cmdline: the root window (read only) and /private/var's write window
 	case "$cmdline" in *@VAR_WIN@*)
 		[ -n "${VAR_UD_FIRST:-}" ] && [ -n "${VAR_UD_BLOCKS:-}" ] ||
@@ -98,7 +101,6 @@ cmd_payload() {
 	cmdline=${cmdline//@VAR_WIN@/${VAR_UD_FIRST:-}:${VAR_UD_BLOCKS:-}}
 	# the loader for this phone: GIC_V2 (the GICv3 system registers are undefined here: a loader built
 	# without it takes a UEFI exception reading ICC_PMR_EL1 on the way into the kernel)
-	GIC_V2=1 xnuloader/build.sh > /dev/null
 	rsize=$(printf '%x' "$(wc -c < userland/root.apfs)")     # (root.apfs grows with GL=test: libOSMesa)
 	python3 xnuloader/mkpayload.py -o "$PAYLOAD" loader.efi=xnuloader/loader.efi \
 		--kpart recovery --koff 2000000 --rpart recovery --roff 3400000 --rsize "$rsize" \
@@ -404,6 +406,28 @@ cmd_loop() {
 	python3 tools/m2m.py report "$(python3 tools/m2m.py fetch --label "$label")"
 }
 
+cmd_uroot() {
+	# the iOS root image into /data/darwin/system.img through the loader (Log access): the loader takes userdata writes
+	# only inside system.img's extent (USERDATA_WIN_OFF/LEN, built in by payload), and reads every chunk back.
+	local f=${1:-userland/system.apfs} chunk=$((64 << 20)) size off i n out
+	# shellcheck disable=SC1091
+	. common/devices/x1slte.conf
+	size=$(wc -c < "$f")
+	[ "$size" -le "$ROOT_UD_LEN" ] || die "$f ($size B) is larger than system.img ($ROOT_UD_LEN B)"
+	fb_wait
+	n=$(( (size + chunk - 1) / chunk ))
+	for ((i = 0; i < n; i++)); do
+		off=$((ROOT_UD_OFF + i * chunk))
+		dd if="$f" of=out/.uroot-chunk bs=1048576 skip=$((i * 64)) count=64 2>/dev/null
+		"$FASTBOOT" stage out/.uroot-chunk > /dev/null 2>&1 || die "stage failed at chunk $i"
+		out=$("$FASTBOOT" oem write userdata "$(printf '%x' $off)" 2>&1)
+		echo "$out" | grep -q "written and read back" || die "chunk $i of $n (userdata+$(printf '%x' $off)): $out"
+		printf '\ruroot: %d/%d chunks written and read back (%d MiB)' $((i + 1)) $n $(( (i + 1) * 64 ))
+	done
+	rm -f out/.uroot-chunk
+	echo; echo "uroot: $f ($((size >> 20)) MiB) is in /data/darwin/system.img"
+}
+
 cmd_uboot() {
 	# NOTE (x1slte, 2026-11-05): after Log access the loader starts the kernel with the USB device controller still
 	# running, and the kernel then shows nothing (no console) -- the first run, from the menu's countdown, did. y2sios's
@@ -494,6 +518,7 @@ ureboot) cmd_ureboot ;;
 standalone) cmd_standalone ;;
 kernel) cmd_kernel ;;
 embed) cmd_embed "${2:-}" ;;
+uroot) cmd_uroot "${2:-}" ;;
 payload) cmd_payload "${2:-}" ;;
 cmdline) cmd_cmdline ;;
 pack) cmd_pack ;;

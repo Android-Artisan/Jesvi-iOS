@@ -59,6 +59,12 @@ SKIP_EXT = ('.weights', '.weights_nonane', '.metallib', '.mov', '.pcm', '.scnz',
 DATA_FRAMEWORKS = tuple(f'System/Library/{name}.framework/' for name in (
     'PrivateFrameworks/TextInputUI', 'PrivateFrameworks/CoreEmoji', 'Frameworks/CFNetwork'))
 # never from applications: their sound, video and 3D content
+# ... but the shader libraries of the frameworks the window server and the media pipeline draw with through Metal: on a
+# phone whose GPU runs Metal (the Mali through the AIR translator, x1slte/y2s), CoreAnimation aborts without QuartzCore's
+# default.metallib, and Core Image and Metal Performance Shaders fail without theirs (about 100 MB in all; the
+# Apple-GPU binaries next to them, pipelines.g*p, stay out)
+METAL_SHADER_FRAMEWORKS = tuple(f'System/Library/Frameworks/{name}.framework/' for name in (
+    'QuartzCore', 'CoreImage', 'Metal', 'MetalPerformanceShaders'))
 SKIP_APP_EXT = ('.mov', '.mp4', '.m4a', '.caf', '.wav', '.heic', '.aiff', '.metallib', '.scnz', '.usdz')
 # pictures the user interface is drawn with: small images, and asset catalogs up to this size
 # (the one with all the SF Symbols alone is 170 MB and is left out)
@@ -149,6 +155,8 @@ def wanted_file(path, size):
     if path.startswith(('Applications/', HEALTH)):
         return not path.lower().endswith(SKIP_APP_EXT) and '.mlmodelc/' not in path
     if path.startswith(FRAMEWORKS):
+        if path.startswith(METAL_SHADER_FRAMEWORKS) and path.endswith('.metallib'):
+            return True
         if re.search(r'/(XPCServices|Support|Helpers)/', path):
             return size <= 32 << 20 and not path.lower().endswith(('.png', '.car', '.loctable', '.caml'))
         if path.endswith('.car'):
