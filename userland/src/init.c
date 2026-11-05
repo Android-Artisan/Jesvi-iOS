@@ -10,7 +10,7 @@
  *   - halts the machine if it is still process 1 after that.
  *
  * Started with a file name by anything else, it is a command runner: that is
- * how a launchd job (LaunchDaemons/com.hakios.demo.plist) runs a list of
+ * how a launchd job (LaunchDaemons/com.redwood.demo.plist) runs a list of
  * commands.
  */
 #include "mini.h"
@@ -128,7 +128,7 @@ synthetic_dir(const char *path)
  *     entry of the volume -- not a mount, which whatever registers the system's
  *     applications passed over), made before /private/var is covered by a memory
  *     filesystem.
- * Then the volume becomes the root (sysctl kern.hakios_switch_root) and the boot volume
+ * Then the volume becomes the root (sysctl kern.redwood_switch_root) and the boot volume
  * goes to its /private/preboot, the cryptexes onto that volume's Cryptexes/OS and App: the iOS
  * volume's /System/Cryptexes/OS and App point to /private/preboot/Cryptexes/OS and App, and the
  * kernel takes a shared cache from the first.  This
@@ -246,7 +246,7 @@ flash_root(const char *dev)
 	printf("  %d applications waiting to be installed, %d of them in /Applications\n", apps, bound);
 	check(apps > 0 && bound == apps, "the first boot's applications in /Applications");
 
-	ok = sysctlbyname("kern.hakios_switch_root", NULL, NULL, "/flash private/preboot", 22) == 0;
+	ok = sysctlbyname("kern.redwood_switch_root", NULL, NULL, "/flash private/preboot", 22) == 0;
 	if (!ok) {
 		printf("  switching the root: %s\n", strerror(errno));
 	}
@@ -820,6 +820,208 @@ read_whole(const char *path, char *buf, size_t size)
 	return (ssize_t)got;
 }
 
+/*
+ * ---- the S20+'s data volume: HFS+ on userdata (var_hfs=1; PLANS/09-standalone.md, P6) ----
+ *
+ * /private/var on the flash, as a phone has it: Apple's HFS+ in the kernel (bsd/hfs), a case-sensitive
+ * journaled one filling the userdata partition (/dev/ufs_userdata, the only partition the kernel lets be
+ * written). The first boot finds no HFS+ there -- Android's data -- and makes one from the format kit in
+ * this image (tools/hfs-kit.py: the blocks macOS's newfs_hfs wrote, data and zeros); every later boot
+ * mounts what the boots before it left. Anything wrong: the memory filesystem, as before, so the phone
+ * still starts.
+ */
+#ifndef EEXIST
+#define EEXIST 17
+#endif
+#define HFS_DEVICE      "/dev/ufs_userdata"
+#define HFS_RAW         "/dev/rufs_userdata"
+
+struct hfs_args {                       /* struct hfs_mount_args (bsd/hfs/hfs_mount.h), as mount_hfs passes it */
+	const char *fspec;
+	unsigned hfs_uid, hfs_gid;
+	unsigned short hfs_mask;
+	unsigned hfs_encoding;
+	int tz_minuteswest, tz_dsttime;
+	int flags;
+	int journal_tbuffer_size, journal_flags, journal_disable;
+};
+
+/* the volume header at 1024: "HX", version 5 (HFSX, case-sensitive) */
+static int
+hfs_is_there(void)
+{
+	static unsigned char block[4096] __attribute__((aligned(4096)));
+	int fd = open(HFS_RAW, O_RDONLY, 0), ok;
+
+	if (fd < 0) {
+		return -1;
+	}
+	ok = pread(fd, block, sizeof(block), 0) == (ssize_t)sizeof(block) && block[1024] == 'H' && block[1025] == 'X' &&
+	    block[1026] == 0 && block[1027] == 5;
+	close(fd);
+	return ok;
+}
+
+static unsigned
+kit_u32(const unsigned char *p)
+{
+	return (unsigned)p[0] | (unsigned)p[1] << 8 | (unsigned)p[2] << 16 | (unsigned)p[3] << 24;
+}
+
+static unsigned long long
+kit_u64(const unsigned char *p)
+{
+	return (unsigned long long)kit_u32(p) | (unsigned long long)kit_u32(p + 4) << 32;
+}
+
+static unsigned
+kit_crc(const unsigned char *p, size_t n)
+{
+	unsigned c = 0xffffffffu;
+
+	for (size_t i = 0; i < n; i++) {
+		c ^= p[i];
+		for (int k = 0; k < 8; k++) {
+			c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
+		}
+	}
+	return ~c;
+}
+
+/* The format kit into userdata: each run of blocks, data or zeros (the kernel reads every write back) */
+static int
+hfs_format(void)
+{
+	static unsigned char kit[256 << 10];
+	const unsigned char *e, *data;
+	unsigned char *zeros;
+	unsigned block, entries;
+	ssize_t got = read_whole(in_image("/share/hfs-kit.bin"), (char *)kit, sizeof(kit));
+	int fd, ok = 1;
+	unsigned long long written = 0;
+
+	if (got < 32 || memcmp(kit, "HFSKIT01", 8) != 0) {
+		printf("  no format kit in the image (/share/hfs-kit.bin)\n");
+		return 0;
+	}
+	block = kit_u32(kit + 8);
+	entries = kit_u32(kit + 12);
+	if (block != 4096 || kit_u64(kit + 16) != 116253523968ULL || 32 + (size_t)entries * 16 > (size_t)got ||
+	    kit_crc(kit + 32, (size_t)got - 32) != kit_u32(kit + 24)) {
+		printf("  the format kit is not one for this phone's userdata, or is damaged\n");
+		return 0;
+	}
+	zeros = mmap(NULL, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	fd = open(HFS_RAW, O_RDWR, 0);
+	if (fd < 0 || zeros == MAP_FAILED) {
+		printf("  %s: %s\n", HFS_RAW, strerror(errno));
+		return 0;
+	}
+	e = kit + 32;
+	data = e + (size_t)entries * 16;
+	for (unsigned i = 0; ok && i < entries; i++, e += 16) {
+		unsigned long long first = kit_u64(e), count = kit_u32(e + 8), kind = kit_u32(e + 12);
+		unsigned long long at = first * block, left = count * block;
+
+		while (ok && left > 0) {
+			size_t n = left > (1 << 20) ? (1 << 20) : (size_t)left;
+			const void *from = kind ? (const void *)data : (const void *)zeros;
+
+			if (kind && data + n > kit + got) {
+				ok = 0;
+				break;
+			}
+			ok = pwrite(fd, from, n, (off_t)at) == (ssize_t)n;
+			if (kind) {
+				data += n;
+			}
+			at += n;
+			left -= n;
+			written += n;
+		}
+	}
+	if (!ok) {
+		printf("  writing the format kit: %s\n", strerror(errno));
+	}
+	close(fd);                      /* (the last close: the unit's cache into the flash) */
+	printf("  the format kit written: %llu MB in %u runs\n", written >> 20, entries);
+	return ok;
+}
+
+/* /private/var/run of the boot before: its pid files and sockets mean nothing now */
+static void
+empty_dir(const char *path)
+{
+	static char buf[8192];
+	char child[1024];
+	off_t pos = 0;
+	ssize_t n;
+	int fd = open(path, O_RDONLY | O_DIRECTORY, 0);
+
+	while (fd >= 0 && (n = getdirentries(fd, buf, sizeof(buf), &pos)) > 0) {
+		for (char *p = buf; p < buf + n;) {
+			struct dirent *de = (struct dirent *)(void *)p;
+			struct stat st;
+
+			if (de->d_reclen == 0) {
+				break;
+			}
+			p += de->d_reclen;
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 ||
+			    strlen(path) + strlen(de->d_name) + 2 > sizeof(child)) {
+				continue;
+			}
+			strcpy(child, join(path, "/", de->d_name));
+			if (lstat(child, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR) {
+				empty_dir(child);
+				rmdir(child);
+			} else {
+				unlink(child);
+			}
+		}
+	}
+	if (fd >= 0) {
+		close(fd);
+	}
+}
+
+/* 1: HFS+ on /private/var, kept; 0: not asked for, or it did not work (the caller mounts the memory filesystem) */
+static int
+mount_data_volume(void)
+{
+	const char *wanted = boot_arg("var_hfs");
+	struct hfs_args args = {
+		.fspec = HFS_DEVICE, .hfs_uid = ~0u, .hfs_gid = ~0u, .hfs_mask = 0xffff, .hfs_encoding = ~0u,
+	};
+	int there;
+
+	if (wanted == NULL || strcmp(wanted, "1") != 0) {
+		return 0;
+	}
+	there = hfs_is_there();
+	if (there < 0) {
+		printf("  %s: %s (ufs_write=1 with the S20+'s storage?)\n", HFS_RAW, strerror(errno));
+		return 0;
+	}
+	if (!there) {
+		printf("  userdata holds no HFS+ yet: making iOS's data volume there\n");
+		if (!hfs_format() || hfs_is_there() != 1) {
+			check(0, "make iOS's data volume (HFS+) on userdata");
+			return 0;
+		}
+		check(1, "make iOS's data volume (HFS+) on userdata");
+	}
+	if (mount("hfs", "/private/var", 0, &args) != 0) {
+		printf("  mount hfs %s on /private/var: %s\n", HFS_DEVICE, strerror(errno));
+		check(0, "mount iOS's data volume (HFS+ on userdata) on /private/var");
+		return 0;
+	}
+	check(1, there ? "mount iOS's data volume (HFS+ on userdata, kept from before) on /private/var" :
+	    "mount iOS's new data volume (HFS+ on userdata) on /private/var");
+	empty_dir("/private/var/run");
+	return 1;
+}
+
 static void
 mount_writable(void)
 {
@@ -831,13 +1033,16 @@ mount_writable(void)
 	struct stat st;
 
 	printf("\n-- writable filesystem --\n");
-	ok = mount("ramfs", "/private/var", 0, NULL) == 0;
+	ok = mount_data_volume();
 	if (!ok) {
-		printf("  mount: %s\n", strerror(errno));
+		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
+		if (!ok) {
+			printf("  mount: %s\n", strerror(errno));
+		}
+		check(ok, "mount a memory filesystem on /private/var");
 	}
-	check(ok, "mount a memory filesystem on /private/var");
 
-	/* the directories of the data volume, as listed in the template that ships with iOS (sysimage/mkvarskel.py) */
+	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
 	read_whole(in_image("/etc/var.skel"), skeleton, sizeof(skeleton));
 	for (char *line = skeleton; ok && *line;) {
 		char *end = strchr(line, '\n'), *f[6];
@@ -850,8 +1055,12 @@ mount_writable(void)
 		if (count == 5 && f[0][0] == 'd') {
 			int mode = (int)parse_number(f[1], 8);
 
-			ok = mkdir(f[4], mode) == 0 && chmod(f[4], mode) == 0 &&
-			    chown(f[4], (int)parse_number(f[2], 10), (int)parse_number(f[3], 10)) == 0;
+			if (mkdir(f[4], mode) != 0 && errno == EEXIST) {
+				ok = 1;         /* (the data volume on the flash: there from a boot before, left as it is) */
+			} else {
+				ok = chmod(f[4], mode) == 0 &&
+				    chown(f[4], (int)parse_number(f[2], 10), (int)parse_number(f[3], 10)) == 0;
+			}
 			if (!ok) {
 				printf("  %s: %s\n", f[4], strerror(errno));
 			}
@@ -859,8 +1068,13 @@ mount_writable(void)
 		} else if (count == 3 && f[0][0] == 'l') {
 			symlink(f[1], f[2]);
 		} else if (count == 6 && f[0][0] == 'f') {
-			/* a file of ours to start with (build.sh: the var/ directory): mode, owner, group, path, source in the image */
-			if (!copy_file(in_image(f[5]), f[4], (int)parse_number(f[1], 8), (int)parse_number(f[2], 10),
+			/* a file of ours to start with (build.sh: the var/ directory): mode, owner, group, path, source in the image
+			 * -- only where there is none yet: on the flash, a later boot keeps what iOS made of it */
+			struct stat had;
+
+			if (lstat(f[4], &had) == 0) {
+				/* kept */
+			} else if (!copy_file(in_image(f[5]), f[4], (int)parse_number(f[1], 8), (int)parse_number(f[2], 10),
 			    (int)parse_number(f[3], 10))) {
 				printf("  %s: %s\n", f[4], strerror(errno));
 			}
@@ -1218,6 +1432,7 @@ run_command(char *line)
 			int null = open("/dev/null", O_WRONLY, 0);
 
 			if (null >= 0) {
+				dup2(null, 1);  /* (launchd's "com.apple.xpc.launchd|" lines come out here) */
 				dup2(null, 2);
 				close(null);
 			}
@@ -1342,7 +1557,7 @@ test_time(void)
 
 /*
  * etc/inject.conf is one line, "LIBRARY NAME NAME ...": the kernel starts the programs with
- * these file names with the library inserted (sysctl kern.exec_inject, see libhakios).
+ * these file names with the library inserted (sysctl kern.exec_inject, see libredwood).
  */
 static void
 configure_inject(void)

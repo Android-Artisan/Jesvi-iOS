@@ -7,8 +7,8 @@
 #   DRIVERS="softpipe,freedreno"
 #                        the gallium drivers to build. softpipe: a rasterizer in plain C; it needs no
 #                        LLVM and nothing of the machine but its processor. freedreno: the Adreno's;
-#                        it talks to the kernel's GPU driver (the service HakiosGPU) through
-#                        tools/mesa/hakios-drm, which stands in for libdrm (tools/mesa/freedreno-darwin.patch
+#                        it talks to the kernel's GPU driver (the service RedwoodGPU) through
+#                        tools/mesa/redwood-drm, which stands in for libdrm (tools/mesa/freedreno-darwin.patch
 #                        makes Mesa build it where there is no DRM). The library takes the GPU when the
 #                        kernel has one and the environment does not say OSMESA_SOFTWARE=1.
 #
@@ -18,6 +18,11 @@
 #                        and the off-screen interface that hands out contexts
 #   exported-gl.txt      the gl* functions it exports, and
 #   gl.xml               their prototypes (the Khronos registry as Mesa has it): for userland/mkeagl.py
+# and with AIR=1, the two things the Metal subsystem needs (docs/air.md, docs/metal.md 10.12):
+#   air_run              the test program: a Metal shader translated, drawn or dispatched, read back
+#   libredwoodair.dylib  the same path as a library (tools/mesa/air/air_metal.h), install name
+#                        /redwood/lib/libredwoodair.dylib, which is what userland's Metal driver
+#                        links against to compile a function Metal hands it
 # Needs on this machine: meson, ninja, bison, flex, python3 with venv (Mako is installed into a
 # private environment), llvm-ar.
 #
@@ -46,6 +51,7 @@ source "$ROOT/xnu-env.sh"
 B=$ROOT/xnu-deps/build/mesa
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 CC=$ROOT/xnu-deps/host/bin/xnu-clang
+[ "$(uname -s)" != Darwin ] || CC=$ROOT/xnu-deps/host-macos/bin/xnu-clang     # (natively on macOS: docs/MACOS.md)
 mkdir -p "$B/out"
 cd "$B"
 
@@ -53,17 +59,17 @@ cd "$B"
 # patched with the earlier ones is of no use (and builds without a word into a library that does not match
 # the rest): the sources are taken from the archive again and everything is built anew, about a minute.
 PATCHES=$(cat "$ROOT"/tools/mesa/*.patch | sha256sum | cut -d' ' -f1)
-if [ ! -d mesa-$VERSION ] || [ "$(cat mesa-$VERSION/.hakios-patches 2>/dev/null)" != "$PATCHES" ]; then
+if [ ! -d mesa-$VERSION ] || [ "$(cat mesa-$VERSION/.redwood-patches 2>/dev/null)" != "$PATCHES" ]; then
 	[ -f mesa-$VERSION.tar.xz ] || curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
 	echo "$SHA256  mesa-$VERSION.tar.xz" | sha256sum -c --quiet
 	rm -rf mesa-$VERSION build-*
 	tar xJf mesa-$VERSION.tar.xz
 	for p in "$ROOT"/tools/mesa/*.patch; do patch -s --no-backup-if-mismatch -d mesa-$VERSION -p1 < "$p"; done
-	echo "$PATCHES" > mesa-$VERSION/.hakios-patches
+	echo "$PATCHES" > mesa-$VERSION/.redwood-patches
 fi
 # ours, kept in the repository: always the current ones
-rm -rf mesa-$VERSION/src/hakios-drm
-cp -r "$ROOT/tools/mesa/hakios-drm" mesa-$VERSION/src/hakios-drm
+rm -rf mesa-$VERSION/src/redwood-drm
+cp -r "$ROOT/tools/mesa/redwood-drm" mesa-$VERSION/src/redwood-drm
 # the AIR frontend (docs/air.md): the Metal runtime will call it in this
 # library's own process, and tools/mesa/air-frontend.patch is the meson that
 # reaches it. Copied rather than linked, because this tree is cross-built.
@@ -71,9 +77,11 @@ rm -rf mesa-$VERSION/src/compiler/air
 cp -r "$ROOT/tools/mesa/air" mesa-$VERSION/src/compiler/air
 if [ ! -x venv/bin/python3 ]; then
 	python3 -m venv venv
-	venv/bin/pip -q install mako pyyaml packaging
+	venv/bin/pip -q install mako pyyaml packaging meson ninja
 fi
 export PATH=$B/venv/bin:$PATH
+# (macOS: llvm-ar, llvm-ranlib and llvm-strip are Homebrew's LLVM's)
+[ "$(uname -s)" != Darwin ] || export PATH=$PATH:$(brew --prefix llvm)/bin
 
 # the compiler is the kernel's wrapper: it names the target (arm64-apple-ios) and the linker (ld64)
 cat > cross.ini <<INI
@@ -105,14 +113,33 @@ BUILD=build-${DRIVERS//,/-}
 	-Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled \
 	-Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled -Dgallium-va=disabled \
 	-Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log
+[ -z "${CONFIGURE_ONLY:-}" ] || exit 0
 ninja -C $BUILD > ninja.log
 # air_run draws with a translated Metal shader and reads the pixels back; it is
 # the only way to find out whether the Adreno takes work that did not come from
 # the window server. Built only when asked, since it is a test program.
 if [ "${AIR:-}" = 1 ]; then
-	ninja -C $BUILD src/gallium/drivers/freedreno/air_run >> ninja.log
-	cp $BUILD/src/gallium/drivers/freedreno/air_run out/air_run
-	echo "mk-mesa.sh: $B/out/air_run ($(stat -c %s out/air_run) bytes)"
+	# (built where the GPU driver is: freedreno's directory for the Adreno, panfrost's for the
+	# Exynos phone's Mali -- tools/mesa/air-panfrost.patch)
+	AIRDIR=src/gallium/drivers/freedreno
+	case ",$DRIVERS," in *,panfrost,*) AIRDIR=src/gallium/drivers/panfrost ;; esac
+	ninja -C $BUILD $AIRDIR/air_run >> ninja.log
+	cp $BUILD/$AIRDIR/air_run out/air_run
+	echo "mk-mesa.sh: $B/out/air_run ($(wc -c < out/air_run) bytes)"
+	# and the same path as a library, which is not a test program: the Metal driver links
+	# against it to compile the bitcode Metal hands a function. Stripped and named the way
+	# libOSMesa is below -- -x keeps the global symbols, which here are the rwa_* of
+	# tools/mesa/air/air_metal.h, and the install name has to be the path on the device
+	# because meson's own is @rpath.
+	ninja -C $BUILD $AIRDIR/libredwoodair.dylib >> ninja.log
+	llvm-strip -x -o out/libredwoodair.dylib $BUILD/$AIRDIR/libredwoodair.dylib
+	install_name_tool -id /redwood/lib/libredwoodair.dylib out/libredwoodair.dylib
+	echo "mk-mesa.sh: $B/out/libredwoodair.dylib ($(wc -c < out/libredwoodair.dylib) bytes," \
+		"$(nm -gU out/libredwoodair.dylib | grep -c ' _rwa_') rwa_* functions)"
+	# what this library was built from, so userland/build.sh can tell that it is older than the
+	# sources and come back here instead of shipping it beside a driver that disagrees with it
+	# (everything it is built from: its sources, the libdrm stand-in compiled into it, and the patches)
+	cat "$ROOT"/tools/mesa/air/* "$ROOT"/tools/mesa/redwood-drm/* "$ROOT"/tools/mesa/*.patch | sha256sum > out/built-from-air
 fi
 
 llvm-strip -x -o out/libOSMesa.8.dylib $BUILD/src/gallium/targets/osmesa/libOSMesa.8.dylib
@@ -120,6 +147,7 @@ install_name_tool -id /redwood/lib/libOSMesa.8.dylib out/libOSMesa.8.dylib
 nm -gU out/libOSMesa.8.dylib | awk '$3 ~ /^_gl/ { print substr($3, 2) }' > out/exported-gl.txt
 cp mesa-$VERSION/src/mapi/glapi/registry/gl.xml out/gl.xml
 # (userland/build.sh comes here again when this no longer matches)
-cat "$ROOT"/tools/mesa/*.patch "$ROOT"/tools/mesa/hakios-drm/* | sha256sum > out/built-from
-echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(stat -c %s out/libOSMesa.8.dylib) bytes," \
+cat "$ROOT"/tools/mesa/*.patch "$ROOT"/tools/mesa/redwood-drm/* | sha256sum > out/built-from
+echo "$DRIVERS" > out/drivers           # (userland/build.sh builds the Adreno's AIR pieces only with freedreno)
+echo "mk-mesa.sh: Mesa $VERSION ($DRIVERS): $B/out/libOSMesa.8.dylib, $(wc -c < out/libOSMesa.8.dylib) bytes," \
 	"$(wc -l < out/exported-gl.txt) gl* functions"

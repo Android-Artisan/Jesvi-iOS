@@ -15,6 +15,7 @@ on the GPU. A module that reaches ir3 has compiled, which is not the same
 thing, and the report never claims otherwise.
 
 usage: corpus.py [--ir3] [--json FILE] [--md FILE] FILE.metallib...
+       corpus.py [--ir3] ... --list FILE      (one library path per line)
 """
 import argparse
 import collections
@@ -30,6 +31,19 @@ IR3 = os.environ.get(
     "IR3", os.path.join(ROOT, "build/mesa-host/build/src/gallium/drivers/freedreno/ir3_compiler"))
 # the redwood's Adreno 7c+ Gen 3 (A635), as freedreno names it
 CHIP_ID = os.environ.get("AIR_CHIP_ID", "0x007506030500")
+
+
+# The mains of the other tools: each one is linked into its own binary and into
+# nothing else, so a change to it cannot make a different tool stale. Treating
+# every file of tools/mesa/air as a dependency of every binary refused a run
+# whose numbers were perfectly current -- which costs more than the guard
+# saves, because the next refusal gets worked around rather than read.
+TOOL_MAINS = {"air2nir.c": "air2nir", "air_run.c": "air_run",
+              # the library the Metal driver links and its test (air_metal.h):
+              # in no binary whose numbers this script reports, so a change to
+              # them makes none of those stale.
+              "air_metal.c": "libredwoodair", "air_metal.h": "libredwoodair",
+              "air_metal_test.c": "air_metal_test"}
 
 
 def refuse_if_stale(prog, what):
@@ -53,10 +67,13 @@ def refuse_if_stale(prog, what):
     src = os.path.join(ROOT, "tools/mesa/air")
     newest, name = 0.0, None
     for f in os.listdir(src):
-        if f.endswith((".c", ".h")):
-            t = os.path.getmtime(os.path.join(src, f))
-            if t > newest:
-                newest, name = t, f
+        if not f.endswith((".c", ".h")):
+            continue
+        if TOOL_MAINS.get(f) not in (None, os.path.basename(prog)):
+            continue      # another tool's main: not linked into this binary
+        t = os.path.getmtime(os.path.join(src, f))
+        if t > newest:
+            newest, name = t, f
     if newest and os.path.getmtime(prog) < newest:
         print("corpus.py: %s is older than tools/mesa/air/%s, so its column would be "
               "the previous frontend's. Build it: ninja -C build/mesa-host/build %s"
@@ -133,13 +150,25 @@ def short_reason(r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("libs", nargs="+")
+    ap.add_argument("libs", nargs="*")
+    # The system's corpus is five files and fits on a command line. A game's
+    # does not: RE Engine compiles every shader variant into a .metallib of its
+    # own and one pak holds 7 879 of them, which is past what argv takes, so
+    # the list can come from a file (one path per line) instead.
+    ap.add_argument("--list", help="file of library paths, one per line")
     ap.add_argument("--ir3", action="store_true", help="also compile through ir3")
     ap.add_argument("--json")
     ap.add_argument("--md")
     args = ap.parse_args()
 
-    rows = read_report(args.libs)
+    libs = list(args.libs)
+    if args.list:
+        with open(args.list) as f:
+            libs += [ln.strip() for ln in f if ln.strip()]
+    if not libs:
+        ap.error("no libraries: give paths, or --list FILE")
+
+    rows = read_report(libs)
     if not rows:
         sys.exit("corpus.py: no modules; is %s built?" % AIR2NIR)
     if args.ir3:
@@ -201,14 +230,22 @@ def main():
     if mismatch:
         out.append("")
 
+    libnames = sorted({r["library"] for r in rows})
     out.append("## By library\n")
-    out.append("| library | modules | translate | ir3 |")
-    out.append("| --- | --- | --- | --- |")
-    for lib in sorted({r["library"] for r in rows}):
-        rs = [r for r in rows if r["library"] == lib]
-        out.append("| %s | %d | %d | %s |" % (
-            lib, len(rs), sum(1 for r in rs if r.get("translate") == "ok"),
-            sum(1 for r in rs if r.get("ir3") == "ok") if args.ir3 else "-"))
+    # A row per library is the report for a handful of system libraries and
+    # noise for thousands of single-function ones; past that the count is the
+    # only thing the table would say that the stage table does not.
+    if len(libnames) <= 24:
+        out.append("| library | modules | translate | ir3 |")
+        out.append("| --- | --- | --- | --- |")
+        for lib in libnames:
+            rs = [r for r in rows if r["library"] == lib]
+            out.append("| %s | %d | %d | %s |" % (
+                lib, len(rs), sum(1 for r in rs if r.get("translate") == "ok"),
+                sum(1 for r in rs if r.get("ir3") == "ok") if args.ir3 else "-"))
+    else:
+        out.append("%d libraries, %.2f modules each on average; not listed one by one.\n"
+                   % (len(libnames), float(total) / len(libnames)))
     out.append("")
 
     out.append("## Modules that call no `air.*` at all\n")
@@ -223,6 +260,26 @@ def main():
         out.append("| --- | --- |")
         for why, n in reasons.most_common():
             out.append("| %d | %s |" % (n, why.replace("|", "\\|")))
+        out.append("")
+
+    # Translated, and not exactly as asked. A refusal is counted above and a
+    # clean translation is counted in the stage table; this is the third thing,
+    # which used to have nowhere to be counted and therefore went unsaid.
+    notes = collections.Counter()
+    for r in rows:
+        for note in (r.get("notes") or "").split(";"):
+            if note:
+                notes[note] += 1
+    if notes:
+        out.append("## What was translated with a caveat\n")
+        out.append("A module here was accepted and something other than exactly what it "
+                   "asked for was done. Not a refusal and not a warning about this "
+                   "frontend's own code: a thing the hardware cannot do exactly, where "
+                   "doing something else is still correct.\n")
+        out.append("| modules | what was asked, and what was done |")
+        out.append("| --- | --- |")
+        for note, n in notes.most_common():
+            out.append("| %d | %s |" % (n, note.replace("|", "\\|")))
         out.append("")
 
     if intrinsics:

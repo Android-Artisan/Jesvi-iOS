@@ -17,7 +17,7 @@
  *                         services say what they decided (X-Set-Apple-Store-Front; rc.jobs.store)
  *   reach NAME            what SCNetworkReachability says: the question applications ask first
  *   wait SECONDS
- *   wifi                  what the job com.hakios.wifi runs in every image: if the kernel was
+ *   wifi                  what the job com.redwood.wifi runs in every image: if the kernel was
  *                         started with wifi=1, wait for the radio's interface (en0) to appear,
  *                         and ask for it to be configured by DHCP ("dhcp en0") only if configd
  *                         has no network service of its own for it; else nothing
@@ -31,9 +31,9 @@
  *                         (21: a wrong passphrase) and how long it took. The network's name is
  *                         the kernel's (its SSID request) and is not printed.
  *
- * The interface QEMU's network gives (en0, bsd/dev/hakios.net.c) has no IOKit object behind it,
+ * The interface QEMU's network gives (en0, bsd/dev/redwood_net.c) has no IOKit object behind it,
  * and configd makes its network services out of those. (The phone's radio has one now:
- * iokit/Kernel/hakios.wlan.cpp, and configd makes a "Wi-Fi" service of it by itself.) But the
+ * iokit/Kernel/RedwoodWLAN.cpp, and configd makes a "Wi-Fi" service of it by itself.) But the
  * plugin that does the configuring keeps its own list
  * of interfaces, straight from the kernel, and has a Mach interface of its own, the one the
  * "ipconfig" command of macOS uses ("ipconfig set en0 DHCP"; the command itself is not part of
@@ -62,6 +62,15 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+/* <net/if_media.h> is not in the iOS SDK: the request and the bit "waitlink" needs */
+struct nt_ifmediareq {
+	char ifm_name[IFNAMSIZ];
+	int ifm_current, ifm_mask, ifm_status, ifm_active, ifm_count;
+	int *ifm_ulist;
+};
+#define NT_SIOCGIFMEDIA         _IOWR('i', 56, struct nt_ifmediareq)
+#define NT_IFM_ACTIVE           0x00000002
 
 /* not in the iOS SDK's headers, in the libraries all the same */
 extern mach_port_t bootstrap_port;
@@ -371,8 +380,8 @@ reach(const char *name)
 }
 
 /*
- * With wifi=1 among the kernel's arguments: wait for en0, and for configd's own network service for
- * it ("Wi-Fi", made of the radio's IOKit objects, iokit/Kernel/hakios.wlan.cpp). That service runs
+ * With wifi=1 (or wifi_pcie=4, the S20+) among the kernel's arguments: wait for en0, and for configd's own network service for
+ * it ("Wi-Fi", made of the radio's IOKit objects, iokit/Kernel/RedwoodWLAN.cpp). That service runs
  * DHCP by itself, and it has to be the one that does: wifid takes the interface for usable only
  * when the address appears under a service whose settings name en0, and the service "dhcp en0"
  * makes has none (Settings then shows a spinner where the tick belongs). Only a kernel without
@@ -391,6 +400,7 @@ wifi(void)
 	}
 	for (const char *word = strtok(arguments, " "); word != NULL; word = strtok(NULL, " ")) {
 		wanted |= strcmp(word, "wifi=1") == 0;
+		wanted |= strncmp(word, "wifi_pcie=", 10) == 0 && atoi(word + 10) >= 4;   /* the S20+'s BCM4375 (redwood_bcm4375.c) */
 	}
 	if (!wanted) {
 		return;
@@ -501,7 +511,7 @@ wrongjoin(void)
 		return;
 	}
 	length = request.length;
-	/* the layout of iOS 16.5 (bsd/dev/hakios.apple80211.c of the kernel): version, mode, authentication lower and
+	/* the layout of iOS 16.5 (bsd/dev/redwood_apple80211.c of the kernel): version, mode, authentication lower and
 	 * upper, the name's length and the name, the access point (none: any), the key's version, length and kind (10:
 	 * a passphrase as typed), the key */
 	memset(assoc, 0, sizeof(assoc));
@@ -568,6 +578,28 @@ main(int argc, char **argv)
 				}
 				printf("net_test: waitaddr %s: %s after %.1f s\n", interface, show(interface, true) ? "an address" :
 				    "NO address", seconds() - start);
+				show(interface, false);
+			} else if (strcmp(step, "waitlink") == 0 && i + 2 < argc) {
+				/* the radio joined: the interface's media active (SIOCGIFMEDIA), its flags as they are */
+				const char *interface = argv[++i];
+				double start = seconds(), limit = atof(argv[++i]);
+				int fd = socket(AF_INET, SOCK_DGRAM, 0);
+				struct nt_ifmediareq media;
+				bool active = false;
+
+				while (fd >= 0 && seconds() - start < limit) {
+					memset(&media, 0, sizeof(media));
+					strlcpy(media.ifm_name, interface, sizeof(media.ifm_name));
+					if ((active = ioctl(fd, NT_SIOCGIFMEDIA, &media) == 0 && (media.ifm_status & NT_IFM_ACTIVE))) {
+						break;
+					}
+					usleep(500000);
+				}
+				printf("net_test: waitlink %s: %s after %.1f s\n", interface, active ? "the link is up" : "NO link",
+				    seconds() - start);
+				if (fd >= 0) {
+					close(fd);
+				}
 				show(interface, false);
 			} else if (strcmp(step, "resolve") == 0 && i + 1 < argc) {
 				resolve(argv[++i], NULL, 0);

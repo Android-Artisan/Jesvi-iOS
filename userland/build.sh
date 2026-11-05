@@ -27,7 +27,7 @@
 #                                   a directory). This goes into the boot volume, which every recipe
 #                                   carries and which the flash recipe puts in RAM, so its size is paid
 #                                   for at every boot -- a few megabytes, not more
-#                      RC_JOBS=<file> what the job com.hakios.demo runs: rc.jobs (default), or
+#                      RC_JOBS=<file> what the job com.redwood.demo runs: rc.jobs (default), or
 #                                   rc.jobs.unlock, which also swipes the lock screen away (for the phone,
 #                                   where nothing else can touch the screen yet).
 #                                   A job list cannot assume a shell. iOS 16.5's own root has none at all
@@ -42,7 +42,7 @@
 #                                   air_run grew --buffer.
 #                      GL=1         with an OpenGL ES implementation for the window server: Mesa
 #                                   (tools/mk-mesa.sh fetches and builds it) behind src/eagl.c, as
-#                                   lib/libOSMesa.8.dylib (15 MB) and lib/libhakios.gl.dylib. Where the
+#                                   lib/libOSMesa.8.dylib (15 MB) and lib/libredwood-gl.dylib. Where the
 #                                   kernel has started the phone's GPU, CoreAnimation then draws with its
 #                                   OpenGL ES renderer, by that GPU (boot-arg gpu=1); anywhere else -- QEMU,
 #                                   no boot-arg, no firmware in ../fw-gpu -- the library is not even loaded
@@ -50,13 +50,11 @@
 #                                   GL=test: only the library and bin/gl_test (a triangle, src/gl_test.c;
 #                                   RC_JOBS=rc.jobs.gltest runs it); the window server stays as it is.
 #                      ADSP=1       with the audio DSP's firmware from ../fw-audio in fw/ (20 MB; for the
-#                                   kernel's adsp_step=N, bsd/dev/hakios.adsp.c, which runs before the root is
+#                                   kernel's adsp_step=N, bsd/dev/redwood_adsp.c, which runs before the root is
 #                                   mounted). Not beside GL=1: the two do not fit the 64 MB the loader takes with
 #                                   the kernel. adsp=1 needs none of it: the system image has the firmware in /fw.
-#                      MODEM=1      stage checked local MPSS firmware from ../fw-modem in system.apfs /fw.
-#                                   This does not start the modem; the XNU MPSS driver is still required.
 #   system.apfs      the system image, the root filesystem (the resident RAM disk, /dev/md0), an
-#                    APFS container: the part of iOS 16.5 chosen by ../sysimage/select-system.py at
+#                    APFS container: the part of iOS 16.5 chosen by ../ios165/select-system.py at
 #                    its real paths, the dyld shared cache, and src/stage0.c as /sbin/launchd (the
 #                    real one is /sbin/launchd.ios). 2.5 GB; upload once per loader session with
 #                    `xl ramdisk userland/system.apfs`. Rebuilt when missing, when its inputs
@@ -83,16 +81,16 @@ source ../xnu-env.sh
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
 LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
 DYN="xnu-clang -arch arm64 -isysroot ${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk -O1"
-IOS=../sysimage
+IOS=../ios165
 CACHE=$IOS/20F66__iPhone10,3_6
-# sysimage/rootfs and sysimage/cryptex must be this copy's own directories of hard links, the way
+# ios165/rootfs and ios165/cryptex must be this copy's own directories of hard links, the way
 # tools/new-workspace.sh makes them. A symlink to another copy's tree makes sysroot a symlink too, because
 # cp -a does not follow one, and then every rm -rf and mv below edits the shared extraction in place. That
 # happened on 19 October 2026: 491 LaunchDaemons, NanoLaunchDaemons, LaunchAngels, xpc/launchd.plist and
 # private/var went out of the main copy's tree, and only the hard links in the other copies still held them.
 for d in rootfs cryptex cryptex-app; do
 	[ -L $IOS/$d ] || continue
-	echo "build.sh: sysimage/$d is a symlink to $(readlink $IOS/$d)" >&2
+	echo "build.sh: ios165/$d is a symlink to $(readlink $IOS/$d)" >&2
 	echo "build.sh: it has to be a directory of this copy's own: rm it and cp -al the original over," >&2
 	echo "build.sh: as tools/new-workspace.sh does. Building against a link damages the shared tree." >&2
 	exit 1
@@ -108,7 +106,7 @@ IOS_JOBS=${JOBS-"
 	com.apple.SpringBoard
 "}
 # iOS's own Wi-Fi daemon, for Settings to have a Wi-Fi to show: the kernel answers it in
-# bsd/dev/hakios.apple80211.c. With the radio (wifi=1) Settings then shows Wi-Fi on, the network joined and the
+# bsd/dev/redwood_apple80211.c. With the radio (wifi=1) Settings then shows Wi-Fi on, the network joined and the
 # networks the radio hears. NOT FINISHED: a network cannot be joined from Settings yet.
 # It is in by default now, because it costs nothing where there is no radio at all: in QEMU it comes up, talks
 # to itself about country codes and sits there -- 114 processes started against 119 without it, no crash, never
@@ -118,28 +116,35 @@ IOS_JOBS=${JOBS-"
 # (Count a QEMU run log with its duplicate lines removed: run-ios.sh prints launchd's log twice.)
 # WIFID=0 leaves it out.
 [ "${WIFID-1}" != 0 ] && IOS_JOBS="$IOS_JOBS com.apple.wifid"
+# The S20+'s Bluetooth (bsd/dev/redwood_exynos_bt.c, bt=1): bluetoothd over the kernel's control
+# com.apple.uart.bluetooth (H4), with BlueTool's stand-in (src/bluetool_stub.c); BT=0 leaves it out.
+if [ "${BT-1}" != 0 ]; then
+	IOS_JOBS="$IOS_JOBS com.apple.bluetoothd"
+	export JOB_ENV="${JOB_ENV:+$JOB_ENV;}com.apple.bluetoothd:BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth"
+	export ALLOW="${ALLOW:-} bluetooth"
+fi
 # The programs (file names) started with a library of ours inside them: "LIBRARY NAME..." per line
-# (src/inject.c is libhakios.dylib, src/inject_sb.c is libhakios.sb.dylib, src/inject_media.c is
-# libhakios.media.dylib).
+# (src/inject.c is libredwood.dylib, src/inject_sb.c is libredwood-sb.dylib, src/inject_media.c is
+# libredwood-media.dylib).
 # What Sileo runs from /bin (see the package manager's prefix below): the system image's /bin, or the
 # boot volume's bin, bound over the iOS volume's /bin when that is the root (src/init.c, flash_root).
 SILEO_BIN="chmod cp mkdir mv rm"
-# (libhakios.tweaks is the tweak loader of the package manager's prefix, src/inject_tweaks.c: in
+# (libredwood-tweaks is the tweak loader of the package manager's prefix, src/inject_tweaks.c: in
 # SpringBoard the library above opens it, here it is named for the programs that have no library of
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
-INJECT=${INJECT-"/redwood/lib/libhakios.dylib backboardd containermanagerd containermanagerd_system
-/redwood/lib/libhakios.sb.dylib SpringBoard
-/redwood/lib/libhakios.media.dylib mediaserverd
-/redwood/lib/libhakios.app.dylib Sileo
-/redwood/lib/libhakios.tweaks.dylib Preferences"}
+INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system
+/redwood/lib/libredwood-sb.dylib SpringBoard
+/redwood/lib/libredwood-media.dylib mediaserverd
+/redwood/lib/libredwood-app.dylib Sileo
+/redwood/lib/libredwood-tweaks.dylib Preferences"}
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
 # a storefront is the only thing it is missing. It also writes down whether a bag request is ever
 # built at all. For an experiment, not for an image anybody else boots.
 [ -n "$STOREFRONT" ] && INJECT="$INJECT
-/redwood/lib/libhakios.store.dylib appstored AppStore
-/redwood/lib/libhakios.fairplay.dylib fairplayd.H2"
+/redwood/lib/libredwood-store.dylib appstored AppStore
+/redwood/lib/libredwood-fairplay.dylib fairplayd.H2"
 mkdir -p obj
 
 if [ -z "$PREBUILT" ] && ! command -v ld64 >/dev/null; then PREBUILT=1; fi
@@ -170,8 +175,12 @@ cp obj/child root/bin/child
 # ends: the program and its job together, away from the iOS job list below, which several working
 # copies are editing at once.
 [ -f obj/var_store ] && cp obj/var_store root/bin/
-cp com.hakios.varstore.plist root/LaunchDaemons/
-echo "Darwin on hakios: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
+cp com.redwood.varstore.plist root/LaunchDaemons/
+# The S20+'s data volume (var_hfs=1, src/init.c): the format kit init writes into userdata at the first boot --
+# the blocks of a case-sensitive journaled HFS+ the size of userdata, made by macOS's newfs_hfs
+# (tools/mk-userdata-hfs.sh, then tools/hfs-kit.py)
+[ -f hfs-kit.bin ] && cp hfs-kit.bin root/share/hfs-kit.bin
+echo "Darwin on redwood: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
 # EXTRA_SHARE: whole directories of data for a one-off diagnostic, each under its own name. Here and
@@ -189,7 +198,16 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/hello_dyn src/hello_dyn.c
 		$DYN -framework CoreFoundation -o obj/svc_test src/svc_test.c
 		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOSurface -o obj/surf_test src/surf_test.c
+		# an IOSurface of ours imported as a texture of the GPU, written through one view
+		# and read through the other (src/drawable_test.c): the check that tells a texture
+		# over the surface's own pages from a texture over a copy of them. It goes through
+		# src/redwooddrawable.m, which is the bridge under test, and dlopens the compiler
+		# library the way the driver does.
+		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOSurface \
+			-framework IOKit -o obj/drawable_test src/drawable_test.c src/redwooddrawable.m
 		$DYN -o obj/rwtouch src/rwtouch.c
+		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
+		$DYN -o obj/thermald src/thermald.c
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
@@ -207,12 +225,73 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -fobjc-arc -Wno-deprecated-declarations -framework Foundation -framework CoreGraphics \
 			-framework CoreImage -framework IOKit -framework Metal -framework OpenGLES \
 			-lMobileGestalt -o obj/metal_test src/metal_test.m
+		# the first question of subsystem (2): can a subclass of the private _MTLDevice be
+		# made here, and what does its initWithAcceleratorPort: do (src/metal_dev.m). No ARC:
+		# it calls objc_msgSend by hand and allocates a class at runtime.
+		$DYN -framework Foundation -framework IOKit -framework Metal -lobjc \
+			-o obj/metal_dev src/metal_dev.m
+		# a device object that implements nothing and logs what Apple's own init asks it
+		# for (src/metal_stubdev.m); same reasons for no ARC and for -lobjc
+		$DYN -framework Foundation -framework IOKit -framework Metal -lobjc \
+			-o obj/metal_stubdev src/metal_stubdev.m
+		# the device object of the driver itself, as the library a bundle would hold
+		# (src/redwoodmetal.m). It links against Metal's private _OBJC_CLASS_$__MTLDevice,
+		# which is bindable because IOGPU.framework imports the same symbol; -lobjc for
+		# class_addProtocol and no ARC because it calls objc_msgSend by hand.
+		# (with src/redwooddrawable.m beside it: the IOSurface a CAMetalLayer hands a
+		# device, as a texture. A file of its own because it answers CoreAnimation and
+		# not Metal, and the two meet in one method -- docs/metal.md 10.46.)
+		$DYN -dynamiclib -install_name /redwood/lib/libredwoodmetal.dylib \
+			-framework Foundation -framework IOKit -framework Metal -lobjc \
+			-o obj/libredwoodmetal.dylib src/redwoodmetal.m src/redwooddrawable.m
+		# and the program that walks Metal's own steps 4 and 5 against it
+		$DYN -framework Foundation -framework IOKit -framework Metal -lobjc \
+			-o obj/metal_drv_test src/metal_drv_test.m
+		# An application of this port's own: a window, a CAMetalLayer, a drawable and a
+		# triangle in it (src/triangle_app.m). UIKit because that is the point -- every
+		# Metal result so far is from inside one of Apple's daemons, and this is an
+		# ordinary bundle in /Applications that SpringBoard launches; IOSurface because
+		# it reads the drawable's own surface back to say whether the texture WAS those
+		# pages; no ARC and -lobjc because it sends -initWithAcceleratorPort: by hand,
+		# the way src/metal_drv_test.m does. The bundle is assembled further down, where
+		# a PREBUILT tree can assemble it too.
+		# (signed, if ldid is there, for the entitlements an application has and a
+		# /redwood/bin program does not: see src/triangle_app.entitlements, which says
+		# why none of them is needed to RUN. Signed here rather than in the bundle, so
+		# that the copy in /redwood/bin carries the same signature.)
+		$DYN -framework Foundation -framework UIKit -framework QuartzCore \
+			-framework Metal -framework IOSurface -framework IOKit -lobjc \
+			-o obj/RedwoodTriangle src/triangle_app.m &&
+			{ ${LDID:-ldid} -Ssrc/triangle_app.entitlements obj/RedwoodTriangle 2>/dev/null ||
+			  echo "build.sh: no ldid: RedwoodTriangle is unsigned, which still runs (AMFI here accepts everything) but holds no entitlements"; }
+		# what the device ANSWERS when an application asks what it supports
+		# (src/metal_caps.m). It takes the device from MTLCreateSystemDefaultDevice() so
+		# that the ivars behind Apple's inherited answers are filled by the registration
+		# Metal itself ran; no ARC and -lobjc because most of what it asks is MTLDeviceSPI,
+		# whose header this port has not got, so every send is an objc_msgSend by hand. MetalFX
+		# because the acceptance test's own capability gate is +supportsDevice: on its two
+		# scaler descriptors, and that gate can be measured without the game.
+		$DYN -framework Foundation -framework IOKit -framework Metal -lobjc \
+			-framework MetalFX -o obj/metal_caps src/metal_caps.m
+		# ... and the switch that steps 1 and 2 need: it puts MetalPluginName and
+		# MetalPluginClassName on the IOAcceleratorES service (src/metal_props.c). IOKit and
+		# CoreFoundation only -- a program that flips this switch must not itself ask Metal,
+		# whose conditions are asserts. It needs the kernel booted with metal=1.
+		$DYN -framework CoreFoundation -framework IOKit -o obj/metal_props src/metal_props.c
 		$DYN -o obj/shm_test src/shm_test.c
 		$DYN -o obj/apfs_mmap_test src/apfs_mmap_test.c
 		$DYN -o obj/vol_ls src/vol_ls.c
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework ImageIO -o obj/snap_test src/snap_test.c
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework CoreText -o obj/font_test src/font_test.c
 		$DYN -fobjc-arc -framework Foundation -framework SystemConfiguration -o obj/net_test src/net_test.m
+		# (the kernel's log over the network while iOS runs: PLANS/09-standalone.md, P4)
+		$DYN -o obj/rwlogd src/rwlogd.c
+		$DYN -fblocks -o obj/bluetool_stub src/bluetool_stub.c
+		# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc
+		# signature is what makes one (bsd/kern/kern_minimac.c): sign the stub, or com.apple.BlueTool
+		# takes the kernel down at ~30 s ("unexpected exec of non-platform binary").
+		{ ${LDID:-ldid} -S obj/bluetool_stub 2>/dev/null || codesign -s - -f obj/bluetool_stub 2>/dev/null; } ||
+			echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
 		# (the account database answers only a client with the entitlements its own daemons hold: src/store_test.m)
 		$DYN -fobjc-arc -framework Foundation -framework Accounts -o obj/store_test src/store_test.m &&
 			{ ${LDID:-ldid} -Ssrc/store_test.entitlements obj/store_test 2>/dev/null ||
@@ -230,42 +309,62 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			{ ${LDID:-ldid} -Ssrc/wifipw_test.entitlements obj/wifipw_test 2>/dev/null ||
 			  echo "build.sh: no ldid: wifipw_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# our library for inside stock iOS programs (the jobs in INJECT are started with it)
-		$DYN -dynamiclib -install_name /redwood/lib/libhakios.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libhakios.dylib src/inject.c
-		$DYN -dynamiclib -install_name /redwood/lib/libhakios.sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libhakios.sb.dylib src/inject_sb.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
+			-o obj/libredwood.dylib src/inject.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
+			-o obj/libredwood-sb.dylib src/inject_sb.c
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
 		# program either as the one library the kernel inserts or opened by a library of ours
-		$DYN -dynamiclib -install_name /redwood/lib/libhakios.tweaks.dylib -framework CoreFoundation -lobjc \
-			-o obj/libhakios.tweaks.dylib src/inject_tweaks.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
+			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
-		$DYN -dynamiclib -install_name /redwood/lib/libhakios.app.dylib -lobjc \
-			-o obj/libhakios.app.dylib src/inject_app.c
-		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia \
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
+			-o obj/libredwood-app.dylib src/inject_app.c
+		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
-			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
+			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
 		# ... and inside appstored (STOREFRONT=1), which answers with a storefront and watches for a bag
 		# request being built (src/inject_store.c)
 		# (-lc++abi for __cxa_throw: every C++ exception thrown in the process is watched, which is how
 		#  the jetpack parser's rejections are seen -- a throw somebody catches logs nothing of itself)
-		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.store.dylib -framework CoreFoundation -lobjc \
-			-lc++abi -o obj/libhakios.store.dylib src/inject_store.c
+		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-store.dylib -framework CoreFoundation -lobjc \
+			-lc++abi -o obj/libredwood-store.dylib src/inject_store.c
 		# ... and inside fairplayd.H2, which starts and leaves at once: what it looks for, and where it
 		# gives up (src/inject_fairplay.c; watches only, replaces nothing)
-		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.fairplay.dylib -framework CoreFoundation \
+		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-fairplay.dylib -framework CoreFoundation \
 			-framework IOKit -framework Security -lMobileGestalt \
-			-o obj/libhakios.fairplay.dylib src/inject_fairplay.c
+			-o obj/libredwood-fairplay.dylib src/inject_fairplay.c
 		# the output device of the audio server: a plug-in for CoreAudio's HAL
-		$DYN -bundle -framework CoreFoundation -o obj/HakiosAudio src/audio_plugin.c
+		$DYN -bundle -framework CoreFoundation -o obj/RedwoodAudio src/audio_plugin.c
+		# The same driver again as a loadable bundle, which is the form Metal's own
+		# discovery wants: step 3 builds the path /System/Library/Extensions/<name>.bundle
+		# and opens it with NSBundle, and -[NSBundle classNamed:] then tests that the class
+		# came out of that bundle (0x1811e0dac). The dylib above cannot serve as the
+		# executable: dyld uniques images by install_name, so a process that already has
+		# /redwood/lib/libredwoodmetal.dylib would bind the bundle to it and fail that test.
+		$DYN -bundle -framework Foundation -framework IOKit -framework Metal -lobjc \
+			-o obj/RedwoodMetal src/redwoodmetal.m src/redwooddrawable.m
 		if [ -n "$GL" ]; then
 			# the OpenGL ES library, and the table of functions that hands CoreAnimation's calls to it
 			# (Mesa says beside the library what it was built from: one from other patches is built again)
 			M=../xnu-deps/build/mesa/out
-			[ "$(cat $M/built-from 2>/dev/null)" = "$(cat ../tools/mesa/*.patch ../tools/mesa/hakios-drm/* | sha256sum)" ] ||
-				../tools/mk-mesa.sh
+			# (again with the drivers it was built with: softpipe,panfrost for the Exynos phone's Mali)
+			[ "$(cat $M/built-from 2>/dev/null)" = "$(cat ../tools/mesa/*.patch ../tools/mesa/redwood-drm/* | sha256sum)" ] ||
+				DRIVERS=$(cat $M/drivers 2>/dev/null) ../tools/mk-mesa.sh
+			# ... and the compiler library separately, because the hash above covers the PATCHES
+			# and the library is built from tools/mesa/air/, which they do not mention. Two boots
+			# of 22 October carried a libredwoodair.dylib three hours older than the driver beside
+			# it while rwa_render_shape had grown IN THE MIDDLE -- the image was the mismatch the
+			# contract warns about, and nothing in it said so. Silence is what made it expensive:
+			# the library is stripped, so the driver found the symbols it wanted and read a stride
+			# where a pixel format was.
+			[ "$(cat $M/built-from-air 2>/dev/null)" = "$(cat ../tools/mesa/air/* ../tools/mesa/redwood-drm/* ../tools/mesa/*.patch | sha256sum)" ] || {
+				echo "build.sh: libredwoodair.dylib is older than what it is built from (mk-mesa.sh's hash)"
+				AIR=1 DRIVERS=$(cat $M/drivers 2>/dev/null) ../tools/mk-mesa.sh
+			}
 			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl.c > obj/eagl_gen.h
-			$DYN -dynamiclib -install_name /redwood/lib/libhakios.gl.dylib -Iobj -framework CoreFoundation \
-				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libhakios.gl.dylib \
+			$DYN -dynamiclib -install_name /redwood/lib/libredwood-gl.dylib -Iobj -framework CoreFoundation \
+				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-gl.dylib \
 				src/eagl.c src/gl_osmesa.c
 			$DYN -framework CoreFoundation -framework IOKit $M/libOSMesa.8.dylib -o obj/gl_test src/gl_test.c
 			# ... and what this GPU makes of an unsigned integer turned into a float (src/u2f_test.c)
@@ -277,12 +376,27 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			# entry points this library exports; AIR=1 tools/mk-mesa.sh makes
 			# it, and it is copied in when it is there.
 			[ -f $M/air_run ] && cp $M/air_run obj/air_run
+			# The compiler the Metal driver asks for: AIR in, a dispatch on the
+			# Adreno out (tools/mesa/air/air_metal.h). It is copied whether or not
+			# GL is wanted, because src/redwoodmetal.m dlopens it by that path --
+			# and its absence is a sentence the driver prints, not a crash.
+			[ -f $M/libredwoodair.dylib ] && cp $M/libredwoodair.dylib obj/
 		fi
 	fi
-	cp obj/hello_dyn obj/svc_test obj/surf_test obj/rwtouch obj/mg_test root/bin/
+	# (drawable_test is built in the same block as surf_test, so it is copied with it)
+	# (a prebuilt/ from before a program has none: copy what is there)
+	for p in hello_dyn svc_test surf_test drawable_test rwtouch mg_test; do
+		if [ -f obj/$p ]; then cp obj/$p root/bin/; fi
+	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
+	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
+	[ -f obj/metal_dev ] && cp obj/metal_dev root/bin/
+	[ -f obj/metal_stubdev ] && cp obj/metal_stubdev root/bin/
+	[ -f obj/metal_drv_test ] && cp obj/metal_drv_test root/bin/
+	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
+	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
 	[ -f obj/vol_ls ] && cp obj/vol_ls root/bin/
@@ -290,6 +404,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/font_test ] && cp obj/font_test root/bin/
 	[ -f obj/metal_test ] && cp obj/metal_test root/bin/
 	[ -f obj/net_test ] && cp obj/net_test root/bin/
+	[ -f obj/rwlogd ] && cp obj/rwlogd root/bin/
+	[ -f obj/m2m_mark ] && cp obj/m2m_mark root/bin/
+	[ -f obj/bluetool_stub ] && cp obj/bluetool_stub root/bin/
 	[ -f obj/store_test ] && cp obj/store_test root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
@@ -299,28 +416,93 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/camera_test ] && cp obj/camera_test root/bin/
 	[ -f obj/camera_avtest ] && cp obj/camera_avtest root/bin/
 	[ -f obj/record_test ] && cp obj/record_test root/bin/
+	# The same binary as the application below, under /redwood/bin, for its --layer mode:
+	# a CAMetalLayer with no window and no UIKit, driven once. That mode cannot say whether
+	# a frame reaches the panel, and it answers the two questions that come before it -- does
+	# the driver work outside Apple's daemons, and does nextDrawable give a texture -- in a
+	# process whose output is certainly in the log, because the job list runs it. An
+	# application launched by SpringBoard is a process this file cannot promise that about.
+	[ -f obj/RedwoodTriangle ] && cp obj/RedwoodTriangle root/bin/triangle_app
 	for f in $EXTRA; do cp "$f" root/bin/; done
+	#
+	# ... and the application bundle itself, staged in obj/ and copied into
+	# sysroot/Applications by the system image below.
+	#
+	# A PLAIN DIRECTORY OF REAL FILES, and that is not a style: a bundle made of symbolic
+	# links is refused by LaunchServices ("Unable to register"), and the registrar that
+	# walks /Applications at boot passes over mount points. So the icons are generated here
+	# rather than linked from anywhere, and the plist and the executable are copied.
+	if [ -f obj/RedwoodTriangle ]; then
+		rm -rf obj/RedwoodTriangle.app
+		mkdir -p obj/RedwoodTriangle.app
+		cp obj/RedwoodTriangle obj/RedwoodTriangle.app/
+		cp src/triangle_app.plist obj/RedwoodTriangle.app/Info.plist
+		printf 'APPL????' > obj/RedwoodTriangle.app/PkgInfo
+		# The icon is the picture the application draws: an orange triangle over the
+		# lower left half of a blue square, by the same rule the shader covers a pixel
+		# by ((x+0.5)/w < (y+0.5)/h). So the home screen states the prediction, and an
+		# icon that comes out with its halves the other way round says the arithmetic in
+		# this one line disagrees with the arithmetic in src/triangle_app.m. No alpha
+		# channel: iOS masks an icon itself and an icon with alpha comes out wrong.
+		python3 - obj/RedwoodTriangle.app <<-'PY'
+		import struct, sys, zlib
+		out = sys.argv[1]
+		for size, scale in ((120, 2), (180, 3)):
+		    rows = bytearray()
+		    for y in range(size):
+		        rows.append(0)                        # PNG filter type: none
+		        for x in range(size):
+		            inside = (2 * x + 1) * size < (2 * y + 1) * size
+		            rows += bytes((255, 128, 0) if inside else (0, 0, 255))
+		    def chunk(kind, body):
+		        return (struct.pack('>I', len(body)) + kind + body +
+		                struct.pack('>I', zlib.crc32(kind + body)))
+		    png = (b'\x89PNG\r\n\x1a\n' +
+		           chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)) +
+		           chunk(b'IDAT', zlib.compress(bytes(rows), 9)) + chunk(b'IEND', b''))
+		    open('%s/AppIcon60x60@%dx.png' % (out, scale), 'wb').write(png)
+		PY
+		# Unsigned, which is enough: AMFI in this kernel accepts every signature and
+		# holds no trust cache (libkern/amfi/miniamfi.c), and the kernel is built without
+		# config_enforce_signed_code. What a signature would still buy is entitlements,
+		# and this application asks the system for nothing that needs one.
+		echo "  RedwoodTriangle.app: $(du -sk obj/RedwoodTriangle.app | cut -f1) KB for /Applications"
+	fi
 	# /dev and /private/var exist so that this image can also be the root on its own:
 	# devfs is mounted on /dev, and init puts a ramfs on /private/var
 	mkdir -p root/dev root/private/var
 	mkdir -p root/lib
-	cp obj/libhakios.dylib obj/libhakios.sb.dylib root/lib/
-	[ -f obj/libhakios.media.dylib ] && cp obj/libhakios.media.dylib root/lib/     # (as with cpu_test)
-	[ -f obj/libhakios.store.dylib ] && cp obj/libhakios.store.dylib root/lib/
-	[ -f obj/libhakios.fairplay.dylib ] && cp obj/libhakios.fairplay.dylib root/lib/
-	[ -f obj/libhakios.app.dylib ] && cp obj/libhakios.app.dylib root/lib/
-	[ -f obj/libhakios.tweaks.dylib ] && cp obj/libhakios.tweaks.dylib root/lib/
-	if [ -f obj/HakiosAudio ]; then
-		mkdir -p root/lib/HakiosAudio.driver
-		cp obj/HakiosAudio root/lib/HakiosAudio.driver/
-		cp src/audio_plugin.plist root/lib/HakiosAudio.driver/Info.plist
+	cp obj/libredwood.dylib obj/libredwood-sb.dylib root/lib/
+	[ -f obj/libredwood-media.dylib ] && cp obj/libredwood-media.dylib root/lib/     # (as with cpu_test)
+	[ -f obj/libredwood-store.dylib ] && cp obj/libredwood-store.dylib root/lib/
+	[ -f obj/libredwood-fairplay.dylib ] && cp obj/libredwood-fairplay.dylib root/lib/
+	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
+	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
+	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
+	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
+	if [ -f obj/RedwoodAudio ]; then
+		mkdir -p root/lib/RedwoodAudio.driver
+		cp obj/RedwoodAudio root/lib/RedwoodAudio.driver/
+		cp src/audio_plugin.plist root/lib/RedwoodAudio.driver/Info.plist
+	fi
+	# The Metal plug-in bundle, flat and unsigned -- which is enough here: AMFI in this
+	# kernel is a stand-in that accepts every signature (libkern/amfi/miniamfi.c), and
+	# Apple's own code already loads the unsigned RedwoodAudio.driver above. The system image
+	# now links this bundle into /System/Library/Extensions as well (see below), but the two
+	# properties that would make Metal look for it are still nobody's by default: only a boot
+	# with metal=1 lets a process put them on the service (docs/metal.md 10.31), because 10.14
+	# measured what a half-made device does to every process that asks Metal for one.
+	if [ -f obj/RedwoodMetal ]; then
+		mkdir -p root/lib/RedwoodMetal.bundle
+		cp obj/RedwoodMetal root/lib/RedwoodMetal.bundle/
+		cp src/metal_plugin.plist root/lib/RedwoodMetal.bundle/Info.plist
 	fi
 	if [ -n "$GL" ]; then
 		cp obj/libOSMesa.8.dylib root/lib/
 		cp obj/gl_test root/bin/
 		if [ -f obj/u2f_test ]; then cp obj/u2f_test root/bin/; fi   # an "if": see the inject.conf loop below
 		[ -f obj/air_run ] && cp obj/air_run root/bin/
-		[ "$GL" = test ] || cp obj/libhakios.gl.dylib root/lib/
+		[ "$GL" = test ] || cp obj/libredwood-gl.dylib root/lib/
 	fi
 	# a program is not started with a library that is not there: it would not start at all
 	echo "$INJECT" | while read -r library names; do
@@ -339,9 +521,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# time zones: the template's links go in a circle until the time zone daemon has run (/usr/share/zoneinfo
 	# points back into /var); point them at the data that ships with the system, and use this machine's zone
 	zone=$(timedatectl show -p Timezone --value 2>/dev/null || true); zone=${zone:-UTC}
-	sed -i.bak -e 's|^l\t/usr/share/zoneinfo\t/private/var/db/timezone/zoneinfo$|l\t/usr/share/zoneinfo.default\t/private/var/db/timezone/zoneinfo|' \
+	sed -i -e 's|^l\t/usr/share/zoneinfo\t/private/var/db/timezone/zoneinfo$|l\t/usr/share/zoneinfo.default\t/private/var/db/timezone/zoneinfo|' \
 		-e "s|^l\t/var/db/timezone/zoneinfo/[^\t]*\t/private/var/db/timezone/localtime\$|l\t/var/db/timezone/zoneinfo/$zone\t/private/var/db/timezone/localtime|" root/etc/var.skel
-	rm -f root/etc/var.skel.bak
 	# ... and the files of ours it puts there (var/): those under mobile/ belong to the user mobile
 	cp -r var root/var
 	(cd var && find . -type f | sed 's|^\./||' | sort) | while read -r f; do
@@ -375,6 +556,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	fi
 	cp ${RC:-rc.launchd} root/etc/rc
 	cp ${RC_JOBS:-rc.jobs} root/etc/rc.jobs
+	cp m2m.tour root/etc/m2m.tour        # mali2metal's standard tour (rwlogd GET /tour)
 	# QUIET=1: launchd's own standard error goes nowhere (src/init.c). It says a few thousand
 	# lines about its own business in the first minutes and pushes everything else out of the
 	# kernel's log; the daemons keep their own standard error on the console all the same.
@@ -385,19 +567,20 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
-	cp com.hakios.demo.plist com.hakios.wifi.plist root/LaunchDaemons/
+	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.logd.plist root/LaunchDaemons/
+	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
-# (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/hakios.adreno.c, finds it in fw/
+# (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/
 if [ -d ../fw-gpu ]; then
 	mkdir -p root/fw
 	cp ../fw-gpu/* root/fw/
 fi
 # ... and the image of the Wi-Fi DSP, from /vendor/firmware_mnt/image of the same Android into ../fw-wifi
-# (bsd/dev/hakios.wifi.c; 7.6 MB), with what the radio's firmware is sent once it runs: this phone's
+# (bsd/dev/redwood_wifi.c; 7.6 MB), with what the radio's firmware is sent once it runs: this phone's
 # board data and the regulatory database (image/qca6750 there; 60 and 24 KB)
 if [ -f ../fw-wifi/wpss.mdt ]; then
 	mkdir -p root/fw
@@ -411,31 +594,45 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
 fi
+# ... or the S20+'s Broadcom BCM4375 (bsd/dev/redwood_bcm4375.c, wifi_pcie=4), from the phone's /vendor/firmware
+# into ../fw-wifi under these names: bcmdhd_sta.bin_b1, bcmdhd_clm.blob and the B1 NVRAMs (SEMCO's is this
+# phone's, "Y2"; Murata's for wifi_nvram=1). 1.3 MB, the vendor's and not in the repository.
+if [ -f ../fw-wifi/bcm4375-sta.bin ]; then
+	mkdir -p root/fw
+	# (and bcm4375B1-semco.hcd: the Bluetooth side's patchram, the phone's /vendor/firmware/bcm4375B1_semco.hcd,
+	# bsd/dev/redwood_exynos_bt.c)
+	for f in bcm4375-sta.bin bcm4375-clm.blob bcm4375-nvram-semco.txt bcm4375-nvram-murata.txt bcm4375B1-semco.hcd; do
+		[ -f ../fw-wifi/$f ] && install -m 0644 ../fw-wifi/$f root/fw/
+	done
+	# the network the kernel joins at the start (name, then passphrase; in no repository), as above
+	rm -f root/fw/network
+	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
+fi
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
-# (bsd/dev/hakios.haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
+# (bsd/dev/redwood_haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-haptic/aw8697_haptic.bin root/fw/
 fi
-# ... and the cameras' register tables (bsd/dev/hakios.camera.c, cam=2 and up), made by tools/camsensor.py out of
+# ... and the cameras' register tables (bsd/dev/redwood_camera.c, cam=2 and up), made by tools/camsensor.py out of
 # the sensors' module files of Android's camera stack, the phone's /vendor/lib64/camera/com.qti.sensormodule.
-# hakios_<maker>_<sensor>_<camera>.bin, in ../fw-camera (the vendor's: neither they nor the tables are in the
+# redwood_<maker>_<sensor>_<camera>.bin, in ../fw-camera (the vendor's: neither they nor the tables are in the
 # repository): camera-<sensor>.tab
-for module in ../fw-camera/com.qti.sensormodule.hakios_*.bin; do
+for module in ../fw-camera/com.qti.sensormodule.redwood_*.bin; do
 	[ -f "$module" ] || continue
-	sensor=$(basename "$module" .bin | sed 's/^com\.qti\.sensormodule\.hakios_[a-z]*_\([a-z0-9]*\)_.*/\1/')
+	sensor=$(basename "$module" .bin | sed 's/^com\.qti\.sensormodule\.redwood_[a-z]*_\([a-z0-9]*\)_.*/\1/')
 	mkdir -p root/fw
 	../tools/camsensor.py "$module" "root/fw/camera-$sensor.tab" >/dev/null
 done
-# ... and their colour tuning (libhakios.media's processor, src/camera_isp.c), made by tools/camtuning.py out of the
-# cameras' tuning files beside them, com.qti.tuned.hakios_<maker>_<sensor>_<camera>.bin: camera-<sensor>.isp
-for tuned in ../fw-camera/com.qti.tuned.hakios_*.bin; do
+# ... and their colour tuning (libredwood-media's processor, src/camera_isp.c), made by tools/camtuning.py out of the
+# cameras' tuning files beside them, com.qti.tuned.redwood_<maker>_<sensor>_<camera>.bin: camera-<sensor>.isp
+for tuned in ../fw-camera/com.qti.tuned.redwood_*.bin; do
 	[ -f "$tuned" ] || continue
-	sensor=$(basename "$tuned" .bin | sed 's/^com\.qti\.tuned\.hakios_[a-z]*_\([a-z0-9]*\)_.*/\1/')
+	sensor=$(basename "$tuned" .bin | sed 's/^com\.qti\.tuned\.redwood_[a-z]*_\([a-z0-9]*\)_.*/\1/')
 	mkdir -p root/fw
 	../tools/camtuning.py "$tuned" "root/fw/camera-$sensor.isp" >/dev/null
 done
-# ... and with ADSP=1 the image of the audio DSP, from the same place into ../fw-audio (bsd/dev/hakios.adsp.c):
+# ... and with ADSP=1 the image of the audio DSP, from the same place into ../fw-audio (bsd/dev/redwood_adsp.c):
 # adsp.mdt and adsp.b02 to adsp.b36, 20 MB. Only when asked for: beside GL=1 the payload would be more than the 64 MB
 # the loader takes.
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
@@ -472,9 +669,17 @@ mkdir -p root/empty root/xpc root/hal
 for f in extensions.plist extensions.plist.sig; do
 	[ -f $IOS/rootfs/System/Library/xpc/$f ] && cp $IOS/rootfs/System/Library/xpc/$f root/xpc/
 done
-[ -d root/lib/HakiosAudio.driver ] && ln -s /redwood/lib/HakiosAudio.driver root/hal/HakiosAudio.driver
+[ -d root/lib/RedwoodAudio.driver ] && ln -s /redwood/lib/RedwoodAudio.driver root/hal/RedwoodAudio.driver
+# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc signature
+# is what makes one (bsd/kern/kern_minimac.c). Sign the BlueTool stand-in here, where every build
+# path passes (macOS copies the program from prebuilt/userland and never compiles it).
+if [ -f root/bin/bluetool_stub ]; then
+	{ ${LDID:-ldid} -S root/bin/bluetool_stub 2>/dev/null ||
+	  codesign -s - -f root/bin/bluetool_stub 2>/dev/null; } ||
+		echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
+fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
-# as it is, which the kernel's drivers use where it lies in memory (bsd/dev/hakios.image.c)
+# as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 
@@ -559,11 +764,11 @@ fi
 if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
 	  [ $IOS/cryptex -nt system.apfs ] || [ $IOS/cryptex-app -nt system.apfs ] || [ -n "$SYSTEM" ]; }; then
-	# what sysimage/select-system.py has chosen since sysimage/rootfs was extracted is not in it, and would not be
+	# what ios165/select-system.py has chosen since ios165/rootfs was extracted is not in it, and would not be
 	# in the image either (so it was once with the audio plug-ins and the system's sounds: iOS found no
 	# speaker and played nothing, though our device was there and the kernel's side worked)
 	if [ -f $IOS/.done-rootfs ] && [ $IOS/select-system.py -nt $IOS/.done-rootfs ]; then
-		echo "build.sh: sysimage/select-system.py has changed since sysimage/rootfs was extracted: run KEEP=1 sysimage/fetch.sh" >&2
+		echo "build.sh: ios165/select-system.py has changed since ios165/rootfs was extracted: run KEEP=1 ios165/fetch.sh" >&2
 		exit 1
 	fi
 	rm -rf sysroot
@@ -584,27 +789,12 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	mv sysroot/sbin/launchd sysroot/sbin/launchd.ios
 	cp obj/stage0 sysroot/sbin/launchd
 	# the audio DSP's firmware, the phone's own from ../fw-audio (never in the repository), where the kernel reads
-	# it once the root is mounted (bsd/dev/hakios.adsp.c, adsp=1): 20 MB that do not fit beside GL=1 in the small image
+	# it once the root is mounted (bsd/dev/redwood_adsp.c, adsp=1): 20 MB that do not fit beside GL=1 in the small image
 	if [ -f ../fw-audio/adsp.mdt ]; then
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
 	fi
-	# MPSS firmware is much too large for the small boot image. Keep it in the system APFS,
-	# only when explicitly requested, after checking every loadable segment against this DTB.
-	# This stages the files; a separate XNU MPSS driver is still required to start the modem.
-	if [ -n "$MODEM" ]; then
-		[ -f ../fw-modem/modem.mdt ] || { echo "build.sh: MODEM=1 needs ../fw-modem/modem.mdt" >&2; exit 1; }
-		../devices/poco-x5-pro/tools/modem_firmware.py --dtb ../devices/poco-x5-pro/prebuilt/device-tree.dtb --firmware-dir ../fw-modem \
-			--node /soc/qcom,mss@4080000 >/dev/null
-		mkdir -p sysroot/fw
-		cp ../fw-modem/modem.mdt ../fw-modem/modem.b[0-9][0-9] sysroot/fw/
-		# ... and the firmware partition's image/ (its mcfg configurations and the registry's *.jsn, pulled from
-		# the phone's /vendor/firmware_mnt/image into ../fw-modem/image), which the modem reads over TFTP (hakios.mpss.c)
-		if [ -d ../fw-modem/image ]; then
-			rm -rf sysroot/fw/image && cp -R ../fw-modem/image sysroot/fw/image
-		fi
-	fi
-	# ... and the speaker amplifiers' configuration, the phone's /vendor/etc/aw882xx_acf.bin (bsd/dev/hakios.speaker.c,
+	# ... and the speaker amplifiers' configuration, the phone's /vendor/etc/aw882xx_acf.bin (bsd/dev/redwood_speaker.c,
 	# for sound=3): Android's own register values, which are not in the repository either
 	if [ -f ../fw-audio/aw882xx_acf.bin ]; then
 		mkdir -p sysroot/fw
@@ -630,9 +820,46 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		done
 		echo "  the package manager's prefix: $(du -sh sysroot/jb | cut -f1) as /jb (init puts it at /var/jb)"
 	fi
+	# An application of this port's own, registered the same free way the prefix's are: a plain
+	# directory in /Applications, which the LaunchServices database is rebuilt from at every boot
+	# by walking that directory -- no installd, no container, no uicache. cp -a and not a link,
+	# because a bundle of symbolic links is refused ("Unable to register") and the boot-time
+	# registrar passes over mount points.
+	#
+	# This is in the SYSTEM image and not the small one, so a change to it costs a 2.5 GB rebuild
+	# and a re-upload: SYSTEM=1 is what makes this line run again.
+	if [ -d obj/RedwoodTriangle.app ]; then
+		cp -a obj/RedwoodTriangle.app sysroot/Applications/
+		echo "  RedwoodTriangle.app in /Applications (com.redwood.triangle, scheme redwoodtriangle:)"
+	fi
+	# Applications from outside this tree: every .app in ../apps, which is kept out of the
+	# repository the way ../fw-* and ../jb are, so that nothing of somebody else's package can
+	# reach it. They go into /Applications beside the port's own on exactly the same terms --
+	# a plain directory, which LaunchServices finds by walking that folder at every boot.
+	#
+	# cp -aL and not cp -a: a bundle made of symbolic links is refused ("Unable to register"),
+	# so whatever a link points at is copied as the file itself.
+	for app in ../apps/*.app; do
+		[ -d "$app" ] || continue
+		cp -aL "$app" sysroot/Applications/
+		echo "  ${app##*/} in /Applications ($(du -sm "$app" | cut -f1) MB from ../apps)"
+	done
 	# our audio device, where the audio server looks for such plug-ins (and for no others: Apple's are left out)
 	mkdir -p sysroot/System/Library/Audio/Plug-Ins/HAL
-	ln -s /redwood/lib/HakiosAudio.driver sysroot/System/Library/Audio/Plug-Ins/HAL/HakiosAudio.driver
+	ln -s /redwood/lib/RedwoodAudio.driver sysroot/System/Library/Audio/Plug-Ins/HAL/RedwoodAudio.driver
+	# ... and our Metal plug-in, at the one path Metal's own discovery can open: step 3 composes
+	# "/System/Library/Extensions/" + MetalPluginName + ".bundle" and opens it with NSBundle
+	# (docs/metal.md 1). Same shape as the audio plug-in above -- a link into /redwood/lib, where
+	# the bundle itself travels in the small image -- because this directory is iOS's own and
+	# nothing can be added to it after the image is built.
+	#
+	# This link is inert on a boot that does not ask for Metal: nothing composes that path until
+	# MetalPluginName is on the IOAcceleratorES service, and only boot-arg metal=1 lets a process
+	# put it there (iokit/Kernel/MiniIOMobileFramebuffer.cpp). So it is not behind a switch of its
+	# own -- a switch here would cost a 2.5 GB system.apfs rebuild and a re-upload every time it
+	# was flipped, and buy nothing a missing boot-arg does not already buy.
+	mkdir -p sysroot/System/Library/Extensions
+	ln -s /redwood/lib/RedwoodMetal.bundle sysroot/System/Library/Extensions/RedwoodMetal.bundle
 	# the OS cryptex: on a device a separate volume grafted at /System/Cryptexes/OS. It holds the dyld
 	# shared cache (dyld looks there first) and a few libraries and resources outside the cache.
 	mkdir -p sysroot/System/Cryptexes

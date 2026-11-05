@@ -30,6 +30,14 @@ struct efi_text_output;
 typedef struct efi_text_output {
 	void *reset;
 	efi_status (EFIAPI *output_string)(struct efi_text_output *self, const char16 *str);
+	void *test_string;
+	void *query_mode;
+	void *set_mode;
+	void *set_attribute;
+	efi_status (EFIAPI *clear_screen)(struct efi_text_output *self);
+	void *set_cursor_position;
+	void *enable_cursor;
+	void *mode;
 } efi_text_output;
 
 enum { EfiLoaderData = 2, EfiConventionalMemory = 7 };
@@ -258,5 +266,80 @@ typedef struct {
 #define EFI_PARTITION_INFO_GUID { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x80, 0x8d, 0xec, 0x9e, 0xc4, 0x21, 0xa1, 0xa0 } }
 #define QCOM_CHARGER_EX_GUID     { 0x6edc8a6d, 0x2663, 0x43cd, { 0x90, 0xff, 0x46, 0x21, 0xff, 0xd1, 0x0d, 0xf5 } }
 #define QCOM_CHARGER_GUID        { 0x21bfb78b, 0x02ea, 0x4ab7, { 0x99, 0x40, 0xb5, 0x8a, 0x2a, 0xd6, 0x58, 0x29 } }
+
+
+/* Simple Text Input: the keypad (Silicium's KeypadDxe: Vol-Up SCAN_UP, Vol-Down SCAN_DOWN, Power Enter,
+ * Power held 0.5 s SCAN_ESC, Power + Vol-Down SCAN_RIGHT, Power + Vol-Up SCAN_LEFT) */
+typedef struct {
+	uint16_t scan_code;
+	char16 unicode_char;
+} efi_input_key;
+
+typedef struct efi_simple_text_input {
+	efi_status (EFIAPI *reset)(struct efi_simple_text_input *self, uint8_t extended);
+	efi_status (EFIAPI *read_key_stroke)(struct efi_simple_text_input *self, efi_input_key *key);
+	void *wait_for_key;
+} efi_simple_text_input;
+
+#define EFI_SCAN_UP     0x01
+#define EFI_SCAN_DOWN   0x02
+#define EFI_SCAN_RIGHT  0x03
+#define EFI_SCAN_LEFT   0x04
+#define EFI_SCAN_ESC    0x17
+
+/* USB Function I/O (UEFI 2.5, MdePkg/Include/Protocol/UsbFunctionIo.h): Silicium's UsbfnDwc3Dxe on y2s */
+#define EFI_USBFN_IO_GUID { 0x32d2963a, 0xfe5d, 0x4f30, { 0xb6, 0x33, 0x6e, 0x5d, 0xc5, 0x58, 0x03, 0xcc } }
+
+enum {
+	EfiUsbMsgNone = 0, EfiUsbMsgSetupPacket, EfiUsbMsgEndpointStatusChangedRx, EfiUsbMsgEndpointStatusChangedTx,
+	EfiUsbMsgBusEventDetach, EfiUsbMsgBusEventAttach, EfiUsbMsgBusEventReset, EfiUsbMsgBusEventSuspend,
+	EfiUsbMsgBusEventResume, EfiUsbMsgBusEventSpeed
+};
+enum { UsbfnTransferUnknown = 0, UsbfnTransferComplete, UsbfnTransferAborted, UsbfnTransferActive, UsbfnTransferNone };
+enum { UsbfnDirDeviceRx = 0, UsbfnDirDeviceTx = 1 };
+
+typedef struct __attribute__((packed)) {
+	uint8_t request_type, request;
+	uint16_t value, index, length;
+} efi_usb_device_request;
+
+typedef struct {
+	uint64_t bytes;                 /* UINTN BytesTransferred */
+	uint32_t status;                /* EFI_USBFN_TRANSFER_STATUS */
+	uint8_t endpoint;               /* EndpointIndex */
+	uint32_t direction;             /* EFI_USBFN_ENDPOINT_DIRECTION */
+	void *buffer;
+} efi_usbfn_transfer_result;
+
+typedef union {
+	efi_usb_device_request udr;
+	efi_usbfn_transfer_result utr;
+	uint32_t speed;
+} efi_usbfn_message_payload;
+
+typedef struct { const void *interface; const void *const *endpoints; } efi_usb_interface_info;
+typedef struct { const void *config; const efi_usb_interface_info *const *interfaces; } efi_usb_config_info;
+typedef struct { const void *device; const efi_usb_config_info *const *configs; } efi_usb_device_info;
+
+typedef struct efi_usbfn_io {
+	uint32_t revision;
+	efi_status (EFIAPI *detect_port)(struct efi_usbfn_io *self, uint32_t *port_type);
+	efi_status (EFIAPI *configure_enable_endpoints)(struct efi_usbfn_io *self, efi_usb_device_info *info);
+	void *get_endpoint_max_packet_size, *get_device_info, *get_vendor_id_product_id;
+	efi_status (EFIAPI *abort_transfer)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction);
+	void *get_endpoint_stall_state;
+	efi_status (EFIAPI *set_endpoint_stall_state)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction,
+	    uint8_t *state);
+	efi_status (EFIAPI *event_handler)(struct efi_usbfn_io *self, uint32_t *message, uint64_t *payload_size,
+	    efi_usbfn_message_payload *payload);
+	efi_status (EFIAPI *transfer)(struct efi_usbfn_io *self, uint8_t endpoint, uint32_t direction, uint64_t *size,
+	    void *buffer);
+	void *get_max_transfer_size, *allocate_transfer_buffer, *free_transfer_buffer;
+	efi_status (EFIAPI *start_controller)(struct efi_usbfn_io *self);
+	efi_status (EFIAPI *stop_controller)(struct efi_usbfn_io *self);
+	void *set_endpoint_policy, *get_endpoint_policy;
+} efi_usbfn_io;
+
+_Static_assert(sizeof(efi_usbfn_transfer_result) == 32, "EFI_USBFN_TRANSFER_RESULT");
 
 #endif /* XNULOADER_EFI_H */

@@ -35,6 +35,8 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import metallib  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tools/air"))
+import airdefs  # noqa: E402  (LLVM-IR definitions for the exactly defined air.*)
 
 AIR2NIR = os.environ.get(
     "AIR2NIR", os.path.join(ROOT, "build/mesa-host/build/src/compiler/air/air2nir"))
@@ -225,6 +227,51 @@ def check_against_metadata(entry, ll):
     return None
 
 
+def air_calls(ll):
+    """Every air.* function the module declares."""
+    return sorted(set(re.findall(r"^declare[^@\n]*@(air\.[A-Za-z0-9_.]+)\(", ll, re.M)))
+
+
+def with_definitions(ll):
+    """The module plus definitions for the air.* it calls, or why not.
+
+    LLVM cannot evaluate a call it has no body for, so a function calling
+    air.* was outside this check entirely -- 21 of the corpus's 135 library
+    functions call none and were the only ones it could reach. airdefs.py
+    supplies bodies for the families whose result is exactly defined, matched
+    to intrincheck's reference, which is itself pinned to the Adreno on 1 748
+    cases.
+
+    That makes the comparison weaker than the 21 and it must not be counted
+    with them: LLVM decides the function's own arithmetic, and we decide what
+    its air.* calls mean. A family with no bit-exact reference anywhere
+    (air.fast_pow and the rest) is refused by name rather than approximated,
+    because a body invented for it would make the agreement circular.
+    """
+    names = air_calls(ll)
+    if not names:
+        return ll, None, 0
+    refused = airdefs.refusals_for(names)
+    if refused:
+        first = sorted(refused)[0]
+        return None, "%s has no bit-exact reference: %s" % (first, refused[first]), 0
+    ir = airdefs.definitions_for(names)
+    if not ir.strip():
+        return None, "no definition for %s" % ", ".join(names[:3]), 0
+    # the module declares each of them; textual IR allows a name once, so the
+    # declaration has to go before the definition can come in ("invalid
+    # redefinition of function", which is what LLVM says rather than merging
+    # the two the way a linker would)
+    defined = set(re.findall(r"^define[^@\n]*@(air\.[A-Za-z0-9_.]+)\(", ir, re.M))
+    kept = []
+    for line in ll.splitlines():
+        m = re.match(r"^declare[^@\n]*@(air\.[A-Za-z0-9_.]+)\(", line)
+        if m and m.group(1) in defined:
+            continue
+        kept.append(line)
+    return "\n".join(kept) + "\n" + ir + "\n", None, len(defined)
+
+
 def build_and_run(ll, entry, bufs, workdir, library=False):
     """Compile the module for this machine and call the entry point.
 
@@ -379,7 +426,13 @@ int main(void) {
     with open(csrc, "w") as f:
         f.write(src)
     exe = os.path.join(workdir, "harness")
-    cc = subprocess.run(["cc", "-O0", "-o", exe, csrc, obj, "-lm"],
+    # -no-pie: llc compiles the module with the default (static) relocation
+    # model, so a module with a global of its own gets an absolute relocation
+    # (R_X86_64_32) that a PIE link refuses. No corpus module had reached this
+    # -- none of the comparable ones has a global -- and the first generated
+    # module with a constant array of its own found it. It changes how the
+    # harness is LINKED and not what it computes.
+    cc = subprocess.run(["cc", "-O0", "-no-pie", "-o", exe, csrc, obj, "-lm"],
                         capture_output=True, text=True)
     if cc.returncode:
         last = cc.stderr.strip().splitlines()
@@ -451,6 +504,16 @@ def main():
                   % (i, n, "the floats ((w * 13) % 29 - 14) / 4" if library
                      else "(i * 7 + 13) & 0xff"))
 
+        defs = 0
+        if library:
+            ll2, why, defs = with_definitions(ll)
+            if why:
+                print("cpuref: cannot run this one: %s" % why)
+                return 1
+            ll = ll2
+            if defs:
+                print("  with our own definitions for %d air.* operations, whose semantics "
+                      "come from intrincheck's reference and not from LLVM" % defs)
         values, why = build_and_run(ll, entry, bufs, work, library)
         if why:
             print("cpuref: cannot run this one: %s" % why)

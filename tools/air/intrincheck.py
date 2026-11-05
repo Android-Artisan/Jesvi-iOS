@@ -78,8 +78,50 @@ def f16(x):
         return math.copysign(float("inf"), x)
 
 
+def f64(x):
+    """x as the shader's `double` holds it, which is what a Python float is."""
+    return float(x)
+
+
 def to_f32_bits(x):
     return struct.unpack("<I", struct.pack("<f", x))[0]
+
+
+def to_f64_bits(x):
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+def same_float(g, exp, rty):
+    """Did the shader return the expected float, bit for bit at its own width?
+
+    Bit patterns and not `==`, because that is what separates 0 from -0.
+    AT ITS OWN WIDTH, because `to_f32_bits(f32(...))` on a `double` compares
+    two numbers after rounding both to a type neither of them is -- which
+    would have made air.floor.f64 agree with half its mantissa thrown away.
+    """
+    if math.isnan(g) and math.isnan(exp):
+        return True
+    if rty == "double":
+        return to_f64_bits(g) == to_f64_bits(exp)
+    return to_f32_bits(f32(g)) == to_f32_bits(f32(exp))
+
+
+def smallest_normal(rty):
+    """The threshold below which a result is not compared, by type.
+
+    A denormal result is not compared at all (Metal compiles with
+    air.compile.denorms_disable, so flushing one to zero is permitted), and
+    f32's 1.17549435e-38 applied to a `double` would call 1e-300 a denormal
+    and drop a case that is perfectly normal where it lives.
+
+    A `half` deliberately keeps f32's threshold rather than its own 2^-14.
+    Its own would be the defensible reading of denorms_disable, but it would
+    also stop comparing every half result between 2^-14 and 2^-126 -- cases
+    that are compared today and agree -- and quietly narrowing a check that
+    passes is the one move this file exists to prevent. Whether a half
+    denormal may be flushed is a separate question and is open.
+    """
+    return 2.2250738585072014e-308 if rty == "double" else 1.17549435e-38
 
 
 def wrap(bits, width, signed):
@@ -138,6 +180,29 @@ EDGE_FLOATS = [float("inf"), float("-inf"), float("nan")]
 INTS = [0, 1, -1, 2, 7, -7, 127, -128, 255, 32767, -32768, 65535, 1000000, -1000000,
         2147483647, -2147483648]
 
+# Added to INTS for an i64 operand only, because WITHOUT ONE OF THESE THE WHOLE
+# 64-BIT FAMILY IS DECIDED BY VALUES WHOSE TOP WORD IS 0 OR ALL ONES. Every
+# value of INTS fits in 32 bits, so a lowering that computed a 64-bit min on
+# the low word alone and sign-extended it would answer correctly on all 192
+# cases of air.min.u.i64: the operand whose low word is smaller is also the
+# operand that is smaller.
+#
+# What separates the two is a value whose low word is SMALL while the value
+# itself is LARGE. 2^32 is the cleanest -- low word 0, so a low-word
+# comparison picks it every time -- and umin(2^32, 1) is 1 while the truncating
+# answer is 2^32 or 0, neither of which is 1. The pool's first argument is
+# taken whole and the others are not (inputs_for), which is enough: one operand
+# of this shape in a comparison decides it.
+#
+# These go at the END, where they cannot move what `--cases N` keeps.
+I64S = [1 << 32,              # low word 0, high word 1
+        (1 << 32) - 1,        # the largest value with a zero high word
+        (1 << 32) + 1,        # low word 1, high word 1: 2^32 + 1 > 2^32 - 1
+        (1 << 40) + 3,
+        (1 << 63) - 1,        # the largest signed i64
+        -(1 << 63),           # the smallest, and 0x8000000000000000 unsigned
+        -(1 << 32)]           # low word 0, high word all ones
+
 # ---------------------------------------------------------------------------
 # the reference
 #
@@ -145,6 +210,22 @@ INTS = [0, 1, -1, 2, 7, -7, 127, -128, 255, 32767, -32768, 65535, 1000000, -1000
 # whether the result is exactly defined. `exact=False` means the reference is
 # this machine's libm and the shader is allowed to differ -- the number is
 # printed and nothing is concluded from it.
+
+
+class Undecided(ValueError):
+    """A case this reference declines to answer, and the reason why.
+
+    Not the same thing as a case that is out of range or out of domain, which
+    is simply skipped: this is a case where the sources disagree about what
+    the answer should be, so asserting any of them would be inventing a
+    verdict. The reason travels with the exception, is counted per operation,
+    and is printed -- a declined case must never look like a case that passed.
+
+    It subclasses ValueError on purpose: emit_suite, airdefs.py and the
+    run-stage generator already drop a case whose reference raises ValueError,
+    so they keep working unchanged and only the folding check, which can
+    report it, tells them apart.
+    """
 
 
 def _signed_int_result(f):
@@ -170,8 +251,39 @@ def _mix(a, b, t):
 
 
 def _fract(x):
-    if math.isnan(x) or math.isinf(x):
+    if math.isnan(x):
         return x
+    if math.isinf(x):
+        # Three sources, three answers, and no oracle on this machine -- so
+        # this is declined rather than decided:
+        #
+        #   Metal says fract returns a value in [0, 1), which an infinity is
+        #     not: the argument is outside the function as specified.
+        #   OpenCL, whose math library MSL's is, has an edge-case table that
+        #     gives fract(+-inf) = +-0.
+        #   NIR's ffract is "src0 - floorf(src0)" (nir_opcodes.py), which is
+        #     inf - inf, so the frontend folds a NaN -- and that is what the
+        #     Adreno's instruction would have to be asked about.
+        #
+        # This reference used to answer `inf`, which is the one answer none of
+        # the three supports: the guard above returned the argument for an
+        # infinity as well as for a NaN, bypassing this function's own clamp
+        # to below 1 four lines down. air.fract.f16 was folded for the first
+        # time on 21 October and reported three cases wrong on the strength of
+        # it.
+        #
+        # It is only ever asked because the pool's 2^24, 2^24+1 and 1e8
+        # overflow f16, which makes air.fract.f16 the one declaration here
+        # given an infinity at all -- and the device's own metal_math routes
+        # `half fract(half)` through __METAL_MAYBE_FAST_MATH__, which
+        # metal_common defines as __METAL_FAST_MATH__ whenever __FAST_MATH__
+        # is set. The corpus says it is: its modules carry `fmul fast` and
+        # air.compile.denorms_disable. Under fast math an implementation is
+        # permitted to assume there are no infinities at all. docs/air.md 4.
+        raise Undecided("fract of an infinity: Metal's result is in [0, 1), "
+                        "OpenCL's edge table says +-0, NIR's ffract computes "
+                        "inf - inf = nan, and nothing here can decide between "
+                        "them")
     # the sign of floor's zero decides the sign of this zero:
     # -0 - (-0) is +0, but -0 - 0 is -0, and Python's math.floor returns an
     # int, which has no -0 to carry
@@ -285,6 +397,41 @@ def _pow(x, y):
                              and int(y) % 2 != 0 else 1.0)
 
 
+def _inverse_trig(f):
+    """asin and acos, which are NaN outside [-1, 1] rather than absent.
+
+    Python raises where C returns a value, and a raise here would drop the
+    cases that decide the most: the shader's lowering goes through a square
+    root of (1 - x)(1 + x), so an argument outside the domain is exactly the
+    one that must come back NaN and not a plausible angle. The same reason
+    _sqrt above returns NaN rather than raising.
+    """
+    def g(x):
+        if math.isnan(x):
+            return x
+        if x < -1.0 or x > 1.0:
+            return float("nan")
+        return f(x)
+    return g
+
+
+def _hyperbolic(f, odd):
+    """sinh and cosh, whose answer for a large argument is an infinity.
+
+    math.sinh raises OverflowError where the shader -- and C, and OpenCL,
+    whose library Metal's is -- gives +-inf. Skipping those would leave the
+    pool's 1e8 and 2^24 untested, which are the only arguments that reach the
+    saturation at all. sinh is odd and keeps the argument's sign; cosh is even
+    and overflows to +inf from either side.
+    """
+    def g(x):
+        try:
+            return f(x)
+        except OverflowError:
+            return math.copysign(float("inf"), x) if odd else float("inf")
+    return g
+
+
 def _ldexp(x, n):
     try:
         return math.ldexp(x, n)
@@ -312,12 +459,34 @@ OPS = {
     "divide":      (2, lambda a, b: a / b if b else math.copysign(float("inf"), a) if a else float("nan"), True),
     "sqrt":        (1, _sqrt, True),      # IEEE: exactly rounded
     "fma":         (3, lambda a, b, c: math.fma(a, b, c), True),
+    # llvm.fmuladd, which this frontend translates FUSED -- one rounding, the
+    # same as fma. Counted as exactly defined although the intrinsic itself is
+    # not: LLVM's reference leaves it unspecified whether the product is
+    # rounded first, so a disagreement here does not mean the frontend is
+    # wrong, it means the frontend changed its mind about which of the two
+    # legal answers it gives. That is worth catching either way, and the
+    # softpipe run stage sets it aside beside air.fma for the reason written
+    # there (TGSI's MAD is allowed to round the product, and does).
+    "fmuladd":     (3, lambda a, b, c: math.fma(a, b, c), True),
     "ldexp":       (2, _ldexp, True),
     # approximate: the reference is libm, the shader is allowed to differ
     "sin":         (1, math.sin, False),
     "cos":         (1, math.cos, False),
     "tan":         (1, math.tan, False),
     "atan2":       (2, math.atan2, False),
+    # The inverse trigonometric and hyperbolic ones. Approximate for the same
+    # reason as sin and cos -- the reference is this machine's libm, and
+    # Metal's fast_ prefix licenses a deviation -- but the number is still
+    # worth having: the lowering of acos and asin goes through atan2, whose
+    # own polynomial is Mesa's, so a large ulp count here is a measurement of
+    # that polynomial and a wrong formula would show as a quadrant, a sign or
+    # a NaN rather than as a few ulp.
+    "acos":        (1, _inverse_trig(math.acos), False),
+    "asin":        (1, _inverse_trig(math.asin), False),
+    "atan":        (1, math.atan, False),
+    "sinh":        (1, _hyperbolic(math.sinh, True), False),
+    "cosh":        (1, _hyperbolic(math.cosh, False), False),
+    "tanh":        (1, math.tanh, False),
     "exp":         (1, math.exp, False),
     "exp2":        (1, lambda x: math.pow(2.0, x), False),
     "exp10":       (1, lambda x: math.pow(10.0, x), False),
@@ -338,6 +507,64 @@ IOPS = {
     ("clamp", True): lambda w: (3, lambda x, lo, hi: min(max(x, lo), hi)),
     ("clamp", False): lambda w: (3, lambda x, lo, hi: min(max(x, lo), hi)),
 }
+
+
+# The one set-aside this check applies to a DISAGREEMENT rather than to a case
+# nobody can ask. It is in the same family as the fract-of-an-infinity case the
+# reference declines and the narrow types softpipe cannot run: a difference
+# whose cause is written down, whose extent is a stated condition, and which is
+# counted and named rather than either hidden or left as an unknown failure.
+#
+# What is being set aside: air_fmod computes fma(-y, trunc(x/y), x) with the
+# quotient corrected by one either way and the sign of a zero taken from the
+# dividend. That is bit-exact for every pair whose quotient is exactly
+# representable and CANNOT be for any other -- measured, not argued: over
+# 195 906 random pairs of normal floats every disagreement with this machine's
+# libm has |x/y| >= 2^24, and over 376 438 whose quotient is representable
+# there is none. The exact answer above that needs an iterated reduction of
+# twelve passes (each removes only 22 bits of an exponent difference that
+# reaches 253), and its exactness ON THE ADRENO cannot be established from this
+# machine at all, because ir3 lowers fdiv to fmul(a, frcp(b)) and frcp is
+# approximate. Shipping it would mean shipping a routine whose only claim
+# cannot be checked here, so it is not shipped and this is the honest verdict
+# instead.
+#
+# WHAT MAKES IT NARROW RATHER THAN AN EXCUSE: it is decided case by case, not
+# per declaration. A disagreement that does not satisfy the condition is a
+# failure and fails the stage, which is the whole point -- if the Adreno's
+# frcp costs more than air_fmod's two corrections can absorb, the cases that
+# show it have |x/y| < 2^24 and will come through as WRONG.
+FMOD_ASIDE = (
+    "fmod with |x/y| >= 2^24 (2^11 for a half): trunc(x/y) is not exactly "
+    "representable there, so no correction of a bounded size can recover it, "
+    "and the exact answer needs a twelve-pass reduction whose exactness on the "
+    "Adreno cannot be established on this machine because ir3 lowers fdiv to "
+    "fmul(a, frcp(b)). Decided case by case -- a disagreement that does not "
+    "satisfy it fails. air_fmod in air_intrinsics.c, docs/air.md section 4")
+
+
+def fmod_aside(args, c, rty):
+    """Is THIS differing case of an fmod one the lowering never claimed?
+
+    True only for a finite pair with a non-zero divisor whose quotient is
+    outside the type's exactly representable integers. Everything else --
+    including a disagreement at a small ratio, which is what a wrong lowering
+    would look like -- is a failure.
+    """
+    if len(args) < 2:
+        return False
+    try:
+        rnd = f16 if rty == "half" else f64 if rty == "double" else f32
+        x = rnd(args[0][c] if len(args[0]) > c else args[0][0])
+        y = rnd(args[1][c] if len(args[1]) > c else args[1][0])
+    except (TypeError, IndexError, OverflowError, ValueError):
+        return False
+    if not (math.isfinite(x) and math.isfinite(y)) or y == 0.0:
+        return False
+    try:
+        return abs(x / y) >= 2.0 ** (11 if rty == "half" else 24)
+    except (ZeroDivisionError, OverflowError):
+        return False
 
 
 def ref_elementwise(op, args, argtys, signed):
@@ -362,7 +589,10 @@ def ref_elementwise(op, args, argtys, signed):
         return wrap(fn(*[wrap(v, w, bool(signed)) for v in args]), w, bool(signed))
 
     global ROUND
-    ROUND = f16 if bty == "half" else f32
+    # AT THE RESULT'S OWN PRECISION. `f32` for a double would round the answer
+    # to 24 bits of mantissa and then compare it with a shader that kept 53,
+    # which is how air.floor.f64 would have "agreed" about something else.
+    ROUND = f16 if bty == "half" else f64 if bty == "double" else f32
     nargs, fn, exact = OPS[op]
     rounded = [ROUND(v) if parse_type(ty)[0] in ("half", "float") else v
                for ty, v in zip(argtys, args)]
@@ -385,11 +615,64 @@ def ref_convert(name, retty, srcty, v):
     dbase, _ = parse_type(retty)
     sbase, _ = parse_type(srcty)
 
+    if dbase == "i1":
+        # A BOOL DESTINATION IS NOT A CONVERSION, and this reference used to
+        # treat it as one: truncate toward zero, then keep one bit. That makes
+        # bool(0.1) false, and bool(2.0) false again, which is not C's rule,
+        # not C++11's, and not the one MSL inherits from either -- the rule is
+        # `x != 0`.
+        #
+        # Apple's own compiler says the same thing by what it does with the
+        # result. Every call to air.convert.u.i1.f.f32 in the device image --
+        # two in QuartzCore's default.metallib, two in AppleCVAPhoto's
+        # cvadepth-iOS.metallib -- feeds a `br i1` directly, e.g.
+        #
+        #     %590 = fpext half %336 to float
+        #     %591 = tail call i1 @air.convert.u.i1.f.f32(float %590)
+        #     br i1 %591, label %592, label %593
+        #
+        # which is an `if (x)` on a floating-point value. Under a truncating
+        # reading that branch would also be a branch on poison, because LLVM's
+        # own rule for `fptoui float to i1` is poison whenever the truncated
+        # value does not fit in the destination, which is every |x| >= 2. No
+        # compiler emits that for a condition.
+        #
+        # air_intrinsics.c lowers this as a comparison and says why
+        # ("A BOOL DESTINATION IS NOT A CONVERSION", nir_fneu_imm): the
+        # reference is what was wrong. Nothing had evaluated it before. The
+        # declaration only entered this check's list late on 21 October --
+        # 688f5de's own commit message records check.sh still reading
+        # "intrincheck 71/0" with that commit's f2u1 fix already in -- so an
+        # expectation nobody had ever folded had no reason to be right.
+        if sbase in ("half", "float"):
+            x = f16(v) if sbase == "half" else f32(v)
+            truth = x != 0.0          # a NaN is true, as `fcmp une` makes it
+        else:
+            truth = wrap(v, int(sbase[1:]), sk == "s") != 0
+        return wrap(1 if truth else 0, 1, dk == "s")
+
     if sbase in ("half", "float"):
+        x = f16(v) if sbase == "half" else f32(v)
+        if dbase in ("half", "float"):
+            # FLOAT -> FLOAT, which this branch used to fall straight through
+            # into the float -> int code below and crash in it: `int("alf")`
+            # for a `half` destination, `int("loat")` for a `float` one. Every
+            # case of the six float/half conversions the corpus declares --
+            # air.convert.f.v{2,3,4}f16.f.v{2,3,4}f32 and the three the other
+            # way -- therefore raised ValueError, was dropped by the bare
+            # `continue` that used to catch it, and left the declaration
+            # reported as "agrees on every case" over ZERO cases. 123 cases
+            # and 6 declarations. It took counting the dropped cases to see
+            # it, which is the whole argument for counting them.
+            #
+            # The answer is one rounding to the destination's precision:
+            # exact widening one way, round-to-nearest-even the other. An
+            # infinity and a NaN pass through, and f16() turns an overflow
+            # into the infinity f32 -> f16 must produce.
+            return f16(x) if dbase == "half" else f32(x)
         # float -> int: Metal truncates toward zero. Out of the destination's
         # range it is undefined, in C and in the MSL specification both, so
         # those are not cases.
-        x = f16(v) if sbase == "half" else f32(v)
         if math.isnan(x) or math.isinf(x):
             raise ValueError("not defined")
         w = int(dbase[1:])
@@ -418,12 +701,34 @@ def reference(family, op, name, args, argtys, retty, signed):
     if family == "dot":
         # The inputs are small dyadic rationals, so every product and every
         # partial sum is exact and the answer does not depend on the order the
-        # accumulation is taken in. What this pins is which components are
+        # accumulation is taken in -- checked, not assumed: over all 300 cases
+        # of the DOT_FLOATS pool the left fold, the right fold, the pairwise
+        # order NIR's own fdot3/fdot4 constant expressions use ((p2+p1)+p0 and
+        # (p3+p2)+(p1+p0)) and the once-rounded exact sum are one and the same
+        # number, in f16 as in f32. What this pins is which components are
         # paired with which -- a lowering that dropped a component or paired
         # them crosswise gives a different number -- and not the rounding of a
         # general dot product, which it cannot.
+        #
+        # THE PRECISION IS THE RESULT'S, not f32. This branch rounded to f32
+        # whatever the declaration returned, and for a half dot product that
+        # is an answer the type cannot hold: (-0.25, 8, -16) against itself is
+        # exactly 320.0625, and f16's step at 320 is 0.25, so 320 is the only
+        # thing a `half` can be. air.dot.v3f16 and air.dot.v4f16 were folded
+        # for the first time on 21 October and were duly reported wrong on the
+        # three of their 200 cases whose exact sum wants a 13-bit significand
+        # from a type that has 11 (air.dot.v2f16 never reaches one). Three say
+        # the same 320: f16 arithmetic itself, llc on this processor through
+        # the half `fmul`/`fadd` bodies of airdefs.py, and air2nir's folder.
+        # The reference was the only one of the four that said otherwise.
+        rnd = f16 if rty == "half" else f32
         n = parse_type(argtys[0])[1]
-        return [f32(sum(f32(args[0][k]) * f32(args[1][k]) for k in range(n)))]
+        acc = 0.0
+        for k in range(n):
+            # +0.0 + p0, then + p1 ...: the order airdefs.py's IR emits, so
+            # the two references stay comparable instruction for instruction
+            acc = rnd(acc + rnd(rnd(args[0][k]) * rnd(args[1][k])))
+        return [acc]
 
     if family in ("all", "any"):
         n = parse_type(argtys[0])[1]
@@ -450,7 +755,12 @@ def reference(family, op, name, args, argtys, retty, signed):
 # air.convert.<f|s|u>.<dst>.<f|s|u>.<src>
 # air.dot.<type>                        returns a scalar from two vectors
 
-DECL = re.compile(r"^declare\s+(.*?)\s+@(air\.[A-Za-z0-9_.]+)\((.*)\)")
+# air.* and the handful of llvm.* this frontend translates. llvm.fmuladd and
+# llvm.fabs belong in this check for the same reason as the arithmetic they sit
+# among: they are operations with a reference, 124 of Resident Evil 4's modules
+# stop at one of them when it is missing, and nothing else here would notice if
+# the lowering changed.
+DECL = re.compile(r"^declare\s+(.*?)\s+@((?:air|llvm)\.[A-Za-z0-9_.]+)\((.*)\)")
 
 
 def parse_type(s):
@@ -462,19 +772,138 @@ def parse_type(s):
     return s, 1
 
 
+# ---------------------------------------------------------------------------
+# how a result is carried back through a four-lane render target
+#
+# A render target lane is 32 bits wide -- air_run reads back through
+# R32G32B32A32, and --eval prints the four components of an int4 or float4 --
+# so a result component that is wider than 32 bits has to be carried in two
+# lanes and put back together here.
+#
+# It was not. `trunc i64 %c to i32` was emitted into the generated shader and
+# the low half was then compared against a 64-bit reference, so EVERY i64
+# result whose top word was not zero was reported as the frontend's mistake:
+# 16 declarations and 2 164 cases, with `air.min.u.i64(-1, -1)` reading "got
+# 4294967295 want 18446744073709551615". The frontend was right all along --
+# air2nir folds that call to 0xffffffffffffffff and softpipe executes it to
+# the same bits (docs/air.md section 4) -- and the truncation was the
+# harness's own. A measurement instrument that quietly drops the top half of
+# what it measures is worse than no instrument: this one accused the compiler.
+
+
+def lanes_per_comp(bty):
+    """32-bit render-target lanes one component of type `bty` occupies.
+
+    A `double` is here for the same reason an `i64` is, and it was NOT: the
+    generated shader put a double straight into a <4 x float> and llvm-as said
+    so -- "'%c0' defined with type 'double' but expected 'float'" -- which was
+    reported as `2 could not be built or did not fold`, a REFUSED row whose
+    reason was a formatting mistake in this harness and nothing about the
+    frontend. The frontend is fine: air.floor.f64(0x1.ccccccccccccdp+0) folds
+    to 0x3FF0000000000000, exactly 1.0. So a double is carried as its two
+    32-bit halves through an int4 target and put back together by unlane,
+    exactly as an i64 is, and compared at 64 bits by same_float.
+    """
+    return 2 if bty in ("i64", "double") else 1
+
+
+def comp_batches(retty):
+    """[(components, cases per shader)]: how to split a result over shaders.
+
+    A four-lane target holds `4 // lanes_per_comp` components, so a v4i64
+    result does not fit in one shader at all and its components are split over
+    two. Returning the split rather than assuming one shader per case is what
+    keeps a component from being silently dropped -- the packing below cuts
+    the lane list to four, so a v4i64 would have had components 2 and 3
+    quietly never measured.
+    """
+    bty, rn = parse_type(retty)
+    lanes = lanes_per_comp(bty)
+    per_group = max(1, 4 // lanes)
+    out = []
+    for k in range(0, rn, per_group):
+        comps = list(range(k, min(k + per_group, rn)))
+        out.append((comps, max(1, 4 // (lanes * len(comps)))))
+    return out
+
+
+def unlane(flat, ncases, comps, bty, signed):
+    """The four lanes of one shader's target, back as [[component]] per case.
+
+    `flat` holds the lanes as they were printed: a float for a float target,
+    an unsigned 32-bit word for an integer one.
+    """
+    lanes = lanes_per_comp(bty)
+    out = []
+    for i in range(ncases):
+        row = []
+        for p in range(len(comps)):
+            base = (i * len(comps) + p) * lanes
+            if base + lanes > len(flat):
+                return None          # a short row is the caller's to report
+            if lanes == 2:
+                bits = ((flat[base] & 0xFFFFFFFF)
+                        | ((flat[base + 1] & 0xFFFFFFFF) << 32))
+                if bty == "double":
+                    row.append(struct.unpack("<d", struct.pack("<Q", bits))[0])
+                else:
+                    row.append(wrap(bits, 64, bool(signed)))
+            elif isinstance(flat[base], float):
+                row.append(flat[base])
+            else:
+                row.append(wrap(flat[base], 32, bool(signed)))
+        out.append(row)
+    return out
+
+
+def not_run_at_all(why):
+    """Does this reason mean the BINARY could not be run, rather than that the
+    library could not be read?
+
+    The distinction decides whether a run is contaminated or merely limited.
+    `not LLVM bitcode` is a fact about the library and will say the same thing
+    tomorrow; EACCES, exit 126 and exit 127 are a fact about the moment -- this
+    tree is shared and air2nir is relinked under the check -- so a run that saw
+    one measured less than it thinks and must not be reported as a pass.
+    """
+    return ("Permission denied" in why or "Text file busy" in why
+            or "No such file" in why
+            or why.startswith("exit 126") or why.startswith("exit 127"))
+
+
 def collect_declarations(libs):
+    """(the declarations, the libraries that could not be read).
+
+    THE SECOND HALF OF THAT PAIR IS THE POINT. This used to be `except
+    OSError: continue` over a subprocess whose exit code was never looked at,
+    so a library air2nir could not be executed for -- and this tree is shared,
+    so the binary is relinked under the check several times a night, which is
+    EACCES or exit 126 -- dropped out of the vocabulary without a word. Fewer
+    declarations is fewer operations tested and a HIGHER pass rate, which is
+    the one direction a broken meter must never move in: older logs read
+    "134 agree, 0 differ" where the vocabulary is 553 declarations wide.
+    A library that was not read is named and counted by the caller.
+    """
     out = set()
+    unread = []
     for lib in libs:
         try:
-            ll = subprocess.run([AIR2NIR, "--ll", lib], capture_output=True).stdout
-        except OSError:
+            q = subprocess.run([AIR2NIR, "--ll", lib], capture_output=True)
+        except OSError as e:
+            unread.append((lib, str(e)))
             continue
-        for line in ll.decode("utf-8", "replace").splitlines():
-            if line.startswith("declare ") and "@air." in line:
+        if q.returncode:
+            err = q.stderr.decode("utf-8", "replace").strip().splitlines()
+            unread.append((lib, "exit %d%s" % (q.returncode,
+                                               ": " + err[-1] if err else "")))
+            continue
+        for line in q.stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("declare ") and ("@air." in line or
+                    re.search(r"@llvm\.(fmuladd|fabs)\.", line)):
                 line = re.sub(r"\s+local_unnamed_addr.*$", "", line)
                 line = re.sub(r"\s+#\d+$", "", line)
                 out.add(line.strip())
-    return sorted(out)
+    return sorted(out), unread
 
 
 # ---------------------------------------------------------------------------
@@ -539,19 +968,28 @@ define <{ <4 x %(outty)s> }> @ic(ptr addrspace(2) %%in) local_unnamed_addr {
 !7 = !{i32 0, !"air.buffer", !"air.buffer_size", i32 4096, !"air.location_index", i32 0, i32 1, !"air.read", !"air.address_space", i32 2, !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"float", !"air.arg_name", !"in"}
 """
 
-# One case's arguments occupy MAXARG * 4 four-byte slots of that buffer, so a
-# component's address is arithmetic on its indices and nothing has to be packed
-# tightly.
+# One case's arguments occupy MAXARG * SLOTS_PER_ARG four-byte slots of that
+# buffer, so a component's address is arithmetic on its indices and nothing has
+# to be packed tightly.
+#
+# SLOTS_PER_ARG is eight and not four because an i64 component takes two slots:
+# with four, a `load i64` of component 0 of a v4i64 argument read its own low
+# word and COMPONENT 1's low word as its high word, so every 64-bit vector
+# operand in the run stage was fed a number nobody chose. The slots are also
+# the reason a component's address stays 8-byte aligned: 24 slots a case, 8 a
+# argument, 2 a component, all even.
 MAXARG = 3
-SLOTS_PER_ARG = 4
+SLOTS_PER_ARG = 8
 SLOTS_PER_CASE = MAXARG * SLOTS_PER_ARG
 
 
 def slot_bytes(bty, v):
-    """One four-byte slot holding `v` as type `bty`, little-endian.
+    """The slots holding `v` as type `bty`, little-endian: 4 bytes, or 8 for i64.
 
     A narrow type is written into the low bytes of its slot, which is where a
     little-endian load of that width at a four-byte-aligned address reads it.
+    An i64 gets both of its slots -- it used to get `struct.pack("<i", ...)` of
+    its low word alone, and the load then took the next slot as its high word.
     """
     if bty == "float":
         return struct.pack("<f", f32(v))
@@ -561,23 +999,64 @@ def slot_bytes(bty, v):
              else struct.pack("<e", h))
         return b + b"\0\0"
     if bty == "double":
-        return struct.pack("<d", v)[:4]
+        return struct.pack("<d", v)
     w = int(bty[1:])
     if w == 1:
         return struct.pack("<B", 1 if v else 0) + b"\0\0\0"
+    if w == 64:
+        return struct.pack("<q", wrap(v, 64, True))
     return struct.pack("<i", wrap(v, 32, True) if w >= 32
                        else wrap(v, w, True) & ((1 << w) - 1))
 
 
-def emit_buffered(decl, name, argtys, retty, cases, signed):
+def split64(lines, i, k, s_):
+    """Append the IR that splits one i64 into its low and high words.
+
+    Two lanes of the render target, low first, which is what unlane() puts
+    back together. `lshr` and not `ashr`: the halves are bit patterns here and
+    the sign is applied once, to the whole 64-bit value, by wrap() in unlane.
+    """
+    lo = "%%lo%d_%d" % (i, k)
+    sh = "%%sh%d_%d" % (i, k)
+    hi = "%%hi%d_%d" % (i, k)
+    lines.append("  %s = trunc i64 %s to i32" % (lo, s_))
+    lines.append("  %s = lshr i64 %s, 32" % (sh, s_))
+    lines.append("  %s = trunc i64 %s to i32" % (hi, sh))
+    return [lo, hi]
+
+
+def emit_buffered(decl, name, argtys, retty, cases, signed, rcomps=None):
     """The .ll of a shader that loads its arguments, and the bytes to load.
 
     Returns (source, input bytes). The caller assembles the source and gives
     the bytes to air_run.
+
+    `rcomps` are the result components this shader carries back, which is all
+    of them for every type but i64: an i64 component needs two of the target's
+    four 32-bit lanes, so a v4i64 result is split over two shaders. See
+    comp_batches.
+
+    A half result is written to a HALF render target rather than widened into a
+    float4. The widening used to happen inside the shader (fpext half to float),
+    and NIR then folded the conversion that produced the value into a 32-bit
+    one: air.convert.f.f16.u.i32 came out as four cov.u32f32 and not one
+    cov.u32f16, so the shader computed f32(x) while the reference computed
+    f16(x) and the comparison meant nothing. Ten declarations of the corpus
+    return half and every one of them had to be set aside for it.
+
+    half4 as a render target type name is not invented here: Apple's own
+    GNR.videoprocessor library, built by the same compiler for the same AIR
+    version, has 24 such declarations across 18 fragment entry points --
+    !"air.render_target", i32 0, i32 0, !"air.arg_type_name", !"half4" over a
+    define returning <4 x half>. It is not attested by the 456-module corpus,
+    which is a statement about how that corpus was collected (.metallib files
+    in rootfs, not libraries embedded in dylibs) and not about Metal.
     """
     rty, rn = parse_type(retty)
-    outty = "float" if rty in ("float", "half", "double") else "i32"
-    outname = "float4" if outty == "float" else "int4"
+    outty = "half" if rty == "half" else "float" if rty == "float" else "i32"
+    outname = {"half": "half4", "float": "float4"}.get(outty, "int4")
+    if rcomps is None:
+        rcomps = list(range(rn))
 
     data = bytearray()
     lines = []
@@ -588,21 +1067,24 @@ def emit_buffered(decl, name, argtys, retty, cases, signed):
         argvals = []
         for j, (ty, v) in enumerate(zip(argtys, args)):
             bty, bn = parse_type(ty)
-            comps = []
+            cslots = lanes_per_comp(bty)
+            align = 8 if cslots == 2 else 4
+            names = []
             for c in range(bn):
-                slot = i * SLOTS_PER_CASE + j * SLOTS_PER_ARG + c
-                data[slot * 4:slot * 4 + 4] = slot_bytes(bty, v[c])
+                slot = i * SLOTS_PER_CASE + j * SLOTS_PER_ARG + c * cslots
+                b = slot_bytes(bty, v[c])
+                data[slot * 4:slot * 4 + len(b)] = b
                 nm = "%%l%d_%d_%d" % (i, j, c)
                 lines.append("  %sp = getelementptr inbounds i8, "
                              "ptr addrspace(2) %%in, i64 %d" % (nm, slot * 4))
-                lines.append("  %s = load %s, ptr addrspace(2) %sp, align 4"
-                             % (nm, bty, nm))
-                comps.append(nm)
+                lines.append("  %s = load %s, ptr addrspace(2) %sp, align %d"
+                             % (nm, bty, nm, align))
+                names.append(nm)
             if bn == 1:
-                argvals.append("%s %s" % (bty, comps[0]))
+                argvals.append("%s %s" % (bty, names[0]))
             else:
                 prev = "undef"
-                for c, nm in enumerate(comps):
+                for c, nm in enumerate(names):
                     vv = "%%g%d_%d_%d" % (i, j, c)
                     lines.append("  %s = insertelement <%d x %s> %s, %s %s, i32 %d"
                                  % (vv, bn, bty, prev, bty, nm, c))
@@ -611,25 +1093,32 @@ def emit_buffered(decl, name, argtys, retty, cases, signed):
 
         lines.append("  %%c%d = call %s @%s(%s)"
                      % (i, retty, name, ", ".join(argvals)))
-        for k in range(rn):
+        for k in rcomps:
             s_ = "%%c%d" % i
             if rn > 1:
                 s_ = "%%e%d_%d" % (i, k)
                 lines.append("  %s = extractelement %s %%c%d, i32 %d"
                              % (s_, retty, i, k))
-            if rty == "half":
+            if rty == "half" and outty == "float":
                 lines.append("  %%f%d_%d = fpext half %s to float" % (i, k, s_))
-                s_ = "%%f%d_%d" % (i, k)
+                slots.append("%%f%d_%d" % (i, k))
             elif rty in ("i1", "i8", "i16") and outty == "i32":
                 lines.append("  %%f%d_%d = %s %s %s to i32"
                              % (i, k, "sext" if signed else "zext", rty, s_))
-                s_ = "%%f%d_%d" % (i, k)
+                slots.append("%%f%d_%d" % (i, k))
             elif rty == "i64" and outty == "i32":
-                lines.append("  %%f%d_%d = trunc i64 %s to i32" % (i, k, s_))
-                s_ = "%%f%d_%d" % (i, k)
-            slots.append(s_)
+                slots.extend(split64(lines, i, k, s_))
+            elif rty == "double" and outty == "i32":
+                lines.append("  %%b%d_%d = bitcast double %s to i64" % (i, k, s_))
+                slots.extend(split64(lines, i, k, "%%b%d_%d" % (i, k)))
+            else:
+                slots.append(s_)
 
-    pad = "0.0" if outty == "float" else "0"
+    pad = "0xH0000" if outty == "half" else "0.0" if outty == "float" else "0"
+    if len(slots) > 4:
+        raise AssertionError(
+            "%s: %d lanes for a four-lane render target; comp_batches and this "
+            "emitter disagree" % (name, len(slots)))
     packed = (slots + [pad] * 4)[:4]
     prev = "undef"
     for i, s_ in enumerate(packed):
@@ -639,7 +1128,7 @@ def emit_buffered(decl, name, argtys, retty, cases, signed):
 
     return (BUF_SKELETON % dict(decl=decl, outty=outty, outname=outname,
                                 body="\n".join(lines)),
-            bytes(data))
+            bytes(data), outname)
 
 
 
@@ -668,16 +1157,23 @@ def const(ty, x):
     return fconst(ty, x) if ty in ("float", "half", "double") else iconst(ty, x)
 
 
-def emit(decl, name, argtys, retty, cases, tmp, signed):
+def emit(decl, name, argtys, retty, cases, tmp, signed, rcomps=None):
     """Build, assemble and evaluate one shader.
 
-    Returns a list of results, one per case, each a list of that result's
-    components -- every component, not just the first: a v4 operation whose
-    fourth component was wrong would otherwise pass.
+    Returns a list of results, one per case, each a list of the components in
+    `rcomps` -- all of them unless the caller split them, which it does for an
+    i64 result because each of those takes two of the target's four lanes.
+    Every component and not just the first: a v4 operation whose fourth
+    component was wrong would otherwise pass.
     """
     rty, rn = parse_type(retty)
-    outty = "float" if rty in ("float", "half", "double") else "i32"
+    # a double is NOT a float target: it goes out as its two 32-bit halves
+    # through an int4, which is the only way a 64-bit value fits four 32-bit
+    # lanes at all (lanes_per_comp)
+    outty = "float" if rty in ("float", "half") else "i32"
     outname = "float4" if outty == "float" else "int4"
+    if rcomps is None:
+        rcomps = list(range(rn))
 
     lines = []
     slots = []
@@ -692,7 +1188,7 @@ def emit(decl, name, argtys, retty, cases, tmp, signed):
                          % (bn, bty, ", ".join(const(bty, x) for x in v[:bn])))
         lines.append("  %%c%d = call %s @%s(%s)" % (i, retty, name, ", ".join(a)))
 
-        for k in range(rn):
+        for k in rcomps:
             s_ = "%%c%d" % i
             if rn > 1:
                 s_ = "%%e%d_%d" % (i, k)
@@ -700,7 +1196,7 @@ def emit(decl, name, argtys, retty, cases, tmp, signed):
                              % (s_, retty, i, k))
             if rty == "half":
                 lines.append("  %%f%d_%d = fpext half %s to float" % (i, k, s_))
-                s_ = "%%f%d_%d" % (i, k)
+                slots.append("%%f%d_%d" % (i, k))
             elif rty in ("i1", "i8", "i16") and outty == "i32":
                 # sext for a signed result: the render target is read back as
                 # an unsigned 32-bit word, so a zero-extended -1 would come
@@ -708,14 +1204,22 @@ def emit(decl, name, argtys, retty, cases, tmp, signed):
                 # than this harness's
                 lines.append("  %%f%d_%d = %s %s %s to i32"
                              % (i, k, "sext" if signed else "zext", rty, s_))
-                s_ = "%%f%d_%d" % (i, k)
+                slots.append("%%f%d_%d" % (i, k))
             elif rty == "i64" and outty == "i32":
-                lines.append("  %%f%d_%d = trunc i64 %s to i32" % (i, k, s_))
-                s_ = "%%f%d_%d" % (i, k)
-            slots.append(s_)
+                # TWO LANES, NOT A trunc. See lanes_per_comp.
+                slots.extend(split64(lines, i, k, s_))
+            elif rty == "double" and outty == "i32":
+                lines.append("  %%b%d_%d = bitcast double %s to i64" % (i, k, s_))
+                slots.extend(split64(lines, i, k, "%%b%d_%d" % (i, k)))
+            else:
+                slots.append(s_)
 
     # the insertelement below names the type, so a pad is the bare value
     pad = "0.0" if outty == "float" else "0"
+    if len(slots) > 4:
+        raise AssertionError(
+            "%s: %d lanes for a four-lane render target; comp_batches and this "
+            "emitter disagree" % (name, len(slots)))
     packed = (slots + [pad] * 4)[:4]
     prev = "undef"
     for i, s_ in enumerate(packed):
@@ -739,11 +1243,19 @@ def emit(decl, name, argtys, retty, cases, tmp, signed):
             if "did not fold" in m.group(1):
                 return None, "did not fold to a constant"
             vals = m.group(1).split()
-            if outty == "float":
-                flat = [float(v) for v in vals]
-            else:
-                flat = [wrap(int(v), 32, bool(signed)) for v in vals]
-            return [flat[i * rn:(i + 1) * rn] for i in range(len(cases))], None
+            # The lanes exactly as --eval printed them: a float for a float
+            # target, an unsigned 32-bit word for an integer one. unlane()
+            # does the signedness and puts an i64's two words back together,
+            # because a half-value cannot be signed before it is whole.
+            flat = ([float(v) for v in vals] if outty == "float"
+                    else [int(v) for v in vals])
+            res = unlane(flat, len(cases), rcomps, rty, signed)
+            if res is None:
+                return None, ("--eval printed %d lanes, not the %d this shader "
+                              "filled" % (len(flat),
+                                          len(cases) * len(rcomps)
+                                          * lanes_per_comp(rty)))
+            return res, None
     err = q.stderr.decode().strip().splitlines()
     return None, (err[0] if err else "no output stored")
 
@@ -753,7 +1265,11 @@ def emit(decl, name, argtys, retty, cases, tmp, signed):
 
 
 def base_and_sign(name):
-    """'air.clamp.s.v2i16' -> ('clamp', True); 'air.fast_round.f32' -> ('fast_round', None)"""
+    """'air.clamp.s.v2i16' -> ('clamp', True); 'air.fast_round.f32' -> ('fast_round', None)
+
+    The same split works for llvm.fmuladd.v4f32 -> ('fmuladd', None): both
+    vocabularies put the operation first and the type last.
+    """
     parts = name.split(".")[1:]
     op = parts[0]
     sign = None
@@ -839,6 +1355,15 @@ def pool_for(ty, family, few=False, nth=0):
         if bty.startswith("i"):
             if family == "convert" and bty == "i32":
                 return CONV_INTS
+            # I64S belongs in the SHORT pool as well as the long one, because
+            # the short one is what gets carried to the phone -- the only
+            # measurement that can say what the Adreno does -- and without
+            # these that suite cannot tell a 64-bit answer from a 32-bit one.
+            # Only the first argument's pool: --few gives the others four
+            # values and two, so an appended value is unreachable there, and
+            # one operand of this shape decides a comparison.
+            if bty == "i64" and nth == 0:
+                return FEW_INTS + I64S
             return FEW_INTS if nth == 0 else FEW_INTS2
         if family == "dot":
             return FEW_DOT
@@ -860,6 +1385,11 @@ def pool_for_full(ty, family):
         # that belongs to one family.
         if family == "convert" and bty == "i32":
             return INTS + [16777215, 16777217, 16777219, 2048, 2049, 2051]
+        # see I64S: every value of INTS fits in 32 bits, so without these the
+        # 64-bit operations are never asked a question a 32-bit answer gets
+        # wrong
+        if bty == "i64":
+            return INTS + I64S
         return INTS
     return DOT_FLOATS if family == "dot" else FLOATS
 
@@ -968,7 +1498,7 @@ done
 """
 
 
-JOBS_HEAD = """# Commands run by the launchd job com.hakios.demo, generated by
+JOBS_HEAD = """# Commands run by the launchd job com.redwood.demo, generated by
 # tools/air/intrincheck.py --emit. Do not edit: regenerate it.
 #
 # %(n)d modules over %(decls)d air.* declarations. Each one calls a single operation on
@@ -995,45 +1525,56 @@ def emit_suite(arith, outdir, want, verbose, few=False, cases=0):
     os.makedirs(outdir, exist_ok=True)
     manifest = []
     n = 0
+    noref = 0
     for d, name, retty, argtys, op, plain, sign, family in arith:
         if want and not any(w in name for w in want):
             continue
         rn = parse_type(retty)[1]
-        per_shader = max(1, 4 // rn)
         cases_l = inputs_for(argtys, family, few, cases)
-        for k in range(0, len(cases_l), per_shader):
-            batch = cases_l[k:k + per_shader]
-            expect = []
-            keep = []
-            for args in batch:
-                try:
-                    expect.append(reference(family, plain, name, args, argtys,
-                                            retty, True if sign is None else sign))
-                    keep.append(args)
-                except (ValueError, OverflowError, ZeroDivisionError):
-                    pass
-            if not keep:
-                continue
-            src, data = emit_buffered(d, name, argtys, retty, keep, sign)
-            ident = "%04d" % n
-            ll = os.path.join(outdir, ident + ".ll")
-            with open(ll, "w") as f:
-                f.write(src)
-            q = subprocess.run(["llvm-as", "-o", os.path.join(outdir, ident + ".bc"), ll],
-                               capture_output=True)
-            if q.returncode:
-                print("REFUSED %-34s llvm-as: %s"
-                      % (name, q.stderr.decode().strip().splitlines()[0]))
-                continue
-            os.remove(ll)
-            with open(os.path.join(outdir, ident + ".bin"), "wb") as f:
-                f.write(data)
-            manifest.append(dict(id=ident, name=name, retty=retty, rn=rn,
-                                 exact=bool(OPS[plain][2] if plain in OPS else True),
-                                 op=plain, signed=True if sign is None else bool(sign),
-                                 cases=[[list(a) for a in c] for c in keep],
-                                 expect=expect))
-            n += 1
+        # One module per (component group, batch of cases): an i64 result takes
+        # two of the target's four lanes, so a v4i64 declaration needs two
+        # modules to carry one case's four components. The manifest records
+        # which components a module carried, because the judging side cannot
+        # work it out from the lane count alone.
+        for rcomps, per_shader in comp_batches(retty):
+            for k in range(0, len(cases_l), per_shader):
+                batch = cases_l[k:k + per_shader]
+                expect = []
+                keep = []
+                for args in batch:
+                    try:
+                        expect.append(reference(family, plain, name, args, argtys,
+                                                retty, True if sign is None else sign))
+                        keep.append(args)
+                    except (ValueError, OverflowError, ZeroDivisionError):
+                        # no reference for this case, so no module for it;
+                        # counted so that "N modules over M declarations" can
+                        # be read against the pool it was cut from
+                        noref += 1
+                if not keep:
+                    continue
+                src, data, outname = emit_buffered(d, name, argtys, retty, keep,
+                                                   sign, rcomps)
+                ident = "%04d" % n
+                ll = os.path.join(outdir, ident + ".ll")
+                with open(ll, "w") as f:
+                    f.write(src)
+                q = subprocess.run(["llvm-as", "-o", os.path.join(outdir, ident + ".bc"), ll],
+                                   capture_output=True)
+                if q.returncode:
+                    print("REFUSED %-34s llvm-as: %s"
+                          % (name, q.stderr.decode().strip().splitlines()[0]))
+                    continue
+                os.remove(ll)
+                with open(os.path.join(outdir, ident + ".bin"), "wb") as f:
+                    f.write(data)
+                manifest.append(dict(id=ident, name=name, retty=retty, rn=rn,
+                                     exact=bool(OPS[plain][2] if plain in OPS else True),
+                                     op=plain, signed=True if sign is None else bool(sign),
+                                     outname=outname, comps=list(rcomps),
+                                     cases=[[list(a) for a in c] for c in keep],
+                                     expect=expect))
+                n += 1
 
     with open(os.path.join(outdir, "manifest.json"), "w") as f:
         json.dump(manifest, f)
@@ -1063,6 +1604,10 @@ def emit_suite(arith, outdir, want, verbose, few=False, cases=0):
     print("intrincheck: %d modules in %s, %d declarations, with run.sh, rc.jobs "
           "and manifest.json" % (len(manifest), outdir,
                                  len(set(m["name"] for m in manifest))))
+    if noref:
+        print("intrincheck: %d cases of the pool are not in the suite: the reference "
+              "has no answer for them (out of a destination's range, outside a domain)"
+              % noref)
     return 0
 
 
@@ -1088,6 +1633,37 @@ def is_number(t):
         return True
     except ValueError:
         return False
+
+
+def narrowing_cases(m):
+    """Of a declaration's cases, how many cannot be answered without rounding.
+
+    Only for a conversion that narrows to half -- from an integer or from f32.
+    For those the rounding IS the operation, so a
+    pass over values that are all exactly representable in half says nothing
+    about it -- and that is not hypothetical. The first run of this suite used
+    --cases 8, and the first eight values of the integer pool are small enough
+    to be exact in half, so four air.convert.*.f16 declarations "agreed on
+    every case" with the rounding never once performed. The pool is ordered for
+    f32's interesting values, which are not f16's.
+    """
+    rty = parse_type(m["retty"])[0]
+    if rty != "half":
+        return None
+    n = 0
+    for case in m["cases"]:
+        for arg in case:
+            for v in arg:
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    if struct.unpack("<e", struct.pack("<e", f))[0] != f:
+                        n += 1
+                except (OverflowError, struct.error):
+                    n += 1      # outside half's range: it must round or overflow
+    return n
 
 
 def parse_runner_log(path):
@@ -1214,9 +1790,42 @@ def check_log(outdir, logpath, verbose):
     # 32768. Either way the verdict would be about softpipe. ir3 has real
     # 16-bit registers, so these are a question for the phone and stay open.
     narrow_here = screen == "softpipe"
+    # And softpipe cannot run a fused multiply-add either, for a reason that is
+    # written down in TGSI's own specification rather than guessed at.
+    # nir_to_tgsi maps nir_op_ffma to TGSI_OPCODE_MAD (its opcode table in
+    # nir_to_tgsi.c), and docs/gallium/tgsi.rst says of MAD: "Perform a * b +
+    # c. The implementation is free to decide whether there is an intermediate
+    # rounding step or not." tgsi_exec.c's micro_mad takes that permission --
+    # `src0->f[0] * src1->f[0] + src2->f[0]` in C, two roundings -- while NIR's
+    # own ffma is `fmaf(src0, src1, src2)` (nir_opcodes.py), one rounding, and
+    # Metal's fma is OpenCL's, which is C's, which is fused and required to be.
+    #
+    # air.fma.v4f32 duly differed by exactly one ulp the first time the run
+    # stage reached it, at fma(1.5, 0x1.fffffep-2, -0.5): 0x3e7ffffd fused,
+    # 0x3e7ffffc with the product rounded first. Folding the same shader agrees
+    # with the reference bit for bit, because NIR's folder does the fma. So the
+    # disagreement is a verdict about softpipe's interpreter and not about the
+    # frontend -- the same shape as the narrow types above -- and it is set
+    # aside by name here and left open for the phone, where ir3 has a real mad.
+    #
+    # fmod is here for the same reason and not for one of its own: its lowering
+    # IS an fma (air_fmod in air_intrinsics.c computes fma(-y, trunc(x/y), x),
+    # one rounding instead of the two that nir_frem's subtraction costs), so a
+    # MAD that rounds the product puts the old two-rounding answer back.
+    # Measured and not supposed: folding the same modules leaves air.fmod.f32
+    # differing on 1 of 264 cases and running them on softpipe leaves 22, and
+    # every one of the extra 21 is the pre-fma value to the bit -- 1.1920929e-07
+    # for fmod(1.5, 0x1.fffffep-2) where one rounding gives 8.94069672e-08.
+    # Worse than an ulp in one shape: a rounded product can land exactly on the
+    # dividend, so fmod(0.5, 0.1) comes back 0 where the answer is 0.0999999940,
+    # because the correction that catches a quotient one too large is the one
+    # thing a zero result cannot be distinguished from. That is the interpreter's
+    # MAD and not the frontend's arithmetic, and on the Adreno mad.f32 is fused.
+    fma_here = screen == "softpipe"
 
     per_decl = {}
     narrow_skipped = set()
+    fma_skipped = set()
     missing = 0
     refused = {}
     short = {}
@@ -1225,6 +1834,9 @@ def check_log(outdir, logpath, verbose):
     for m in manifest:
         if narrow_here and is_narrow(m["name"], m["retty"]):
             narrow_skipped.add(m["name"])
+            continue
+        if fma_here and m["op"] in ("fma", "fmuladd", "fmod"):
+            fma_skipped.add(m["name"])
             continue
         # A declaration that returns half cannot be judged from a run of
         # air_run, and this is the frontend's harness and not the shader at
@@ -1241,9 +1853,14 @@ def check_log(outdir, logpath, verbose):
         # it produced an infinite expectation, and infinities were skipped
         # without being counted: three cases of four skipped, the zero
         # agreeing, and the declaration reported as agreeing on every case.
-        # Set aside by name now. Giving air_run a 16-bit target is the real
-        # answer and is separate work; this commit only stops the claim.
-        if parse_type(m["retty"])[0] in ("half", "f16"):
+        # Both halves of the real answer are in place now: air_run has the
+        # 16-bit target (PIPE_FORMAT_R16G16B16A16_FLOAT) and emit_buffered
+        # declares a half4 render target instead of widening inside the shader,
+        # so the value compared is the half the shader actually wrote. A
+        # manifest generated before that change still carries float4 shaders,
+        # and comparing those would be the old meaningless comparison -- so the
+        # set-aside stays for a manifest that says float4 and nothing else.
+        if parse_type(m["retty"])[0] in ("half", "f16") and m.get("outname") != "half4":
             half_set_aside.add(m["name"])
             continue
         r = got.get(m["id"])
@@ -1254,7 +1871,9 @@ def check_log(outdir, logpath, verbose):
             refused.setdefault(m["name"], r[1])
             continue
         vals = r[1]
-        isf = parse_type(m["retty"])[0] in ("float", "half", "double")
+        # a double comes back as two integer lanes and is reassembled by
+        # unlane, so it is NOT parsed as a float here
+        isf = parse_type(m["retty"])[0] in ("float", "half")
         # A block that answered printed the render target's four components,
         # always four whether the module filled two of them or all four. Any
         # other count means the block was not read whole -- a line of ours lost
@@ -1273,17 +1892,26 @@ def check_log(outdir, logpath, verbose):
                 flat.append(float(v) if isf else int(float(v)))
             except ValueError:
                 flat.append(float("nan"))
-        if not isf and m["signed"]:
-            # only what really came back as an integer: a value that would not
-            # parse is a NaN here, and wrap() cannot take one
-            flat = [wrap(v, 32, True) if isinstance(v, int) else v for v in flat]
+        rty = parse_type(m["retty"])[0]
+        # Which components this module carried, and how its lanes map onto
+        # them. A manifest written before the lanes existed has no "comps",
+        # and for it every component is in the module in order -- which is
+        # what the old reading assumed for an i64 too, and was wrong.
+        mcomps = m.get("comps", list(range(m["rn"])))
+        unparsed = not isf and not all(isinstance(v, int) for v in flat)
+        rows = (None if unparsed
+                else unlane(flat, len(m["cases"]), mcomps, rty, m["signed"]))
+        if rows is None:
+            # a lane that did not parse as a number, or a short row: either way
+            # this module was not read and says nothing
+            short.setdefault(m["name"], []).append((m["id"], len(vals)))
+            continue
         st = per_decl.setdefault(m["name"], dict(exact=m["exact"], n=0, bad=[],
-                                                 worst=0, worst_case=None, denorm=0))
+                                                 aside=[], worst=0, worst_case=None,
+                                                 denorm=0, op=m["op"], rty=rty))
         for i, args in enumerate(m["cases"]):
-            for c, exp in enumerate(m["expect"][i]):
-                idx = i * m["rn"] + c
-                if idx >= len(flat):
-                    continue
+            for p, c in enumerate(mcomps):
+                exp = m["expect"][i][c]
                 # An infinite expectation used to be skipped here along with the
                 # denormals, and that skip hid a real disagreement rather than a
                 # licensed one. The four half-returning conversions expected
@@ -1300,26 +1928,33 @@ def check_log(outdir, logpath, verbose):
                 # this check keeps getting wrong.
                 if (isinstance(exp, float) and exp != 0.0
                         and not math.isinf(exp)
-                        and abs(exp) < 1.17549435e-38):
+                        and abs(exp) < smallest_normal(rty)):
                     st["denorm"] += 1
                     continue
                 st["n"] += 1
                 total += 1
-                g = flat[idx]
+                g = rows[i][p]
                 if st["exact"]:
                     if isinstance(exp, int):
                         same = g == exp
                     else:
-                        same = (to_f32_bits(f32(g)) == to_f32_bits(f32(exp))
-                                or (math.isnan(g) and math.isnan(exp)))
+                        same = same_float(g, exp, rty)
                     if not same:
-                        st["bad"].append((args, c, g, exp))
+                        # the same per-case set-aside the folding stage applies,
+                        # so that a run on the phone reads the same way: see
+                        # FMOD_ASIDE
+                        if st["op"] == "fmod" and fmod_aside(args, c, rty):
+                            st["aside"].append((args, c, g, exp))
+                        else:
+                            st["bad"].append((args, c, g, exp))
                 else:
                     u = ulps(g, exp)
                     if u > st["worst"]:
                         st["worst"], st["worst_case"] = u, (args, c, g, exp)
 
     ok = bad = approx = 0
+    aside_cases = {}
+    allaside = []
     for name in sorted(per_decl):
         st = per_decl[name]
         if not st["n"]:
@@ -1327,11 +1962,23 @@ def check_log(outdir, logpath, verbose):
         if st["exact"]:
             if st["bad"]:
                 bad += 1
-                print("WRONG   %-34s %d of %d cases differ" % (name, len(st["bad"]), st["n"]))
+                print("WRONG   %-34s %d of %d cases differ%s"
+                      % (name, len(st["bad"]), st["n"],
+                         " (and %d more set aside)" % len(st["aside"])
+                         if st["aside"] else ""))
                 for args, c, g, exp in st["bad"][:4]:
                     fmt = (lambda v: "%.9g" % v) if isinstance(g, float) else str
                     print("          %-34s [%d] got %-16s want %s"
                           % (showargs(args), c, fmt(g), fmt(exp)))
+            elif st["aside"] and len(st["aside"]) == st["n"]:
+                allaside.append(name)
+                print("NOCASE  %-34s all %d of its compared cases are in the "
+                      "set-aside, so nothing was decided" % (name, st["n"]))
+            elif st["aside"]:
+                aside_cases[name] = len(st["aside"])
+                print("ASIDE   %-34s %d of %d cases set aside, the other %d agree"
+                      % (name, len(st["aside"]), st["n"],
+                         st["n"] - len(st["aside"])))
             else:
                 ok += 1
                 if verbose:
@@ -1350,6 +1997,17 @@ def check_log(outdir, logpath, verbose):
     print()
     print("intrincheck: %d exactly defined operations agree on every case, %d differ"
           % (ok, bad))
+    if aside_cases:
+        print("intrincheck: %d more agree on every case they are claimed to, with %d "
+              "cases set aside by name (%s)"
+              % (len(aside_cases), sum(aside_cases.values()),
+                 ", ".join("%s: %d" % (k, aside_cases[k])
+                           for k in sorted(aside_cases))))
+        print("intrincheck: the set-aside is %s" % FMOD_ASIDE)
+    if allaside:
+        print("intrincheck: %d declarations had every compared case in the set-aside, "
+              "which decides nothing and is counted as a failure: %s"
+              % (len(allaside), ", ".join(sorted(allaside))))
     print("intrincheck: %d are approximate, compared with this machine's libm and not counted"
           % approx)
     if refused:
@@ -1364,6 +2022,16 @@ def check_log(outdir, logpath, verbose):
     if narrow_skipped:
         print("intrincheck: %d declarations left out: a narrow type (i1, i8, i16, f16) "
               "and this ran on softpipe, whose registers are 32-bit" % len(narrow_skipped))
+    if fma_skipped:
+        print("intrincheck: %d left out for computing an fma: nir_to_tgsi sends ffma to "
+              "TGSI's MAD, which its own specification lets round the product first, and "
+              "softpipe's micro_mad does -- one ulp at fma(1.5, 0x1.fffffep-2, -0.5). "
+              "Metal's fma is fused; so is NIR's ffma, which is why folding agrees. fmod "
+              "is in this set because its lowering is an fma, and a rounded product undoes "
+              "it: folded, air.fmod.f32 has 1 case of 264 in the named set-aside and the "
+              "other 263 agree; run on softpipe, 22 differ. A question for the phone, "
+              "where mad.f32 is fused (%s)"
+              % (len(fma_skipped), ", ".join(sorted(fma_skipped))))
     # How thin a verdict is matters as much as the verdict. "Agrees on every
     # case" over one case is not a statement about the operation, and the four
     # half-returning conversions were exactly that: three of their four cases
@@ -1374,6 +2042,25 @@ def check_log(outdir, logpath, verbose):
         print("intrincheck: %d declarations agree on fewer than 3 cases, which is "
               "agreement about very little: %s"
               % (len(thin), ", ".join("%s (%d)" % (k, per_decl[k]["n"]) for k in thin)))
+    # A half-narrowing declaration whose cases never round is a pass about
+    # nothing. Summed over the declaration's modules and not per module: a
+    # suite splits one declaration across several shaders, most of which
+    # legitimately carry only exact values, and the first version of this
+    # check named a declaration whenever any one of its modules did -- it
+    # fired on a suite that covered the rounding perfectly well.
+    blind_total = {}
+    for m in manifest:
+        if parse_type(m["retty"])[0] != "half" or m["op"] != "convert":
+            continue
+        if m["name"] not in per_decl or not per_decl[m["name"]]["n"]:
+            continue
+        blind_total[m["name"]] = blind_total.get(m["name"], 0) + (narrowing_cases(m) or 0)
+    blind = sorted(k for k, v in blind_total.items() if v == 0)
+    if blind:
+        print("intrincheck: %d declarations narrow to half and not one of their cases "
+              "needs rounding, so agreement says nothing about the only thing they do: "
+              "%s. Emit them with more cases (--cases, or none at all)."
+              % (len(blind), ", ".join(blind)))
     if half_set_aside:
         print("intrincheck: %d declarations set aside: they return half, which this suite packs into a "
               "float4 output (an fpext in emit_buffered), so the conversion is widened inside "
@@ -1387,7 +2074,7 @@ def check_log(outdir, logpath, verbose):
               "compiles with air.compile.denorms_disable" % denorm)
     print("intrincheck: %d cases in all, as RUN on %s and not as folded"
           % (total, screen or "an unnamed screen"))
-    return 1 if (bad or missing or short) else 0
+    return 1 if (bad or allaside or missing or short) else 0
 
 
 def main(argv):
@@ -1430,15 +2117,36 @@ def main(argv):
         print("intrincheck: run tools/air/mk-host.sh first", file=sys.stderr)
         return 1
 
+    unread = []
+    nlibs = 0
     if decls_file:
         decls = [l.strip() for l in open(decls_file) if l.strip()]
     else:
         libs = []
-        for dirpath, _, names in os.walk(os.path.join(ROOT, "sysimage/rootfs")):
+        for dirpath, _, names in os.walk(os.path.join(ROOT, "ios165/rootfs")):
             for n in names:
                 if n.endswith(".metallib"):
                     libs.append(os.path.join(dirpath, n))
-        decls = collect_declarations(sorted(libs))
+        nlibs = len(libs)
+        decls, unread = collect_declarations(sorted(libs))
+    # Printed BEFORE anything else and on stderr as well as stdout, because
+    # the vocabulary decides how much the rest of this check is a check of:
+    # a library that did not open takes its operations out of the suite and
+    # pushes the pass rate UP. See collect_declarations.
+    if unread:
+        # on stderr only: the same count goes out on stdout in the summary at
+        # the end, and printing it in both places put it through `grep
+        # '^intrincheck:'` twice
+        print("intrincheck: %d of %d libraries could not be read, so the "
+              "operations only they declare are NOT in this run and the pass "
+              "count below is an upper bound" % (len(unread), nlibs),
+              file=sys.stderr)
+        for lib, why in unread:
+            # the reason, cut to one short line: what matters here is whether
+            # it is a library this frontend cannot parse (a finding) or a
+            # binary that could not be executed (a race in a shared tree)
+            why = re.sub(r"^air2nir: \S+: ", "", why.strip().splitlines()[0])
+            print("unread  %-34s %s" % (os.path.basename(lib), why[:70]))
 
     arith = []
     skipped = []
@@ -1493,88 +2201,152 @@ def main(argv):
     tmp = tempfile.mkdtemp(prefix="intrincheck.")
     exact_ok = exact_bad = approx = refused = denorm = notnormal = 0
     total_cases = 0
+    # cases the reference declined, by the reason it gave: {why: {name: count}}
+    declined = {}
+    # and cases it has no answer for at all, by the same shape
+    noanswer = {}
+    # declarations for which not one case was compared
+    nocase = []
+    # declarations every one of whose disagreements is in a named set-aside,
+    # by declaration: {name: cases}
+    aside_cases = {}
     for d, name, retty, argtys, op, plain, sign, family in arith:
         if want and not any(w in name for w in want):
             continue
         is_exact = OPS[plain][2] if plain in OPS else True
+        rty = parse_type(retty)[0]
         cases = inputs_for(argtys, family)
-        # how many cases fit in one four-component render target
-        rn = parse_type(retty)[1]
-        per_shader = max(1, 4 // rn)
         bad = []
+        aside = []
         worst = 0
         worst_case = None
         n = 0
-        for k in range(0, len(cases), per_shader):
-            batch = cases[k:k + per_shader]
-            got, err = emit(d, name, argtys, retty, batch, tmp, sign)
-            if got is None:
-                refused += 1
-                print("REFUSED %-34s %s" % (name, err))
-                bad = None
+        # which result components go in one shader, and how many cases fit
+        # beside them in a four-lane render target. One group for everything
+        # but an i64 result, whose components take two lanes each.
+        for rcomps, per_shader in comp_batches(retty):
+            if bad is None:
                 break
-            for j, args in enumerate(batch):
-                try:
-                    expv = reference(family, plain, name, args, argtys, retty,
-                                     True if sign is None else sign)
-                except (ValueError, OverflowError, ZeroDivisionError):
-                    continue
-                for c, exp in enumerate(expv):
-                    # Apple compiles with air.compile.denorms_disable, so a
-                    # denormal result is allowed to be flushed to zero and
-                    # this check has nothing to say about it. ldexp is the
-                    # only operation here that reaches one from normal inputs.
-                    #
-                    # ldexp also loses an overflow. NIR's constant expression
-                    # for it is
-                    #
-                    #     dst = ldexpf(src0, src1);
-                    #     /* flush denormals to zero. */
-                    #     if (!isnormal(dst)) dst = copysignf(0.0f, src0);
-                    #
-                    # and !isnormal is true of an infinity as well as of a
-                    # denormal, so ldexp(0.5, 32767) folds to 0 where Metal,
-                    # OpenCL and C all say +inf. The comment names denormals;
-                    # the condition catches more than it means to. That is
-                    # Mesa's to fix and not this frontend's to work around, so
-                    # those cases are left out here and written down in
-                    # docs/air.md instead.
-                    if (isinstance(exp, float)
-                            and (math.isinf(exp)
-                                 or (exp != 0.0 and abs(exp) < 1.17549435e-38))):
-                        if plain == "ldexp":
-                            notnormal += 1
-                            continue
-                        if not math.isinf(exp):
-                            denorm += 1
-                            continue
-                    n += 1
-                    total_cases += 1
-                    g = got[j][c]
-                    if is_exact:
-                        if isinstance(g, int) and isinstance(exp, int):
-                            same = g == exp
+            for k in range(0, len(cases), per_shader):
+                batch = cases[k:k + per_shader]
+                got, err = emit(d, name, argtys, retty, batch, tmp, sign, rcomps)
+                if got is None:
+                    refused += 1
+                    print("REFUSED %-34s %s" % (name, err))
+                    bad = None
+                    break
+                for j, args in enumerate(batch):
+                    try:
+                        expv = reference(family, plain, name, args, argtys, retty,
+                                         True if sign is None else sign)
+                    except Undecided as why:
+                        per = declined.setdefault(str(why), {})
+                        per[name] = per.get(name, 0) + 1
+                        continue
+                    except (ValueError, OverflowError, ZeroDivisionError) as why:
+                        # A case the reference has no answer for -- out of the
+                        # destination's range, outside a domain -- and NOT a
+                        # case that passed. It used to be a bare `continue`,
+                        # which is the same quiet subtraction from the total
+                        # that this file has been bitten by three times: a
+                        # declaration can lose most of its cases this way and
+                        # still read "agrees on every case".
+                        per = noanswer.setdefault(str(why) or type(why).__name__, {})
+                        per[name] = per.get(name, 0) + 1
+                        continue
+                    for p, c in enumerate(rcomps):
+                        exp = expv[c]
+                        # Apple compiles with air.compile.denorms_disable, so a
+                        # denormal result is allowed to be flushed to zero and
+                        # this check has nothing to say about it. ldexp is the
+                        # only operation here that reaches one from normal inputs.
+                        #
+                        # ldexp also loses an overflow. NIR's constant expression
+                        # for it is
+                        #
+                        #     dst = ldexpf(src0, src1);
+                        #     /* flush denormals to zero. */
+                        #     if (!isnormal(dst)) dst = copysignf(0.0f, src0);
+                        #
+                        # and !isnormal is true of an infinity as well as of a
+                        # denormal, so ldexp(0.5, 32767) folds to 0 where Metal,
+                        # OpenCL and C all say +inf. The comment names denormals;
+                        # the condition catches more than it means to. That is
+                        # Mesa's to fix and not this frontend's to work around, so
+                        # those cases are left out here and written down in
+                        # docs/air.md instead.
+                        if (isinstance(exp, float)
+                                and (math.isinf(exp)
+                                     or (exp != 0.0
+                                         and abs(exp) < smallest_normal(rty)))):
+                            if plain == "ldexp":
+                                notnormal += 1
+                                continue
+                            if not math.isinf(exp):
+                                denorm += 1
+                                continue
+                        n += 1
+                        total_cases += 1
+                        g = got[j][p]
+                        if is_exact:
+                            if isinstance(g, int) and isinstance(exp, int):
+                                same = g == exp
+                            else:
+                                same = same_float(g, exp, rty)
+                            if not same:
+                                # a disagreement goes into the set-aside only
+                                # if THIS case satisfies the condition; see
+                                # FMOD_ASIDE
+                                if plain == "fmod" and fmod_aside(args, c, rty):
+                                    aside.append((args, c, g, exp))
+                                else:
+                                    bad.append((args, c, g, exp))
                         else:
-                            # bit patterns, not ==: this is what separates 0
-                            # from -0, which is a real difference in a shader
-                            same = (to_f32_bits(f32(g)) == to_f32_bits(f32(exp))
-                                    or (math.isnan(g) and math.isnan(exp)))
-                        if not same:
-                            bad.append((args, c, g, exp))
-                    else:
-                        u = ulps(g, exp)
-                        if u > worst:
-                            worst, worst_case = u, (args, c, g, exp)
+                            u = ulps(g, exp)
+                            if u > worst:
+                                worst, worst_case = u, (args, c, g, exp)
         if bad is None:
+            continue
+        # A DECLARATION NOBODY COMPARED A CASE OF IS NOT A DECLARATION THAT
+        # AGREES, and it used to be counted as one: `if bad:` is false over an
+        # empty list, so zero comparisons fell into the `else` and incremented
+        # the agreeing count. Six declarations were in exactly that state --
+        # the float/half conversions whose reference crashed (see ref_convert)
+        # -- and the summary called them agreement. Named, counted apart, and
+        # fatal, because this is the shape of every wrong green this check has
+        # ever had.
+        if not n:
+            nocase.append(name)
+            print("NOCASE  %-34s not one case was compared, so this is not "
+                  "agreement" % name)
             continue
         if is_exact:
             if bad:
                 exact_bad += 1
-                print("WRONG   %-34s %d of %d cases differ" % (name, len(bad), n))
+                print("WRONG   %-34s %d of %d cases differ%s"
+                      % (name, len(bad), n,
+                         " (and %d more set aside)" % len(aside) if aside else ""))
                 for args, c, g, exp in bad[:4]:
                     fmt = (lambda v: "%.9g" % v) if isinstance(g, float) else str
                     print("          %-34s [%d] got %-16s want %s"
                           % (showargs(args), c, fmt(g), fmt(exp)))
+            elif aside and len(aside) == n:
+                # EVERY case set aside is agreement about nothing, and the
+                # set-aside must not be able to swallow a whole declaration:
+                # that is the NOCASE failure wearing a different hat.
+                nocase.append(name)
+                print("NOCASE  %-34s all %d of its compared cases are in the "
+                      "set-aside, so nothing was decided" % (name, n))
+            elif aside:
+                # every disagreement satisfied the condition, so the operation
+                # agrees everywhere it is claimed to and the stage passes --
+                # with the count and the reason printed, never implied
+                aside_cases[name] = len(aside)
+                print("ASIDE   %-34s %d of %d cases set aside, the other %d agree"
+                      % (name, len(aside), n, n - len(aside)))
+                args, c, g, exp = aside[0]
+                print("          %-34s [%d] got %-16s want %s"
+                      % (showargs(args), c, "%.9g" % g, "%.9g" % exp))
             else:
                 exact_ok += 1
                 if verbose:
@@ -1593,10 +2365,25 @@ def main(argv):
                   % (name, n, worst if worst != float("inf") else "inf", where))
 
     print()
+    # Repeated at the end as well as at the start: every caller of this script
+    # reads it through `tail`, and the first copy is exactly the line that got
+    # cut off while the pass count stayed green.
+    if unread:
+        print("intrincheck: %d of %d libraries could not be read, so this run's "
+              "vocabulary is incomplete and its pass rate is an upper bound (%s)"
+              % (len(unread), nlibs,
+                 ", ".join(sorted(os.path.basename(q) for q, _ in unread))))
     print("intrincheck: %d declarations of the corpus have a reference here, %d others do not"
           % (len(arith), len(skipped)))
     print("intrincheck: %d exactly defined operations agree on every case, %d differ"
           % (exact_ok, exact_bad))
+    if aside_cases:
+        print("intrincheck: %d more agree on every case they are claimed to, with %d "
+              "cases set aside by name (%s)"
+              % (len(aside_cases), sum(aside_cases.values()),
+                 ", ".join("%s: %d" % (k, aside_cases[k])
+                           for k in sorted(aside_cases))))
+        print("intrincheck: the set-aside is %s" % FMOD_ASIDE)
     print("intrincheck: %d are approximate, compared with this machine's libm and not counted"
           % approx)
     if refused:
@@ -1607,12 +2394,58 @@ def main(argv):
     if notnormal:
         print("intrincheck: %d ldexp cases left out: NIR's constant expression flushes "
               "anything !isnormal, infinities included" % notnormal)
+    # A case the reference declines is not a case that passed and not a case
+    # that was quietly dropped, so it is named here with the reason -- the
+    # whole point of Undecided being an exception that carries one.
+    for why in sorted(declined):
+        per = declined[why]
+        print("intrincheck: %d cases the reference declines to answer -- %s (%s)"
+              % (sum(per.values()), why,
+                 ", ".join("%s: %d" % (k, per[k]) for k in sorted(per))))
+    # Named too, and for the same reason: a case nobody could ask is not a
+    # case that agreed. These are the reference's own limits (a conversion out
+    # of the destination's range, a domain a function does not have) and not
+    # the frontend's, which is why they are a separate line from the ones
+    # above and not an error.
+    for why in sorted(noanswer):
+        per = noanswer[why]
+        print("intrincheck: %d cases the reference has no answer for -- %s (%s)"
+              % (sum(per.values()), why,
+                 ", ".join("%s: %d" % (k, per[k]) for k in sorted(per)[:8])
+                 + (", ..." if len(per) > 8 else "")))
     print("intrincheck: %d cases in all" % total_cases)
     if verbose and skipped:
         print()
         for name, why in sorted(set(skipped)):
             print("no ref  %-34s %s" % (name, why))
-    return 1 if (exact_bad or refused) else 0
+
+    # A GREEN RUN THAT COMPARED NOTHING IS THE WORST OUTCOME THIS SCRIPT CAN
+    # HAVE, and until this it was reachable: point AIR2NIR at a binary that
+    # cannot be executed -- which is what a relink in this shared tree looks
+    # like for the second or two it takes -- and every library dropped out,
+    # the vocabulary came back empty, and the summary read "0 agree, 0 differ"
+    # and exited 0. Two rules close it, and they are different claims:
+    #   - nothing was compared, so there is no result either way;
+    #   - something could not be EXECUTED (see not_run_at_all), so what was
+    #     compared is less than this run believes. A library that is simply
+    #     not bitcode is NOT in this set: that is a fact about the library and
+    #     would make the check permanently red for the fourteen it is true of.
+    if nocase:
+        print("intrincheck: %d declarations had NOT ONE case compared, which is not "
+              "agreement and is counted as a failure: %s"
+              % (len(nocase), ", ".join(sorted(nocase))))
+    contaminated = [(p_, w) for p_, w in unread if not_run_at_all(w)]
+    if not total_cases:
+        print("intrincheck: NOTHING WAS COMPARED, so this is not a pass; %d "
+              "libraries went unread" % len(unread), file=sys.stderr)
+    if contaminated:
+        print("intrincheck: %d libraries could not be EXECUTED for, not merely not "
+              "read (%s) -- a relink under the run, not a result"
+              % (len(contaminated),
+                 ", ".join("%s: %s" % (os.path.basename(p_), w)
+                           for p_, w in contaminated[:4])), file=sys.stderr)
+    return 1 if (exact_bad or refused or nocase or not total_cases
+                 or contaminated) else 0
 
 
 if __name__ == "__main__":

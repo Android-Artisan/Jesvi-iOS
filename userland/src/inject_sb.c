@@ -1,5 +1,5 @@
 /*
- * libhakios.sb.dylib: code of ours inside SpringBoard (see inject.c for how it gets there).
+ * libredwood-sb.dylib: code of ours inside SpringBoard (see inject.c for how it gets there).
  *
  *   - The phone is "activated". SpringBoard asks mobileactivationd, which is not running (and
  *     could not talk to Apple anyway); without an answer it treats the device as bricked and
@@ -25,18 +25,19 @@
  *   - A long press on the lock screen's wallpaper does not open the poster switcher, which the
  *     window server here shows as a black screen: see poster_switcher_allowed().
  *   - Darwin notifications as a remote control, for scripts (rwtouch notify NAME):
- *       com.hakios.unlock      what the lock screen does after "swipe up to open"
- *       com.hakios.layers      write down the layers SpringBoard has on the screen: see layers()
- *       com.hakios.switcher    open the switcher of running applications: see switcher()
+ *       com.redwood.unlock      what the lock screen does after "swipe up to open"
+ *       com.redwood.layers      write down the layers SpringBoard has on the screen: see layers()
+ *       com.redwood.switcher    open the switcher of running applications: see switcher()
+ *       com.redwood.open        open a web page in Safari (mali2metal's tour): see open_page()
  *     In any other program given this library (INJECT in build.sh) only the last of them is
  *     answered, with that program's layers.
  */
 #include <CoreFoundation/CoreFoundation.h>
-#include <time.h>
 #include <IOKit/IOKitLib.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <mach-o/dyld.h>
 #include <mach/mach_time.h>
 #include <notify.h>
 #include <objc/message.h>
@@ -148,7 +149,7 @@ replace_method_of_kind(char kind, const char *class_name, const char *selector, 
 	IMP original = method ? method_getImplementation(method) : NULL;
 
 	if (original == NULL || (uintptr_t)original != expected + slide) {
-		say("hakios: %c[%s %s]: found %#lx, expected %#lx; left alone\n", kind, class_name, selector,
+		say("redwood: %c[%s %s]: found %#lx, expected %#lx; left alone\n", kind, class_name, selector,
 		    original ? (uintptr_t)original - slide : 0, expected);
 		return NULL;
 	}
@@ -182,7 +183,7 @@ static void
 set_setup_required_reason(id self, SEL selector, long reason)
 {
 	if (reason != 0) {
-		say("hakios: SpringBoard wants the setup assistant (reason %ld); not here\n", reason);
+		say("redwood: SpringBoard wants the setup assistant (reason %ld); not here\n", reason);
 	}
 	original_set_setup_required_reason(self, selector, 0);
 }
@@ -219,13 +220,13 @@ snapshot_output_format(__unused id self, __unused SEL selector, id snapshot)
  * iOS reads battery level through UIDevice.batteryLevel and UIDevice.batteryState; SpringBoard's
  * status bar reads it the same way via SBBatteryController. Where the battery has no power source
  * of its own in the kernel (battery=1, the loader's way through Qualcomm's UEFI charger protocols),
- * we hook the UIDevice accessors to return what XNU publishes as kern.hakios.battery_soc (0..100)
- * and kern.hakios.battery_charging.
+ * we hook the UIDevice accessors to return what XNU publishes as kern.redwood.battery_soc (0..100)
+ * and kern.redwood.battery_charging.
  * When the sysctl is missing (battery=1 not in boot-args, or the driver never started) we hand
  * back the value the real implementation computed; the status bar then shows whatever iOS last
  * knew, which is better than crashing.
- * With adsp=1 the battery is a power source (the service HakiosBattery, an IOPMPowerSource:
- * iokit/Kernel/hakios.battery.cpp), which powerd reads like an iPhone's own, and from it iOS knows
+ * With adsp=1 the battery is a power source (the service RedwoodBattery, an IOPMPowerSource:
+ * iokit/Kernel/RedwoodBattery.cpp), which powerd reads like an iPhone's own, and from it iOS knows
  * everything by itself; once that service is there, the hooks hand everything to iOS's own code.
  */
 static float  (*original_battery_level)(id self, SEL sel);
@@ -254,271 +255,18 @@ battery_power_source(void)
 	static bool found;
 	io_service_t service;
 
-	if (!found && (service = IOServiceGetMatchingService(0, IOServiceMatching("HakiosBattery"))) != 0) {
+	if (!found && (service = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodBattery"))) != 0) {
 		IOObjectRelease(service);
 		found = true;
 	}
 	return found;
 }
 
-/* ---- the cellular items of the status bar, from the kernel's modem ------------------------------ */
-
-/*
- * SpringBoard's SBStatusBarStateAggregator fills the raw status bar data from CoreTelephony, which
- * has no baseband here. Its item updaters take the data and a getter and setter for the field
- * (iOS 16.5: -[SBStatusBarStateAggregator _updateSignalStrengthItem:withData:SIMInfo:barsGetter:
- * barsSetter:], and the like for the service string): the signal one is replaced so that, when the
- * kernel's modem is registered (sysctl kern.hakios.cellular_registered, _bars: hakios.mpss.c),
- * the bars are set and the item switched on (-[... _setItem:enabled:]). The aggregator's whole
- * method list is said once in the log, for the posting to be found; and the signal item is asked
- * to update itself every few seconds while the kernel's state changes.
- */
-static void (*original_update_signal_item)(id self, SEL sel, long item, void *data, id sim, void *getter, void *setter);
-static id cellular_aggregator;
-static int cellular_last_bars = -2, cellular_said;
-
-/* The getters and setters are blocks (their type is "@?"): called through the block's own invoke pointer, with the block first. */
-struct block_layout {
-	void *isa;
-	int flags, reserved;
-	void (*invoke)(void *, ...);
-};
-#define BLOCK_CALL(block, type, ...) ((type)((struct block_layout *)(block))->invoke)((block), __VA_ARGS__)
-
-static void
-update_signal_item(id self, SEL sel, long item, void *data, id sim, void *getter, void *setter)
-{
-	int up = sysctl_int("kern.hakios.cellular_up"), registered = sysctl_int("kern.hakios.cellular_registered");
-	int bars = sysctl_int("kern.hakios.cellular_bars"), dbm = sysctl_int("kern.hakios.cellular_dbm");
-	int shown;
-
-	cellular_aggregator = self;
-	if (original_update_signal_item) {
-		original_update_signal_item(self, sel, item, data, sim, getter, setter);
-	}
-	if (cellular_said++ < 8) {
-		say("hakios: cellular: signal item %ld: data %p, SIM info %p, getter %p, setter %p; the kernel says up %d registered %d bars %d dbm %d\n",
-		    item, data, (void *)sim, getter, setter, up, registered, bars, dbm);
-	}
-	/*
-	 * Force the signal item on. iOS hides it unless its own cellular stack (CommCenter, which is
-	 * not here) says there is service, so the bars never appear on their own. The kernel knows
-	 * the modem's state, so once it is up the item is shown here with the kernel's bars; when the
-	 * kernel has a reading but zero bars (a brief "no signal" sample, or a reading just after
-	 * registration) at least one bar is forced so the icon is visibly present rather than empty.
-	 * modem_bars_off=1 (as a sysctl) is not honoured; set kern.hakios.cellular_up=0 to hide it.
-	 */
-	/*
-	 * The kernel's NAS state alternates between two reports -- "registered, signal not read" and
-	 * "not registered, -86 dBm" -- so at the moments it says registered the dBm reads 0. The last
-	 * real reading (within a minute) stands in for it.
-	 */
-	{
-		static int last_dbm;
-		static time_t last_dbm_at;
-		time_t now = time(NULL);
-
-		if (dbm < 0) {
-			last_dbm = dbm;
-			last_dbm_at = now;
-		} else if (last_dbm < 0 && now - last_dbm_at < 60) {
-			dbm = last_dbm;
-		}
-	}
-	shown = bars;
-	if (shown <= 0 && dbm < 0) {
-		shown = dbm >= -95 ? 4 : dbm >= -105 ? 3 : dbm >= -115 ? 2 : 1;   /* derive from dBm when bars is 0 */
-	}
-	if (shown <= 0 && (up > 0 || registered > 0)) {
-		shown = 1;                      /* up but no reading yet: still show the icon */
-	}
-	if (shown > 5) {
-		shown = 5;
-	}
-	if ((up > 0 || registered > 0) && shown > 0 && setter != NULL && data != NULL) {
-		BLOCK_CALL(setter, void (*)(void *, void *, int), data, shown);
-		((void (*)(id, SEL, long, BOOL))objc_msgSend)(self, sel_registerName("_setItem:enabled:"), item, YES);
-		if (shown != cellular_last_bars) {
-			say("hakios: cellular: %d bars shown (item %ld; kernel bars %d, %d dBm, registered %d)\n", shown, item, bars, dbm, registered);
-		}
-	}
-	cellular_last_bars = shown;
-}
-
-static void (*original_update_service_item)(id self, SEL sel, long item, void *data, id sim, id other, void *g1, void *s1, void *g2, void *s2,
-    void *g3, void *s3, void *g4, void *s4);
-
-/*
- * The service item ("No SIM", the network's name): once the kernel's modem is registered, the
- * network's name (sysctl kern.hakios.cellular_operator) goes in through the item's string setter
- * and the item is switched on.
- */
-static void
-update_service_item(id self, SEL sel, long item, void *data, id sim, id other, void *g1, void *s1, void *g2, void *s2, void *g3, void *s3,
-    void *g4, void *s4)
-{
-	static int said;
-	static char shown[64];
-	char name[64] = "";
-	size_t size = sizeof(name) - 1;
-	int registered = sysctl_int("kern.hakios.cellular_registered");
-
-	if (original_update_service_item) {
-		original_update_service_item(self, sel, item, data, sim, other, g1, s1, g2, s2, g3, s3, g4, s4);
-	}
-	sysctlbyname("kern.hakios.cellular_operator", name, &size, NULL, 0);
-	if (said++ < 4) {
-		say("hakios: cellular: service item %ld: data %p, SIM info %p, other %p; string getter %p setter %p, content type getter %p "
-		    "setter %p; the kernel's network \"%s\"\n", item, data, (void *)sim, (void *)other, g1, s1, g3, s3, name);
-	}
-	if (registered > 0 && name[0] != 0 && s1 != NULL && data != NULL) {
-		CFStringRef string = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
-
-		if (string != NULL) {
-			BLOCK_CALL(s1, void (*)(void *, void *, CFStringRef), data, string);
-			((void (*)(id, SEL, long, BOOL))objc_msgSend)(self, sel_registerName("_setItem:enabled:"), item, YES);
-			if (strcmp(shown, name) != 0) {
-				snprintf(shown, sizeof(shown), "%s", name);
-				say("hakios: cellular: service \"%s\" shown (item %ld)\n", name, item);
-			}
-			CFRelease(string);
-		}
-	}
-}
-
-/*
- * The bars are drawn by UIKit's signal view, whose "signal mode" says how: inactive (all bars grey),
- * searching, or active (the bars that count dark). iOS's cellular stack (CommCenter, not here)
- * puts it in active mode once there is service; without it the bars stay grey whatever their
- * number. So for the cellular signal view (not the Wi-Fi one), while the kernel says the modem is
- * registered, the mode is made active. The modes seen are said in the log once each.
- */
-static void (*original_set_signal_mode)(id self, SEL sel, long mode);
-static long cellular_active_mode = 2;  /* _UIStatusBarSignalView: 0 inactive, 1 searching, 2 active */
-
-static void
-set_signal_mode(id self, SEL sel, long mode)
-{
-	static unsigned said_modes;
-	const char *name = object_getClassName(self);
-	bool cellular = name != NULL && strstr(name, "Cellular") != NULL;
-	long wanted = mode;
-
-	if (cellular && mode < 8 && !(said_modes & (1u << mode))) {
-		said_modes |= 1u << mode;
-		say("hakios: cellular: %s asked for signal mode %ld\n", name, mode);
-	}
-	if (cellular && sysctl_int("kern.hakios.cellular_registered") > 0 && mode != cellular_active_mode) {
-		wanted = cellular_active_mode;
-	}
-	original_set_signal_mode(self, sel, wanted);
-}
-
-static void
-signal_view_hook(void)
-{
-	static const char *const classes[] = { "_UIStatusBarCellularSignalView", "_UIStatusBarSignalView" };
-
-	for (unsigned c = 0; c < sizeof(classes) / sizeof(classes[0]); c++) {
-		Class cls = objc_getClass(classes[c]);
-		Method method = cls ? class_getInstanceMethod(cls, sel_registerName("setSignalMode:")) : NULL;
-
-		if (method == NULL) {
-			say("hakios: cellular: no -[%s setSignalMode:]\n", classes[c]);
-			continue;
-		}
-		original_set_signal_mode = (void (*)(id, SEL, long))method_getImplementation(method);
-		method_setImplementation(method, (IMP)set_signal_mode);
-		say("hakios: cellular: -[%s setSignalMode:] replaced (types \"%s\"): active while the kernel says registered\n",
-		    classes[c], method_getTypeEncoding(method));
-		return;         /* the base class's method serves the subclasses */
-	}
-}
-
-static void
-cellular_hook(void)
-{
-	signal_view_hook();
-	{
-		const char *service_selector = "_updateServiceItem:withData:SIMInfo:otherSIMInfo:serviceStringGetter:serviceStringSetter:"
-		    "serviceCrossfadeStringGetter:serviceCrossfadeStringSetter:serviceContentTypeGetter:serviceContentTypeSetter:"
-		    "serviceBadgeStringGetter:serviceBadgeStringSetter:";
-		Class cls = objc_getClass("SBStatusBarStateAggregator");
-		Method method = cls ? class_getInstanceMethod(cls, sel_registerName(service_selector)) : NULL;
-
-		if (method) {
-			say("hakios: cellular: -[SBStatusBarStateAggregator %s] at %#lx, types \"%s\": looked at\n", service_selector,
-			    (uintptr_t)method_getImplementation(method) - slide, method_getTypeEncoding(method));
-			original_update_service_item = (void (*)(id, SEL, long, void *, id, id, void *, void *, void *, void *, void *, void *, void *,
-			    void *))method_getImplementation(method);
-			method_setImplementation(method, (IMP)update_service_item);
-		}
-	}
-	const char *selector = "_updateSignalStrengthItem:withData:SIMInfo:barsGetter:barsSetter:";
-	Class cls = objc_getClass("SBStatusBarStateAggregator");
-	Method method = cls ? class_getInstanceMethod(cls, sel_registerName(selector)) : NULL;
-
-	if (method == NULL) {
-		say("hakios: cellular: no -[SBStatusBarStateAggregator %s]\n", selector);
-		return;
-	}
-	say("hakios: cellular: -[SBStatusBarStateAggregator %s] at %#lx, types \"%s\": replaced\n", selector,
-	    (uintptr_t)method_getImplementation(method) - slide, method_getTypeEncoding(method));
-	original_update_signal_item = (void (*)(id, SEL, long, void *, id, void *, void *))method_getImplementation(method);
-	method_setImplementation(method, (IMP)update_signal_item);
-	{
-		/* the whole class, once: which updaters and posters there are */
-		unsigned count = 0;
-		Method *list = class_copyMethodList(cls, &count);
-		char line[1024] = "";
-		size_t at = 0;
-
-		for (unsigned i = 0; list && i < count; i++) {
-			const char *name = sel_getName(method_getName(list[i]));
-			size_t n = strlen(name);
-
-			if (at + n + 2 > sizeof(line)) {
-				say("hakios: cellular: aggregator methods: %s\n", line);
-				line[0] = 0;
-				at = 0;
-			}
-			memcpy(line + at, name, n);
-			at += n;
-			line[at++] = ' ';
-			line[at] = 0;
-		}
-		if (at) {
-			say("hakios: cellular: aggregator methods: %s\n", line);
-		}
-		free(list);
-	}
-	/* every 3 s: when the kernel's registration or bars change, the item is asked to update itself */
-	dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-
-	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
-	dispatch_source_set_event_handler(timer, ^{
-		static int last_registered = -2, last_bars = -2;
-		int registered = sysctl_int("kern.hakios.cellular_registered"), bars = sysctl_int("kern.hakios.cellular_bars");
-
-		if ((registered != last_registered || bars != last_bars) && cellular_aggregator != nil) {
-			SEL update = sel_registerName("_updateSignalStrengthItem");
-
-			last_registered = registered;
-			last_bars = bars;
-			if (class_getInstanceMethod(object_getClass(cellular_aggregator), update)) {
-				((void (*)(id, SEL))objc_msgSend)(cellular_aggregator, update);
-				say("hakios: cellular: the signal item asked to update (registered %d, bars %d)\n", registered, bars);
-			}
-		}
-	});
-	dispatch_resume(timer);
-}
-
 /* UIDevice.batteryLevel: 0.0..1.0; -1.0 if monitoring not enabled */
 static float
 battery_level(id self, SEL sel)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	if (soc < 0 || soc > 100 || battery_power_source()) {
 		return original_battery_level ? original_battery_level(self, sel) : -1.0f;
@@ -530,10 +278,10 @@ battery_level(id self, SEL sel)
 static long
 battery_state(id self, SEL sel)
 {
-	int charging = sysctl_int("kern.hakios.battery_charging");
-	int present = sysctl_int("kern.hakios.battery_present");
-	int plugged = sysctl_int("kern.hakios.battery_charger_present");
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int charging = sysctl_int("kern.redwood.battery_charging");
+	int present = sysctl_int("kern.redwood.battery_present");
+	int plugged = sysctl_int("kern.redwood.battery_charger_present");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	if (charging == -1 || present == -1 || plugged == -1 || soc < 0 || soc > 100 || battery_power_source()) {
 		return original_battery_state ? original_battery_state(self, sel) : 0;
@@ -551,7 +299,7 @@ battery_state(id self, SEL sel)
 static BOOL
 battery_view_shows_percentage(id self, SEL sel)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	if (soc >= 0 && soc <= 100 && !battery_power_source()) return YES;
 	return original_battery_view_shows_percentage ? original_battery_view_shows_percentage(self, sel) : NO;
@@ -560,7 +308,7 @@ battery_view_shows_percentage(id self, SEL sel)
 static void
 battery_view_set_shows_percentage(id self, SEL sel, BOOL shows)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	original_battery_view_set_shows_percentage(self, sel, (soc >= 0 && soc <= 100 && !battery_power_source()) ? YES : shows);
 }
@@ -568,9 +316,9 @@ battery_view_set_shows_percentage(id self, SEL sel, BOOL shows)
 static BOOL
 battery_view_should_show_bolt(id self, SEL sel)
 {
-	int charging = sysctl_int("kern.hakios.battery_charging");
-	int present = sysctl_int("kern.hakios.battery_present");
-	int plugged = sysctl_int("kern.hakios.battery_charger_present");
+	int charging = sysctl_int("kern.redwood.battery_charging");
+	int present = sysctl_int("kern.redwood.battery_present");
+	int plugged = sysctl_int("kern.redwood.battery_charger_present");
 
 	if (charging != -1 && present != -1 && plugged != -1 && !battery_power_source()) return charging && present && plugged;
 	return original_battery_view_should_show_bolt ? original_battery_view_should_show_bolt(self, sel) : NO;
@@ -586,7 +334,7 @@ battery_view_should_show_bolt(id self, SEL sel)
 static double
 battery_view_charge_percent(id self, SEL sel)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	if (soc >= 0 && soc <= 100 && !battery_power_source()) return (double)soc / 100.0;
 	return original_battery_view_charge_percent ? original_battery_view_charge_percent(self, sel) : 0.0;
@@ -595,7 +343,7 @@ battery_view_charge_percent(id self, SEL sel)
 static void
 battery_view_set_charge_percent(id self, SEL sel, double p)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	original_battery_view_set_charge_percent(self, sel, (soc >= 0 && soc <= 100 && !battery_power_source()) ? (double)soc / 100.0 : p);
 }
@@ -604,7 +352,7 @@ battery_view_set_charge_percent(id self, SEL sel, double p)
 static double
 ring_charging_level(id self, SEL sel)
 {
-	int soc = sysctl_int("kern.hakios.battery_soc");
+	int soc = sysctl_int("kern.redwood.battery_soc");
 
 	if (soc >= 0 && soc <= 100 && !battery_power_source()) return (double)soc / 100.0;
 	return original_ring_charging_level ? original_ring_charging_level(self, sel) : 0.0;
@@ -634,7 +382,7 @@ battery_post_notifications(void)
 
 /* ---- the lock screen's clock without a GPU ------------------------------------------------------- */
 
-#define HAKIOS_GL "/redwood/lib/libhakios.gl.dylib"
+#define REDWOOD_GL "/redwood/lib/libredwood-gl.dylib"
 
 /* Does the window server draw with OpenGL ES? The same question, asked the same way, as opengl_es() in inject.c. */
 static bool
@@ -645,7 +393,7 @@ gpu_draws(void)
 	const char *argument;
 	io_service_t gpu;
 
-	if (access(HAKIOS_GL, R_OK) != 0) {
+	if (access(REDWOOD_GL, R_OK) != 0) {
 		return false;
 	}
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
@@ -655,7 +403,10 @@ gpu_draws(void)
 			}
 		}
 	}
-	gpu = IOServiceGetMatchingService(0, IOServiceMatching("HakiosGPU"));
+	gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodGPU"));
+	if (gpu == 0) {
+		gpu = IOServiceGetMatchingService(0, IOServiceMatching("RedwoodMali"));        /* (the Exynos phone's Mali-G77) */
+	}
 	if (gpu != 0) {
 		IOObjectRelease(gpu);
 	}
@@ -681,7 +432,7 @@ plain_vibrancy(void)
 		return;
 	}
 	CFPreferencesSetAppValue(CFSTR("BSUIVibrancyEffectViewDisabled"), kCFBooleanTrue, kCFPreferencesCurrentApplication);
-	say("hakios: SpringBoard: no GPU draws, vibrant views are plain (the lock screen's clock is white)\n");
+	say("redwood: SpringBoard: no GPU draws, vibrant views are plain (the lock screen's clock is white)\n");
 }
 
 /* ---- the side button's long press ---------------------------------------------------------------- */
@@ -710,7 +461,7 @@ lock_button_held(void)
 	static int token = NOTIFY_TOKEN_INVALID;
 	uint64_t state = 0;
 
-	if (token == NOTIFY_TOKEN_INVALID && notify_register_check("com.hakios.button.lock", &token) != NOTIFY_STATUS_OK) {
+	if (token == NOTIFY_TOKEN_INVALID && notify_register_check("com.redwood.button.lock", &token) != NOTIFY_STATUS_OK) {
 		token = NOTIFY_TOKEN_INVALID;
 		return true;
 	}
@@ -729,7 +480,7 @@ lock_long_press(id self, SEL selector, id recognizer)
 	if (state == GESTURE_BEGAN) {
 		dropping = !lock_button_held();
 		if (dropping) {
-			say("hakios: SpringBoard: a long press of the side button, which was released long ago: dropped\n");
+			say("redwood: SpringBoard: a long press of the side button, which was released long ago: dropped\n");
 		}
 	}
 	if (dropping) {
@@ -745,7 +496,7 @@ lock_long_press(id self, SEL selector, id recognizer)
 
 #define UNLOCK_SOURCE_COVER_SHEET       24      /* what the lock screen itself passes */
 
-static void
+static BOOL
 unlock(void)
 {
 	Class cls = objc_getClass("SBLockScreenManager");
@@ -755,18 +506,21 @@ unlock(void)
 
 	if (cls == NULL || class_getClassMethod(cls, shared) == NULL || class_getInstanceMethod(cls, locked) == NULL ||
 	    class_getInstanceMethod(cls, unlock_ui) == NULL) {
-		say("hakios: unlock: SBLockScreenManager is not what it was\n");
-		return;
+		say("redwood: unlock: SBLockScreenManager is not what it was\n");
+		return YES;                      /* nothing to wait for */
 	}
 	manager = ((id (*)(Class, SEL))objc_msgSend)(cls, shared);
 	if (manager == NULL) {
-		say("hakios: unlock: no lock screen manager yet\n");
+		say("redwood: unlock: no lock screen manager yet\n");
+		return NO;
 	} else if (!((BOOL (*)(id, SEL))objc_msgSend)(manager, locked)) {
-		say("hakios: unlock: not locked\n");
+		say("redwood: unlock: not locked\n");
+		return YES;
 	} else {
 		BOOL done = ((BOOL (*)(id, SEL, long, id))objc_msgSend)(manager, unlock_ui, UNLOCK_SOURCE_COVER_SHEET, NULL);
 
-		say("hakios: unlock: asked, answer %d\n", done);
+		say("redwood: unlock: asked, answer %d\n", done);
+		return YES;
 	}
 }
 
@@ -853,11 +607,89 @@ switcher_wallpaper_overlay(id self, SEL selector)
 		    (at = strstr(args, "switcher_wallpaper=1")) != NULL && (at == args || at[-1] == ' ');
 	}
 	if (told++ == 0) {
-		say("hakios: the switcher's wash of wallpaper is %s\n", wanted ?
+		say("redwood: the switcher's wash of wallpaper is %s\n", wanted ?
 		    "drawn as iOS asks (switcher_wallpaper=1)" : "left out: there is no picture of the wallpaper for it");
 	}
 	if (wanted) {
 		original_switcher_wallpaper_overlay(self, selector);
+	}
+}
+
+/*
+ * SIRI'S ORB, which is where SpringBoard dies on this port.
+ *
+ * -[SpringBoard applicationDidFinishLaunching:] builds the banner manager, which builds
+ * SBAssistantController, which builds Siri's presentation controller, whose -prewarmOrbViewShaders
+ * makes a SUICOrbView whose -_updateMetalTextureRasterSize: asks Metal for something Metal will not
+ * give: _MTLReportFailure, then abort. 48 times in the boot of 21 October, every 8.3 seconds, with
+ * backboardd alive throughout for the first time.
+ *
+ * The message Metal reported is in none of our logs -- SpringBoard's own os_log output never
+ * reaches them, where backboardd's did -- so this stands one frame above the fall and says what the
+ * process has to work with: whether MTLCreateSystemDefaultDevice() answers in SpringBoard at all,
+ * and with which class. That one line separates two very different diseases: our device never
+ * reaching this process, and our device reaching it and refusing something.
+ *
+ * With siri_orb=0 among the boot-args the prewarm is skipped. That fixes nothing and is not meant
+ * to: it asks what SpringBoard does NEXT, which is the only way to see the wall behind this one
+ * while this one still stands.
+ */
+static void (*original_prewarm_orb_view_shaders)(id self, SEL selector);
+
+static bool
+boot_arg_is_set(const char *word)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *at;
+
+	return sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
+	    (at = strstr(args, word)) != NULL && (at == args || at[-1] == ' ');
+}
+
+static void
+prewarm_orb_view_shaders(id self, SEL selector)
+{
+	static int skip = -1;
+	id (*create)(void) = (id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice");
+	id device = create ? create() : nil;
+
+	if (skip < 0) {
+		skip = boot_arg_is_set("siri_orb=0");
+	}
+	if (create == NULL) {
+		say("redwood: Siri's orb: MTLCreateSystemDefaultDevice is not even a symbol here\n");
+	} else {
+		say("redwood: Siri's orb prewarms its shaders; MTLCreateSystemDefaultDevice() = %s\n",
+		    device ? object_getClassName(device) : "nil");
+	}
+	if (skip) {
+		say("redwood: Siri's orb: the prewarm is skipped (siri_orb=0), so what follows is the next wall\n");
+		return;
+	}
+	original_prewarm_orb_view_shaders(self, selector);
+	say("redwood: Siri's orb: the prewarm RETURNED -- it did not abort this time\n");
+}
+
+/*
+ * SiriUIActivation arrives only when SpringBoard first wants Siri, which is after everything else
+ * this library replaces at startup. So this waits for the class rather than for a named image: the
+ * notifier runs once per image already loaded and once per image afterwards, and the first time the
+ * class is there the replacement goes in.
+ */
+static void
+image_added(__unused const struct mach_header *header, __unused intptr_t image_slide)
+{
+	static bool told;
+
+	if (original_prewarm_orb_view_shaders != NULL || objc_getClass("SiriPresentationViewController") == NULL) {
+		return;
+	}
+	original_prewarm_orb_view_shaders = (void (*)(id, SEL))replace_method("SiriPresentationViewController",
+	    "prewarmOrbViewShaders", 0x1f0144c30UL, (IMP)prewarm_orb_view_shaders);
+	if (!told++) {
+		say("redwood: Siri's orb: the prewarm is %s\n",
+		    original_prewarm_orb_view_shaders ? "watched" : "NOT watched (the address moved)");
 	}
 }
 
@@ -870,7 +702,7 @@ layer_filter(id filter, const char *what, int depth)
 	size_t n;
 
 	if (!class_respondsToSelector(object_getClass(filter), sel_registerName("type"))) {
-		say("hakios: layers%s: %*s  %s %s\n", layers_of, 2 * depth, "", what, text_of(filter));     /* a name alone */
+		say("redwood: layers%s: %*s  %s %s\n", layers_of, 2 * depth, "", what, text_of(filter));     /* a name alone */
 		return;
 	}
 	n = (size_t)snprintf(line, sizeof(line), "%s %s \"%s\"%s", what, text_of(SEND(id, filter, "type")),
@@ -892,7 +724,7 @@ layer_filter(id filter, const char *what, int depth)
 			n += (size_t)snprintf(line + n, sizeof(line) - n, " %s %s", inputs[i], text_of(value));
 		}
 	}
-	say("hakios: layers%s: %*s  %s\n", layers_of, 2 * depth, "", line);
+	say("redwood: layers%s: %*s  %s\n", layers_of, 2 * depth, "", line);
 }
 
 static void
@@ -1008,7 +840,7 @@ layer_line(id layer, const char *role, int depth)
 			    text_of(SEND1(id, keys, "objectAtIndex:", long, i)));
 		}
 	}
-	say("hakios: layers%s: %*s%s%s %p \"%s\" %g,%g %gx%g opacity %g%s\n", layers_of, 2 * depth, "", role, class_name, (void *)layer,
+	say("redwood: layers%s: %*s%s%s %p \"%s\" %g,%g %gx%g opacity %g%s\n", layers_of, 2 * depth, "", role, class_name, (void *)layer,
 	    text_of(SEND(id, layer, "name")), frame.x, frame.y, frame.w, frame.h, (double)SEND(float, layer, "opacity"), more);
 	for (long i = 0; filters != NULL && i < SEND(long, filters, "count"); i++) {
 		layer_filter(SEND1(id, filters, "objectAtIndex:", long, i), "filter", depth);
@@ -1046,7 +878,7 @@ web_views(id view, int depth)
 		SEL background = sel_registerName("_isBackground"), pid = sel_registerName("_webProcessIdentifier");
 		SEL responsive = sel_registerName("_webProcessIsResponsive");
 
-		say("hakios: layers%s: a WKWebView %p: in the background %s, web process %d, responsive %s, in a window %s, hidden %s\n",
+		say("redwood: layers%s: a WKWebView %p: in the background %s, web process %d, responsive %s, in a window %s, hidden %s\n",
 		    layers_of, (void *)view, class_respondsToSelector(object_getClass(view), background) ?
 		    (SEND(BOOL, view, "_isBackground") ? "YES" : "no") : "?", class_respondsToSelector(object_getClass(view), pid) ?
 		    SEND(int, view, "_webProcessIdentifier") : -1, class_respondsToSelector(object_getClass(view), responsive) ?
@@ -1069,9 +901,9 @@ layers(void)
 	id authentication = application && class_respondsToSelector(object_getClass(application),
 	    sel_registerName("authenticationController")) ? SEND(id, application, "authenticationController") : NULL;
 
-	say("hakios: layers%s: %ld windows\n", layers_of, windows ? SEND(long, windows, "count") : 0L);
+	say("redwood: layers%s: %ld windows\n", layers_of, windows ? SEND(long, windows, "count") : 0L);
 	if (authentication != NULL) {
-		say("hakios: layers: the user is %sauthenticated, %s passcode, the display %sin secure mode\n",
+		say("redwood: layers: the user is %sauthenticated, %s passcode, the display %sin secure mode\n",
 		    SEND(BOOL, authentication, "isAuthenticated") ? "" : "NOT ", SEND(BOOL, authentication, "hasPasscodeSet") ? "a" : "no",
 		    SEND(BOOL, authentication, "inSecureDisplayMode") ? "" : "not ");
 	}
@@ -1080,24 +912,24 @@ layers(void)
 		id scene = class_respondsToSelector(object_getClass(w), sel_registerName("windowScene")) ? SEND(id, w, "windowScene") : NULL;
 		id context = class_respondsToSelector(object_getClass(w), sel_registerName("_boundContext")) ? SEND(id, w, "_boundContext") : NULL;
 
-		say("hakios: layers%s: window %s level %g, context %#x (%ssecure, %u commits), scene %s (activation state %ld)\n",
+		say("redwood: layers%s: window %s level %g, context %#x (%ssecure, %u commits), scene %s (activation state %ld)\n",
 		    layers_of, object_getClassName(w), SEND(double, w, "windowLevel"), context ? SEND(unsigned, context, "contextId") : 0,
 		    context && SEND(BOOL, context, "isSecure") ? "" : "not ", context ? (unsigned)SEND(unsigned long long, context, "commitId") : 0,
 		    scene ? text_of(SEND(id, scene, "_persistenceIdentifier")) : "none", scene ? SEND(long, scene, "activationState") : -1L);
 		layer_line(SEND(id, w, "layer"), "", 1);
 	}
 	if (application != NULL) {
-		say("hakios: layers%s: the application's state %ld (0 active, 1 inactive, 2 in the background)\n", layers_of,
+		say("redwood: layers%s: the application's state %ld (0 active, 1 inactive, 2 in the background)\n", layers_of,
 		    SEND(long, application, "applicationState"));
 	}
 	for (long i = 0; windows != NULL && i < SEND(long, windows, "count"); i++) {
 		web_views(SEND1(id, windows, "objectAtIndex:", long, i), 0);
 	}
-	say("hakios: layers%s: end\n", layers_of);
+	say("redwood: layers%s: end\n", layers_of);
 }
 
 /*
- * The switcher of running applications, on the notification com.hakios.switcher (rwtouch notify).
+ * The switcher of running applications, on the notification com.redwood.switcher (rwtouch notify).
  * A drag up from the bottom edge is the way to it on a phone, but the touches a script puts in do
  * not reach iOS's system gestures -- nothing comes of such a drag, not even going home -- and two
  * presses of the home button only go home (there is no home button on a phone of this shape, and
@@ -1113,6 +945,57 @@ layers(void)
  * (_activateSwitcherValidatorWithEventLabel:animated:windowScene:), which is what its own
  * gestures use.
  */
+/*
+ * A web page in Safari, on the notification com.redwood.open: the tour's way into WebKit (its JIT and its
+ * GPU process), which a tap could reach only through wherever the user has put Safari's icon. SpringBoard
+ * opens it as any link it is handed: -[LSApplicationWorkspace openURL:]. Each notification opens the next
+ * page of /redwood/etc/m2m.url (one a line), or of the list below: a single page left WebKit's JIT faults
+ * unseen that three pages a minute later showed (PLANS/10-mali2metal.md, runs 23-24).
+ */
+static void
+open_page(void)
+{
+	static const char *const builtin[] = {
+		"https://www.apple.com/iphone/",
+		"https://en.wikipedia.org/wiki/IPhone",
+		"https://www.bbc.co.uk/news",
+	};
+	static unsigned next;
+	char url[512], lines[8][512];
+	unsigned count = 0;
+	FILE *f = fopen("/redwood/etc/m2m.url", "r");
+	Class workspace_class = objc_getClass("LSApplicationWorkspace");
+	Class url_class = objc_getClass("NSURL"), string_class = objc_getClass("NSString");
+	id workspace, string, link;
+	BOOL opened;
+
+	if (f != NULL) {
+		while (count < 8 && fgets(lines[count], sizeof(lines[count]), f) != NULL) {
+			lines[count][strcspn(lines[count], "\r\n")] = '\0';
+			if (lines[count][0] != '\0' && lines[count][0] != '#') {
+				count++;
+			}
+		}
+		fclose(f);
+	}
+	if (count > 0) {
+		strlcpy(url, lines[next % count], sizeof(url));
+	} else {
+		strlcpy(url, builtin[next % (sizeof(builtin) / sizeof(builtin[0]))], sizeof(url));
+	}
+	next++;
+	if (workspace_class == NULL || url_class == NULL || string_class == NULL) {
+		say("redwood: open: LSApplicationWorkspace is not here\n");
+		return;
+	}
+	workspace = ((id (*)(Class, SEL))objc_msgSend)(workspace_class, sel_registerName("defaultWorkspace"));
+	string = ((id (*)(Class, SEL, const char *))objc_msgSend)(string_class, sel_registerName("stringWithUTF8String:"), url);
+	link = ((id (*)(Class, SEL, id))objc_msgSend)(url_class, sel_registerName("URLWithString:"), string);
+	opened = workspace != NULL && link != NULL &&
+	    ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, sel_registerName("openURL:"), link);
+	say("redwood: open %s: %s\n", url, opened ? "handed to Safari" : "NOT opened");
+}
+
 static void
 switcher(void)
 {
@@ -1122,11 +1005,11 @@ switcher(void)
 	Method method = shared != NULL ? class_getInstanceMethod(object_getClass(shared), activate) : NULL;
 
 	if (method == NULL) {
-		say("hakios: the switcher: %s has no %s\n",
+		say("redwood: the switcher: %s has no %s\n",
 		    coordinator != NULL ? "SBMainSwitcherControllerCoordinator" : "nothing", sel_getName(activate));
 		return;
 	}
-	say("hakios: the switcher: opening it (%s, %s)\n", object_getClassName(shared),
+	say("redwood: the switcher: opening it (%s, %s)\n", object_getClassName(shared),
 	    method_getTypeEncoding(method) != NULL ? method_getTypeEncoding(method) : "?");
 	/*
 	 * It answers whether it took the request. The source is an analytics label and not every one
@@ -1139,7 +1022,7 @@ switcher(void)
 	for (long source = 0; source < 10; source++) {
 		BOOL taken = ((BOOL (*)(id, SEL, long, BOOL))objc_msgSend)(shared, activate, source, NO);
 
-		say("hakios: the switcher: from source %ld: %s\n", source, taken ? "taken" : "refused");
+		say("redwood: the switcher: from source %ld: %s\n", source, taken ? "taken" : "refused");
 		if (taken) {
 			return;
 		}
@@ -1201,7 +1084,7 @@ add_animation_cc(id self, SEL selector, id animation, id key)
 		SEND1(void, fade, "setDuration:", double, cc_fade_s);
 		SEND1(void, fade, "setTimingFunction:", id, ease);
 		if (cc_fades++ < 3) {
-			say("hakios: Control Center: an opacity animation of %.3f s (%s) made a fade of %.3f s\n",
+			say("redwood: Control Center: an opacity animation of %.3f s (%s) made a fade of %.3f s\n",
 			    SEND(double, animation, "duration"), object_getClassName(animation), cc_fade_s);
 		}
 		animation = fade;
@@ -1229,7 +1112,7 @@ control_center_fades(const char *arguments)
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
  * it: without a prefix (or without ElleKit in it) the file is not there and this does nothing.
  */
-#define HAKIOS_TWEAK_LOADER    "/redwood/lib/libhakios.tweaks.dylib"
+#define REDWOOD_TWEAK_LOADER    "/redwood/lib/libredwood-tweaks.dylib"
 
 static void
 load_tweaks(void)
@@ -1239,16 +1122,38 @@ load_tweaks(void)
 	if (stat("/var/jb/usr/lib/TweakInject", &st) != 0) {
 		return;                 /* no package manager's prefix here, so no tweaks */
 	}
-	if (dlopen(HAKIOS_TWEAK_LOADER, RTLD_NOW | RTLD_GLOBAL) == NULL) {
-		say("hakios: the tweak loader %s: %s\n", HAKIOS_TWEAK_LOADER, dlerror());
+	if (dlopen(REDWOOD_TWEAK_LOADER, RTLD_NOW | RTLD_GLOBAL) == NULL) {
+		say("redwood: the tweak loader %s: %s\n", REDWOOD_TWEAK_LOADER, dlerror());
 	} else {
-		say("hakios: tweaks: %s opened\n", HAKIOS_TWEAK_LOADER);
+		say("redwood: tweaks: %s opened\n", REDWOOD_TWEAK_LOADER);
 	}
+}
+
+/*
+ * Metal Performance Shaders does not know our GPU: -[MPSKernel initWithDevice:] finds no MPSDevice for it and,
+ * while MTLReportFailureTypeEnabled(0) holds, calls MTLReportFailure(), which aborts. SpringBoard creates MPS
+ * kernels for Siri's UI (SiriUIActivation -> SiriUICore -> MPSImage) once there is a network, and so died every
+ * 6 s from the boot on. Metal's error mode 4 for failure type 0 turns the check off: MPS returns nil instead
+ * (MTLReportFailureTypeEnabled(t) is MTLFailureTypeGetErrorModeType(t) != 4).
+ */
+static void
+mps_unsupported_returns_nil(void)
+{
+	void *metal = dlopen("/System/Library/Frameworks/Metal.framework/Metal", RTLD_NOW | RTLD_GLOBAL);
+	void (*set_mode)(uint64_t type, uint32_t mode) = metal == NULL ? NULL :
+	    (void (*)(uint64_t, uint32_t))dlsym(metal, "MTLFailureTypeSetErrorModeType");
+
+	if (set_mode == NULL) {
+		say("redwood: SpringBoard: no MTLFailureTypeSetErrorModeType: an unsupported MPS kernel still aborts\n");
+		return;
+	}
+	set_mode(0, 4);
+	say("redwood: SpringBoard: Metal's failure reports of type 0 ignored: MPS kernels it cannot make are nil\n");
 }
 
 __attribute__((constructor))
 static void
-hakios_springboard_init(void)
+redwood_springboard_init(void)
 {
 	const char *name = getprogname();
 	size_t length = 0;
@@ -1266,8 +1171,8 @@ hakios_springboard_init(void)
 		if ((say_fd = open("/dev/console", O_WRONLY | O_NOCTTY)) < 0) {
 			say_fd = 2;
 		}
-		say("hakios: in %s[%d]: its layers are said on the notification com.hakios.layers\n", name, getpid());
-		notify_register_dispatch("com.hakios.layers", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		say("redwood: in %s[%d]: its layers are said on the notification com.redwood.layers\n", name, getpid());
+		notify_register_dispatch("com.redwood.layers", &token, dispatch_get_main_queue(), ^(__unused int t) {
 			layers();
 		});
 		return;
@@ -1279,9 +1184,30 @@ hakios_springboard_init(void)
 	 * only one inserted library per program is reliable here, and SpringBoard's is this one; so
 	 * this one opens it, the way a jailbreak's own hook does.
 	 */
+	mps_unsupported_returns_nil();
 	load_tweaks();
+	/*
+	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output
+	 * goes nowhere -- so inside this process every refusal our driver prints has been invisible.
+	 * That is not a small blindness: the boot of 22 October showed SpringBoard dying in Siri's
+	 * orb with MTLCreateSystemDefaultDevice() answering RedwoodMetalDevice, which means our
+	 * device was there and refused something, and the sentence naming what was written to a
+	 * file descriptor that is closed. Pointing stdout at stderr, which IS the console here, is
+	 * the whole fix and it costs nothing: the driver keeps its printf, and we get to read it.
+	 */
+	if (dup2(say_fd, 1) < 0) {
+		say("redwood: stdout could not be pointed at the console; the driver's own lines stay lost\n");
+	}
+	/*
+	 * And unbuffered, which is the half of this that is easy to leave out and would waste the
+	 * boot it is meant to serve: stdio chose its buffering when stdout was still going nowhere,
+	 * so it is fully buffered, and the process we are trying to hear from ABORTS -- the buffer
+	 * would go with it, holding exactly the sentence we wanted.
+	 */
+	setvbuf(stdout, NULL, _IONBF, 0);
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
 	activation = replace_method("SBLockdownManager", "_setupActivationState", 0x1c4bc8dfcUL, (IMP)setup_activation_state);
+	_dyld_register_func_for_add_image(image_added);         /* Siri's orb, whose framework comes late */
 	original_set_setup_required_reason = (void (*)(id, SEL, long))replace_method("SBSetupManager",
 	    "_setSetupRequiredReason:", 0x1c4cdd3a4UL, (IMP)set_setup_required_reason);
 	snapshot_format = replace_method_of_kind('+', "XBApplicationSnapshotManifestImpl", "_outputFormatForSnapshot:",
@@ -1314,46 +1240,13 @@ hakios_springboard_init(void)
 	    0x1c48c2cf4UL, (IMP)ring_charging_level);
 	battery_lvl = (IMP)original_battery_level;
 	battery_st  = (IMP)original_battery_state;
-	say("hakios: SpringBoard: activation %s, setup assistant %s, application snapshots %s, the side button's long press %s, "
+	say("redwood: SpringBoard: activation %s, setup assistant %s, application snapshots %s, the side button's long press %s, "
 	    "battery level %s, battery state %s, poster switcher %s\n",
 	    activation ? "answered here" : "NOT replaced", original_set_setup_required_reason ? "refused" : "NOT replaced",
 	    snapshot_format ? "as JPEG" : "NOT changed", original_lock_long_press ? "checked" : "NOT checked",
 	    battery_lvl ? "from QG" : "NOT replaced", battery_st ? "from QG" : "NOT replaced",
 	    poster_switcher ? "not offered" : "NOT withheld");
-	/*
-	 * Cellular, a survey first (the modem's bars come from the kernel: sysctl kern.hakios.cellular_*,
-	 * bsd/dev/hakios.mpss.c): where UIKit makes the status bar's cellular entry from the raw data,
-	 * and with which signature -- said in the log with the unslid address, for the hook to come.
-	 */
-	{
-		static const char *const classes[] = { "_UIStatusBarDataCellularEntry", "_UIStatusBarData", "_UIStatusBarDataEntry" };
-		const char *selector = "_cellularEntryWithData:signalStrengthEnabled:serviceEnabled:dataNetworkEnabled:serviceString:"
-		    "serviceCrossfadeString:serviceBadgeString:serviceContentType:dataNetworkType:gsmSignalStrengthRaw:"
-		    "gsmSignalStrengthBars:callForwardingType:lowDataModeActive:";
-
-		for (unsigned c = 0; c < sizeof(classes) / sizeof(classes[0]); c++) {
-			Class cls = objc_getClass(classes[c]);
-			Method plus = cls ? class_getClassMethod(cls, sel_registerName(selector)) : NULL;
-			Method minus = cls ? class_getInstanceMethod(cls, sel_registerName(selector)) : NULL;
-
-			if (plus) {
-				say("hakios: cellular: +[%s %s] at %#lx, types \"%s\"\n", classes[c], selector,
-				    (uintptr_t)method_getImplementation(plus) - slide, method_getTypeEncoding(plus));
-			}
-			if (minus) {
-				say("hakios: cellular: -[%s %s] at %#lx, types \"%s\"\n", classes[c], selector,
-				    (uintptr_t)method_getImplementation(minus) - slide, method_getTypeEncoding(minus));
-			}
-			if (cls && !plus && !minus) {
-				say("hakios: cellular: %s has no such method\n", classes[c]);
-			}
-		}
-		say("hakios: cellular: the kernel says up=%d registered=%d bars=%d dbm=%d radio=%d\n", sysctl_int("kern.hakios.cellular_up"),
-		    sysctl_int("kern.hakios.cellular_registered"), sysctl_int("kern.hakios.cellular_bars"),
-		    sysctl_int("kern.hakios.cellular_dbm"), sysctl_int("kern.hakios.cellular_radio"));
-	}
-	cellular_hook();
-	say("hakios: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
+	say("redwood: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
 	    original_battery_view_shows_percentage ? "ok" : "NO",
 	    original_battery_view_set_shows_percentage ? "ok" : "NO",
 	    original_battery_view_should_show_bolt ? "ok" : "NO",
@@ -1393,19 +1286,22 @@ hakios_springboard_init(void)
 				control_center_fades(arguments);
 			}
 		}
-		say("hakios: battery: SOC=%d%% battery=%d charger=%d charging=%d\n",
-		    sysctl_int("kern.hakios.battery_soc"), sysctl_int("kern.hakios.battery_present"),
-		    sysctl_int("kern.hakios.battery_charger_present"), sysctl_int("kern.hakios.battery_charging"));
+		say("redwood: battery: SOC=%d%% battery=%d charger=%d charging=%d\n",
+		    sysctl_int("kern.redwood.battery_soc"), sysctl_int("kern.redwood.battery_present"),
+		    sysctl_int("kern.redwood.battery_charger_present"), sysctl_int("kern.redwood.battery_charging"));
 		battery_post_notifications();
 	});
-	notify_register_dispatch("com.hakios.unlock", &token, dispatch_get_main_queue(), ^(__unused int t) {
+	notify_register_dispatch("com.redwood.unlock", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		unlock();
 	});
-	notify_register_dispatch("com.hakios.layers", &token, dispatch_get_main_queue(), ^(__unused int t) {
+	notify_register_dispatch("com.redwood.layers", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		layers();
 	});
-	notify_register_dispatch("com.hakios.switcher", &token, dispatch_get_main_queue(), ^(__unused int t) {
+	notify_register_dispatch("com.redwood.switcher", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		switcher();
+	});
+	notify_register_dispatch("com.redwood.open", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		open_page();
 	});
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that
@@ -1425,11 +1321,26 @@ hakios_springboard_init(void)
 
 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (arg = strstr(args, "autounlock=0")) != NULL &&
 		    (arg == args || arg[-1] == ' ')) {
-			say("hakios: the lock screen stays until it is swiped away (autounlock=0)\n");
+			say("redwood: the lock screen stays until it is swiped away (autounlock=0)\n");
 			return;
 		}
 	}
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-		unlock();
+	/*
+	 * Straight to the home screen: ask as soon as the lock screen exists rather than after a
+	 * fixed ten seconds. unlock() says whether there was anything to unlock (no manager yet,
+	 * or already unlocked), so this retries quickly until it takes and then stops.
+	 */
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+		__block int tries = 0;
+		void (^attempt)(void);
+
+		attempt = ^{
+			if (unlock() || ++tries >= 30) {
+				return;
+			}
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC),
+			    dispatch_get_main_queue(), attempt);
+		};
+		attempt();
 	});
 }

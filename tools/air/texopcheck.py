@@ -26,11 +26,12 @@ arithmetic, where the buffer was necessary.
 
 What is NOT checked, and why:
 
-  - Metal's own sampler state. air_run's sampler is the API's -- nearest,
-    clamped -- and the 64-bit constexpr sampler word is not decoded
-    (docs/air.md section 3.3). The coordinates here are texel centres, where
-    nearest filtering has no weights to round, so this says nothing about
-    filtering or addressing.
+  - Metal's own sampler state. air_run's sampler here is the API's -- nearest,
+    clamped -- and the coordinates are texel centres, where nearest filtering
+    has no weights to round, so this says nothing about filtering or
+    addressing. That is now a separate check rather than a gap:
+    tools/air/sampcheck.py samples with the shader's own constexpr sampler and
+    compares against Apple's rules (docs/air.md section 3.3).
   - The integer-typed reads and samples (read_texture_2d.s.v4i16,
     sample_texture_2d.u.v4i32 and the rest). air_run binds one
     r32g32b32a32_float texture, and a shader declaring an integer texture
@@ -120,11 +121,52 @@ def build(decl, call, needs_sampler, kind, access, outty="float"):
         argmd="\n".join("!%d = %s" % (7 + i, m) for i, m in enumerate(md)))
 
 
+# The declarations the system corpus does not carry, written out here.
+#
+# Every other case in this file takes its declaration from a module of the
+# device image, which is what makes the signature a measurement rather than a
+# claim. These four families are not in that image at all -- an array sample
+# appears once, as the half-typed air.sample_texture_2d_array.v4f16, and the
+# gradient and cube forms not at all -- while Resident Evil 4 calls them in
+# 1 753 of its 7 879 modules. That library is not in this repository and must
+# not be, so the signature is written here instead, from the two places it was
+# read:
+#
+#   - Apple's own metal_stdlib on the device
+#     (GPUCompiler.framework/.../include/metal/metal_texture), where each
+#     texture method is a one-line forwarder to the builtin and so states the
+#     argument order for every dimensionality;
+#   - and `llvm-dis` of the modules that call them, which agrees with it
+#     exactly.
+#
+# A shader built from one of these lines is this file's own, like every other
+# shader here: nothing of the library it describes is in the line.
+EXTRA_DECLS = [
+    "declare { <4 x float>, i8 } @air.sample_texture_2d_array.v4f32("
+    "ptr addrspace(1), ptr addrspace(2), <2 x float>, i32, i1, <2 x i32>, "
+    "i1, float, float, i32)",
+    "declare { <4 x float>, i8 } @air.read_texture_2d_array.v4f32("
+    "ptr addrspace(1), <2 x i32>, i32, i32, i32)",
+    "declare { <4 x float>, i8 } @air.gather_texture_2d_array.v4f32("
+    "ptr addrspace(1), ptr addrspace(2), <2 x float>, i32, i1, <2 x i32>, "
+    "i32, i32)",
+    "declare { <4 x float>, i8 } @air.sample_texture_1d_array.v4f32("
+    "ptr addrspace(1), ptr addrspace(2), float, i32, i1, i32, i1, float, "
+    "float, i32)",
+    "declare { <4 x float>, i8 } @air.sample_texture_2d_grad.v4f32("
+    "ptr addrspace(1), ptr addrspace(2), <2 x float>, <2 x float>, "
+    "<2 x float>, float, i1, <2 x i32>, i32)",
+    "declare { <4 x float>, i8 } @air.sample_texture_2d_array_grad.v4f32("
+    "ptr addrspace(1), ptr addrspace(2), <2 x float>, i32, <2 x float>, "
+    "<2 x float>, float, i1, <2 x i32>, i32)",
+]
+
+
 def cases(decls):
     """Everything to try: (label, source, expected four floats)."""
     out = []
     have = {}
-    for d in decls:
+    for d in list(decls) + EXTRA_DECLS:
         m = re.match(r"^declare\s+(.*?)\s+@(air\.[A-Za-z0-9_.]+)\((.*)\)", d)
         if m:
             have[m.group(2)] = d
@@ -196,6 +238,119 @@ def cases(decls):
                         build(have[name], body, True, "3d<float, sample>",
                               "air.sample"),
                         texel(x, y, z), False))
+    # -- the array textures --------------------------------------------------
+    #
+    # The layer is a separate argument after the coordinate in AIR and the last
+    # component of one coordinate in NIR, so what these ask is whether it
+    # arrives at the right place. air_run binds a real 2D array (four layers,
+    # layer z holding 300+x+y+z in its third channel), so a lowering that
+    # dropped the layer reads layer 0 and comes back with a number that is
+    # wrong by exactly the layer -- and the coordinates below have a different
+    # layer from their x and y, so a layer read out of the wrong component
+    # cannot agree either.
+    name = "air.sample_texture_2d_array.v4f32"
+    if name in have:
+        for (x, y, layer) in [(0, 0, 0), (1, 1, 2), (2, 3, 1), (3, 0, 3)]:
+            u, v = (x + 0.5) / TEX, (y + 0.5) / TEX
+            body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                    'ptr addrspace(2) %%s, <2 x float> <float %.9e, float %.9e>, '
+                    'i32 %d, i1 true, <2 x i32> zeroinitializer, i1 false, float 0.0, '
+                    'float 0.0, i32 0)\n'
+                    '  %%v = extractvalue { <4 x float>, i8 } %%r, 0' % (name, u, v, layer))
+            out.append(("%s (%d,%d) layer %d" % (name, x, y, layer),
+                        build(have[name], body, True, "2d_array<float, sample>",
+                              "air.sample"),
+                        texel(x, y, layer), False))
+
+    name = "air.read_texture_2d_array.v4f32"
+    if name in have:
+        for (x, y, layer) in [(1, 1, 2), (2, 3, 3), (0, 0, 1), (3, 0, 0)]:
+            body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                    '<2 x i32> <i32 %d, i32 %d>, i32 %d, i32 0, i32 0)\n'
+                    '  %%v = extractvalue { <4 x float>, i8 } %%r, 0'
+                    % (name, x, y, layer))
+            out.append(("%s (%d,%d) layer %d" % (name, x, y, layer),
+                        build(have[name], body, False,
+                              "2d_array<float, access::read>", "air.read"),
+                        texel(x, y, layer), False))
+
+    # A 1D array is the shape where a mistake is invisible in the 2D one: the
+    # coordinate is a SCALAR and the layer becomes the second component, so a
+    # lowering that appended the layer to a vector it had not made yet, or put
+    # it in component 0, still produces a two-component coordinate.
+    name = "air.sample_texture_1d_array.v4f32"
+    if name in have:
+        for (x, layer) in [(0, 0), (1, 2), (3, 1), (2, 3)]:
+            u = (x + 0.5) / TEX
+            body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                    'ptr addrspace(2) %%s, float %.9e, i32 %d, i1 false, i32 0, '
+                    'i1 false, float 0.0, float 0.0, i32 0)\n'
+                    '  %%v = extractvalue { <4 x float>, i8 } %%r, 0' % (name, u, layer))
+            out.append(("%s (%d) layer %d" % (name, x, layer),
+                        build(have[name], body, True, "1d_array<float, sample>",
+                              "air.sample"),
+                        texel(x, 0, layer), False))
+
+    name = "air.gather_texture_2d_array.v4f32"
+    if name in have:
+        u = 1.75 / TEX
+        for comp in range(4):
+            for layer in (0, 2):
+                want = sorted(texel(x, y, layer)[comp] for x in (1, 2) for y in (1, 2))
+                body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                        'ptr addrspace(2) %%s, <2 x float> <float %.9e, float %.9e>, '
+                        'i32 %d, i1 true, <2 x i32> zeroinitializer, i32 %d, i32 0)\n'
+                        '  %%v = extractvalue { <4 x float>, i8 } %%r, 0'
+                        % (name, u, u, layer, comp))
+                out.append(("%s channel %d layer %d" % (name, comp, layer),
+                            build(have[name], body, True, "2d_array<float, sample>",
+                                  "air.sample"),
+                            want, True))
+
+    # -- gradient sampling ---------------------------------------------------
+    #
+    # WHAT THIS CHECKS AND WHAT IT CANNOT. The gradients are given values that
+    # are not the coordinate, not zero and not each other, so a lowering that
+    # read one of them as the coordinate, as the offset vector or as the level
+    # flag answers with a different texel or refuses. What it does NOT check is
+    # the level of detail those gradients select: air_run's texture has one mip
+    # level, so every level clamps to it, and a level computed from the wrong
+    # pair of numbers would still read level 0. Checking that needs a
+    # mipmapped texture and a sampler whose mip filter is not NONE, which is a
+    # change to the harness that would change what every other check here
+    # samples -- so it is named as open rather than quietly counted.
+    name = "air.sample_texture_2d_grad.v4f32"
+    if name in have:
+        for (x, y) in [(0, 0), (1, 1), (2, 3), (3, 3)]:
+            u, v = (x + 0.5) / TEX, (y + 0.5) / TEX
+            body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                    'ptr addrspace(2) %%s, <2 x float> <float %.9e, float %.9e>, '
+                    '<2 x float> <float 0x3FD0000000000000, float 0x3FE0000000000000>, '
+                    '<2 x float> <float 0x3FC0000000000000, float 0x3FB0000000000000>, '
+                    'float 0.0, i1 true, <2 x i32> zeroinitializer, i32 0)\n'
+                    '  %%v = extractvalue { <4 x float>, i8 } %%r, 0' % (name, u, v))
+            out.append(("%s (%d,%d)" % (name, x, y),
+                        build(have[name], body, True, "2d<float, sample>",
+                              "air.sample"),
+                        texel(x, y), False))
+
+    name = "air.sample_texture_2d_array_grad.v4f32"
+    if name in have:
+        for (x, y, layer) in [(1, 1, 0), (2, 3, 2), (0, 3, 3)]:
+            u, v = (x + 0.5) / TEX, (y + 0.5) / TEX
+            body = ('  %%r = tail call { <4 x float>, i8 } @%s(ptr addrspace(1) %%t, '
+                    'ptr addrspace(2) %%s, <2 x float> <float %.9e, float %.9e>, '
+                    'i32 %d, '
+                    '<2 x float> <float 0x3FD0000000000000, float 0x3FE0000000000000>, '
+                    '<2 x float> <float 0x3FC0000000000000, float 0x3FB0000000000000>, '
+                    'float 0.0, i1 true, <2 x i32> zeroinitializer, i32 0)\n'
+                    '  %%v = extractvalue { <4 x float>, i8 } %%r, 0'
+                    % (name, u, v, layer))
+            out.append(("%s (%d,%d) layer %d" % (name, x, y, layer),
+                        build(have[name], body, True, "2d_array<float, sample>",
+                              "air.sample"),
+                        texel(x, y, layer), False))
+
     # -- the integer-typed reads and samples ---------------------------------
     #
     # air_run picks the texture's format from what the shader samples into, so
@@ -323,7 +478,7 @@ def collect_declarations():
     air2nir = os.environ.get(
         "AIR2NIR", os.path.join(ROOT, "build/mesa-host/build/src/compiler/air/air2nir"))
     out = set()
-    for dirpath, _, names in os.walk(os.path.join(ROOT, "sysimage/rootfs")):
+    for dirpath, _, names in os.walk(os.path.join(ROOT, "ios165/rootfs")):
         for n in sorted(names):
             if not n.endswith(".metallib"):
                 continue
@@ -423,7 +578,7 @@ def main(argv):
     print("texopcheck: (i0j1, i1j1, i1j0, i0j0), but Metal's own order is not established")
     print("texopcheck: here, so the footprint and the channel are checked and not the order")
     print("texopcheck: nothing here tests Metal's sampler state: the sampler is the API's")
-    print("texopcheck: (nearest, clamped) and the 64-bit sampler word is not decoded")
+    print("texopcheck: (nearest, clamped); the shader's own sampler is sampcheck.py's job")
     if keep:
         print("texopcheck: kept in %s" % d)
     return 1 if (other or refused) else 0

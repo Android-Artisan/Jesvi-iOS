@@ -15,7 +15,7 @@ Every kernel lands in exactly one row and the rows are checked against the
 total before anything is printed. That check is here because the first version
 of this table was assembled by hand in a report, and it came to 45 of 47: two
 kernels whose message matched no pattern fell into a prose aside instead of a
-row, which is exactly the habit README's "Как врут собственные проверки" warns
+row, which is exactly the habit the "How our own checks lie" notes (docs/checks.md in hackios-xnu-kernel) warns
 about -- an exclusion without its own number. A table that cannot fail to add
 up is worth more than a careful author.
 
@@ -32,6 +32,7 @@ compared against. The rows mean dispatched or refused. They do not mean right.
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -43,10 +44,10 @@ AIR_RUN = os.environ.get(
     os.path.join(ROOT, "build/mesa-host/build/src/gallium/drivers/freedreno/air_run"))
 
 LIBS = [
-    "sysimage/rootfs/System/Library/VideoDecoders/AV1SW.metallib",
-    "sysimage/rootfs/System/Library/Extensions/AppleMetalGLRenderer.bundle/default.metallib",
-    "sysimage/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/default.metallib",
-    "sysimage/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/portrait_filters.metallib",
+    "ios165/rootfs/System/Library/VideoDecoders/AV1SW.metallib",
+    "ios165/rootfs/System/Library/Extensions/AppleMetalGLRenderer.bundle/default.metallib",
+    "ios165/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/default.metallib",
+    "ios165/rootfs/System/Library/CoreImage/PortraitFilters.cifilter/portrait_filters.metallib",
 ]
 
 # One row per cause, in the order a reader wants them: what works, then what is
@@ -93,17 +94,129 @@ def classify(text):
     return None
 
 
+def fill_word(w):
+    """Word w of the pattern air_run fills a buffer with."""
+    v = 0
+    for k in range(4):
+        v |= (((w * 4 + k) * 7 + 13) & 0xff) << (8 * k)
+    return v
+
+
+def wrote_nothing(lines):
+    """True when every buffer this block printed is exactly the fill.
+
+    A dispatch whose output buffer comes back as the harness filled it has not
+    been measured, whatever the log says about it running. On the phone that is
+    what every dispatch after the first couple of dozen looks like: the GPU
+    stops making writes visible and nothing says so (air_run prints it now; a
+    log from before that change has to be read this way). Images are not
+    counted here -- their readback is compared against the texel pattern
+    separately -- so this is about buffer-writing kernels only.
+    """
+    saw, where = False, None
+    for line in lines:
+        m = re.match(r"^air_run: device buffer (\d+) after", line)
+        if m:
+            saw, where = True, True
+            continue
+        if where:
+            m = re.match(r"^\s*\[\s*(\d+)\]\s+(\d+)", line)
+            if m:
+                if int(m.group(2)) != fill_word(int(m.group(1))):
+                    return False
+            elif line.startswith("air_run:"):
+                where = None
+    return saw
+
+
+CANARY = "probe_one_scalar"
+
+
+def canary_boundary(path):
+    """Where in a run the GPU stopped making writes visible, if a canary says so.
+
+    A canary is a kernel that stores a constant to word 0 of its buffer,
+    unconditionally, from every thread (the probe in docs/air.md section 4). Put
+    one every few jobs and it marks the point past which nothing is evidence:
+    this device survives about thirty dispatches of kernels that bind textures
+    or images in one boot, and after that every dispatch still succeeds, every
+    readback still prints, and nothing the GPU writes is ever visible again.
+
+    Returns (last dispatch where the canary wrote, total dispatches, how many
+    canaries there were), or None when the log carries no canary at all.
+    """
+    order, cur, inbuf = [], None, None
+    for line in open(path, errors="replace"):
+        m = re.match(r"^air_run: (\S+) on ", line)
+        if m and ", as a compute kernel" not in line:
+            order.append([m.group(1).split("/")[-1], None])
+            cur, inbuf = len(order) - 1, None
+            continue
+        if cur is None:
+            continue
+        if re.match(r"^air_run: device buffer (\d+) after", line):
+            inbuf = True
+            if order[cur][1] is None:
+                order[cur][1] = False
+            continue
+        if inbuf:
+            m = re.match(r"^\s*\[\s*(\d+)\]\s+(\d+)", line)
+            if m:
+                if int(m.group(2)) != fill_word(int(m.group(1))):
+                    order[cur][1] = True
+            elif line.startswith("air_run:"):
+                inbuf = None
+    cans = [(i, w) for i, (n, w) in enumerate(order, 1) if CANARY in n]
+    if not cans:
+        return None
+    good = [i for i, w in cans if w]
+    return (max(good) if good else 0), len(order), len(cans)
+
+
+def values_of(lines):
+    """The texels and buffer words a kernel's block reports, in order.
+
+    Keyed by the label air_run prints -- "(0,0)[2]" or "[ 3]" -- rather than by
+    position, so a kernel that binds a different number of images on one side
+    than the other is a mismatch of labels and not a silent shift of the whole
+    list.
+    """
+    out, where = {}, None
+    for line in lines:
+        m = re.match(r"^air_run: (?:image|device buffer) (\d+) after", line)
+        if m:
+            where = (("image" if "image" in line else "buffer"), int(m.group(1)))
+            continue
+        if where is None:
+            continue
+        m = re.match(r"^\s*(\(\d+,\d+\)\[\d+\]|\[\s*\d+\])\s+(-?\d+)", line)
+        if m:
+            out["%s%d%s" % (where[0], where[1], m.group(1).replace(" ", ""))] = m.group(2)
+        elif line.startswith("air_run:"):
+            where = None
+    return out
+
+
+def host_values(path, name):
+    """What softpipe writes for the same kernel, or why it cannot."""
+    out = subprocess.run([AIR_RUN, path, name], capture_output=True, text=True,
+                         timeout=300)
+    if out.returncode:
+        last = (out.stderr or out.stdout).strip().splitlines()
+        return None, (last[-1][:110] if last else "air_run failed")
+    return values_of(out.stdout.splitlines()), None
+
+
 def from_log(path, ks):
     """Each kernel's outcome as a device run reported it.
 
     Keyed on the name air_run prints, not on the order of the lines: a console
     shared with launchd interleaves them, and the loader's log drops its own
-    middle when it grows (README, "Как врут собственные проверки"). A kernel
+    middle when it grows (docs/checks.md in hackios-xnu-kernel). A kernel
     whose block never appears is "not in the log", which is its own row rather
     than being folded into a refusal -- the two have different causes and the
     log being truncated is one of them.
     """
-    import re
     blocks, cur = {}, None
     for line in open(path, errors="replace"):
         m = re.match(r"^air_run: (\S+) on ", line)
@@ -117,7 +230,7 @@ def from_log(path, ks):
     for _, name in ks:
         b = blocks.get(name)
         if b is None:
-            out[name] = ("missing", "")
+            out[name] = ("missing", "", [])
             continue
         text = "".join(b)
         # A crash is not a refusal and must not be counted as one. air_run's
@@ -127,10 +240,18 @@ def from_log(path, ks):
         # together hid four segfaults inside a row called "refused", which read
         # as though the frontend had declined them.
         crash = next((l.strip() for l in b if "signal " in l and " at 0x" in l), None)
+        hung = any("DID NOT FINISH" in l for l in b)
         if crash:
-            out[name] = ("crashed", crash[:110])
+            out[name] = ("crashed", crash[:110], b)
+        elif hung:
+            # air_run waited on a fence and the GPU did not answer. The first
+            # one of these poisons the whole boot: this port's driver latches
+            # after one timeout and every later wait returns false at once
+            # (RedwoodGPU.cpp), so everything after the first hang is unmeasured
+            # rather than wrong.
+            out[name] = ("hung", "the GPU did not finish within two seconds", b)
         elif "came back as" in text or "after the dispatch" in text:
-            out[name] = ("dispatched", "")
+            out[name] = ("dispatched", "", b)
         else:
             # the LAST air_run line, not the first: the first is usually the
             # progress line it had already printed before giving up
@@ -138,7 +259,7 @@ def from_log(path, ks):
             for l in b:
                 if "air_run:" in l or "Assertion" in l:
                     why = l.strip()
-            out[name] = ("refused", why[:110])
+            out[name] = ("refused", why[:110], b)
     return out
 
 
@@ -176,13 +297,59 @@ def main(argv):
         ref = {n: v[1] for n, v in res.items() if v[0] == "refused"}
         crashed = {n: v[1] for n, v in res.items() if v[0] == "crashed"}
         miss = [n for n, v in res.items() if v[0] == "missing"]
+        hung = [n for n, v in res.items() if v[0] == "hung"]
+
+        # The one comparison these kernels can have. There is no executed
+        # reference for them anywhere -- softpipe will not run most -- but the
+        # few it does run can be compared against the Adreno word for word.
+        # That is two readings of our own frontend and not an independent
+        # check, so it cannot say a kernel is right; what it catches is the
+        # backend or the hardware disagreeing with softpipe, which is how the
+        # ir3 u32-to-f32 rounding bug surfaced.
+        same, diff, nohost = [], [], []
+        for path, name in ks:
+            if res[name][0] != "dispatched":
+                continue
+            theirs = values_of(res[name][2])
+            ours, why = host_values(path, name)
+            if ours is None or not ours:
+                nohost.append((name, why or "softpipe printed nothing"))
+            elif ours == theirs:
+                same.append(name)
+            else:
+                keys = sorted(set(ours) | set(theirs))
+                first = next((k for k in keys if ours.get(k) != theirs.get(k)), "?")
+                diff.append((name, "%s: softpipe %s, the Adreno %s"
+                             % (first, ours.get(first), theirs.get(first))))
         print("kernelcheck: %d compute kernels, as %s reports them"
               % (len(ks), os.path.basename(log)))
         print("  %2d  dispatched and read back" % got)
         print("  %2d  refused, with a reason in the log" % len(ref))
         print("  %2d  CRASHED air_run (a defect here, not a limit)" % len(crashed))
+        print("  %2d  the GPU did not finish (the first one poisons the rest of the boot)"
+              % len(hung))
+        if hung:
+            print("      14 of the 47 cannot be dispatched by this harness at all -- their "
+                  "loops leave on a value from a buffer it fills with a byte pattern "
+                  "(tools/air/kstruct.py)")
         print("  %2d  not in the log at all (the loader drops its middle when it grows)"
               % len(miss))
+        vacuous = [n for n, v in res.items()
+                   if v[0] == "dispatched" and wrote_nothing(v[2])]
+        print("  of the %d dispatched, %d wrote nothing visible: every buffer they write "
+              "came back as the fill" % (got, len(vacuous)))
+        can = canary_boundary(log)
+        if can:
+            last, total, n = can
+            print("  the canary wrote up to dispatch %d of %d (%d canaries): past that point "
+                  "this run is not evidence about any shader" % (last, total, n))
+        else:
+            print("  no canary in this log, so there is no way to tell a kernel that writes "
+                  "nothing from a run that had stopped writing (see docs/air.md section 4)")
+        print("  of the %d dispatched, softpipe runs %d of them too:" % (got, len(same) + len(diff)))
+        print("  %2d  write word for word what softpipe writes" % len(same))
+        print("  %2d  DISAGREE with softpipe" % len(diff))
+        print("  %2d  softpipe cannot run, so there is nothing to compare" % len(nohost))
         if want_list:
             for n in sorted(ref):
                 print("        %-44s %s" % (n, ref[n]))
@@ -190,15 +357,22 @@ def main(argv):
                 print("        %-44s %s" % (n, crashed[n]))
             for n in sorted(miss):
                 print("        %-44s (absent)" % n)
-        total = got + len(ref) + len(crashed) + len(miss)
+            for n, why in diff:
+                print("        %-44s %s" % (n, why))
+            for n in sorted(vacuous):
+                print("        %-44s wrote nothing visible" % n)
+        if want_list:
+            for n in sorted(hung):
+                print("        %-44s the GPU did not finish" % n)
+        total = got + len(ref) + len(crashed) + len(miss) + len(hung)
         if total != len(ks):
             print("kernelcheck: the rows add to %d and there are %d kernels" % (total, len(ks)),
                   file=sys.stderr)
             return 1
-        print("kernelcheck: the rows add to %d, which is every kernel. These rows say "
-              "dispatched or refused, never right: softpipe runs too few of these for there "
-              "to be a reference." % total)
-        return 0
+        print("kernelcheck: the rows add to %d, which is every kernel. Dispatched is not "
+              "right: there is no independent reference for these kernels, and the softpipe "
+              "comparison above is our own frontend read twice." % total)
+        return 1 if diff else 0
 
     for path, name in ks:
         q = subprocess.run([AIR_RUN, path, name], capture_output=True, timeout=300)

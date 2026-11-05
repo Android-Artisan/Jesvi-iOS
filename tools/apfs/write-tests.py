@@ -403,7 +403,7 @@ def test_store_refusals():
     # a volume that is not the store: the name is the gate
     base, img = fresh('store-notstore')
     rc, out = store_save(img, b'x' * 100)
-    say(rc != 0 and 'not named' in out, 'refused: a volume that is not named HakiosStore' +
+    say(rc != 0 and 'not named' in out, 'refused: a volume that is not named RedwoodStore' +
         ('' if rc != 0 else ':\n' + out.strip()))
     say(changed_blocks(base, img) == [], '  and nothing in it was written')
 
@@ -442,7 +442,7 @@ def test_store_refusals():
         argv = [sys.executable, os.path.join(HERE, 'mkapfs.py'), '-o', img]
         if compress:
             argv.append('-z')
-        argv.append('HakiosStore=' + tree)
+        argv.append('RedwoodStore=' + tree)
         rc, out = run(*argv)
         if rc != 0:
             say(False, '%s: the image could not be made:\n%s' % (what, out))
@@ -809,9 +809,9 @@ def test_real_images():
         rc, out = run(TOOL, 'writable', path)
         say(rc == 0, '%s: %s' % (rel, out.strip().splitlines()[0].split(': ', 1)[-1]))
 
-    dmg = os.path.join(ROOT, 'sysimage', 'rootfs.dmg')
+    dmg = os.path.join(ROOT, 'ios165', 'rootfs.dmg')
     if not os.path.exists(dmg):
-        print('[skip] sysimage/rootfs.dmg is not here')
+        print('[skip] ios165/rootfs.dmg is not here')
         return
     c = apfs.Container(dmg)
     try:

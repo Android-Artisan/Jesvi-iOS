@@ -33,9 +33,9 @@
  * recent part (a ring); room is left for what is appended on the way out (the kernel message
  * buffer, a panic's text). loader_log_linearize() puts the pieces in order before returning.
  */
-#define LOADER_LOG_SIZE (1536 * 1024)
-#define LOADER_LOG_HEAD (256 * 1024)
-#define LOADER_LOG_RING (1024 * 1024)
+#define LOADER_LOG_SIZE (6656 * 1024)        /* y2s: an iOS boot with all its jobs says megabytes; the loader keeps 8 MB */
+#define LOADER_LOG_HEAD (1024 * 1024)
+#define LOADER_LOG_RING (5120 * 1024)
 
 #if defined(GENERIC_GIC_V3_IRQ)
 extern void gic_v3_irq_quiesce(void);
@@ -44,28 +44,33 @@ extern void gic_v3_irq_cpu_shutdown(void);
 
 void loader_log_putc(char c);
 void loader_return(void);
-extern void hakios_adreno_quiesce(void);
-extern void hakios_adreno_stop(void);
-extern void hakios_adreno_minute(void);
-extern void hakios_wifi_stop(void);
-extern void hakios_wifi_quiesce(void);
-extern void hakios_adsp_stop(void);
-extern void hakios_adsp_quiesce(void);
-extern void hakios_mpss_stop(void);
-extern void hakios_mpss_quiesce(void);
-extern void hakios_ddr_quiesce(void);
-extern void hakios_haptic_quiesce(void);
-extern void hakios_torch_quiesce(void);
-extern void hakios_camera_quiesce(void);
-extern void hakios_mic_quiesce(void);
-extern void hakios_ufs_quiesce(void);
-extern void hakios_var_save_on_return(void);   /* bsd/dev/hakios.ufs.c: the data volume into the flash */
+extern void redwood_adreno_quiesce(void);
+extern void redwood_mali_quiesce(void);
+extern void redwood_adreno_stop(void);
+extern void redwood_adreno_minute(void);
+extern void redwood_wifi_stop(void);
+extern void redwood_wifi_quiesce(void);
+extern void redwood_fb_quiesce(void);
+extern void redwood_adsp_stop(void);
+extern void redwood_adsp_quiesce(void);
+extern void redwood_ddr_quiesce(void);
+extern void redwood_haptic_quiesce(void);
+extern void redwood_torch_quiesce(void);
+extern void redwood_camera_quiesce(void);
+extern void redwood_exynos_sound_quiesce(void);
+extern void redwood_m2m_to_loader(void);
+extern void redwood_mic_quiesce(void);
+extern void redwood_ufs_quiesce(void);
+extern void redwood_var_save_on_return(void);   /* bsd/dev/redwood_ufs.c: the data volume into the flash */
 void loader_checkpoint(uint64_t n);
 
 /* Also referenced from the early exception vector in start.s. */
 char     loader_log[LOADER_LOG_SIZE];
 uint32_t loader_log_len;
 static bool     loader_return_entered;
+/* why this run is handing back: the loader reads it (CTX_REASON) and acts on 3 by opening Log
+ * access instead of booting again. Set from user space by kern.redwood_menu. */
+static uint64_t loader_return_reason;
 
 /* One L1 table and one L2 table are enough to map a single 2 MB block. */
 static uint64_t loader_l1[512] __attribute__((aligned(4096)));
@@ -75,6 +80,7 @@ static uint32_t loader_log_ring_at;      /* where the next character goes in the
 static bool     loader_log_wrapped;
 static bool     loader_log_linear;       /* the pieces have been put in order: only appending from now on */
 static char     loader_log_scratch[LOADER_LOG_RING];
+uint64_t        loader_log_total;        /* characters ever put in the log (redwood_logd.c: a reader's place) */
 
 /*
  * Characters come from every processor, and from interrupt handlers on top of whatever was
@@ -138,6 +144,7 @@ loader_log_line(const char *line)
 static void
 loader_log_put_locked(char c)
 {
+	loader_log_total++;
 	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
 		if (loader_log_len < LOADER_LOG_SIZE) {
 			loader_log[loader_log_len++] = c;
@@ -154,11 +161,37 @@ loader_log_put_locked(char c)
 	}
 }
 
+/*
+ * The log so far in order, for a reader while the system runs (bsd/dev/redwood_logd.c): the head, then the
+ * ring from its oldest character -- copied, the log itself left as it is. Not under the lock: a line being
+ * written meanwhile may come out half. Returns the bytes copied (at most `cap`).
+ */
+size_t loader_log_snapshot(char *out, size_t cap);
+
+size_t
+loader_log_snapshot(char *out, size_t cap)
+{
+	size_t n = 0, head = loader_log_len < LOADER_LOG_HEAD || loader_log_linear ? loader_log_len : LOADER_LOG_HEAD;
+	uint32_t at = loader_log_ring_at;
+
+#define LOG_COPY(src, len) do { size_t l_ = (len); if (l_ > cap - n) { l_ = cap - n; } \
+	__builtin_memcpy(out + n, (src), l_); n += l_; } while (0)
+	LOG_COPY(loader_log, head);
+	if (!loader_log_linear && loader_log_len >= LOADER_LOG_HEAD) {
+		if (loader_log_wrapped) {
+			LOG_COPY(loader_log + LOADER_LOG_HEAD + at, LOADER_LOG_RING - at);
+		}
+		LOG_COPY(loader_log + LOADER_LOG_HEAD, at);
+	}
+#undef LOG_COPY
+	return n;
+}
+
 /* Oldest first: the head, a note about what was dropped, then the ring from its oldest character. */
 static void
 loader_log_linearize(void)
 {
-	static const char note[] = "\n\n[... the log between the first 256 KB and the last 1 MB was dropped ...]\n\n";
+	static const char note[] = "\n\n[... the log between the first 1 MB and the last 5 MB was dropped ...]\n\n";
 	uint32_t older = LOADER_LOG_RING - loader_log_ring_at, n = LOADER_LOG_HEAD;
 
 	if (loader_log_linear) {
@@ -207,7 +240,7 @@ struct loader_live {
  * loader to hand to the host once the kernel is back. { physical address, bytes, kernel address }.
  */
 uint64_t loader_recording[3];
-/* ... and of the sound (/dev/hakios-audio makes one with boot-arg rec_sound). */
+/* ... and of the sound (/dev/redwood-audio makes one with boot-arg rec_sound). */
 uint64_t loader_sound[3];
 
 struct loader_live loader_live = {
@@ -371,16 +404,18 @@ loader_return(void)
 	 */
 	psci_smp_stop_others();
 #endif
-	hakios_ufs_quiesce();          /* this kernel's requests to the storage done, UEFI's list as it was, for the log */
-	hakios_adreno_quiesce();       /* the GPU block, if it was started, has tables in memory that is about to be reused */
-	hakios_wifi_quiesce();         /* the Wi-Fi DSP, if it still runs (a panic), is not left to itself */
-	hakios_adsp_quiesce();         /* nor the audio DSP */
-	hakios_mpss_quiesce();         /* nor the modem */
-	hakios_ddr_quiesce();          /* and the vote for the memory's bandwidth taken away */
-	hakios_haptic_quiesce();       /* the vibration motor's chip back into reset, if it was let out */
-	hakios_torch_quiesce();        /* the flashlight off, if it was lit */
-	hakios_camera_quiesce();       /* the camera powered down, if it was powered up */
-	hakios_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
+	redwood_ufs_quiesce();          /* this kernel's requests to the storage done, UEFI's list as it was, for the log */
+	redwood_adreno_quiesce();       /* the GPU block, if it was started, has tables in memory that is about to be reused */
+	redwood_mali_quiesce();         /* the S20+'s Mali powered off: its tables are in that memory too, and it kept the menu warm */
+	redwood_wifi_quiesce();         /* the Wi-Fi DSP, if it still runs (a panic), is not left to itself */
+	redwood_fb_quiesce();           /* the panel back on the firmware's framebuffer: the loader's menu shows */
+	redwood_adsp_quiesce();         /* nor the audio DSP */
+	redwood_ddr_quiesce();          /* and the vote for the memory's bandwidth taken away */
+	redwood_haptic_quiesce();       /* the vibration motor's chip back into reset, if it was let out */
+	redwood_torch_quiesce();        /* the flashlight off, if it was lit */
+	redwood_camera_quiesce();       /* the camera powered down, if it was powered up */
+	redwood_exynos_sound_quiesce(); /* the S20+'s amplifiers into reset and the audio DMA stopped: its ring is reused memory */
+	redwood_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */
 	/*
 	 * A panic's text is first collected in the panic buffer and only later
 	 * flushed to the console; if the console itself is what failed, that
@@ -389,6 +424,7 @@ loader_return(void)
 	loader_log_linearize();
 	if (!loader_return_entered) {
 		loader_log_append_msgbuf();
+		redwood_m2m_to_loader();        /* mali2metal's last records, for a run that ends without a network */
 	}
 	if (!loader_return_entered && debug_buf_base != NULL && debug_buf_ptr > debug_buf_base &&
 	    (size_t)(debug_buf_ptr - debug_buf_base) < 256 * 1024) {
@@ -397,7 +433,19 @@ loader_return(void)
 			loader_log_putc(*c);
 		}
 	}
-	loader_jump(0, 0);
+	loader_jump(loader_return_reason, 0);
+}
+
+/*
+ * Hand back to the loader *and tell it why*: `reason' is the loader's own CTX_REASON code, passed
+ * as it is (kern.redwood_menu maps its values to these: 0 an ordinary return, 3 Log access,
+ * 4 Download Mode).
+ */
+void
+loader_return_asked(uint64_t reason)
+{
+	loader_return_reason = reason;
+	loader_return();
 }
 
 /* Bring-up aid: stop here if the loader asked for checkpoint n. */
@@ -439,11 +487,10 @@ loader_return_timer(__unused thread_call_param_t p0, __unused thread_call_param_
 	}
 	PE_parse_boot_argn("return_panic", &as_panic, sizeof(as_panic));
 	if (!as_panic) {
-		hakios_var_save_on_return();   /* the data volume kept, while the system is still whole */
-		hakios_adreno_stop();          /* a GPU kept for the system is given back while there is a thread to wait in */
-		hakios_wifi_stop();            /* and the Wi-Fi DSP, if it runs, shut down */
-		hakios_adsp_stop();            /* and the audio DSP */
-		hakios_mpss_stop();            /* and the modem */
+		redwood_var_save_on_return();   /* the data volume kept, while the system is still whole */
+		redwood_adreno_stop();          /* a GPU kept for the system is given back while there is a thread to wait in */
+		redwood_wifi_stop();            /* and the Wi-Fi DSP, if it runs, shut down */
+		redwood_adsp_stop();            /* and the audio DSP */
 	}
 	if (PE_parse_boot_argn("return_cpu", &cpu, sizeof(cpu)) && cpu <= (uint32_t)ml_get_max_cpu_number() &&
 	    cpu_xcall((int)cpu, loader_return_test, (void *)(uintptr_t)(as_panic ? 2 : 1)) == KERN_SUCCESS) {
@@ -486,10 +533,10 @@ loader_stop_poll(__unused thread_call_param_t p0, __unused thread_call_param_t p
 		for (const char *c = banner; *c; c++) {
 			loader_log_putc(*c);
 		}
-		hakios_var_save_on_return();
-		hakios_adreno_stop();
-		hakios_wifi_stop();
-		hakios_adsp_stop();
+		redwood_var_save_on_return();
+		redwood_adreno_stop();
+		redwood_wifi_stop();
+		redwood_adsp_stop();
 		loader_return();
 	}
 	clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
@@ -531,11 +578,11 @@ extern void MiniIOSurfaceUsage(uint32_t *count, uint64_t *bytes);
  * daemons, and once none is left and it is below the second, whatever is next in line -- the
  * window server included.
  */
-void hakios_memory_line(char *buf, size_t len);
+void redwood_memory_line(char *buf, size_t len);
 
-/* The line itself (also kern.hakios_memory, for a job list to keep: bsd/miscfs/apfs/apfs_vfsops.c) */
+/* The line itself (also kern.redwood_memory, for a job list to keep: bsd/miscfs/apfs/apfs_vfsops.c) */
 void
-hakios_memory_line(char *buf, size_t len)
+redwood_memory_line(char *buf, size_t len)
 {
 #define MB(pages)       ((unsigned int)(((uint64_t)(pages) * PAGE_SIZE) >> 20))
 	uint32_t surfaces = 0;
@@ -558,9 +605,9 @@ memory_report(void)
 {
 	char line[256];
 
-	hakios_memory_line(line, sizeof(line));
+	redwood_memory_line(line, sizeof(line));
 	printf("%s", line);
-	hakios_adreno_minute();                /* (and how warm the GPU is, if it is in use) */
+	redwood_adreno_minute();                /* (and how warm the GPU is, if it is in use) */
 }
 
 /* Every HV_WDT_PET_SECONDS: feed the watchdog if there is one, and show any watching loader a sign of life. */

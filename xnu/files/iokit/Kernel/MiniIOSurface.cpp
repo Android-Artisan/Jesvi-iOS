@@ -11,6 +11,7 @@
 
 #include <IOKit/IOLib.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -151,6 +152,82 @@ static thread_call_t    gSurfaceClearing;
 static uint32_t         gSurfacesGivenAgain;    /* for MiniIOSurfaceCost() */
 /* boot-arg surf_clear=0: kept memory is given out as it is (to see what the clearing costs; a surface is then not all zeroes) */
 static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
+/*
+ * fb_scaler=1: a full-screen 32-bit surface is made of one piece of physical memory below 4 GB, so
+ * that the display controller's DMA can read it where it is (MiniIOMobileFramebuffer.cpp: the
+ * scaler shows CoreAnimation's frame without a copy). If no such piece can be had, it is made as
+ * any other, and shown by copying.
+ */
+static TUNABLE(uint32_t, gSurfaceContiguous, "fb_scaler", 0);
+#define SURFACE_CONTIGUOUS_FROM (2000000u)     /* pixels: full-screen (1125 x 2436 here) */
+
+static bool
+surfaceContiguous(IOMemoryDescriptor * memory)
+{
+	IOByteCount length = 0;
+	addr64_t phys = memory->getPhysicalSegment(0, &length, kIOMemoryMapperNone);
+
+	return phys != 0 && length >= memory->getLength() && phys + memory->getLength() <= (1ULL << 32);
+}
+
+/*
+ * The display pool: what the loader set aside below 4 GB for the display controller to read
+ * frames from (/chosen display-pool-base, display-pool-size; xnuloader/loader.c), since none of
+ * XNU's own memory is there (vm_page_find_contiguous scanned one page and found nothing: every
+ * kIOMemoryPhysicallyContiguous surface below 4 GB was refused, 25 October). Slots of a size that
+ * holds a full-screen frame and its page of state. Memory outside XNU's is device memory unless
+ * said otherwise: every mapping of it is made write-combined (here, IOSurfaceRootUserClient::
+ * addRef, RedwoodMali's clientMemoryForType).
+ */
+#define POOL_SLOT               (14u << 20)
+#define POOL_SLOTS_MAX          16
+static uint64_t gPoolBase;
+static uint32_t gPoolSlots;
+static volatile uint32_t gPoolUsed;
+static bool gPoolLooked;
+
+static int
+poolTake(uint64_t bytes, uint64_t * phys)
+{
+	if (!gPoolLooked) {
+		DTEntry chosen;
+		void const * base = NULL, * size = NULL;
+		unsigned int baseSize = 0, sizeSize = 0;
+
+		gPoolLooked = true;
+		if (SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
+		    SecureDTGetProperty(chosen, "display-pool-base", &base, &baseSize) == kSuccess && baseSize == 8 &&
+		    SecureDTGetProperty(chosen, "display-pool-size", &size, &sizeSize) == kSuccess && sizeSize == 8) {
+			gPoolBase = *(const uint64_t *) base;
+			gPoolSlots = (uint32_t) (*(const uint64_t *) size / POOL_SLOT);
+			gPoolSlots = gPoolSlots > POOL_SLOTS_MAX ? POOL_SLOTS_MAX : gPoolSlots;
+		}
+		IOLog("MiniIOSurface: fb_scaler: display pool at %#llx, %u slots of %u MB\n", gPoolBase, gPoolSlots, POOL_SLOT >> 20);
+	}
+	if (bytes > POOL_SLOT || gPoolBase == 0) {
+		return -1;
+	}
+	for (uint32_t i = 0; i < gPoolSlots; i++) {
+		uint32_t used = gPoolUsed;
+
+		if (!(used & (1u << i)) && OSCompareAndSwap(used, used | (1u << i), &gPoolUsed)) {
+			*phys = gPoolBase + (uint64_t) i * POOL_SLOT;
+			return (int) i;
+		}
+		if (!(gPoolUsed & (1u << i))) {
+			i--;                    /* (somebody else changed the bits: this slot again) */
+		}
+	}
+	return -1;
+}
+
+static void
+poolGive(int slot)
+{
+	if (slot >= 0) {
+		OSBitAndAtomic(~(1u << slot), &gPoolUsed);
+	}
+}
 
 void
 MiniIOSurfaceClearKept(void)
@@ -290,8 +367,13 @@ MiniIOSurface::free(void)
 		client->release();
 		client = NULL;
 	}
-	if (memory != NULL) {
-		surfaceMemoryBack(memory);
+	if (poolSlot >= 0) {
+		OSSafeReleaseNULL(poolMap);
+		OSSafeReleaseNULL(memory);
+		poolGive(poolSlot);
+		poolSlot = -1;
+	} else if (memory != NULL) {
+		surfaceMemoryBack(OSDynamicCast(IOBufferMemoryDescriptor, memory));
 		memory = NULL;
 	}
 	OSObject::free();
@@ -571,6 +653,13 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 	if (bpe == 0) {
 		bpe = planeCount ? s->planes[0].bytesPerElement : defaultBytesPerElement(format);
 	}
+	/*
+	 * A row length the caller asks for is kept exactly. (25 October it was rounded up to 64 for
+	 * the GPU's import, and that broke every surface built around a process's own memory: an
+	 * icon of 180x180 at 720 bytes a row was described as 768, drawn sheared, and read past its
+	 * end by the window server -- three crashes in one boot. A surface Metal cannot import at
+	 * its own pitch has to be copied there instead.)
+	 */
 	bpr = dictNumber(props, "IOSurfaceBytesPerRow", 0);
 	if (bpr == 0) {
 		bpr = planeCount ? s->planes[0].bytesPerRow
@@ -612,7 +701,31 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 		alloc = dictNumber(props, "IOSurfaceAllocSize", (uint32_t) needed);
 	}
 
-	s->memory = surfaceMemory((vm_size_t) PAGE_SIZE + (wrapped ? 0 : alloc));
+	bool contiguous = gSurfaceContiguous && wrapped == NULL && planeCount == 0 && bpe == 4 &&
+	    (uint64_t) width * height >= SURFACE_CONTIGUOUS_FROM;
+
+	s->poolSlot = -1;
+	if (contiguous) {
+		uint64_t phys = 0;
+		int slot = poolTake((uint64_t) PAGE_SIZE + alloc, &phys);
+		IOMemoryDescriptor * md = slot >= 0 ? IOMemoryDescriptor::withPhysicalAddress(phys, (IOByteCount) PAGE_SIZE + alloc,
+		    kIODirectionInOut) : NULL;
+		IOMemoryMap * map = md != NULL ? md->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache) : NULL;
+
+		if (map != NULL) {
+			s->memory = md;
+			s->poolMap = map;
+			s->poolSlot = slot;
+			bzero((void *) map->getVirtualAddress(), (size_t) PAGE_SIZE + alloc);   /* (a new surface is all zeroes) */
+		} else {
+			OSSafeReleaseNULL(md);
+			poolGive(slot);
+		}
+	}
+	if (s->memory == NULL) {
+		/* (not XNU's contiguous allocator: it has nothing below 4 GB, and every refusal ran zone_gc -- a stall) */
+		s->memory = surfaceMemory((vm_size_t) PAGE_SIZE + (wrapped ? 0 : alloc));
+	}
 	if (s->memory == NULL) {
 		IOLog("MiniIOSurface: no memory for %u bytes (%u surfaces, %llu MB in use)\n", alloc, gSurfaceCount,
 		    gSurfaceBytes >> 20);
@@ -620,9 +733,19 @@ surfaceCreate(OSDictionary * props, IOReturn * error)
 		*error = kIOReturnNoMemory;
 		return NULL;
 	}
-	s->kbase = (uint8_t *) s->memory->getBytesNoCopy();
+	s->kbase = s->poolMap != NULL ? (uint8_t *) s->poolMap->getVirtualAddress() :
+	    (uint8_t *) OSDynamicCast(IOBufferMemoryDescriptor, s->memory)->getBytesNoCopy();
 	s->values = OSDictionary::withCapacity(4);
 	s->kpixels = s->kbase + PAGE_SIZE;
+	if (contiguous && surfaceContiguous(s->memory)) {
+		static uint32_t said;
+
+		s->phys = s->memory->getPhysicalSegment(PAGE_SIZE, NULL, kIOMemoryMapperNone);
+		if (said++ < 6) {
+			IOLog("MiniIOSurface: fb_scaler: %ux%u '%.4s' in one piece at %#llx (%u bytes)\n", width, height,
+			    (const char *) &format, s->phys, alloc);
+		}
+	}
 	if (wrapped != NULL) {
 		s->clientTask = current_task();
 		s->clientAddress = wrapped->unsigned64BitValue();
@@ -760,6 +883,20 @@ MiniIOSurfaceDrop(MiniIOSurface * s)
 	}
 	IOLockLock(gSurfaceLock);
 	surfaceUnhold(s);
+	IOLockUnlock(gSurfaceLock);
+}
+
+void
+MiniIOSurfaceDisplayUse(MiniIOSurface * s, int delta)
+{
+	if (s == NULL) {
+		return;
+	}
+	IOLockLock(gSurfaceLock);
+	if (delta > 0 || s->useCount[0] != 0) {
+		s->useCount[0] += delta;
+		s->shared()->useCount = (uint64_t) s->useCount[1] << 32 | s->useCount[0];
+	}
 	IOLockUnlock(gSurfaceLock);
 }
 
@@ -1008,7 +1145,7 @@ IOSurfaceRootUserClient::addRef(MiniIOSurface * surface)
 		fRefs = refs;
 		fRefCapacity = capacity;
 	}
-	map = surface->memory->createMappingInTask(fTask, 0, kIOMapAnywhere);
+	map = surface->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | (surface->poolSlot >= 0 ? kIOMapWriteCombineCache : 0));
 	if (map == NULL) {
 		IOLog("MiniIOSurface: cannot map surface %u (%u bytes) into the client\n", surface->sid, surface->info.allocSize);
 		return NULL;

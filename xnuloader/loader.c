@@ -15,7 +15,13 @@
 /* ------------------------------------------------------------------------ */
 /* Fixed conventions shared with the boot shim, the packer and the kernel   */
 
-#define PAYLOAD_BASE        0xF0000000ULL
+/*
+ * The XNUP payload is embedded in the unused tail of the UEFI FD image itself,
+ * so the stock boot shim delivers it together with the FD (no custom shim, and
+ * no image_size mismatch for the bootloader).
+ */
+#define PAYLOAD_BASE        0xE8100000ULL         /* FD base 0xE8000000 + 0x100000 */
+#define PAYLOAD_MAX_SIZE    0x00080000ULL         /* 512 KB, inside the 2 MB FD region */
 #define PAYLOAD_MAGIC       0x50554E58u /* "XNUP" */
 
 struct payload_header { uint32_t magic; uint32_t size; };
@@ -34,12 +40,15 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define RESIDENT_RD_RESERVE 0x30000000ULL         /* RAM that must remain for the kernel itself */
 #define PAGE_SIZE_MAX       0x4000ULL
 
-#define LOG_PARTITION       u"logdump"
+#define LOG_PARTITION       u"recovery"   /* y2s has no logdump: park the log in the recovery image */
+#define LOG_OFFSET          0x01000000ULL /* 16 MB into recovery: clear of the UEFI image (0) and the kernel (32 MB) */
 #define CHECKPOINT_SELFTEST 999
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
-#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE - 0x100000ULL)
-#define PAYLOAD_MAX_SIZE    0x04000000ULL         /* RAM reserved for the payload in the UEFI memory map */
+#define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE)
+/* Staging area for images the host sends over USB (kernel, root image). */
+#define DOWNLOAD_BASE       0xF0000000ULL
+#define DOWNLOAD_MAX_SIZE   0x01000000ULL         /* 16 MB: up to the display at 0xF1000000 */
 
 /* ------------------------------------------------------------------------ */
 /* XNU structures (pexpert/pexpert/arm64/boot.h, mach-o/loader.h)           */
@@ -168,6 +177,12 @@ str_eq(const char *a, const char *b)
  * the screen is left to the kernel (and to "oem screenshot").
  */
 static int screen_quiet;
+/*
+ * y2s: once the kernel has run, the firmware's console is not to be trusted until the log is in the
+ * partition -- its state has been found corrupted after a run, and the first character printed then
+ * took the loader down with the log unsaved (24 Oct, twice). Lines go to the log buffer only.
+ */
+static int console_suspect;
 
 static void
 put_char(char c)
@@ -177,7 +192,7 @@ put_char(char c)
 	if (log_len < sizeof(log_buf) - 1) {
 		log_buf[log_len++] = c;
 	}
-	if (ST->con_out != NULL && !screen_quiet) {
+	if (ST->con_out != NULL && !screen_quiet && !console_suspect) {
 		if (c == '\n') {
 			w[0] = '\r', w[1] = '\n';
 		} else {
@@ -226,6 +241,20 @@ print(const char *fmt, ...)
 #define READ_SYSREG(name) ({ uint64_t _v; __asm__ volatile ("mrs %0, " #name : "=r" (_v)); _v; })
 
 /*
+ * CNTFRQ_EL0 is read-only from EL1 (an msr traps), and some Samsung firmware
+ * leaves it at 0. The Exynos 990 arch timer runs at 26 MHz, so fall back to
+ * that: otherwise every timeout below is a division by zero and the device
+ * tree would advertise timebase-frequency = 0 to XNU.
+ */
+static uint64_t
+timer_freq(void)
+{
+	uint64_t f;
+	__asm__ volatile ("mrs %0, CNTFRQ_EL0" : "=r" (f));
+	return f != 0 ? f : 26000000ULL;
+}
+
+/*
  * Write back and drop cached copies of a range. Required for memory the
  * kernel will touch with the MMU (and so the data cache) off: its early code
  * builds page tables that way, and a stale cached copy of those pages would
@@ -255,11 +284,10 @@ clean_dcache(uint64_t start, uint64_t end)
 /* Log persistence: raw write to a GPT partition (phone only)               */
 
 static efi_block_io *
-find_log_partition(void)
+find_partition(const char16 *want)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
-	static const char16 want[] = LOG_PARTITION;
 	efi_handle *handles;
 	uint64_t count;
 
@@ -274,9 +302,12 @@ find_log_partition(void)
 		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2) {
 			continue;
 		}
-		for (unsigned k = 0; k < sizeof(want) / sizeof(want[0]); k++) {
+		for (unsigned k = 0; k < 36; k++) {
 			if (info->name[k] != want[k]) {
 				match = 0;
+				break;
+			}
+			if (want[k] == 0) {
 				break;
 			}
 		}
@@ -287,12 +318,32 @@ find_log_partition(void)
 	return NULL;
 }
 
+/* ASCII (payload entry) to the UTF-16 name a GPT partition carries. */
+static efi_block_io *
+find_partition_ascii(const char *name)
+{
+	char16 buf[37];
+	unsigned i;
+
+	for (i = 0; i < 36 && name[i] != 0; i++) {
+		buf[i] = (char16)(uint8_t)name[i];
+	}
+	buf[i] = 0;
+	return find_partition(buf);
+}
+
+static efi_block_io *
+find_log_partition(void)
+{
+	return find_partition(LOG_PARTITION);
+}
+
 /*
  * The "staged" buffer holds the loader log followed by the kernel log of the
  * last run. It is what gets written to the log partition and what the host
  * fetches over USB (fastboot get_staged).
  */
-static char out_buf[2 * 1024 * 1024];
+static char out_buf[8 * 1024 * 1024];      /* recovery+16 MB up to the kernel at +32 MB has room for it */
 /* the storage's reads for the kernel land here (block_poll); also where the log is read back */
 #define BLOCK_BUFFER_SIZE  (4u << 20)
 static uint8_t block_buffer[BLOCK_BUFFER_SIZE] __attribute__((aligned(0x2000)));
@@ -327,25 +378,57 @@ static int hc_log_skips;                /* logs not written this run (said twice
 static void hc_print_state(const char *when);
 static void hc_take_back(const char *when);
 
+#define LOG_SCREEN_TAIL     (16 * 1024)   /* bytes of the kernel log shown on the screen after a run */
+
+static int store_logs(efi_block_io *bio, const char *klog, uint64_t klog_len);
+
 static void
 write_logs(const char *klog, uint64_t klog_len)
 {
 	efi_block_io *bio = find_log_partition();
 
 	compose_logs(klog, klog_len);
-	if (bio == NULL) {
-		/* No log partition (QEMU): echo the returned kernel log on the console instead. */
-		if (klog != NULL) {
-			print("\n== KERNEL LOG ==\n");
-			for (uint64_t i = 0; i < klog_len; i++) {
-				put_char(klog[i]);
-			}
-			print("\n== END OF LOG ==\n");
+	/*
+	 * Into the partition first, on the screen after: printing a whole iOS boot log through the
+	 * firmware's console takes minutes on the phone's 1440 x 3200 panel, and a reset during that
+	 * used to lose the log.
+	 */
+	int stored = store_logs(bio, klog, klog_len);
+
+	if (klog != NULL) {
+		console_suspect = 0;    /* the kernel's log is safe (or cannot be made so): the screen may have it now */
+	}
+
+	if (klog != NULL) {
+		/*
+		 * Show the log on a clean screen: the kernel draws its own console straight into the
+		 * framebuffer (with no font of ours), so the firmware's console would otherwise print
+		 * over the mess it leaves behind. Only its end: the whole of it is in the partition.
+		 */
+		uint64_t from = klog_len > LOG_SCREEN_TAIL ? klog_len - LOG_SCREEN_TAIL : 0;
+
+		if (ST->con_out != NULL && ST->con_out->clear_screen != NULL) {
+			ST->con_out->clear_screen(ST->con_out);
 		}
-		return;
+		print("== KERNEL LOG (last %d of %d bytes) ==\n", klog_len - from, klog_len);
+		for (uint64_t i = from; i < klog_len; i++) {
+			put_char(klog[i]);
+		}
+		print("\n== END OF LOG ==\n");
+		print(stored ? "log: saved to recovery+%x before it was shown: the phone may be reset now\n" :
+		    "log: NOT SAVED to recovery+%x (see above): only this screen has it\n", LOG_OFFSET);
+	}
+}
+
+static int
+store_logs(efi_block_io *bio, const char *klog, uint64_t klog_len)
+{
+	if (bio == NULL) {
+		return 0;
 	}
 	uint64_t bs = bio->media->block_size;
 	uint64_t len = (staged_len + 1 + bs - 1) / bs * bs;
+	uint64_t lba = bs != 0 ? LOG_OFFSET / bs : 0;
 	efi_status ws, rs = 0;
 	int same = 0;
 
@@ -353,12 +436,12 @@ write_logs(const char *klog, uint64_t klog_len)
 	if (!hc_list_is_uefis()) {
 		if (hc_log_skips++ < 2) {
 			hc_print_state("log not written");
-			print("log: NOT WRITTEN to logdump: UEFI's transfer list is not the one in the controller\n");
+			print("log: NOT WRITTEN to the log partition: UEFI's transfer list is not the one in the controller\n");
 		}
 		compose_logs(klog, klog_len);
-		return;
+		return 0;
 	}
-	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
+	ws = bio->write_blocks(bio, bio->media->media_id, lba, len, out_buf);
 
 	if (!EFI_ERROR(ws)) {
 		bio->flush_blocks(bio);
@@ -368,13 +451,14 @@ write_logs(const char *klog, uint64_t klog_len)
 		 * the copy the host fetches over USB, not into the partition, which already has the rest.
 		 */
 		if (len <= sizeof(block_buffer)) {
-			rs = bio->read_blocks(bio, bio->media->media_id, 0, len, block_buffer);
+			rs = bio->read_blocks(bio, bio->media->media_id, lba, len, block_buffer);
 			same = !EFI_ERROR(rs) && memcmp(block_buffer, out_buf, len) == 0;
 		}
 	}
-	print("log: %d bytes written to logdump (%x), read back %s (%x)\n", len, ws,
+	print("log: %d bytes written to recovery+%x (%x), read back %s (%x)\n", len, LOG_OFFSET, ws,
 	    EFI_ERROR(ws) ? "not tried" : same ? "the same" : "DIFFERENT", rs);
 	compose_logs(klog, klog_len);
+	return !EFI_ERROR(ws);
 }
 
 static void
@@ -516,19 +600,53 @@ dt_end(struct dt_writer *w)
 struct platform {
 	const char *name;
 	uint64_t io_base, io_size;       /* one window covering the SoC peripherals */
-	uint64_t gic_dist, gic_redist;   /* GICv3 */
+	uint64_t gic_dist, gic_redist;   /* GICv3: distributor/redistributor; GICv2: distributor/CPU interface */
 	uint64_t uart;                   /* PL011, 0 if none */
 	int psci_hvc;                    /* the firmware's power interface is called with HVC, not SMC */
 	int log_other_cpu;               /* keep notes in the log partition while a kernel starts on another core */
 	int cores;                       /* at most this many processor cores, numbered from 0 ... */
-	int core_shift;                  /* ... in this bit of MPIDR: the phone numbers them in the second affinity field */
+	int core_shift;                  /* ... in this bit of MPIDR, when mpidrs is not given (Qualcomm) */
+	const uint64_t *mpidrs;          /* or the MPIDR of each core, by index (Exynos: A55 0-3, A76 4-5, M5 0x100/0x101) */
+	int gic_v2;                      /* the interrupt controller is a GICv2 (GIC-400), not a GICv3 */
 	uint32_t timeout_scale;          /* a kernel on several cores gets this much longer to wait for a lock, 0: as it is */
-	uint32_t small_cores;            /* a bit for each of the slower cores, by number: "small-core" in the device tree */
+	uint32_t small_cores;            /* a bit for each of the slower cores, by core number: "small-core" in the device tree */
+	uint64_t fb_base;                /* the framebuffer the firmware reports (GOP): it tells this device apart */
+	int watch_quietly;               /* bootcpu=N: no UEFI code on this core while the kernel runs (see run_on_other_cpu) */
 };
+
+/*
+ * The MPIDR of a core index, and the core index of an MPIDR. Qualcomm numbers its cores in the
+ * second affinity field (core << 8); some SoCs (Exynos 990) put several cores in one cluster and
+ * one in another, which no single shift expresses -- those give an explicit table (mpidrs).
+ */
+static uint64_t
+plat_mpidr_of(const struct platform *p, int core)
+{
+	return p->mpidrs ? p->mpidrs[core] : (uint64_t)core << p->core_shift;
+}
+
+static int
+plat_core_of(const struct platform *p, uint64_t mpidr)
+{
+	if (p->mpidrs) {
+		for (int i = 0; i < p->cores; i++) {
+			if (p->mpidrs[i] == mpidr) {
+				return i;
+			}
+		}
+		return -1;
+	}
+	return (int)(mpidr >> p->core_shift);
+}
 
 static const struct platform platform_qemu_virt = {
 	.name = "qemu-virt", .io_base = 0x08000000, .io_size = 0x08000000,
+#ifdef GIC_V2
+	/* -M virt,gic-version=2: a GIC-400 (GICv2), distributor at 0x08000000, CPU interface at 0x08010000 */
+	.gic_dist = 0x08000000, .gic_redist = 0x08010000, .gic_v2 = 1, .uart = 0x09000000, .psci_hvc = 1,
+#else
 	.gic_dist = 0x08000000, .gic_redist = 0x080A0000, .uart = 0x09000000, .psci_hvc = 1,
+#endif
 	.cores = 8, .core_shift = 0,
 	/*
 	 * QEMU's emulated cores stop each other all the time (every flush of a page from all the
@@ -549,6 +667,41 @@ static const struct platform platform_redwood = {
 	 * (XNU's machine_routines.c, ml_choose_slow_core_partners()).
 	 */
 	.small_cores = 0x0f,
+	.fb_base = 0xE1000000,
+};
+
+/*
+ * Exynos 990 (Galaxy S20+ 5G): 4 Cortex-A55 in one cluster, 2 Cortex-A76 in the next, and 2
+ * Mongoose M5 in the third -- the MPIDRs are not core << 8, so they are given outright.
+ */
+static const uint64_t platform_y2s_mpidrs[8] = { 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x100, 0x101 };
+
+static const struct platform platform_y2s = {
+	/* peripherals span 0x02000000 (IRAM) .. 0x1B000000 (DECON/clock); io_base must be non-zero. */
+	.name = "y2s", .io_base = 0x02000000, .io_size = 0x19000000,
+	/* GICv2 (GIC-400): distributor and CPU interface (see osfmk/arm64/gic_v2_irq.c). */
+	.gic_dist = 0x10101000, .gic_redist = 0x10102000, .gic_v2 = 1, .uart = 0, .log_other_cpu = 1,
+	.cores = 8, .mpidrs = platform_y2s_mpidrs,
+	/* cores 0-3 are the Cortex-A55s (the little cluster). */
+	.small_cores = 0x0f,
+	/* the UEFI's Display Reserved window (see the x1s MemoryMapLib). VERIFY: the runtime "display ... at" line. */
+	.fb_base = 0xF1000000,
+	/*
+	 * Mu-Silicium's DXE core, left to take its timer interrupts on core 0 while the kernel started
+	 * on core 0x100, jumped through a corrupted event ("evnt" as the PC, 24 Oct). Nothing of it is
+	 * needed meanwhile on this phone (no watchdog, charger or USB here), so it is not run at all.
+	 */
+	.watch_quietly = 1,
+};
+
+/*
+ * The devices the loader knows, told apart by the framebuffer base their UEFI reports. A port to another
+ * device adds its description here (common/new-device.sh writes a starting point, docs/PORTING.md says
+ * where each value comes from); a display that matches none is QEMU's ramfb.
+ */
+static const struct platform *const platforms[] = {
+	&platform_redwood,
+	&platform_y2s,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -586,6 +739,10 @@ enum {
 	CTX_ICC_PMR, CTX_ICC_IGRPEN1, CTX_ICC_BPR1, CTX_COUNT
 };
 uint64_t loader_ctx[CTX_COUNT];
+
+/* set when the kernel hands back asking for Log access (CTX_REASON 3, kern.redwood_menu) */
+static int y2s_want_log_access;
+static int y2s_want_download;
 int loader_save_ctx(void);
 void loader_return_stub(void);
 
@@ -617,10 +774,13 @@ __asm__ (
         "  mrs x9, mdscr_el1\n     str x9, [x10, #320]\n"
         "  mrs x9, s3_3_c4_c4_0\n          str x9, [x10, #328]\n"
         "  mrs x9, s3_3_c4_c4_1\n          str x9, [x10, #336]\n"
-        /* GICv3 CPU interface: the kernel reprograms it for its own interrupts */
+        /* GICv3 CPU interface: the kernel reprograms it for its own interrupts.
+         * A GICv2 (GIC-400) has no ICC_* system registers: reading them traps. */
+#ifndef GIC_V2
         "  mrs x9, icc_pmr_el1\n     str x9, [x10, #344]\n"
         "  mrs x9, icc_igrpen1_el1\n str x9, [x10, #352]\n"
         "  mrs x9, icc_bpr1_el1\n    str x9, [x10, #360]\n"
+#endif
         "  mrs x9, spsel\n"
         "  cbz x9, 1f\n"                  /* SP_EL0 is only accessible while running on SP_EL1 */
         "  mrs x9, sp_el0\n        str x9, [x10, #304]\n"
@@ -677,9 +837,11 @@ __asm__ (
         "  ldr x9, [x10, #296]\n msr tpidrro_el0, x9\n"
         "  ldr x9, [x10, #312]\n msr contextidr_el1, x9\n"
         "  ldr x9, [x10, #320]\n msr mdscr_el1, x9\n"
+#ifndef GIC_V2
         "  ldr x9, [x10, #344]\n msr icc_pmr_el1, x9\n"
         "  ldr x9, [x10, #360]\n msr icc_bpr1_el1, x9\n"
         "  ldr x9, [x10, #352]\n msr icc_igrpen1_el1, x9\n"
+#endif
         "  ldr x9, [x10, #328]\n msr s3_3_c4_c4_0, x9\n"
         "  ldr x9, [x10, #336]\n msr s3_3_c4_c4_1, x9\n"
         "  ldr x9, [x10, #104]\n msr cntkctl_el1, x9\n"
@@ -751,9 +913,27 @@ jump_to_kernel(uint64_t entry, uint64_t boot_args_pa)
 #define PSCI_NOT_SUPPORTED (-1)
 
 /* each alone in a cache line: one core reads them with its caches off */
-static struct {
+struct {
 	uint64_t entry, boot_args;
 } other_cpu_start __attribute__((aligned(64)));
+/*
+ * The kernel's own CPU_ON (XNU psci_smp.c) goes through kernel_cpu_trampoline, here below 4 GB:
+ * Samsung's firmware (Exynos 990) starts a core at the address it is given only if that address
+ * fits in 32 bits, and it does not hand the core its context_id in x0. The kernel, which is far
+ * above 4 GB, writes its reset vector and the core's id into kernel_cpu_slot before each CPU_ON
+ * (it starts its cores one at a time); the device tree's /chosen says where both are.
+ */
+void kernel_cpu_trampoline(void);
+extern uint64_t kernel_cpu_slot[2];
+/*
+ * ... and kernel_cpu_resume for a core coming back from PSCI CPU_SUSPEND (a power-down idle: XNU's
+ * redwood_cpuidle.c). Any core may wake at any time, so one shared slot cannot say which it is; and its
+ * MPIDR alone is ambiguous on this SoC (A55 #1 masks to the id M5 #0 is registered under). The kernel fills
+ * kernel_cpu_resume_data: [0] its reset vector, then up to eight pairs { MPIDR & 0xffffff, phys id }; the
+ * trampoline finds its own MPIDR there and enters the kernel with that phys id in x0, as kernel_cpu_trampoline.
+ */
+void kernel_cpu_resume(void);
+extern uint64_t kernel_cpu_resume_data[17];
 volatile uint64_t other_cpu_stage __attribute__((aligned(64)));  /* 1: that core has reached other_cpu_entry */
 volatile uint64_t other_cpu_done __attribute__((aligned(64)));   /* 1: the kernel is back (other_cpu_return_stub) */
 uint64_t psci_by_hvc __attribute__((aligned(64)));
@@ -764,7 +944,7 @@ __asm__ (
         ".text\n"
         ".balign 64\n"
         ".globl other_cpu_entry\n"
-        "other_cpu_entry:\n"                    /* x0 = &other_cpu_start; MMU and caches are off */
+        "other_cpu_entry:\n"                    /* MMU and caches are off; x0 is NOT reliable (Samsung) */
         "  msr daifset, #0xf\n"
         /* until the kernel has vectors of its own, an exception must not go nowhere */
         "  adrp x9, other_cpu_vectors\n"
@@ -786,9 +966,46 @@ __asm__ (
         "  add  x9, x9, :lo12:other_cpu_stage\n"
         "  mov x10, #1\n"
         "  str x10, [x9]\n"
+        "  adrp x0, other_cpu_start\n"
+        "  add  x0, x0, :lo12:other_cpu_start\n"
         "  ldp x9, x10, [x0]\n"
         "  mov x0, x10\n"
         "  br x9\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_trampoline\n"
+        "kernel_cpu_trampoline:\n"             /* MMU off: x0 <- the core's id, then its 64-bit entry */
+        "  adr x9, kernel_cpu_slot\n"
+        "  ldp x10, x0, [x9]\n"
+        "  br x10\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_slot\n"
+        "kernel_cpu_slot:\n"
+        "  .quad 0, 0\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_resume\n"
+        "kernel_cpu_resume:\n"                /* MMU off: find this core in the table by its MPIDR */
+        "  mrs x11, mpidr_el1\n"
+        "  and x11, x11, #0xffffff\n"
+        "  adr x9, kernel_cpu_resume_data\n"
+        "  ldr x12, [x9], #8\n"               /* the kernel's reset vector */
+        "  mov x13, #8\n"
+        "1:\n"
+        "  ldp x10, x0, [x9], #16\n"
+        "  cmp x10, x11\n"
+        "  b.eq 2f\n"
+        "  subs x13, x13, #1\n"
+        "  b.ne 1b\n"
+        "3:\n"                                 /* not in the table: nothing to enter; stay out of the way */
+        "  wfi\n"
+        "  b 3b\n"
+        "2:\n"
+        "  cbz x12, 3b\n"
+        "  br x12\n"
+        ".balign 64\n"
+        ".globl kernel_cpu_resume_data\n"
+        "kernel_cpu_resume_data:\n"
+        "  .fill 17, 8, 0\n"
+        ".balign 64\n"
         "other_cpu_fault:\n"                    /* as an early exception in the kernel: reason 1 */
         "  mrs x3, esr_el1\n"
         "  mrs x4, elr_el1\n"
@@ -950,7 +1167,7 @@ static void usb_poll_command(void);
 static uint64_t
 seconds_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) / timer_freq();
 }
 
 /* Reverse a stretch of memory in place. */
@@ -1217,7 +1434,7 @@ ufs_hash_partition(efi_block_io *bio, const char *name, uint64_t bytes)
 		}
 	}
 	print("ufs: %s: fnv %x over %d bytes, %d ms\n", name, h, bytes,
-	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / READ_SYSREG(CNTFRQ_EL0));
+	    (READ_SYSREG(CNTVCT_EL0) - started) * 1000 / timer_freq());
 }
 
 /* CRC-32 as GPT uses it (IEEE 802.3, reflected, 0xedb88320) */
@@ -1445,13 +1662,13 @@ ufs_survey(void)
  * resident, and this loader already serves the kernel from core 0 while the kernel runs on another
  * (the battery). So the kernel asks for blocks through a page both can see, and core 0 reads them
  * with that driver's ReadBlocks into a buffer both can see. The kernel's side is
- * bsd/dev/hakios.ufs.c; it gets the page's address as ufs_shared_pa= on its command line.
+ * bsd/dev/redwood_ufs.c; it gets the page's address as ufs_shared_pa= on its command line.
  *
  * Reads, and -- with ufs_write=1 on the command line -- writes into one partition and nowhere
  * else: the port's own darwin, proved by its GPT entry (name, both GUIDs, first and last LBA, its
  * logical unit), and in it only past everything the build writes from the computer, so that no
  * answer to the kernel can reach Android's partitions, the iOS volume or the cryptexes. The
- * refusals are here, in the kernel (bsd/dev/hakios.ufs.c) and in UEFI's own driver, which gives
+ * refusals are here, in the kernel (bsd/dev/redwood_ufs.c) and in UEFI's own driver, which gives
  * out a partition's BlockIo and bounds it: a request has to pass all three.
  *
  * Each side writes its own cache lines only: the kernel the request, core 0 the answer (and the
@@ -1465,6 +1682,7 @@ ufs_survey(void)
 #define BLOCK_VERSION      3
 #define BLOCK_MAX_PARTS    160
 #define BLOCK_MAX_UNITS    16
+#define BLOCK_NATIVE_ONLY  1u      /* native.flags: the loader serves no request while the kernel runs */
 #define BLOCK_PART_UNIT    1u                          /* the entry is a whole logical unit, not a partition */
 #define BLOCK_OP_READ      0u
 #define BLOCK_OP_WRITE     1u
@@ -1543,6 +1761,9 @@ struct loader_block {
 		uint64_t area_pa;              /* the list (1 KB, at the start) and command descriptors */
 		uint32_t area_size, ucd_offset, ucd_size, slots;
 		uint32_t uefi_utrlba, uefi_utrlbau;
+		uint32_t flags;                /* BLOCK_NATIVE_ONLY */
+		uint32_t gpt_units;            /* with BLOCK_NATIVE_ONLY: unit k's block 1 at gpt_pa + k * 4096 */
+		uint64_t gpt_pa;
 	} native __attribute__((aligned(128)));
 	/* written by the loader during a run: it takes the controller back (a hung kernel); send nothing more */
 	struct {
@@ -1563,6 +1784,8 @@ _Static_assert(__builtin_offsetof(struct loader_block, ask) == 128,
 static struct loader_block block_shared __attribute__((aligned(0x2000)));
 static void block_io2_probe(efi_handle h, efi_block_io *bio);
 static int block_probe_requested;       /* ufs_probe=1: block_io2_probe() at block_start() */
+/* the units' GPT headers for a kernel on this core (not block_buffer: the log's read-back reuses that) */
+static uint8_t block_gpt[BLOCK_MAX_UNITS][4096] __attribute__((aligned(0x2000)));
 static efi_block_io *block_bios[BLOCK_MAX_PARTS];
 static int block_enabled;
 static int block_write_requested;       /* ufs_write=1 on the command line */
@@ -1627,7 +1850,13 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
  * touches the storage; it reads for the kernel (block_poll) and writes the log (write_logs) only
  * while UEFI's list is the one in the controller.
  */
-#define HC_PA              0x1d84000ULL        /* ufshc@1d84000, "ufs_mem", in this phone's Android device tree */
+/*
+ * ufshc@1d84000 ("ufs_mem") in the Xiaomi's Android device tree; on the S20+ (Exynos 990) the
+ * controller is at 0x13100000 (Samsung's ufs-exynos.c, Silicium's PlatformUfsLib), where offsets
+ * and lengths in a request descriptor are in bytes and a slot is cleared by writing a one.
+ */
+#define HC_PA              (PLAT == &platform_y2s ? 0x13100000ULL : 0x1d84000ULL)
+#define HC_EXYNOS          (PLAT == &platform_y2s)
 #define HC_CAP             0x00
 #define HC_VER             0x08
 #define HC_IS              0x20
@@ -1643,7 +1872,7 @@ device_path_print(uint64_t unit, const efi_device_path *dp)
 #define HC_UTMRLDBR        0x78
 #define HC_SLOTS           32
 #define HC_UCD_OFFSET      0x1000
-#define HC_UCD_SIZE        0x800
+#define HC_UCD_SIZE        0x1000              /* (Exynos: a PRD entry per 4 KB, 65 of them for 256 KB) */
 #define HC_AREA_SIZE       (HC_UCD_OFFSET + HC_SLOTS * HC_UCD_SIZE)
 
 static uint8_t hc_area[HC_AREA_SIZE] __attribute__((aligned(0x2000)));
@@ -1669,7 +1898,7 @@ hc_wr(uint32_t off, uint32_t v)
 static uint64_t
 hc_ms_since(uint64_t then)
 {
-	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / READ_SYSREG(CNTFRQ_EL0);
+	return (READ_SYSREG(CNTVCT_EL0) - then) * 1000 / timer_freq();
 }
 
 /* UEFI's list in, and running: what UEFI's driver needs to read or write */
@@ -1695,6 +1924,27 @@ hc_print_state(const char *when)
  * is waited for (1 s), cleared if it does not finish (UTRLCLR: every slot of that list is the
  * kernel's), the list stopped, UEFI's address written back, the list started, all read back.
  */
+/*
+ * The S20+: IS's UTRCS left set by the kernel's commands makes UEFI's next command keep its doorbell
+ * bit for ever (its driver clears IS only after the bit clears): every read and write times out.
+ * Acknowledged before UEFI's driver is used again.
+ */
+static void
+hc_clear_utrcs(const char *when)
+{
+	uint32_t is;
+
+	if (!HC_EXYNOS) {
+		return;
+	}
+	is = hc_rd(HC_IS);
+	if (is & 1) {
+		hc_wr(HC_IS, 1);
+		print("ufs: %s: IS was %x: the transfer-complete status acknowledged (now %x), for UEFI's driver\n", when,
+		    (uint64_t)is, (uint64_t)hc_rd(HC_IS));
+	}
+}
+
 static void
 hc_take_back(const char *when)
 {
@@ -1711,6 +1961,7 @@ hc_take_back(const char *when)
 	if (lo == hc_uefi_lo && hi == hc_uefi_hi && (rsr & 1)) {
 		print("ufs: %s: UEFI's transfer list is in the controller (%x), running, doorbell %x\n", when, (uint64_t)lo,
 		    (uint64_t)db);
+		hc_clear_utrcs(when);
 		return;
 	}
 	print("ufs: %s: the controller has list %x:%x (run %x, doorbell %x), not UEFI's %x:%x: taking it back\n", when,
@@ -1726,7 +1977,7 @@ hc_take_back(const char *when)
 		print("ufs: %s: doorbell %x still set after 1 s\n", when, (uint64_t)db);
 		if (hc_rd(HC_UTRLBA) != hc_uefi_lo || hc_rd(HC_UTRLBAU) != hc_uefi_hi) {
 			print("ufs: %s: clearing the kernel's slots (UTRLCLR)\n", when);
-			hc_wr(HC_UTRLCLR, 0);
+			hc_wr(HC_UTRLCLR, HC_EXYNOS ? 0xffffffffu : 0);
 			for (t = READ_SYSREG(CNTVCT_EL0); (db = hc_rd(HC_UTRLDBR)) != 0 && hc_ms_since(t) < 1000;) {
 			}
 			print("ufs: %s: doorbell %x after the clear\n", when, (uint64_t)db);
@@ -1752,6 +2003,7 @@ hc_take_back(const char *when)
 	hc_wr(HC_UTRLRSR, 1);
 	for (t = READ_SYSREG(CNTVCT_EL0); hc_ms_since(t) < 50;) {
 	}
+	hc_clear_utrcs(when);
 	hc_print_state(when);
 	print("ufs: %s: UEFI's list %s\n", when, hc_list_is_uefis() ? "put back" : "NOT PUT BACK: the storage is not used");
 }
@@ -1855,7 +2107,7 @@ block_is_darwin(const efi_partition_info *info, const efi_block_io *bio, const s
 }
 
 static void
-block_start(void)
+block_start(int kernel_on_this_core)
 {
 	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
 	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
@@ -1966,6 +2218,29 @@ block_start(void)
 	} else if (hc_requested) {
 		print("ufs: the kernel's own transfer list is not offered: the controller is not as UEFI keeps it\n");
 	}
+	/*
+	 * The kernel runs on this core (the S20+): nobody serves the page while it runs, so its own
+	 * driver is the only way to the storage. What it would ask the loader for -- each unit's GPT
+	 * header, to know which logical unit is which -- is read here now, unit k's into the buffer
+	 * at k * 4096 (bsd/dev/redwood_ufs.c, ufs_read_mailbox).
+	 */
+	if (kernel_on_this_core) {
+		block_shared.native.flags |= BLOCK_NATIVE_ONLY;
+		for (uint64_t u = 0; u < nunits; u++) {
+			efi_block_io *bio = units[u].bio;
+
+			memset(block_gpt[u], 0, 4096);
+			if (bio->media->block_size != 4096 ||
+			    EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, 1, 4096, block_gpt[u]))) {
+				print("ufs: unit %d: its GPT header not read\n", u);
+			}
+		}
+		block_shared.native.gpt_units = (uint32_t)nunits;
+		block_shared.native.gpt_pa = (uint64_t)(uintptr_t)block_gpt;
+		clean_dcache((uint64_t)(uintptr_t)block_gpt, (uint64_t)(uintptr_t)block_gpt + sizeof(block_gpt));
+		print("ufs: the kernel runs on this core: nothing is served while it runs; the units' GPT headers are kept "
+		    "for its own driver\n");
+	}
 	hc_refused_reads = 0;
 	hc_log_skips = 0;
 	/* per run, like the two above: this loader stays resident across runs, and a tally carried
@@ -2008,7 +2283,7 @@ block_io2_probe(efi_handle h, efi_block_io *bio)
 	efi_status (EFIAPI *check_event)(void *) = (efi_status (EFIAPI *)(void *))BS->check_event;
 	static efi_block_io2_token tokens[8];
 	efi_block_io2 *bio2 = NULL;
-	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t bs = bio->media->block_size, t0, t_sync, t_issue = 0, t_all, freq = timer_freq();
 	uint64_t returned_done = 0, pending, polls = 0;
 	efi_status s;
 
@@ -2267,13 +2542,23 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 	clean_dcache((uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_entry + 0x1000);
 	clean_dcache((uint64_t)(uintptr_t)loader_ctx, (uint64_t)(uintptr_t)loader_ctx + sizeof(loader_ctx));
 
-	/* the last argument arrives in that core's x0 */
+	if (PLAT->watch_quietly) {
+		/* what is known so far into the partition now: after CPU_ON this core calls nothing of UEFI's */
+		print("core %x: starting the kernel there; this core watches with its interrupts off\n", mpidr);
+		flush_log();
+		watching_only = 1;
+		daif = READ_SYSREG(DAIF);
+		__asm__ volatile ("msr daifset, #0xf");
+	}
+	/* the last argument arrives in that core's x0 (not on Samsung's firmware: other_cpu_entry finds it itself) */
 	status = psci_call(PSCI_CPU_ON, mpidr, (uint64_t)(uintptr_t)&other_cpu_entry, (uint64_t)(uintptr_t)&other_cpu_start);
 
 	started = last_pet = last_battery = last_beat_at = READ_SYSREG(CNTVCT_EL0);
-	print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
-	if (PLAT->log_other_cpu) {
-		flush_log();
+	if (!PLAT->watch_quietly) {
+		print("core %x: the firmware answers %d to the request to start it\n", mpidr, (uint64_t)status);
+		if (PLAT->log_other_cpu) {
+			flush_log();
+		}
 	}
 	while (status == 0) {
 		/*
@@ -2301,8 +2586,10 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 			watching_only = 1;
 			daif = READ_SYSREG(DAIF);
 			__asm__ volatile ("msr daifset, #0xf");
+#ifndef GIC_V2
 			group1 = READ_SYSREG(S3_0_C12_C12_7);          /* ICC_IGRPEN1_EL1 */
 			__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" ((uint64_t)0));
+#endif
 		}
 		/* both are written by a core with its caches off: look at memory, not at our copy */
 		flush_dcache((uint64_t)(uintptr_t)&other_cpu_done, (uint64_t)(uintptr_t)&other_cpu_done + 8);
@@ -2345,7 +2632,9 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 		if (block_enabled) {
 			block_poll();
 		}
-		usb_poll_command();
+		if (!PLAT->watch_quietly) {
+			usb_poll_command();
+		}
 		if (block_enabled) {
 			/*
 			 * The pause is spent looking at the kernel's mailbox: with one look a pass, a
@@ -2363,9 +2652,14 @@ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const st
 		}
 	}
 	running_live = NULL;
+	if (PLAT->watch_quietly) {
+		print("core %x: the firmware answered %d to the request to start it\n", mpidr, (uint64_t)status);
+	}
 
 	if (watching_only) {
+#ifndef GIC_V2
 		__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" (group1));
+#endif
 		__asm__ volatile ("msr daif, %0" : : "r" (daif));
 	}
 	return status;
@@ -2457,6 +2751,16 @@ exception_handler(int64_t type, uint64_t *ctx)
 	print("loader image base %x (elr offset %x)\n", (uint64_t)(uintptr_t)&__ImageBase,
 	    ctx[EXC_CTX_ELR] - (uint64_t)(uintptr_t)&__ImageBase);
 	flush_log();
+	if (PLAT == &platform_y2s) {
+		/*
+		 * Nobody resets this phone unattended, and a reset wipes the message before anyone can
+		 * read it (the log write may fail in this state too). Keep it on the screen: Vol-Down +
+		 * Power for 10-15 s resets.
+		 */
+		print("held here: photograph this screen, then hold Vol-Down + Power to reset\n");
+		for (;;) {
+		}
+	}
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 	for (;;) {
 	}
@@ -2492,6 +2796,12 @@ struct payload_info {
 	uint64_t forced_base;
 	uint64_t resident_rd;           /* size of a root image the host put at the resident address */
 	int usb_mode;
+	char kpart[32];                 /* where the kernel lives on storage, if not in the payload */
+	uint64_t koff;                  /* byte offset of the kernel inside that partition */
+	char rpart[32];                 /* same for the root ramdisk (md1) */
+	uint64_t roff, rsize;
+	char rdpart[32];                /* same for the resident root image (md0) */
+	uint64_t rdoff, rdsize;
 };
 
 static uint64_t
@@ -2544,6 +2854,38 @@ parse_payload(struct payload_info *pi, int verbose)
 			pi->checkpoint = parse_number(text, 10);  /* where the kernel should stop and come back */
 		} else if (str_eq(e->name, "usb")) {
 			pi->usb_mode = 1;                         /* stay in the loader and take commands over USB */
+		} else if (str_eq(e->name, "kpart")) {
+			/* the kernel is not in the payload: it sits on a GPT partition */
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->kpart) && text[k] != 0) {
+				pi->kpart[k] = text[k];
+				k++;
+			}
+			pi->kpart[k] = 0;
+		} else if (str_eq(e->name, "koff")) {
+			pi->koff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rpart")) {
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->rpart) && text[k] != 0) {
+				pi->rpart[k] = text[k];
+				k++;
+			}
+			pi->rpart[k] = 0;
+		} else if (str_eq(e->name, "roff")) {
+			pi->roff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rsize")) {
+			pi->rsize = parse_number(text, 16);
+		} else if (str_eq(e->name, "rdpart")) {
+			unsigned k = 0;
+			while (k + 1 < sizeof(pi->rdpart) && text[k] != 0) {
+				pi->rdpart[k] = text[k];
+				k++;
+			}
+			pi->rdpart[k] = 0;
+		} else if (str_eq(e->name, "rdoff")) {
+			pi->rdoff = parse_number(text, 16);
+		} else if (str_eq(e->name, "rdsize")) {
+			pi->rdsize = parse_number(text, 16);
 		}
 		p += sizeof(*e) + ((e->size + 15) & ~15u);
 	}
@@ -2656,6 +2998,72 @@ print_memory_map(void)
 	}
 }
 
+/*
+ * y2s: memory for the Wi-Fi chip's DMA. Samsung's hypervisor lets the PCIe block (HSI1) reach memory
+ * only where the kernel grants it, 64 KB at a time (HVC 0xc6000101), and z3s, which has this chip
+ * working, grants only between 2 and 4 GB; the kernel's own window is above 4 GB. So a piece of it
+ * there, never UEFI's again, said in /chosen as wifi-dma-base and wifi-dma-size.
+ */
+#define WIFI_DMA_SIZE   (32ULL << 20)
+static uint64_t wifi_dma_base, wifi_dma_size;
+
+static void
+reserve_wifi_dma(void)
+{
+	uint64_t at = 0xFFFFFFFFULL;
+
+	if (wifi_dma_size != 0 || PLAT != &platform_y2s) {
+		return;
+	}
+	if (EFI_ERROR(BS->allocate_pages(AllocateMaxAddress, EfiLoaderData, (WIFI_DMA_SIZE + 0x10000) >> 12, &at))) {
+		print("wifi dma: no %d MB below 4 GB\n", (uint64_t)(WIFI_DMA_SIZE >> 20));
+		return;
+	}
+	if (at < 0x80000000ULL) {
+		print("wifi dma: %x is not where the PCIe block may be granted: not used\n", at);
+		BS->free_pages(at, (WIFI_DMA_SIZE + 0x10000) >> 12);
+		return;
+	}
+	wifi_dma_base = (at + 0xFFFF) & ~0xFFFFULL;     /* (granted 64 KB at a time) */
+	wifi_dma_size = WIFI_DMA_SIZE;
+	print("wifi dma: %x size %x\n", wifi_dma_base, wifi_dma_size);
+}
+
+/*
+ * y2s: memory for the display controller's DMA to read CoreAnimation's frames from (the kernel's
+ * fb_scaler, MiniIOSurface.cpp). Its base registers hold 32 bits and nothing translates its
+ * addresses, and XNU's own memory is all above 4 GB (its VM found no page below: "scanned 1
+ * pages", 25 October). So a piece below 4 GB, never UEFI's again, said in /chosen as
+ * display-pool-base and display-pool-size: room for four full-screen frames.
+ */
+static uint64_t display_pool_base, display_pool_size;
+
+/*
+ * As much as is free of 192, 128 or 64 MB (13, 9 or 4 slots of 14 MB): the window server's frames
+ * and an application's full-screen layers all want a slot, and memory below 4 GB is nobody
+ * else's (XNU has none of it).
+ */
+static void
+reserve_display_pool(void)
+{
+	static const uint64_t sizes[] = { 192ULL << 20, 128ULL << 20, 64ULL << 20 };
+
+	if (display_pool_size != 0 || PLAT != &platform_y2s) {
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+		uint64_t at = 0xFFFFFFFFULL;
+
+		if (!EFI_ERROR(BS->allocate_pages(AllocateMaxAddress, EfiLoaderData, (sizes[i] + 0x10000) >> 12, &at))) {
+			display_pool_base = (at + 0xFFFF) & ~0xFFFFULL;
+			display_pool_size = sizes[i];
+			print("display pool: %x size %x\n", display_pool_base, display_pool_size);
+			return;
+		}
+	}
+	print("display pool: not even 64 MB below 4 GB\n");
+}
+
 static int
 choose_window(const struct payload_info *pi)
 {
@@ -2714,6 +3122,58 @@ choose_window(const struct payload_info *pi)
 }
 
 /*
+ * The kernel does not have to live in the payload: a "kpart"/"koff" pair in the
+ * payload points at a GPT partition and a byte offset, and the image is read
+ * into the download staging area. This keeps the UEFI image small and lets the
+ * kernel be replaced from Android with dd.
+ */
+static int
+read_partition_into(const char *part, uint64_t off, void *dest, uint64_t len)
+{
+	efi_block_io *bio = find_partition_ascii(part);
+	uint8_t *d = dest;
+	uint64_t bs, lba, left = len, done = 0;
+
+	if (bio == NULL || bio->media == NULL) {
+		print("storage: no partition '%s'\n", part);
+		return 0;
+	}
+	bs = bio->media->block_size;
+	if (bs == 0 || (off % bs) != 0) {
+		print("storage: bad offset %x\n", off);
+		return 0;
+	}
+	lba = off / bs;
+	while (left != 0) {
+		uint64_t chunk = left > (4ULL << 20) ? (4ULL << 20) : left;
+		if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, lba, chunk, d + done))) {
+			print("storage: read failed at %x\n", off + done);
+			return 0;
+		}
+		done += chunk;
+		lba += chunk / bs;
+		left -= chunk;
+	}
+	return 1;
+}
+
+static int
+load_kernel_from_partition(const char *part, uint64_t off)
+{
+	uint8_t *dest = (uint8_t *)DOWNLOAD_BASE;
+
+	if (!read_partition_into(part, off, dest, DOWNLOAD_MAX_SIZE)) {
+		return 0;
+	}
+	if (*(const uint32_t *)dest != 0xfeedfacf) {
+		print("kernel: bad Mach-O magic %x at '%s'+%x\n", (uint64_t)*(const uint32_t *)dest, part, off);
+		return 0;
+	}
+	print("kernel: read %x bytes from '%s' at %x\n", (uint64_t)DOWNLOAD_MAX_SIZE, part, off);
+	return 1;
+}
+
+/*
  * Load and run the kernel from the payload. Returns when the kernel comes
  * back (panic, checkpoint, early exception); the combined log is staged and
  * written to the log partition. Returns 0 if the kernel could not be started.
@@ -2728,9 +3188,22 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	uint32_t desc_ver;
 	struct payload_info pi;
 
-	if (!parse_payload(&pi, 1) || pi.kernel == NULL) {
+	if (!parse_payload(&pi, 1)) {
+		print("no payload\n");
+		return 0;
+	}
+	if (pi.kernel == NULL && pi.kpart[0] != 0) {
+		if (!load_kernel_from_partition(pi.kpart, pi.koff)) {
+			return 0;
+		}
+		pi.kernel = (const uint8_t *)DOWNLOAD_BASE;
+	}
+	if (pi.kernel == NULL) {
 		print("no kernel in payload\n");
 		return 0;
+	}
+	if (pi.ramdisk == NULL && pi.rpart[0] != 0) {
+		pi.ramdisk_size = pi.rsize;      /* read straight into rd_pa below */
 	}
 	if (!have_checkpoint) {
 		checkpoint = pi.checkpoint;
@@ -2781,13 +3254,37 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* A resident image next to a payload ramdisk: two disks (which is which is decided where the device tree is written). */
 	uint64_t rd1_pa = 0, rd1_size = 0;
 
+	/*
+	 * ufs_root=: the kernel mounts its root from the flash itself (bsd/dev/redwood_ufs.c): the
+	 * system image is not copied into memory, and the payload's small image is the only RAM disk,
+	 * md1 as always ("RAMDisk1" alone below).
+	 */
+	int root_on_flash = 0;
+
+	for (const char *c = pi.cmdline; *c; c++) {
+		root_on_flash |= starts_with(c, "ufs_root=") && (c == pi.cmdline || c[-1] == ' ');
+	}
 	if (pi.resident_rd != 0) {
 		resident_rd_size = pi.resident_rd;
+	}
+	if (pi.rdpart[0] != 0) {
+		resident_rd_size = pi.rdsize;    /* read straight to res_pa below */
+	}
+	if (root_on_flash) {
+		resident_rd_size = 0;
+		print("the root is on the flash (ufs_root=): the system image is not read into memory\n");
 	}
 	if (resident_rd_size != 0) {
 		uint64_t res_pa = phys_base + RESIDENT_RD_OFFSET;
 		uint64_t res_size = (resident_rd_size + PAGE_SIZE_MAX - 1) & ~(PAGE_SIZE_MAX - 1);
 
+		if (pi.rdpart[0] != 0) {
+			print("resident image: reading %x bytes from '%s'+%x\n", resident_rd_size, pi.rdpart, pi.rdoff);
+			if (!read_partition_into(pi.rdpart, pi.rdoff, (void *)res_pa, resident_rd_size)) {
+				return 0;
+			}
+			print("resident image: read\n");
+		}
 		if (kern_hi + rd_size > res_pa) {
 			print("kernel and ramdisk overlap the resident image\n");
 			return 0;
@@ -2827,7 +3324,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		print("resident ramdisk at pa %x size %x\n", rd_pa, rd_size);
 	} else if (rd_size != 0) {
 		memset((void *)rd_pa, 0, rd_size);
-		memcpy((void *)rd_pa, pi.ramdisk, pi.ramdisk_size);
+		if (pi.ramdisk != NULL) {
+			memcpy((void *)rd_pa, pi.ramdisk, pi.ramdisk_size);
+		} else if (!read_partition_into(pi.rpart, pi.roff, (void *)rd_pa, pi.ramdisk_size)) {
+			return 0;
+		}
 		print("ramdisk at pa %x size %x\n", rd_pa, rd_size);
 	}
 	if (rd1_size != 0) {
@@ -2838,9 +3339,9 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	uint64_t this_mpidr = READ_SYSREG(MPIDR_EL1) & 0xFFFFFF, kernel_mpidr = this_mpidr;
 	/* "cpus=N" or "cpumask=M" there too: the kernel may have more cores than the one it starts on */
 	int more_cores = 0, battery_requested = 0, ufs_requested = 0;
-	/* "torch=N" (not 0) there too: the phone's flashlight is the kernel's (bsd/dev/hakios.torch.c) */
+	/* "torch=N" (not 0) there too: the phone's flashlight is the kernel's (bsd/dev/redwood_torch.c) */
 	int torch_requested = 0;
-	/* "cam=5" there too: the phone's wide camera is iOS's (bsd/dev/hakios.camera.c) */
+	/* "cam=5" there too: the phone's wide camera is iOS's (bsd/dev/redwood_camera.c) */
 	int camera_requested = 0;
 	/* (the loader stays for run after run: what the last run's arguments said must not hold for this one) */
 	gamut_p3 = 0;
@@ -2850,7 +3351,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	block_write_part = -1;
 	for (const char *c = pi.cmdline; *c; c++) {
 		if (starts_with(c, "bootcpu=") && (c == pi.cmdline || c[-1] == ' ') && c[8] >= '0' && c[8] <= '7') {
-			kernel_mpidr = (uint64_t)(c[8] - '0') << PLAT->core_shift;
+			kernel_mpidr = plat_mpidr_of(PLAT, c[8] - '0');
 		}
 		more_cores |= (starts_with(c, "cpus=") || starts_with(c, "cpumask=")) && (c == pi.cmdline || c[-1] == ' ');
 		battery_requested |= starts_with(c, "battery=1") && (c == pi.cmdline || c[-1] == ' ') &&
@@ -2878,7 +3379,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		ufs_survey();
 	}
 	if (ufs_requested >= 2) {
-		block_start();
+		block_start(kernel_mpidr == this_mpidr);
 	}
 	if (checkpoint == CHECKPOINT_SELFTEST) {
 		kernel_mpidr = this_mpidr;
@@ -3015,7 +3516,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	/* --- device tree ---------------------------------------------------- */
 	const struct platform *plat = PLAT;
 	struct dt_writer w = { .base = (uint8_t *)dt_pa, .cur = (uint8_t *)dt_pa, .depth = 0 };
-	uint64_t cntfrq = READ_SYSREG(CNTFRQ_EL0);
+	uint64_t cntfrq = timer_freq();
 	uint64_t ranges[3] = { 0, plat->io_base, plat->io_size };
 	uint64_t reg2[2];
 	uint8_t seed[64];
@@ -3045,12 +3546,28 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
+	reserve_wifi_dma();
+	if (wifi_dma_size != 0) {
+		dt_prop_u64(&w, "wifi-dma-base", wifi_dma_base);
+		dt_prop_u64(&w, "wifi-dma-size", wifi_dma_size);
+	}
+	reserve_display_pool();
+	if (display_pool_size != 0) {
+		dt_prop_u64(&w, "display-pool-base", display_pool_base);
+		dt_prop_u64(&w, "display-pool-size", display_pool_size);
+	}
 	dt_prop_u32(&w, "debug-enabled", 1);
 	/* what MobileGestalt answers "main screen scale" from: 3 device pixels per point */
 	dt_prop_u32(&w, "display-scale", 3);
 	dt_prop_u32(&w, "display-rotation", 0);
 	/* how the kernel is to ask the firmware for more cores (PSCI) */
 	dt_prop_str(&w, "psci-method", plat->psci_hvc ? "hvc" : "smc");
+	/* ... and where it may start them from: below 4 GB, with a slot for the real entry (see kernel_cpu_trampoline) */
+	dt_prop_u64(&w, "psci-cpu-on-trampoline", (uint64_t)(uintptr_t)&kernel_cpu_trampoline);
+	dt_prop_u64(&w, "psci-cpu-on-slot", (uint64_t)(uintptr_t)kernel_cpu_slot);
+	/* ... and where a core coming back from a power-down idle enters (see kernel_cpu_resume) */
+	dt_prop_u64(&w, "psci-cpu-resume-trampoline", (uint64_t)(uintptr_t)&kernel_cpu_resume);
+	dt_prop_u64(&w, "psci-cpu-resume-data", (uint64_t)(uintptr_t)kernel_cpu_resume_data);
 	/* the time now, by the firmware's clock (the kernel has no real-time clock driver) */
 	uint64_t epoch = firmware_epoch();
 	if (epoch != 0) {
@@ -3095,7 +3612,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * images present the big resident one is the root and the payload's
 	 * small one is the second disk.
 	 */
-	if (rd_size != 0 || rd1_size != 0) {
+	if (root_on_flash && rd_size != 0 && rd1_size == 0) {
+		uint64_t only[2] = { rd_pa, rd_size };
+
+		dt_prop(&w, "RAMDisk1", only, sizeof(only));
+	} else if (rd_size != 0 || rd1_size != 0) {
 		uint64_t first[2] = { rd1_size != 0 ? rd1_pa : rd_pa, rd1_size != 0 ? rd1_size : rd_size };
 		dt_prop(&w, "RAMDisk", first, sizeof(first));
 	}
@@ -3168,16 +3689,20 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	 * this loader stays on while it watches is not the kernel's, nor any the firmware runs.
 	 */
 	uint64_t cpu_mpidr[8] = { kernel_mpidr };
-	int cpu_count = 1, boot_core = (int)(kernel_mpidr >> plat->core_shift);
+	int cpu_count = 1, boot_core = plat_core_of(plat, kernel_mpidr);
 
 	if (more_cores) {
 		for (int distance = 1; distance < plat->cores; distance++) {
 			for (int side = 0; side < 2; side++) {
 				int core = side == 0 ? boot_core + distance : boot_core - distance;
-				uint64_t mpidr = (uint64_t)core << plat->core_shift;
+				uint64_t mpidr;
 				int64_t state;
 
-				if (core < 0 || core >= plat->cores || mpidr == this_mpidr) {
+				if (core < 0 || core >= plat->cores) {
+					continue;
+				}
+				mpidr = plat_mpidr_of(plat, core);
+				if (mpidr == this_mpidr) {
 					continue;
 				}
 				state = psci_call(PSCI_AFFINITY_INFO, mpidr, 0, 0);
@@ -3210,7 +3735,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_prop_u64(&w, "bus-frequency", 100000000ULL);
 		dt_prop_u64(&w, "memory-frequency", 100000000ULL);
 		dt_prop_u64(&w, "peripheral-frequency", 24000000ULL);
-		if (plat->small_cores & (1u << ((cpu_mpidr[i] >> plat->core_shift) & 31))) {
+		if (plat->small_cores & (1u << (plat_core_of(plat, cpu_mpidr[i]) & 31))) {
 			dt_prop_u32(&w, "small-core", 1);
 		}
 		dt_end(&w);
@@ -3234,9 +3759,17 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	dt_begin(&w, "gic");
 	dt_prop_str(&w, "device_type", "interrupt-controller");
-	dt_prop_str(&w, "compatible", "arm,gic-v3");
-	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
-	dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	if (plat->gic_v2) {
+		/* GICv2: distributor + CPU interface; osfmk/arm64/gic_v2_irq.c reads this. */
+		dt_prop_str(&w, "compatible", "arm,cortex-a15-gic");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x1000, plat->gic_redist - plat->io_base, 0x1000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	} else {
+		/* GICv3: distributor + redistributor; osfmk/arm64/gic_v3_irq.c reads this. */
+		dt_prop_str(&w, "compatible", "arm,gic-v3");
+		uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
+		dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+	}
 	dt_end(&w);
 	if (plat->uart != 0) {
 		dt_begin(&w, "uart0");
@@ -3289,6 +3822,11 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		uint64_t sp_now = (uint64_t)(uintptr_t)__builtin_frame_address(0);
 		clean_dcache(sp_now - 0x2000, sp_now + 0x2000);
 		flush_dcache(phys_base, top);
+		/* the kernel writes the slot uncached and new cores read it with their caches off (the slot
+		 * is in .text, which the firmware maps read-only: not written from here, it is 0 in the image) */
+		flush_dcache((uint64_t)(uintptr_t)&kernel_cpu_trampoline,
+		    (uint64_t)(uintptr_t)kernel_cpu_resume_data + sizeof(uint64_t) * 17);
+		console_suspect = PLAT == &platform_y2s;
 		if (checkpoint == CHECKPOINT_SELFTEST) {
 			/* Do not enter the kernel at all: exercise only the return path. */
 			jump_to_kernel((uint64_t)(uintptr_t)&loader_return_stub, 0);
@@ -3372,13 +3910,20 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	const char *klog = (const char *)loader_ctx[CTX_LOG_PA];
 	uint64_t klog_len = loader_ctx[CTX_LOG_LEN];
 	uint64_t reason = loader_ctx[CTX_REASON];
+
+	if (reason == 3) {
+		y2s_want_log_access = 1;
+	} else if (reason == 4) {
+		y2s_want_download = 1;      /* the kernel asked for Download Mode */
+	}
 	if (checkpoint == CHECKPOINT_SELFTEST) {
 		print("return-path self test passed\n");
 		set_result("selftest-ok", 0, 0);
 		klog = NULL;
 		klog_len = 0;
 	} else {
-		print("kernel returned: log at %x, %d bytes\n", (uint64_t)(uintptr_t)klog, klog_len);
+		print("kernel returned: reason %d, log at %x, %d bytes\n", reason,
+		    (uint64_t)(uintptr_t)klog, klog_len);
 		if (reason == 2) {
 			print("STOPPED AT CHECKPOINT %d\n", loader_ctx[CTX_ESR]);
 			set_result("checkpoint", loader_ctx[CTX_ESR], 0);
@@ -3500,7 +4045,7 @@ usb_wait(uint8_t endpoint)
 {
 	/* static: a long transfer is many short waits, and the watchdog must be fed across them */
 	static uint64_t last_pet;
-	uint64_t freq = READ_SYSREG(CNTFRQ_EL0), began = READ_SYSREG(CNTVCT_EL0);
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0);
 
 	for (;;) {
 		uint32_t msg = UsbDeviceEventNoEvent;
@@ -3527,10 +4072,22 @@ usb_wait(uint8_t endpoint)
 }
 
 static int usb_rx_queued;       /* usb_poll_command() has left the receive for the next command with the controller */
+static struct efi_usbfn_io *USBFN;      /* y2s: the transport (see the boot menu's section) */
+static int64_t ufn_rx(uint8_t *buf, uint64_t len);
+static int64_t ufn_tx(const uint8_t *data, uint64_t len);
+static uint8_t *stage_buf;
+static uint64_t stage_size, stage_len;
+static int stage_last_log(void);
+static const char *stage_write(const char *part, uint64_t off);
+static int usb_boot_asked;
+static void reboot_download(void);
 
 static int64_t
 usb_rx(uint8_t *buf, uint64_t len)
 {
+	if (USBFN != NULL) {
+		return ufn_rx(buf, len);
+	}
 	if (usb_rx_queued) {
 		usb_rx_queued = 0;      /* (every command is received the same way, into the same buffer) */
 	} else if (EFI_ERROR(USB->send(USB_EP_OUT, len, buf))) {
@@ -3544,6 +4101,9 @@ usb_tx(const uint8_t *data, uint64_t len)
 {
 	if (data != usb_tx_buf) {
 		memcpy(usb_tx_buf, data, len);
+	}
+	if (USBFN != NULL) {
+		return ufn_tx(usb_tx_buf, len);
 	}
 	if (EFI_ERROR(USB->send(USB_EP_IN, len, usb_tx_buf))) {
 		return -1;
@@ -3612,7 +4172,7 @@ fb_command(char *cmd)
 			} else if (str_eq(var, "version")) {
 				fb_reply("OKAY", "0.5");
 			} else if (str_eq(var, "max-download-size")) {
-				fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : "0x03f00000");
+				fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : stage_buf != NULL ? "0x05f00000" : "0x03f00000");
 			} else if (str_eq(var, "result")) {
 				fb_reply("OKAY", last_result);
 			} else if (str_eq(var, "screen") && SCREEN.base != 0) {
@@ -3644,8 +4204,8 @@ fb_command(char *cmd)
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "download:")) {
 			uint64_t total = parse_number(cmd + 9, 16), got = 0;
-			uint64_t limit = PAYLOAD_MAX_SIZE - 0x100000;
-			uint8_t *dest = (uint8_t *)PAYLOAD_BASE;
+			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
+			uint8_t *dest = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
 			int to_ramdisk = download_to_ramdisk;
 
 			download_to_ramdisk = 0;
@@ -3671,6 +4231,11 @@ fb_command(char *cmd)
 			if (got == total) {
 				if (to_ramdisk) {
 					resident_rd_size = total;
+				}
+				if (stage_buf != NULL && !to_ramdisk) {
+					stage_len = total;
+					/* (a write is rounded up to the block: what follows is zeroes, not the last download's) */
+					memset(stage_buf + total, 0, (size_t)((total + 4095) / 4096 * 4096 - total));
 				}
 				fb_reply("OKAY", "");
 			} else {
@@ -3744,6 +4309,39 @@ fb_command(char *cmd)
 			/* the firmware's memory map into the log (then "oem log" and fetch it) */
 			print_memory_map();
 			fb_reply("OKAY", "");
+		} else if (starts_with(cmd, "oem lastlog")) {
+			/* the last run's log as it was saved in the partition; then "upload" (fastboot get_staged) */
+			fb_reply(stage_last_log() ? "OKAY" : "FAIL", "");
+		} else if (starts_with(cmd, "oem write ")) {
+			/* "oem write PART HEXOFFSET": the last download into the partition, read back */
+			char part[24];
+			const char *a = cmd + 10, *why;
+			unsigned n = 0;
+
+			while (*a == ' ') {
+				a++;
+			}
+			while (*a && *a != ' ' && n < sizeof(part) - 1) {
+				part[n++] = *a++;
+			}
+			part[n] = 0;
+			while (*a == ' ') {
+				a++;
+			}
+			why = stage_write(part, parse_number(a, 16));
+			if (why == NULL) {
+				fb_reply("INFO", "written and read back");
+				fb_reply("OKAY", "");
+			} else {
+				fb_reply("FAIL", why);
+			}
+		} else if (starts_with(cmd, "oem boot")) {
+			fb_reply("OKAY", "booting iOS");
+			usb_boot_asked = 1;
+		} else if (starts_with(cmd, "oem download-mode")) {
+			fb_reply("OKAY", "");
+			BS->stall(200000);
+			reboot_download();
 		} else if (starts_with(cmd, "oem log")) {
 			if (busy) {
 				compose_live_log(running_live, running_slide);
@@ -3825,6 +4423,663 @@ usb_command_loop(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* y2s: the boot menu, USB through EFI_USBFN_IO_PROTOCOL, Download Mode       */
+/* (PLANS/09-standalone.md)                                                  */
+
+#include "menu_font.h"
+
+#define STAGE_SIZE      (96ULL << 20)   /* stage_buf: where downloads land on y2s (a whole recovery image) */
+
+/* the panel, through the firmware's framebuffer */
+static uint32_t
+menu_rgb(uint32_t rgb)
+{
+	/* GOP pixel format 0 is RGBX in memory (R first), 1 BGRX */
+	if (GOP != NULL && GOP->mode->info->pixel_format == 0) {
+		return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+	}
+	return rgb;
+}
+
+static void
+menu_fill(int x, int y, int w, int h, uint32_t rgb, int radius)
+{
+	uint32_t c = menu_rgb(rgb);
+
+	for (int j = 0; j < h; j++) {
+		int py = y + j;
+
+		if (py < 0 || py >= (int)SCREEN.height) {
+			continue;
+		}
+		uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)py * SCREEN.stride);
+		int inset = 0;
+
+		if (radius > 0 && (j < radius || j >= h - radius)) {
+			int dy = j < radius ? radius - 1 - j : j - (h - radius);
+
+			/* the first x of the row inside a corner circle of this radius */
+			inset = radius;
+			while (inset > 0 && (radius - inset) * (radius - inset) + dy * dy < radius * radius) {
+				inset--;
+			}
+		}
+		for (int i = inset; i < w - inset; i++) {
+			int px = x + i;
+
+			if (px >= 0 && px < (int)SCREEN.width) {
+				row[px] = c;
+			}
+		}
+	}
+}
+
+static int
+menu_text_width(const char *s, int scale)
+{
+	return (int)str_len(s) * 8 * scale;
+}
+
+static void
+menu_text(int x, int y, const char *s, int scale, uint32_t rgb)
+{
+	uint32_t c = menu_rgb(rgb);
+
+	for (; *s; s++, x += 8 * scale) {
+		const unsigned char *glyph = menu_font + (unsigned char)*s * 16;
+
+		for (int gy = 0; gy < 16; gy++) {
+			for (int gx = 0; gx < 8; gx++) {
+				if (!(glyph[gy] & (1u << gx))) {
+					continue;
+				}
+				for (int sy = 0; sy < scale; sy++) {
+					int py = y + gy * scale + sy;
+
+					if (py < 0 || py >= (int)SCREEN.height) {
+						continue;
+					}
+					uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)py * SCREEN.stride);
+
+					for (int sx = 0; sx < scale; sx++) {
+						int px = x + gx * scale + sx;
+
+						if (px >= 0 && px < (int)SCREEN.width) {
+							row[px] = c;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+static void
+menu_text_center(int y, const char *s, int scale, uint32_t rgb)
+{
+	menu_text(((int)SCREEN.width - menu_text_width(s, scale)) / 2, y, s, scale, rgb);
+}
+
+static void
+menu_flush(void)
+{
+	clean_dcache(SCREEN.base, SCREEN.base + (uint64_t)SCREEN.stride * SCREEN.height);
+}
+
+enum { MENU_BOOT, MENU_USB, MENU_DOWNLOAD, MENU_REBOOT, MENU_OFF, MENU_COUNT };
+static const char *const menu_items[MENU_COUNT] = { "Boot iOS", "Log access (USB)", "Download Mode", "Reboot", "Power off" };
+
+#define MENU_TOP        980
+#define MENU_ROW        230
+#define MENU_SCALE      5
+
+static void
+menu_draw(int selected, const char *banner, int countdown)
+{
+	int w = (int)SCREEN.width;
+	char line[64];
+
+	menu_fill(0, 0, w, (int)SCREEN.height, 0x000000, 0);
+	menu_text_center(300, "HackiOS", 10, 0xffffff);
+	menu_text_center(500, "Galaxy S20+  -  iOS 16.5", 3, 0x8e8e93);
+	if (banner != NULL && banner[0] != 0) {
+		menu_text_center(640, banner, 3, 0xffd60a);
+	}
+	for (int i = 0; i < MENU_COUNT; i++) {
+		int y = MENU_TOP + i * MENU_ROW, x = 90;
+
+		menu_fill(x, y, w - 2 * x, MENU_ROW - 40, i == selected ? 0x0a84ff : 0x1c1c1e, 48);
+		menu_text(x + 70, y + (MENU_ROW - 40 - 16 * MENU_SCALE) / 2, menu_items[i], MENU_SCALE,
+		    i == selected ? 0xffffff : 0xebebf5);
+	}
+	if (countdown > 0) {
+		static const char head[] = "Booting iOS in ", tail[] = " s - press a key to stay";
+		unsigned n = 0;
+
+		for (unsigned i = 0; head[i]; i++) {
+			line[n++] = head[i];
+		}
+		line[n++] = (char)('0' + (countdown > 9 ? 9 : countdown));
+		for (unsigned i = 0; tail[i]; i++) {
+			line[n++] = tail[i];
+		}
+		line[n] = 0;
+		menu_text_center(MENU_TOP + MENU_COUNT * MENU_ROW + 60, line, 3, 0x8e8e93);
+	}
+	menu_text_center((int)SCREEN.height - 360, "Volume Up / Down: move", 3, 0x8e8e93);
+	menu_text_center((int)SCREEN.height - 290, "Power: select", 3, 0x8e8e93);
+	menu_flush();
+}
+
+/* a key, or 0 for none: 'u' up, 'd' down, 's' select */
+static int
+menu_key(void)
+{
+	efi_simple_text_input *in = (efi_simple_text_input *)ST->con_in;
+	efi_input_key key;
+
+	if (in == NULL || EFI_ERROR(in->read_key_stroke(in, &key))) {
+		return 0;
+	}
+	if (key.scan_code == EFI_SCAN_UP || key.scan_code == EFI_SCAN_LEFT) {
+		return 'u';
+	}
+	if (key.scan_code == EFI_SCAN_DOWN || key.scan_code == EFI_SCAN_RIGHT) {
+		return 'd';
+	}
+	if (key.unicode_char == '\r' || key.unicode_char == '\n' || key.scan_code == EFI_SCAN_ESC) {
+		return 's';
+	}
+	return 'x';
+}
+
+/* the choice: `wait` seconds untouched boot iOS (0: wait for a key) */
+static int
+menu_choose(const char *banner, int wait)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0), last_pet = began;
+	int selected = MENU_BOOT, left = wait, touched = wait == 0;
+
+	while (menu_key() != 0) {               /* (keys still held from the bootloader's combination) */
+	}
+	menu_draw(selected, banner, touched ? 0 : left);
+	for (;;) {
+		int k = menu_key();
+		uint64_t now = READ_SYSREG(CNTVCT_EL0);
+
+		if (now - last_pet > freq) {
+			last_pet = now;
+			wdt_pet();
+		}
+		if (k == 0) {
+			if (!touched) {
+				int remaining = wait - (int)((now - began) / freq);
+
+				if (remaining <= 0) {
+					return MENU_BOOT;
+				}
+				if (remaining != left) {
+					left = remaining;
+					menu_draw(selected, banner, left);
+				}
+			}
+			BS->stall(20000);
+			continue;
+		}
+		touched = 1;
+		if (k == 'u') {
+			selected = (selected + MENU_COUNT - 1) % MENU_COUNT;
+		} else if (k == 'd') {
+			selected = (selected + 1) % MENU_COUNT;
+		} else if (k == 's') {
+			return selected;
+		}
+		menu_draw(selected, banner, 0);
+	}
+}
+
+/* a status screen: a title and up to four lines */
+static void
+menu_status(const char *title, const char *l1, const char *l2, const char *l3, const char *l4)
+{
+	const char *lines[4] = { l1, l2, l3, l4 };
+
+	menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+	menu_text_center(300, "HackiOS", 10, 0xffffff);
+	menu_text_center(700, title, 5, 0x0a84ff);
+	for (int i = 0; i < 4; i++) {
+		if (lines[i] != NULL) {
+			menu_text_center(1000 + i * 120, lines[i], 3, 0xebebf5);
+		}
+	}
+	menu_text_center((int)SCREEN.height - 290, "Power: back to the menu", 3, 0x8e8e93);
+	menu_flush();
+}
+
+/*
+ * Samsung's Download Mode, as `reboot download` asks for it (drivers/samsung/sec_reboot.c, exynos-reboot.c):
+ * PMU INFORM2[23:16] = 0x4E (a normal reboot, not into the charging screen), INFORM3 = 0x12345601
+ * (SEC_RESET_REASON_DOWNLOAD), RST_STAT cleared, the software reset.
+ */
+#define Y2S_PMU                 0x15860000ULL
+static void
+reboot_download(void)
+{
+	volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)Y2S_PMU;
+	uint32_t v = pmu[0x808 / 4];
+
+	v &= ~(0xffu << 16);
+	v |= 0x4eu << 16;
+	pmu[0x808 / 4] = v;
+	pmu[0x80c / 4] = 0x12345601;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	pmu[0x404 / 4] = 0;
+	pmu[0x3a00 / 4] = 1u << 1;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	BS->stall(1000000);
+	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+}
+
+static void
+power_off(void)
+{
+	volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)Y2S_PMU;
+
+	ST->rt->reset_system(2 /* EfiResetShutdown */, 0, 0, NULL);
+	/* (sec_power_off: PS_HOLD low; with a charger in, S-Boot comes back to the charging screen) */
+	pmu[0x30c / 4] &= ~(1u << 8);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	BS->stall(2000000);
+}
+
+/* ---- USB: the fastboot server over EFI_USBFN_IO_PROTOCOL (high speed: bulk 512, ep0 64) ---- */
+
+static const uint8_t ufn_dev_desc[18] = { 18, 1, 0x00, 0x02, 0, 0, 0, 64, 0xd1, 0x18, 0x0d, 0xd0, 0x00, 0x01, 1, 2, 3, 1 };
+static uint8_t ufn_ep0_buf[256] __attribute__((aligned(64)));
+static int ufn_configured;
+static int ufn_done[2];                 /* a transfer on endpoint 1 finished: [0] OUT (rx), [1] IN (tx) */
+static uint64_t ufn_bytes[2];
+static int ufn_status[2];
+
+static void
+ufn_setup(const efi_usb_device_request *r)
+{
+	static const uint8_t status0[2] = { 0, 0 };
+	const uint8_t *data = NULL;
+	uint64_t len = 0;
+	uint8_t one = 1;
+
+	if (r->request_type == 0x80 && r->request == 6) {       /* GET_DESCRIPTOR */
+		uint8_t type = (uint8_t)(r->value >> 8), index = (uint8_t)r->value;
+		static const uint8_t *const strings[5] = { usb_str0, usb_str_mfr, usb_str_prod, usb_str_serial, usb_str_iface };
+
+		if (type == 1) {
+			data = ufn_dev_desc, len = sizeof(ufn_dev_desc);
+		} else if (type == 2) {
+			data = usb_cfg_desc, len = sizeof(usb_cfg_desc);
+		} else if (type == 3 && index < 5) {
+			data = strings[index], len = strings[index][0];
+		} else if (type == 6) {
+			data = usb_qualifier, len = sizeof(usb_qualifier);
+		}
+	} else if (r->request_type == 0x80 && r->request == 0) {       /* GET_STATUS */
+		data = status0, len = 2;
+	} else if (r->request_type == 0x80 && r->request == 8) {       /* GET_CONFIGURATION */
+		ufn_ep0_buf[0] = (uint8_t)ufn_configured;
+		data = ufn_ep0_buf, len = 1;
+	} else if (r->request_type == 0x00 && r->request == 9) {       /* SET_CONFIGURATION: the status stage is the driver's */
+		ufn_configured = r->value != 0;
+		usb_connected = ufn_configured;
+		return;
+	} else if ((r->request_type == 0x02) && (r->request == 1 || r->request == 3) && r->value == 0 && (r->index & 0x0f) != 0) {
+		/*
+		 * CLEAR_FEATURE / SET_FEATURE (ENDPOINT_HALT) of a bulk endpoint. macOS's fastboot clears both pipes every
+		 * time it opens the device, and the host's data toggle goes back to DATA0 with it: the device's must too
+		 * (DWC3's CLEARSTALL resets the sequence number), or every other packet after the first session is
+		 * dropped and the next command never arrives (25 October: the first command answered, the rest hung).
+		 */
+		uint8_t stall = r->request == 3;
+
+		USBFN->set_endpoint_stall_state(USBFN, (uint8_t)(r->index & 0x0f), (r->index & 0x80) ? UsbfnDirDeviceTx :
+		    UsbfnDirDeviceRx, &stall);
+		return;
+	} else if (r->length == 0) {
+		return;                 /* SET_INTERFACE, ...: nothing to say, the driver acknowledges */
+	}
+	if (data == NULL) {
+		USBFN->set_endpoint_stall_state(USBFN, 0, (r->request_type & 0x80) ? UsbfnDirDeviceTx : UsbfnDirDeviceRx, &one);
+		return;
+	}
+	if (len > r->length) {
+		len = r->length;
+	}
+	if (data != ufn_ep0_buf) {
+		memcpy(ufn_ep0_buf, data, (size_t)len);
+	}
+	USBFN->transfer(USBFN, 0, UsbfnDirDeviceTx, &len, ufn_ep0_buf);
+}
+
+/* one message from the driver: 0 nothing, 1 something */
+static int
+ufn_pump(void)
+{
+	uint32_t msg = EfiUsbMsgNone;
+	uint64_t size = sizeof(efi_usbfn_message_payload);
+	efi_usbfn_message_payload p;
+
+	if (EFI_ERROR(USBFN->event_handler(USBFN, &msg, &size, &p)) || msg == EfiUsbMsgNone) {
+		return 0;
+	}
+	switch (msg) {
+	case EfiUsbMsgSetupPacket:
+		ufn_setup(&p.udr);
+		break;
+	case EfiUsbMsgEndpointStatusChangedRx:
+	case EfiUsbMsgEndpointStatusChangedTx:
+		if (p.utr.endpoint == 1) {
+			int tx = msg == EfiUsbMsgEndpointStatusChangedTx;
+
+			ufn_done[tx] = 1;
+			ufn_bytes[tx] = p.utr.bytes;
+			ufn_status[tx] = (int)p.utr.status;
+		}
+		break;
+	case EfiUsbMsgBusEventDetach:
+	case EfiUsbMsgBusEventReset:
+		ufn_configured = 0;
+		usb_connected = 0;
+		break;
+	default:
+		break;
+	}
+	return 1;
+}
+
+static int ufn_leave;                   /* Power pressed, or "oem boot": out of the command loop */
+
+/* until endpoint 1's transfer `tx` finishes: the bytes, or -1 (aborted, unplugged, Power pressed) */
+static int64_t
+ufn_wait(int tx)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0), last_pet = began;
+
+	for (;;) {
+		/* a send the host does not take within 5 s: it went away (a fastboot that was stopped) */
+		if (tx && READ_SYSREG(CNTVCT_EL0) - began > 5 * freq) {
+			USBFN->abort_transfer(USBFN, 1, UsbfnDirDeviceTx);
+			ufn_done[1] = 0;
+			return -1;
+		}
+		if (!ufn_pump()) {
+			if (menu_key() == 's') {
+				ufn_leave = 1;
+				USBFN->abort_transfer(USBFN, 1, tx ? UsbfnDirDeviceTx : UsbfnDirDeviceRx);
+				return -1;
+			}
+		}
+		if (ufn_done[tx]) {
+			ufn_done[tx] = 0;
+			return ufn_status[tx] == UsbfnTransferComplete ? (int64_t)ufn_bytes[tx] : -1;
+		}
+		if (!ufn_configured) {
+			return -1;
+		}
+		if (READ_SYSREG(CNTVCT_EL0) - last_pet > freq) {
+			last_pet = READ_SYSREG(CNTVCT_EL0);
+			wdt_pet();
+		}
+	}
+}
+
+static int64_t
+ufn_rx(uint8_t *buf, uint64_t len)
+{
+	uint64_t n = (len + 511) & ~511ULL;
+	int64_t got;
+
+	ufn_done[0] = 0;
+	if (EFI_ERROR(USBFN->transfer(USBFN, 1, UsbfnDirDeviceRx, &n, buf))) {
+		return -1;
+	}
+	got = ufn_wait(0);
+	if (got > 0) {
+		flush_dcache((uint64_t)(uintptr_t)buf, (uint64_t)(uintptr_t)buf + (uint64_t)got);
+	}
+	return got;
+}
+
+static int64_t
+ufn_tx(const uint8_t *data, uint64_t len)
+{
+	uint64_t n = len;
+
+	ufn_done[1] = 0;
+	if (EFI_ERROR(USBFN->transfer(USBFN, 1, UsbfnDirDeviceTx, &n, (void *)(uintptr_t)data))) {
+		return -1;
+	}
+	return ufn_wait(1);
+}
+
+static int
+ufn_start(void)
+{
+	static const efi_guid guid = EFI_USBFN_IO_GUID;
+	static const void *const endpoints[2] = { usb_cfg_desc + 18, usb_cfg_desc + 25 };
+	static const efi_usb_interface_info iface = { usb_cfg_desc + 9, endpoints };
+	static const efi_usb_interface_info *const ifaces[1] = { &iface };
+	static const efi_usb_config_info config = { usb_cfg_desc, ifaces };
+	static const efi_usb_config_info *const configs[1] = { &config };
+	static efi_usb_device_info info = { ufn_dev_desc, configs };
+	static int started;
+	efi_status s;
+
+	if (started) {
+		return 1;
+	}
+	if (EFI_ERROR(BS->locate_protocol(&guid, NULL, (void **)&USBFN))) {
+		print("usb: no EFI_USBFN_IO_PROTOCOL\n");
+		USBFN = NULL;
+		return 0;
+	}
+	s = USBFN->start_controller(USBFN);
+	print("usb: UsbfnDwc3: start %x\n", s);
+	s = USBFN->configure_enable_endpoints(USBFN, &info);
+	print("usb: endpoints %x\n", s);
+	if (EFI_ERROR(s)) {
+		return 0;
+	}
+	if (usb_rx_buf == NULL) {
+		uint64_t at = 0;
+
+		if (EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, (2 * USB_CHUNK) >> 12, &at))) {
+			return 0;
+		}
+		usb_rx_buf = (uint8_t *)(uintptr_t)at;
+		usb_tx_buf = (uint8_t *)(uintptr_t)(at + USB_CHUNK);
+	}
+	started = 1;
+	return 1;
+}
+
+/* the last run's log, as it was saved: recovery + 16 MB, NULs and all (the host drops them) */
+static int
+stage_last_log(void)
+{
+	uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
+
+	if (!read_partition_into("recovery", LOG_OFFSET, buf, 8ULL << 20)) {
+		return 0;
+	}
+	staged_data = (const char *)buf;
+	staged_len = 8ULL << 20;
+	return 1;
+}
+
+/*
+ * What was downloaded, into a partition at an offset (bytes, a multiple of the block): only where this port
+ * keeps its own things -- recovery, boot, super's tail (system.apfs at 0x184B00000) -- never the bootloaders,
+ * EFS or Samsung's other partitions. Read back and compared.
+ */
+static const char *
+stage_write(const char *part, uint64_t off)
+{
+	efi_block_io *bio = find_partition_ascii(part);
+	uint64_t bs, size, len = stage_len, done = 0;
+	uint8_t *src = stage_buf;
+
+	if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= 0x184B00000ULL))) {
+		return "refused: only recovery, boot and super from 0x184B00000";
+	}
+	if (bio == NULL || bio->media == NULL || src == NULL || len == 0) {
+		return "no such partition, or nothing downloaded";
+	}
+	bs = bio->media->block_size;
+	size = (bio->media->last_block + 1) * bs;
+	if (bs == 0 || off % bs != 0) {
+		return "the offset is not a multiple of the block";
+	}
+	len = (len + bs - 1) / bs * bs;         /* (the stage's tail beyond the download is zeroed) */
+	if (off + len > size || len > stage_size) {
+		return "past the end of the partition";
+	}
+	print("write: %d bytes to %s+%x\n", len, part, off);
+	while (done < len) {
+		uint64_t chunk = len - done > (4ULL << 20) ? (4ULL << 20) : len - done;
+
+		if (EFI_ERROR(bio->write_blocks(bio, bio->media->media_id, (off + done) / bs, chunk, src + done))) {
+			return "the write failed";
+		}
+		done += chunk;
+		wdt_pet();
+	}
+	bio->flush_blocks(bio);
+	for (done = 0; done < len;) {
+		uint64_t chunk = len - done > sizeof(ufs_buffer) ? sizeof(ufs_buffer) : len - done;
+
+		if (EFI_ERROR(bio->read_blocks(bio, bio->media->media_id, (off + done) / bs, chunk, ufs_buffer)) ||
+		    memcmp(ufs_buffer, src + done, (size_t)chunk) != 0) {
+			return "READ BACK DIFFERENT";
+		}
+		done += chunk;
+	}
+	return NULL;
+}
+
+/*
+ * "Log access": the fastboot server until Power is pressed or the host says "oem boot". Returns 1 to boot iOS.
+ * Host: ./y2s.sh ulog (oem lastlog, get_staged), ./y2s.sh uflash (stage, oem write recovery 0), oem boot.
+ */
+static int
+log_access(void)
+{
+	if (stage_buf == NULL) {
+		uint64_t at = 0;
+
+		if (!EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, STAGE_SIZE >> 12, &at))) {
+			stage_buf = (uint8_t *)(uintptr_t)at;
+			stage_size = STAGE_SIZE;
+		}
+	}
+	if (!ufn_start()) {
+		menu_status("Log access", "USB could not be started", "(no EFI_USBFN_IO_PROTOCOL)", NULL, NULL);
+		while (menu_key() != 's') {
+			BS->stall(20000);
+			wdt_pet();
+		}
+		return 0;
+	}
+	/* (the last log is read from the flash when the host asks for it: oem lastlog) */
+	menu_status("Log access (USB)", "Connect the phone to the Mac, then:", "./y2s.sh ulog    the last log",
+	    "./y2s.sh uflash  a new build", "./y2s.sh uboot   boot iOS");
+	ufn_leave = 0;
+	usb_boot_asked = 0;
+	while (!ufn_leave && !usb_boot_asked) {
+		char cmd[128];
+		int64_t n;
+
+		if (!ufn_configured) {
+			if (!ufn_pump()) {
+				if (menu_key() == 's') {
+					break;
+				}
+				BS->stall(2000);
+			}
+			continue;
+		}
+		n = usb_rx(usb_rx_buf, 511);
+		if (n <= 0) {
+			continue;
+		}
+		if (n > (int64_t)sizeof(cmd) - 1) {
+			n = sizeof(cmd) - 1;
+		}
+		memcpy(cmd, usb_rx_buf, (size_t)n);
+		cmd[n] = 0;
+		fb_command(cmd);
+	}
+	return usb_boot_asked;
+}
+
+/*
+ * The y2s loader: the menu at power-on, and again whenever iOS comes back. "Boot iOS" by itself after
+ * 3 s at power-on; after a run, the menu waits.
+ */
+static void
+y2s_menu_loop(void)
+{
+	const char *banner = "";
+	int wait = 3;
+
+	for (;;) {
+		int choice;
+
+		if (y2s_want_download) {
+			y2s_want_download = 0;
+			menu_status("Download Mode", "the kernel asked for it", NULL, NULL, NULL);
+			reboot_download();
+		}
+		if (y2s_want_log_access) {
+			y2s_want_log_access = 0;
+			choice = MENU_USB;
+			wait = 0;
+			banner = "the kernel asked for Log access";
+		} else {
+			choice = menu_choose(banner, wait);
+		}
+		wait = 0;
+		if (choice == MENU_USB) {
+			if (!log_access()) {
+				banner = "";
+				continue;
+			}
+			choice = MENU_BOOT;
+		}
+		if (choice == MENU_BOOT) {
+			menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+			menu_text_center((int)SCREEN.height / 2 - 40, "Starting iOS", 5, 0xffffff);
+			menu_flush();
+			log_len = 0;
+			print("== XNULOADER run (menu) ==\n");
+			if (!run_kernel(0, 0)) {
+				flush_log();            /* (why, from this loader's own lines, for Log access) */
+				banner = "iOS did not start: see Log access";
+			} else {
+				banner = "iOS returned: its log is saved (Log access)";
+			}
+			console_suspect = 1;            /* (the firmware's console after a run: see put_char) */
+		} else if (choice == MENU_DOWNLOAD) {
+			menu_status("Download Mode", "Rebooting into Samsung's Download Mode", NULL, NULL, NULL);
+			reboot_download();
+		} else if (choice == MENU_REBOOT) {
+			ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+		} else if (choice == MENU_OFF) {
+			menu_status("Power off", "Turning off", NULL, NULL, NULL);
+			power_off();
+		}
+	}
+}
+
+/* ------------------------------------------------------------------------ */
 
 /*
  * QEMU's "ramfb" display shows whatever guest memory it is told to, in any size; the firmware
@@ -3835,6 +5090,10 @@ usb_command_loop(void)
  */
 #define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */
 #define PHONE_HEIGHT    2436
+/* HACKIOS_RAMFB_HEIGHT: QEMU's ramfb refuses a mode taller than 2048 (bochs-vbe's
+ * VBE_DISPI_MAX_YRES), so the panel is asked for 2048 rows and the kernel scales the
+ * 1125x2436 display into it -- the same thing it does on a real phone. */
+#define RAMFB_HEIGHT    2048
 #define FW_CFG_BASE     0x09020000ULL   /* QEMU virt: data at +0, selector at +8, DMA address at +16 */
 #define FW_CFG_FILE_DIR 0x19
 #define FW_CFG_DMA_SELECT 0x08
@@ -3871,7 +5130,7 @@ ramfb_phone_screen(void)
 		char name[56];
 	} file;
 	uint32_t count, select = 0;
-	uint64_t fb = 0, bytes = (uint64_t)PHONE_WIDTH * 4 * PHONE_HEIGHT;
+	uint64_t fb = 0, bytes = (uint64_t)PHONE_WIDTH * 4 * RAMFB_HEIGHT;
 
 	*(volatile uint16_t *)(FW_CFG_BASE + 8) = __builtin_bswap16(FW_CFG_FILE_DIR);
 	fw_cfg_read(&count, sizeof(count));
@@ -3890,19 +5149,22 @@ ramfb_phone_screen(void)
 	cfg.fourcc = be32(0x34325258);          /* 'XR24': blue, green, red, unused */
 	cfg.flags = 0;
 	cfg.width = be32(PHONE_WIDTH);
-	cfg.height = be32(PHONE_HEIGHT);
+	cfg.height = be32(RAMFB_HEIGHT);
 	cfg.stride = be32(PHONE_WIDTH * 4);
 	dma.control = be32(select << 16 | FW_CFG_DMA_SELECT | FW_CFG_DMA_WRITE);
 	dma.length = be32(sizeof(cfg));
 	dma.address = __builtin_bswap64((uint64_t)(uintptr_t)&cfg);
 	*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);
 	if (dma.control != 0) {
-		print("ramfb: control %x after the request\n", (uint64_t)be32(dma.control));
-		return;
+		/* HACKIOS: this is the value we wrote ourselves; nothing writes back into it, so it
+		 * says nothing about whether the request worked. QEMU's ramfb refuses a mode taller
+		 * than 2048 (VBE_DISPI_MAX_YRES), and the mode it takes is the one in the panel. */
+		print("ramfb: control %x after the request (the mode is taken as it stands)\n",
+		    (uint64_t)be32(dma.control));
 	}
 	SCREEN.base = fb;
 	SCREEN.width = PHONE_WIDTH;
-	SCREEN.height = PHONE_HEIGHT;
+	SCREEN.height = RAMFB_HEIGHT;
 	SCREEN.stride = PHONE_WIDTH * 4;
 }
 
@@ -3917,9 +5179,10 @@ efi_main(efi_handle image, efi_system_table *st)
 	IMAGE = image;
 
 	BS->set_watchdog_timer(0, 0, 0, NULL);
+
 	print("== XNULOADER v3 ==\n");
 	print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
-	    READ_SYSREG(ID_AA64MMFR0_EL1), READ_SYSREG(CNTFRQ_EL0), (uint64_t)(uintptr_t)&__ImageBase);
+	    READ_SYSREG(ID_AA64MMFR0_EL1), timer_freq(), (uint64_t)(uintptr_t)&__ImageBase);
 
 	PLAT = &platform_qemu_virt;
 	if (EFI_ERROR(BS->locate_protocol(&gop_guid, NULL, (void **)&GOP)) || GOP->mode == NULL ||
@@ -3930,11 +5193,11 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.width = GOP->mode->info->width;
 		SCREEN.height = GOP->mode->info->height;
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
-		if (SCREEN.base == 0xE1000000ULL) {
-			PLAT = &platform_redwood;
-		} else {
+		for (unsigned i = 0; i < sizeof(platforms) / sizeof(platforms[0]); i++)
+			if (platforms[i]->fb_base == SCREEN.base)
+				PLAT = platforms[i];
+		if (PLAT == &platform_qemu_virt)
 			ramfb_phone_screen();
-		}
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
@@ -3948,10 +5211,17 @@ efi_main(efi_handle image, efi_system_table *st)
 		usb_command_loop();
 	}
 
+	/* y2s: the boot menu (Boot iOS by itself after 3 s, Log access over USB, Download Mode) */
+	if (have_payload && PLAT == &platform_y2s && SCREEN.base != 0 && !pi.usb_mode) {
+		y2s_menu_loop();
+	}
 	/* One-shot mode: run the kernel that came with the image, then reset. */
 	if (have_payload) {
 		run_kernel(0, 0);
 	}
-	reboot();
-	return 0;
+	/* Keep the result on screen: a reboot loop would hide the panic. */
+	print("\nloader: done, holding. Hold Power+VolDown to reset.\n");
+	for (;;) {
+		BS->stall(1000000);
+	}
 }
