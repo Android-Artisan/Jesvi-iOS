@@ -174,6 +174,35 @@ out[0x3400000:0x3400000 + len(rd)] = rd
 open('out/x1slte-recovery.img', 'wb').write(out)
 print('pack: out/x1slte-recovery.img (%d bytes)' % len(out))
 PY
+	# The DTB section as this phone's sboot reads it: a Samsung DT table (magic d7b7ab1e) like its stock boot.img and
+	# TWRP carry, not a bare FDT -- "DT table header check fail ... FDT_ERR_BADMAGIC", then Download Mode (2026-11-05).
+	# Swapped in at the image's end, the header's dtb_size and id (mkbootimg's SHA-1) made to match.
+	# shellcheck disable=SC1091
+	. common/devices/x1slte.conf
+	[ -f "$DTBH_FILE" ] || die "no DTBH_FILE ($DTBH_FILE): extract it from the phone's boot.img"
+	python3 - out/x1slte-recovery.img "$DTBH_FILE" <<'PY'
+import hashlib, struct, sys
+p, dtbh = sys.argv[1], open(sys.argv[2], 'rb').read()
+d = bytearray(open(p, 'rb').read())
+assert d[:8] == b'ANDROID!' and struct.unpack('<I', d[40:44])[0] == 2 and dtbh[:4] == bytes.fromhex('d7b7ab1e')
+ps = struct.unpack('<I', d[36:40])[0]; pg = lambda n: (n + ps - 1) // ps * ps
+ks, rs, ss = (struct.unpack('<I', d[o:o + 4])[0] for o in (8, 16, 24))
+rec_sz = struct.unpack('<I', d[1632:1636])[0]; dsz = struct.unpack('<I', d[1648:1652])[0]
+koff = ps; roff = koff + pg(ks); soff = roff + pg(rs); recoff = soff + pg(ss); doff = recoff + pg(rec_sz)
+end = doff + pg(dsz)
+assert end <= 0x2000000, 'boot image runs into the kernel slot'
+d[doff:end] = bytes(end - doff)
+d[doff:doff + len(dtbh)] = dtbh
+struct.pack_into('<I', d, 1648, len(dtbh))
+struct.pack_into('<Q', d, 1652, 0x10000000)   # dtb_addr as the stock boot.img and TWRP have it (Mu-Silicium's is 0x11f00000)
+assert doff + pg(len(dtbh)) <= 0x1000000
+h = hashlib.sha1()
+for off, n in ((koff, ks), (roff, rs), (soff, ss), (recoff, rec_sz), (doff, len(dtbh))):
+    h.update(bytes(d[off:off + n])); h.update(struct.pack('<I', n))
+d[576:576 + 32] = h.digest().ljust(32, b'\0')
+open(p, 'wb').write(d)
+print('pack: DTB section is the Samsung DT table (%d bytes), header id updated' % len(dtbh))
+PY
 	# An AVB hash footer, as TWRP's recovery has: this phone's sboot looks for one on recovery and drops to Download
 	# Mode without it (2026-11-05), even with vbmeta's verification off (flags 3). Signed like TWRP's, with AOSP's
 	# public test key (external/avb/test/data/testkey_rsa4096.pem); the key matters not, the footer's presence does.
