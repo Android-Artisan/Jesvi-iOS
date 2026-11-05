@@ -60,7 +60,7 @@ $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoun
 $DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood-sb.dylib.new src/inject_sb.c
 for lib in libredwood libredwood-sb; do
-	[ -f ../prebuilt/userland/$lib.dylib.orig ] || cp ../prebuilt/userland/$lib.dylib ../prebuilt/userland/$lib.dylib.orig
+	[ -f ../prebuilt/userland/$lib.dylib.orig ] || [ ! -f ../prebuilt/userland/$lib.dylib ] || cp ../prebuilt/userland/$lib.dylib ../prebuilt/userland/$lib.dylib.orig
 	mv obj/$lib.dylib.new ../prebuilt/userland/$lib.dylib
 done
 # process 1 (src/init.c), static against libmini as build.sh would with ld64; Apple's ld makes the same layout
@@ -68,7 +68,7 @@ STATIC="$ROOT/xnu-deps/host-macos/bin/xnu-clang -arch arm64 -Os -static -nostdli
 $STATIC -Ilibmini -c libmini/mini.c -o obj/mini.o
 $STATIC -c libmini/start.S -o obj/start.o
 $STATIC -Ilibmini -Wl,-e,_start -Wl,-pagezero_size,0x100000000 -o obj/init.new src/init.c obj/mini.o obj/start.o
-[ -f ../prebuilt/userland/init.orig ] || cp ../prebuilt/userland/init ../prebuilt/userland/init.orig
+[ -f ../prebuilt/userland/init.orig ] || [ ! -f ../prebuilt/userland/init ] || cp ../prebuilt/userland/init ../prebuilt/userland/init.orig
 cmp -s obj/init.new ../prebuilt/userland/init && rm obj/init.new || mv obj/init.new ../prebuilt/userland/init
 
 PATH=$ROOT/xnu-deps/host-macos/bin:$PATH REST=${REST:-1} GL=1 EXTRA="${EXTRA:-} obj/mali_test" ./build.sh

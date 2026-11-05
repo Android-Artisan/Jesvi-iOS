@@ -1,6 +1,6 @@
 #!/bin/bash
 # x1slte.sh: build, pack, flash, and read back the kernel log for the Galaxy S20 (SM-G980F, x1slte).
-# Derived from y2s.sh. Differences: a 24 MiB kernel slot (root.apfs at 56 MiB), the iOS system image
+# Derived from y2s.sh. Differences: a 20 MiB kernel slot (root.apfs at 52 MiB, up to 14.4 MB), the iOS system image
 # from a pinned file in userdata (common/devices/x1slte.conf), never y2s's super offset.
 #
 #   ./x1slte.sh kernel                 build XNU (GIC_V2 exported), copy to out/mach.x1slte, export xnu/
@@ -65,7 +65,7 @@ cmd_kernel() {
 	[ "$KERNEL_BUILD" -nt out/.kernel-start ] || echo "kernel: nothing changed, not relinked"
 	strings "$KERNEL_BUILD" | grep 'gic: v2' > /dev/null || die "kernel is not GICv2 (GIC_V2 not exported?)"
 	cp "$KERNEL_BUILD" out/mach.x1slte
-	[ "$(wc -c < out/mach.x1slte)" -le $((0x1800000)) ] || die "kernel larger than its 24 MiB slot"
+	[ "$(wc -c < out/mach.x1slte)" -le $((0x1400000)) ] || die "kernel larger than its 20 MiB slot"
 	xnu/export.sh || echo "kernel: xnu/export.sh failed (needs GNU cp: brew install coreutils); xnu/ overlay not refreshed from xnu-src/"
 	echo "kernel: out/mach.x1slte ($(wc -c < out/mach.x1slte) bytes)"
 }
@@ -78,6 +78,8 @@ cmd_payload() {
 	local rsize
 	# shellcheck disable=SC1091
 	. common/devices/x1slte.conf
+	# this phone's own identifiers (EFS): kept out of git in x1slte.local.conf
+	[ -f common/devices/x1slte.local.conf ] && . common/devices/x1slte.local.conf
 	[ -n "${ROOT_UD_OFF:-}" ] && [ -n "${ROOT_UD_LEN:-}" ] ||
 		die "ROOT_UD_OFF/ROOT_UD_LEN are empty in common/devices/x1slte.conf: create /data/darwin/system.img with tools/phone/pinfile first"
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_UD_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_UD_LEN")
@@ -86,6 +88,7 @@ cmd_payload() {
 		[ -n "${VAR_UD_FIRST:-}" ] && [ -n "${VAR_UD_BLOCKS:-}" ] ||
 			die "VAR_UD_FIRST/VAR_UD_BLOCKS are empty in common/devices/x1slte.conf: create /data/darwin/var.img first" ;;
 	esac
+	[ -n "${BT_ADDR:-}" ] && case " $cmdline " in *" bt_addr="*) ;; *) cmdline="$cmdline bt_addr=$BT_ADDR" ;; esac
 	cmdline=${cmdline//@ROOT_OFF@/$ROOT_UD_OFF_HEX}
 	cmdline=${cmdline//@ROOT_LEN@/$ROOT_UD_LEN_HEX}
 	cmdline=${cmdline//@VAR_WIN@/${VAR_UD_FIRST:-}:${VAR_UD_BLOCKS:-}}
@@ -94,7 +97,7 @@ cmd_payload() {
 	GIC_V2=1 xnuloader/build.sh > /dev/null
 	rsize=$(printf '%x' "$(wc -c < userland/root.apfs)")     # (root.apfs grows with GL=test: libOSMesa)
 	python3 xnuloader/mkpayload.py -o "$PAYLOAD" loader.efi=xnuloader/loader.efi \
-		--kpart recovery --koff 2000000 --rpart recovery --roff 3800000 --rsize "$rsize" \
+		--kpart recovery --koff 2000000 --rpart recovery --roff 3400000 --rsize "$rsize" \
 		--rdpart userdata --rdoff "$ROOT_UD_OFF_HEX" --rdsize "$ROOT_UD_LEN_HEX" ${cmdline:+--cmdline "$cmdline"}
 	python3 - "$EMBED" "$PAYLOAD" "$PAYLOAD_AT" "$PAYLOAD_MAX" <<'PY'
 import sys
@@ -132,8 +135,8 @@ import struct, sys
 ker = open('out/mach.x1slte', 'rb').read()
 rd = open('userland/root.apfs', 'rb').read()
 img = open('out/x1slte-embed.img', 'rb').read()
-assert len(img) <= 0x1000000 and len(ker) <= 0x1800000, 'embed > 16 MiB or kernel > 24 MiB'
-assert 0x3800000 + len(rd) <= 69009408, 'root.apfs does not fit in recovery (65.8 MiB)'
+assert len(img) <= 0x1000000 and len(ker) <= 0x1400000, 'embed > 16 MiB or kernel > 20 MiB'
+assert 0x3400000 + len(rd) <= 69009408, 'root.apfs does not fit in recovery (65.8 MiB)'
 # The loader reads exactly the payload's rsize bytes of root.apfs: a rebuilt image of another size
 # packed without `payload` boots to "apfs: container 0: N blocks of 4096 do not fit the device"
 # and halts on the Silicium screen (25 October).
@@ -149,10 +152,10 @@ while True:
 if rsize != len(rd):
     sys.exit('x1slte.sh: pack: the payload says root.apfs is %s bytes and it is %d: run '
              '`./x1slte.sh payload "<cmdline>"` again first' % (rsize, len(rd)))
-out = bytearray(max(0x2000000 + len(ker), 0x3800000 + len(rd)))
+out = bytearray(max(0x2000000 + len(ker), 0x3400000 + len(rd)))
 out[0:len(img)] = img
 out[0x2000000:0x2000000 + len(ker)] = ker
-out[0x3800000:0x3800000 + len(rd)] = rd
+out[0x3400000:0x3400000 + len(rd)] = rd
 open('out/x1slte-recovery.img', 'wb').write(out)
 print('pack: out/x1slte-recovery.img (%d bytes)' % len(out))
 PY

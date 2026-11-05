@@ -453,7 +453,35 @@ bt_set_speed(uint32_t baud)
 static bool
 bt_bringup(void)
 {
-	static const char hcd_name[] = "bcm4375B1-semco.hcd";
+	/*
+	 * The BCM4375 is one Wi-Fi/Bluetooth module: its maker decides both the NVRAM and this patchram. The S20+ (y2s)
+	 * is SEMCO's; the European S20 (x1slte) ships Murata's "X1_EUR" NVRAM too. wifi_nvram=1 (Murata) selects both.
+	 */
+	int which = 0;
+	(void)PE_parse_boot_argn("wifi_nvram", &which, sizeof(which));
+	/* bt_addr=AA:BB:CC:DD:EE:FF: the phone's own address (its EFS, bluetooth/bt_addr) instead of the placeholder */
+	{
+		char a[32] = { 0 };
+		if (PE_parse_boot_arg_str("bt_addr", a, sizeof(a))) {
+			uint8_t v[6];
+			int n = 0;
+			for (const char *c = a; *c && n < 6; ) {
+				char *end;
+				unsigned long b = strtoul(c, &end, 16);
+				if (end == c || b > 0xff) {
+					break;
+				}
+				v[n++] = (uint8_t)b;
+				c = (*end == ':') ? end + 1 : end;
+			}
+			if (n == 6) {
+				memcpy(bt_address, v, 6);
+			} else {
+				bt_log("bt: bt_addr=%s is not six bytes: keeping the placeholder\n", a);
+			}
+		}
+	}
+	const char *hcd_name = which == 1 ? "bcm4375B1-murata.hcd" : "bcm4375B1-semco.hcd";
 	const uint8_t *hcd;
 	uint64_t hcd_size = 0, at;
 	uint8_t reply[64];

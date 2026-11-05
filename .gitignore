@@ -112,3 +112,4 @@ __pycache__/
 !/userland/libmini/
 !/x1slte.sh
 !/x1slte.cmdline
+/common/devices/*.local.conf
