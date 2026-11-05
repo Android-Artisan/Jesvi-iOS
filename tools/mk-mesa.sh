@@ -51,7 +51,7 @@ source "$ROOT/xnu-env.sh"
 B=$ROOT/xnu-deps/build/mesa
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 CC=$ROOT/xnu-deps/host/bin/xnu-clang
-[ "$(uname -s)" != Darwin ] || CC=$ROOT/xnu-deps/host-macos/bin/xnu-clang     # (natively on macOS: docs/MACOS.md)
+[ "$(uname -s)" != Darwin ] || [ ! -x $ROOT/xnu-deps/host-macos/bin/xnu-clang ] || CC=$ROOT/xnu-deps/host-macos/bin/xnu-clang     # (y2sios's macOS layer when present; else legacy's Darwin-aware host/bin/xnu-clang)
 mkdir -p "$B/out"
 cd "$B"
 
@@ -81,7 +81,7 @@ if [ ! -x venv/bin/python3 ]; then
 fi
 export PATH=$B/venv/bin:$PATH
 # (macOS: llvm-ar, llvm-ranlib and llvm-strip are Homebrew's LLVM's)
-[ "$(uname -s)" != Darwin ] || export PATH=$PATH:$(brew --prefix llvm)/bin
+[ "$(uname -s)" != Darwin ] || ! command -v brew >/dev/null || export PATH=$PATH:$(brew --prefix llvm)/bin
 
 # the compiler is the kernel's wrapper: it names the target (arm64-apple-ios) and the linker (ld64)
 cat > cross.ini <<INI
