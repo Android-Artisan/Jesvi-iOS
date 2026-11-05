@@ -4920,6 +4920,25 @@ stage_last_log(void)
  * keeps its own things -- recovery, boot, super's tail (system.apfs at 0x184B00000) -- never the bootloaders,
  * EFS or Samsung's other partitions. Read back and compared.
  */
+/*
+ * Where super's free tail begins: past the last logical partition in super's LP metadata, which differs per phone
+ * and firmware. y2s (SM-G986B): 0x184B00000. x1slte (SM-G980F, G980FXXSNHYB7): 0x1E8B04000 -- 0x184B00000 is
+ * inside its vendor partition. Set with -DSUPER_TAIL_START=... (xnuloader/build.sh, from the device's .conf).
+ */
+#ifndef SUPER_TAIL_START
+#define SUPER_TAIL_START 0x1E8B04000ULL
+#endif
+/*
+ * A window of userdata the port may write (bytes): a pinned, preallocated f2fs file's single extent,
+ * read with FIEMAP. 0 (the default): no write to userdata at all.
+ */
+#ifndef USERDATA_WIN_OFF
+#define USERDATA_WIN_OFF 0ULL
+#endif
+#ifndef USERDATA_WIN_LEN
+#define USERDATA_WIN_LEN 0ULL
+#endif
+
 static const char *
 stage_write(const char *part, uint64_t off)
 {
@@ -4927,8 +4946,12 @@ stage_write(const char *part, uint64_t off)
 	uint64_t bs, size, len = stage_len, done = 0;
 	uint8_t *src = stage_buf;
 
-	if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= 0x184B00000ULL))) {
-		return "refused: only recovery, boot and super from 0x184B00000";
+	if (str_eq(part, "userdata")) {
+		if (USERDATA_WIN_LEN == 0 || off < USERDATA_WIN_OFF || off + len > USERDATA_WIN_OFF + USERDATA_WIN_LEN) {
+			return "refused: userdata only inside the port's own window (USERDATA_WIN_OFF/LEN)";
+		}
+	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= SUPER_TAIL_START))) {
+		return "refused: only recovery, boot, super's free tail (SUPER_TAIL_START) and the userdata window";
 	}
 	if (bio == NULL || bio->media == NULL || src == NULL || len == 0) {
 		return "no such partition, or nothing downloaded";

@@ -2068,6 +2068,26 @@ redwood_ufs_init(void)
 		uint32_t i = ufs_entry("userdata");
 		const char *why = NULL;
 
+		/*
+		 * x1slte (SM-G980F): userdata has exactly the S20+'s start and size, but it is Android's live data.
+		 * So the whole partition is never given away by default. Writes go only to an explicit window,
+		 * ufs_win=FIRST:BLOCKS (4096-byte blocks inside userdata: the extent of a pinned, preallocated
+		 * f2fs file such as /data/darwin/var.img, read with FIEMAP). The old S20+ behaviour (all of
+		 * userdata) needs ufs_userdata_all=1 as well.
+		 */
+		char win[64] = { 0 };
+		uint64_t win_first = 0, win_blocks = 0;
+		int all = 0;
+		bool have_win = PE_parse_boot_arg_str("ufs_win", win, sizeof(win)) && win[0] != 0;
+		(void)PE_parse_boot_argn("ufs_userdata_all", &all, sizeof(all));
+		if (have_win) {
+			char *p = win;
+			win_first = strtoq(p, &p, 0);
+			if (*p == ':') {
+				win_blocks = strtoq(p + 1, NULL, 0);
+			}
+		}
+
 		if (i == BLOCK_MAX_PARTS) {
 			why = "there is no userdata";
 		} else if (!ufs_native_on || ufs_lun[i] != 0) {
@@ -2075,17 +2095,32 @@ redwood_ufs_init(void)
 		} else if (ufs_page->part[i].start_lba != UFS_Y2S_DATA_FIRST || ufs_page->part[i].blocks != UFS_Y2S_DATA_BLOCKS ||
 		    ufs_page->part[i].block_size != 4096) {
 			why = "it is not where, or the size, it was";
+		} else if (!have_win && all != 1) {
+			why = "no ufs_win=FIRST:BLOCKS given (the whole of userdata needs ufs_userdata_all=1)";
+		} else if (have_win && (win_blocks == 0 || win_first + win_blocks > UFS_Y2S_DATA_BLOCKS ||
+		    win_first + win_blocks < win_first)) {
+			why = "ufs_win is empty or outside userdata";
+		} else if (have_win) {
+			if (!ufshc_set_write_window(0, UFS_Y2S_DATA_FIRST + win_first, win_blocks)) {
+				why = "the driver took no window";
+			}
 		} else if (!ufshc_set_write_window(0, UFS_Y2S_DATA_FIRST, UFS_Y2S_DATA_BLOCKS)) {
 			why = "the driver took no window";
 		}
 		if (why != NULL) {
 			ufs_log("ufs: nothing takes writes: userdata: %s\n", why);
+		} else if (have_win) {
+			ufs_write_part = (int)i;
+			ufs_write_first = win_first;
+			ufs_write_end = win_first + win_blocks;
+			ufs_log("ufs: userdata takes writes only in blocks %llu..%llu (%llu MB, ufs_win); "
+			    "everything else of the storage is read only\n", win_first, win_first + win_blocks, (win_blocks * 4096) >> 20);
 		} else {
 			ufs_write_part = (int)i;
 			ufs_write_first = 0;
 			ufs_write_end = UFS_Y2S_DATA_BLOCKS;
-			ufs_log("ufs: /dev/ufs_userdata and /dev/rufs_userdata take writes (iOS's data volume, %llu MB); "
-			    "everything else of the storage is read only\n", (UFS_Y2S_DATA_BLOCKS * 4096) >> 20);
+			ufs_log("ufs: /dev/ufs_userdata and /dev/rufs_userdata take writes (iOS's data volume, %llu MB, "
+			    "ufs_userdata_all=1); everything else of the storage is read only\n", (UFS_Y2S_DATA_BLOCKS * 4096) >> 20);
 		}
 	}
 
