@@ -131,10 +131,18 @@ stage1() {
 	mkdir -p host/bin
 	if [ "$XNU_HOST_OS" = Darwin ]; then
 		# macOS has it all: mig (Xcode's; it takes $MIGCC and $MIGCOM from the kernel build), unifdef, csh
-		link "$(/usr/bin/xcrun -f mig)" host/bin/mig
-		link "$(/usr/bin/xcrun -f migcom)" host/bin/migcom
+		# from the developer directory itself: xcrun -f also searches PATH, where these links are, and
+		# a second run would link them to themselves
+		_dev=$(xcode-select -p)
+		_mig=$_dev/usr/bin/mig; [ -x "$_mig" ] || _mig=$_dev/Toolchains/XcodeDefault.xctoolchain/usr/bin/mig
+		_migcom=$_dev/usr/libexec/migcom; [ -x "$_migcom" ] || _migcom=$_dev/Toolchains/XcodeDefault.xctoolchain/usr/libexec/migcom
+		rm -f host/bin/mig host/bin/migcom
+		link "$_mig" host/bin/mig
+		link "$_migcom" host/bin/migcom
 		link /usr/bin/unifdef host/bin/unifdef
 		link /bin/tcsh host/bin/tcsh
+		# GNU nproc, which the makefiles call, without needing coreutils
+		printf '#!/bin/sh\nexec /usr/sbin/sysctl -n hw.ncpu\n' > host/bin/nproc && chmod +x host/bin/nproc
 	fi
 	# mig: Apple's own does not build on glibc; this is a port that does
 	if [ ! -x host/bin/migcom ] || [ ! -x host/bin/mig ]; then

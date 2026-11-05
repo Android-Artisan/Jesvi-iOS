@@ -16,6 +16,8 @@ export XNUDEPS=$DARWIN_REDWOOD/xnu-deps
 if [ "$(uname -s)" = Darwin ]; then
 	# Build natively on macOS: GNU userland from Homebrew + the two macOS shims.
 	. "$DARWIN_REDWOOD/common/macos-env.sh"
+	# legacy-hackios's macOS path: its xcrun (Darwin-aware: target SDK ours, host SDK the real one) and tools first
+	export PATH=$XNUDEPS/host/bin:$PATH
 else
 	export PATH=$XNUDEPS/host/bin:$PATH
 fi
