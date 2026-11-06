@@ -1229,7 +1229,7 @@ IOMobileFramebuffer::dpuProbe(void)
 	}
 	if (gScaler && !gFlip) {
 		fScanCh = ch;
-		if (gFbMode == 1) {
+		if (gFbMode == 1 || gFbMode == 2) {
 			(void) modeSetFhd120();         /* the scaler's target follows it (fPanelWidth/Height) */
 		}
 		scalerSetup();
@@ -4003,17 +4003,24 @@ IOMobileFramebuffer::modeSetFhd120(void)
 
 		memcpy(ltps1 + 1, osc96 ? kLtps1Osc96 : kLtps1Osc86, 8);
 		memcpy(ltps2 + 1, osc96 ? kLtps2Osc96 : kLtps2Osc86, 8);
+		/*
+		 * fb_mode=2 (B, 2026-11-06): the resolution half alone -- PPS, CASET/PASET, scaler -- at the panel's own 60 Hz
+		 * (no AID/OSC/VFP/LTPS/FPS: those are the 120 HS half). Every 1080x2400 mode of the dtbo has the same DSIM and
+		 * DECON values (cmd_lp_ref 0x284d), so this tells which half garbled the first fb_mode=1 picture.
+		 */
+		bool hs = gFbMode == 1;
+
 		ok = panelWriteAt(key1On, sizeof(key1On), 0) && panelWriteAt(key2On, sizeof(key2On), 0) &&
-		    panelWriteAt(aidHs, sizeof(aidHs), 0x06);
+		    (!hs || panelWriteAt(aidHs, sizeof(aidHs), 0x06));
 		IOSleep(17);                                                    /* Samsung: wait 1 vsync */
 		ok = ok && dsimPacket(DSI_DSC_PRA, dsc, 1) && dsimPacket(DSI_DSC_PPS, kPpsFhd, sizeof(kPpsFhd)) &&
 		    panelWriteAt(caset, sizeof(caset), 0) && panelWriteAt(paset, sizeof(paset), 0) &&
-		    panelWriteAt(scaler, sizeof(scaler), 0) &&
+		    panelWriteAt(scaler, sizeof(scaler), 0) && (!hs || (
 		    panelWriteAt(osc, sizeof(osc), 0) && panelWriteAt(vfpNm, sizeof(vfpNm), 0x0B) &&
 		    panelWriteAt(vfpHs, sizeof(vfpHs), 0x06) && panelWriteAt(pwrGen, sizeof(pwrGen), 0x06) &&
 		    panelWriteAt(srcAmp, sizeof(srcAmp), 0x18) && panelWriteAt(ltps0, sizeof(ltps0), 0x03) &&
 		    panelWriteAt(ltps1, sizeof(ltps1), 0x54) && panelWriteAt(ltps2, sizeof(ltps2), 0x8E) &&
-		    panelWriteAt(fps, sizeof(fps), 0) && panelWriteAt(gammaUpdate, sizeof(gammaUpdate), 0) &&
+		    panelWriteAt(fps, sizeof(fps), 0))) && panelWriteAt(gammaUpdate, sizeof(gammaUpdate), 0) &&
 		    panelWriteAt(key2Off, sizeof(key2Off), 0) && panelWriteAt(key1Off, sizeof(key1Off), 0);
 		if (!ok) {
 			fbSay("fb_mode: a panel command did not go out (FIFO %#x): the panel may be half-switched\n",
@@ -4033,9 +4040,9 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
 	fPanelWidth = 1080;
 	fPanelHeight = 2400;
-	gModeHz = 120;
-	fbSay("fb_mode: 1080x2400 at 120 Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
-	    ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
+	gModeHz = gFbMode == 1 ? 120 : 60;            /* fb_mode=2: the resolution alone, at 60 Hz */
+	fbSay("fb_mode: 1080x2400 at %u Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
+	    gModeHz, ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
 	    dpuRead(fDsim, DSIM_SLICE01_R), ndecon);
 	return ok;
 }
