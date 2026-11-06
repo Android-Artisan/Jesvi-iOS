@@ -620,6 +620,13 @@ if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-haptic/aw8697_haptic.bin root/fw/
 fi
+# x1slte: the Galaxy S20's CS40L25 needs Cirrus's DSP program and wavetable (bsd/dev/redwood_cs40l25.c, haptic_chip=cs40l25)
+for f in cs40l25a.wmfw cs40l20.bin; do
+	if [ -f ../fw-haptic/$f ]; then
+		mkdir -p root/fw
+		install -m 0644 ../fw-haptic/$f root/fw/
+	fi
+done
 # ... and the cameras' register tables (bsd/dev/redwood_camera.c, cam=2 and up), made by tools/camsensor.py out of
 # the sensors' module files of Android's camera stack, the phone's /vendor/lib64/camera/com.qti.sensormodule.
 # redwood_<maker>_<sensor>_<camera>.bin, in ../fw-camera (the vendor's: neither they nor the tables are in the

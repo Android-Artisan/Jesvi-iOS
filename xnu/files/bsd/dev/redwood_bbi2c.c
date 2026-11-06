@@ -91,10 +91,15 @@ redwood_gpio_func(volatile uint8_t *bank, uint32_t pin, uint32_t func)
 	bank_update(bank, REDWOOD_GPIO_CON, 0xfu << (pin * 4), (func & 0xf) << (pin * 4));
 }
 
+/*
+ * x1slte (2026-11-06): a pin's pull is a 4-bit field on the Exynos 990 (Samsung's pinctrl-exynos-arm64.c bank_type_6 and
+ * bank_type_7: CON 4, DAT 1, PUD 4, DRV 4 bits; 0 none, 1 down, 3 up). It was written as 2 bits at pin x 2: a pull-up on
+ * pin n landed in pin n/2's field (the speaker amplifiers' SDA, Bluetooth's gpq0-3 never got theirs).
+ */
 void
 redwood_gpio_pull(volatile uint8_t *bank, uint32_t pin, uint32_t pull)
 {
-	bank_update(bank, REDWOOD_GPIO_PUD, 0x3u << (pin * 2), (pull & 0x3) << (pin * 2));
+	bank_update(bank, REDWOOD_GPIO_PUD, 0xfu << (pin * 4), (pull & 0xf) << (pin * 4));
 }
 
 uint32_t
@@ -317,7 +322,7 @@ void
 redwood_bbi2c_restore(struct redwood_bbi2c *b)
 {
 	uint32_t mask = (0xfu << (b->scl * 4)) | (0xfu << (b->sda * 4));
-	uint32_t pmask = (0x3u << (b->scl * 2)) | (0x3u << (b->sda * 2));
+	uint32_t pmask = (0xfu << (b->scl * 4)) | (0xfu << (b->sda * 4));      /* (4-bit pull fields: see redwood_gpio_pull) */
 
 	bank_update(b->bank, REDWOOD_GPIO_CON, mask, b->saved_con);
 	bank_update(b->bank, REDWOOD_GPIO_PUD, pmask, b->saved_pud);

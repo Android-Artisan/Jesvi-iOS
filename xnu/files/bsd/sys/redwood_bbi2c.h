@@ -19,7 +19,7 @@
 
 #define REDWOOD_GPIO_CON        0x00U           /* 4 bits per pin */
 #define REDWOOD_GPIO_DAT        0x04U
-#define REDWOOD_GPIO_PUD        0x08U           /* 2 bits per pin: 0 none, 1 down, 3 up */
+#define REDWOOD_GPIO_PUD        0x08U           /* 4 bits per pin on the Exynos 990: 0 none, 1 down, 3 up */
 
 #define REDWOOD_GPIO_INPUT      0x0U
 #define REDWOOD_GPIO_OUTPUT     0x1U
