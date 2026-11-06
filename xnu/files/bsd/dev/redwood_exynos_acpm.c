@@ -461,7 +461,9 @@ redwood_gov_boost(uint32_t ms)
 }
 static uint32_t gov_frame = 1;                  /* dvfs_frame= (on by default; 0 off) */
 /* M5 at 2208, not its 2730 top: held at the top through the tour it reached 89 C and was throttled to 1794 (step 1) */
-static const uint32_t gov_frame_khz[] = { 1456000, 2504000, 2208000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
+/* A55 at its 2002 top too: the lock screen's wallpaper (PosterBoard's extensions, lower priority) is drawn on the little
+ * cores while SpringBoard and backboardd hold the big ones -- its screen-off frames came 33-50 ms apart at 1456 */
+static const uint32_t gov_frame_khz[] = { 2002000, 2504000, 2208000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
 static uint32_t gov_frame_ticks;                /* ticks with the frame floor on (for the 10 s line) */
 
 /* the lowest rung the touch booster holds cluster `g` at now (0: no boost) */
