@@ -44,6 +44,8 @@
 
 #define FG_ADDR                 0x36U
 #define CHG_ADDR                0x69U
+#define MUIC_ADDR               0x25U           /* the USB-C/MUIC firmware */
+#define MUIC_BC_STATUS          0x08U           /* bit 7 VBUS, bits 1:0 charger type: 0 none, 1 USB host, 2 charging host, 3 wall */
 
 #define FG_STATUS               0x00U
 #define FG_REPCAP               0x05U
@@ -81,7 +83,7 @@
 #define PS_STATUS_FULL          4
 
 static struct redwood_bbi2c bus = { .name = "max77705 bus gpp1-6/7", .scl = 6, .sda = 7, .half_us = 4 };
-static uint32_t trace, wdt_kick;
+static uint32_t trace, wdt_kick, ilim;
 static uint64_t wdt_kicks, wdt_expired_seen;
 
 static bool
@@ -138,6 +140,68 @@ status_name(int status)
 	}
 }
 
+/*
+ * bms_ilim=1 (x1slte, 2026-11-06): the bootloader leaves the charger at 900 mA in (CNFG_09 0x23) and 900 mA
+ * into the battery (CNFG_02 0x52), which is what iOS draws while awake: the battery gained nothing. As
+ * Samsung's driver does once the cable is known (max77705_set_input_current / _set_charge_current, the
+ * values from the phone's dtbo cable-info: TA 1650 mA in, CDP 1500 mA in), the input limit is raised
+ * for a wall charger or a charging host. The charge current is kept at 1500 mA, below Samsung's 3150:
+ * Samsung's software watches the battery's temperature and steps the current down, and this kernel does
+ * not, so it stays at the bootloader's values outside 10..42 C. A USB host, no cable or a temperature
+ * outside the range gets the bootloader's own values back. Every write is read back; on a mismatch the
+ * feature switches itself off.
+ */
+static int16_t boot_c2 = -1, boot_c9 = -1;
+
+static void
+charger_limits(bool external, int32_t temp_hundredths)
+{
+	uint8_t bc = 0, c2 = 0, c9 = 0, want2, want9, r2 = 0, r9 = 0;
+	unsigned type, in_ma = 0;
+	static int last_in = -1;
+
+	if (!ilim || !chg_byte(CHG_CNFG_02, &c2) || !chg_byte(CHG_CNFG_09, &c9)) {
+		return;
+	}
+	if (boot_c2 < 0) {
+		boot_c2 = c2;
+		boot_c9 = c9;
+	}
+	if (!redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_BC_STATUS, &bc, 1)) {
+		bc = 0;                 /* unknown: treated as no charger */
+	}
+	type = bc & 3U;
+	if (external && (bc & 0x80U) && temp_hundredths >= 1000 && temp_hundredths <= 4200) {
+		in_ma = type == 3 ? 1650 : type == 2 ? 1500 : 0;
+	}
+	if (in_ma) {
+		want9 = (uint8_t)((c9 & 0x80U) | ((in_ma / 25 - 1) & 0x7fU));
+		want2 = (uint8_t)((c2 & ~0x3fU) | ((1500 / 50) & 0x3fU));
+	} else {
+		want9 = (uint8_t)boot_c9;
+		want2 = (uint8_t)boot_c2;
+	}
+	if (want9 == c9 && want2 == c2) {
+		return;
+	}
+	if (!redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_09, want9) ||
+	    !redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_02, want2) ||
+	    !chg_byte(CHG_CNFG_09, &r9) || !chg_byte(CHG_CNFG_02, &r2) || r9 != want9 || r2 != want2) {
+		m2m_klog('W', "DEV", "bms: charger limits did not take (CNFG_09 %#x -> %#x reads %#x, CNFG_02 %#x -> %#x reads "
+		    "%#x): bms_ilim switched off, bootloader values put back", c9, want9, r9, c2, want2, r2);
+		ilim = 0;
+		redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_09, (uint8_t)boot_c9);
+		redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_02, (uint8_t)boot_c2);
+		return;
+	}
+	if ((int)in_ma != last_in) {
+		m2m_klog('I', "DEV", "bms: charger type %u (BC_STATUS %#x), %d.%02d C: input limit %u mA, charge %u mA "
+		    "(CNFG_09 %#x, CNFG_02 %#x)", type, bc, temp_hundredths / 100, temp_hundredths % 100,
+		    ((r9 & 0x7fU) + 1) * 25, (r2 & 0x3fU) * 50, r9, r2);
+		last_in = (int)in_ma;
+	}
+}
+
 static bool
 poll_once(bool say)
 {
@@ -188,6 +252,8 @@ poll_once(bool say)
 	if (temp_hundredths < -2000 || temp_hundredths > 7000) {
 		temp_hundredths = 2500;
 	}
+
+	charger_limits(external, temp_hundredths);
 
 	bzero(&b, sizeof(b));
 	b.size = sizeof(b);
@@ -260,6 +326,7 @@ bms_thread(__unused void *parameter, __unused wait_result_t result)
 	PE_parse_boot_argn("bms_secs", &secs, sizeof(secs));
 	PE_parse_boot_argn("bms_trace", &trace, sizeof(trace));
 	PE_parse_boot_argn("bms_wdt", &wdt_kick, sizeof(wdt_kick));
+	PE_parse_boot_argn("bms_ilim", &ilim, sizeof(ilim));
 	if (secs < 1 || secs > 600) {
 		secs = 5;
 	}
