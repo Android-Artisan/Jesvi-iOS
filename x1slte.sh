@@ -57,6 +57,13 @@ cmd_kernel() {
 	. common/macos-env.sh
 	set -u
 	export GIC_V2=1
+	# several Claude sessions share this one build tree: one kernel build at a time (tools/team.sh, lock "build")
+	if [ -n "${CLAUDECODE:-}" ]; then
+		local team=$HOME/ios-port-research/tools/team.sh who
+		who=$("$team" name)
+		"$team" lock "$who" build "./x1slte.sh kernel" || die "another session is building the kernel (tools/team.sh who)"
+		trap '"$HOME/ios-port-research/tools/team.sh" unlock "'"$who"'" build >/dev/null' EXIT
+	fi
 	touch out/.kernel-start
 	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k > out/kernel-build.log 2>&1 || true
 	if grep -E '^[^ ]*\.(c|cpp|s|h):[0-9]+:[0-9]+: (fatal error|error|warning):' out/kernel-build.log; then
