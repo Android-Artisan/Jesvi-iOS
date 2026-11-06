@@ -225,6 +225,7 @@ extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint
 #define T_WMDR_NAME             0xFE00U
 #define T_WMDR_INFO             0xFF00U
 #define MAX_WLEN                4096            /* :980, the longest single write Samsung makes */
+#define CHUNK                   256             /* ours: a bit-banged write that short rarely meets a disturbance */
 
 #define TAP_MS                  30              /* haptic_tap=0: a tap is waveform 0 for this long */
 #define HOTTEST_BATTERY_C       45
@@ -264,6 +265,7 @@ static struct {
 static unsigned nwseq;
 
 static uint8_t xbuf[4 + MAX_WLEN], vbuf[MAX_WLEN];
+static uint32_t block_retries;
 
 /* ---- the reset pin and the bus -------------------------------------------------------------------------- */
 
@@ -362,9 +364,27 @@ wr_raw(uint32_t reg, const uint8_t *data, uint32_t len)
 	for (uint32_t done = 0; done < len && !broken; ) {
 		uint32_t n = len - done > MAX_WLEN ? MAX_WLEN : len - done;
 
+		bool sent = false;
+
 		put_be32(xbuf, reg + done);
 		memcpy(xbuf + 4, data + done, n);
-		if (!redwood_bbi2c_xfer(&bus, CS_ADDR, xbuf, 4 + n, NULL, 0)) {
+		/*
+		 * x1slte (2026-11-06): a 4 KB block bit-banged is a third of a second on a bank the battery gauge's bus shares;
+		 * the first run lost one (not acknowledged). Shorter blocks (CHUNK, the chip's address auto-increments) and,
+		 * for a block that still fails, the bus freed and the block sent again, three times at most.
+		 */
+		for (int tries = 0; tries < 3 && !sent; tries++) {
+			if (tries > 0) {
+				char why[160];
+
+				(void) redwood_bbi2c_setup(&bus, false, why, sizeof(why));
+				block_retries++;
+			}
+			sent = redwood_bbi2c_xfer(&bus, CS_ADDR, xbuf, 4 + n, NULL, 0);
+		}
+		if (!sent) {
+			hsay("haptic: cs40l25: %u bytes at %#010x not acknowledged three times (%u retries so far)\n", n, reg + done,
+			    block_retries);
 			give_up("a block write was not acknowledged");
 			return false;
 		}
@@ -1009,8 +1029,19 @@ dsp_start(void)
 			return false;
 		}
 	}
-	if (!upd(R_PWRMGT_CTL, 0x2, 0x2) || !upd(R_DSP1_CCM_CORE_CTRL, 0x201, 0x201)) {
-		return false;
+	/*
+	 * CCM_CORE_CTRL: RESET (bit 9) clears itself once the core is reset, so the write is not read back whole
+	 * (2026-11-06: 0x301 written, 0x101 read, and the strict check stopped the start); EN (bit 0) must stay.
+	 */
+	{
+		uint32_t v = 0;
+
+		if (!upd(R_PWRMGT_CTL, 0x2, 0x2) || !rd(R_DSP1_CCM_CORE_CTRL, &v) || !wr_once(R_DSP1_CCM_CORE_CTRL, v | 0x201) ||
+		    !rd(R_DSP1_CCM_CORE_CTRL, &v) || !(v & 0x1)) {
+			hsay("haptic: cs40l25: the DSP core is not enabled (CCM_CORE_CTRL %#x)\n", v);
+			give_up("the DSP core did not start");
+			return false;
+		}
 	}
 	for (i = 0; i < 10; i++) {
 		delay_for_interval(10, NSEC_PER_MSEC);

@@ -310,7 +310,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			  echo "build.sh: no ldid: wifipw_test is unsigned, and the keychain will refuse it (-34018)"; }
 		# our library for inside stock iOS programs (the jobs in INJECT are started with it)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libredwood.dylib src/inject.c
+			-o obj/libredwood.dylib src/inject.c src/inject_sensors.c
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
 			-o obj/libredwood-sb.dylib src/inject_sb.c
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
@@ -619,6 +619,12 @@ fi
 if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-haptic/aw8697_haptic.bin root/fw/
+fi
+# x1slte: the sensor hub's firmware (bsd/dev/redwood_ssp.c, shub=4 and up), made by
+# proposals/sensors/mk-fw-sensors.py out of Samsung's picasso patch into ../fw-sensors (Samsung's/Broadcom's: never committed)
+if [ -f ../fw-sensors/bcm_sensorhub_a1.bin ]; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-sensors/bcm_sensorhub_a1.bin root/fw/
 fi
 # x1slte: the Galaxy S20's CS40L25 needs Cirrus's DSP program and wavetable (bsd/dev/redwood_cs40l25.c, haptic_chip=cs40l25)
 for f in cs40l25a.wmfw cs40l20.bin; do

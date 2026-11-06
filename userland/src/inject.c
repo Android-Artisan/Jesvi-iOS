@@ -51,6 +51,10 @@
 #include "redwood_gl.h"
 #include "redwood_input.h"
 
+/* the S20's sensors (src/inject_sensors.c): /dev/redwood-sensors into HID services */
+void redwood_sensors_early(void);
+void redwood_sensors_client(void *client);
+
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 
 #define CACHE_BASE 0x180000000UL                /* where the cache was built to be, before the slide */
@@ -1088,6 +1092,9 @@ input_thread(__unused void *arg)
 	}
 	say("redwood: input: touch screen service %p, buttons %p\n", (void *)screen, (void *)buttons);
 	dispatch_semaphore_signal(input_services_made); /* see wait_for_als_arrival() */
+	if (screen != NULL) {
+		redwood_sensors_client(client);  /* the sensors' services on the same client (inject_sensors.c) */
+	}
 	if (screen == NULL) {
 		return NULL;
 	}
@@ -1282,6 +1289,7 @@ redwood_init(void)
 		 * moved the start of the event server onto the moment make_service() now knows how to
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
+		redwood_sensors_early();        /* CMDeviceOrientationManager taken over, if the kernel has sensors */
 		input_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
 		container_manager_fixes();
