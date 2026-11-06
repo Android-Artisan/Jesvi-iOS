@@ -4185,6 +4185,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		return nil;
 	}
 	memset(&shape, 0, sizeof(shape));
+	memset(&took, 0, sizeof(took));
 	shape.pixel_format = (unsigned)[d pixelFormat];
 	shape.type = (unsigned)[d textureType];
 	shape.width = (unsigned)[d width];
@@ -4198,6 +4199,26 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 					  &took, why, sizeof(why));
 	/* a surface the GPU cannot import in place, only because of its row length: a texture of
 	 * our own, filled from the surface and kept up to date with it (-redwoodRefreshCopy) */
+	/* (x1slte: also a plane of a two-plane surface, e.g. a video frame's luma or chroma: rwd_texture_for_surface
+	 * describes only single-plane ones in `took`, so the requested plane's row length is asked of the IOSurface) */
+	if (texture == NULL && took.surface == 0 && s != NULL) {
+		static size_t (*pc)(void *), (*rowp)(void *, size_t), (*wp)(void *, size_t), (*hp)(void *, size_t);
+		static uint32_t (*sid)(void *);
+		if (pc == NULL) {
+			*(void **)&pc = dlsym(RTLD_DEFAULT, "IOSurfaceGetPlaneCount");
+			*(void **)&rowp = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
+			*(void **)&wp = dlsym(RTLD_DEFAULT, "IOSurfaceGetWidthOfPlane");
+			*(void **)&hp = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeightOfPlane");
+			*(void **)&sid = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+		}
+		if (pc != NULL && rowp != NULL && wp != NULL && hp != NULL && sid != NULL && pc(s) > 1 && p < pc(s) &&
+		    rowp(s, p) % 64 != 0 && wp(s, p) == shape.width && hp(s, p) == shape.height) {
+			took.surface = sid(s);
+			took.width = (unsigned)wp(s, p);
+			took.height = (unsigned)hp(s, p);
+			took.rowBytes = (unsigned)rowp(s, p);
+		}
+	}
 	if (texture == NULL && took.surface != 0 && took.rowBytes % 64 != 0 &&
 	    mesa.texture_create != NULL && mesa.texture_write != NULL) {
 		char why2[256];
@@ -4812,8 +4833,18 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		RW_AGAIN('E', "SURF", "a copied surface could not be locked for reading\n");
 		return;
 	}
-	const void *base = base_of(_iosurface);
-	size_t row = row_of(_iosurface);
+	/* a plane of a two-plane surface (video's 4:2:0 frames: luma, then chroma) is copied from that plane */
+	static size_t (*plane_count)(void *);
+	static void *(*base_of_plane)(void *, size_t);
+	static size_t (*row_of_plane)(void *, size_t);
+	if (plane_count == NULL) {
+		*(void **)&plane_count = dlsym(RTLD_DEFAULT, "IOSurfaceGetPlaneCount");
+		*(void **)&base_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddressOfPlane");
+		*(void **)&row_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
+	}
+	int planar = plane_count != NULL && base_of_plane != NULL && row_of_plane != NULL && plane_count(_iosurface) > 0;
+	const void *base = planar ? base_of_plane(_iosurface, _iosurfacePlane) : base_of(_iosurface);
+	size_t row = planar ? row_of_plane(_iosurface, _iosurfacePlane) : row_of(_iosurface);
 	uint64_t t_copy = rw_now_ns();
 	const unsigned origin[3] = { 0, 0, 0 };
 	const unsigned size[3] = { _shape.width, _shape.height, 1 };

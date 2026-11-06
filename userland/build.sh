@@ -397,6 +397,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/metal_drv_test ] && cp obj/metal_drv_test root/bin/
 	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
 	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
+	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
 	[ -f obj/vol_ls ] && cp obj/vol_ls root/bin/

@@ -54,6 +54,10 @@ $DYN -o obj/rwlogd src/rwlogd.c
 cp obj/rwlogd ../prebuilt/userland/rwlogd   # the macOS path copies prebuilt/* into obj/, so that is where it must land
 # mali2metal's marker for scripts (src/m2m_mark.c; the tour, m2m.tour, uses it)
 $DYN -o obj/m2m_mark src/m2m_mark.c
+# preferences without Settings' UI (x1slte: WebKit's VP9/VP8 software decoders; src/prefset.c)
+$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
+${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
+cp obj/prefset ../prebuilt/userland/prefset
 cp obj/m2m_mark ../prebuilt/userland/m2m_mark
 $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood.dylib.new src/inject.c
