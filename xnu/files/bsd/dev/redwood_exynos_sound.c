@@ -120,7 +120,8 @@ extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint
 #define ABOX_UAIF_CTRL0         (0x0500U + 0x10 * UAIF_ID)     /* MODE 2 (1 master), SPK_ENABLE 0 */
 #define ABOX_UAIF_CTRL1         (0x0504U + 0x10 * UAIF_ID)
 #define ABOX_UAIF_STATUS        (0x050cU + 0x10 * UAIF_ID)
-#define RDMA_ID                 3
+static uint32_t snd_rdma = 3;           /* RDMA3 for the bypass; Calliope's firmware has a PCM task for RDMA0 only (run 6) */
+#define RDMA_ID                 (snd_rdma)
 #define RDMA(off)               (0x1000U + 0x100 * RDMA_ID + (off))
 #define RDMA_CTRL0              0x00U           /* BURST_LEN 22:19, FUNC 18:16, FORMAT 12:8, ENABLE 0 */
 #define RDMA_BUF_STR            0x08U
@@ -207,6 +208,7 @@ static uint64_t buf_phys;
 static int16_t *buf;
 static bool started, amps_ok, amps_on, faulted, use_status;
 static uint32_t snd_below = 144, snd_gain = 12 * 8, snd_tone;
+static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
 
 struct amp {
 	const char *name;
@@ -353,6 +355,32 @@ smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
             "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
 	return x0;
+}
+
+/*
+ * Samsung's SFR access through EL3 (include/linux/smc.h: SMC_CMD_REG -101, SFR_W class 1 << 30, SFR_R 3 << 30, the
+ * address >> 2; arch/arm64/kernel/exynos-smc.S). ABOX's GIC on the Exynos 990 past rev 0 is secure (abox_util.c
+ * is_secure_gic): abox_gic.c writes its distributor and CPU interface this way; plain writes are dropped.
+ */
+#define SMC_CMD_REG             0xFFFFFFFFFFFFFF9BULL
+static uint64_t
+sfr_smc_write(uint32_t addr, uint32_t value)
+{
+	return smc4(SMC_CMD_REG, (1U << 30) | (addr >> 2), value, 0);
+}
+
+static bool
+sfr_smc_read(uint32_t addr, uint32_t *value)
+{
+	register uint64_t x0 __asm__("x0") = SMC_CMD_REG & 0xffffffffULL;
+	register uint64_t x1 __asm__("x1") = (3U << 30) | (addr >> 2);
+	register uint64_t x2 __asm__("x2") = 0;
+	register uint64_t x3 __asm__("x3") = 0;
+
+	__asm__ volatile ("dsb sy\n\tsmc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
+            "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
+	*value = (uint32_t)x2;
+	return x0 == 0;
 }
 
 /* ---- the amplifiers ------------------------------------------------------------------------------------------- */
@@ -782,7 +810,7 @@ abox_route(void)
 	 * old test of bit 0 alone took 0x4 for off: RDMA3's physical ring was then an IOVA nothing mapped, and the DMA
 	 * read 0 frames.
 	 */
-	if ((rd(mmu, MMU_CTRL) & 0x7) || (rd(mmu, MMU_CTRL_VM) & 1)) {
+	if (snd_calliope < 2 && ((rd(mmu, MMU_CTRL) & 0x7) || (rd(mmu, MMU_CTRL_VM) & 1))) {
 		wr(mmu, MMU_CTRL_VM, 0);
 		wr(mmu, MMU_CTRL, 0);
 		snd_log("snd: SysMMU was on: off (CTRL %#x CTRL_VM %#x)\n", rd(mmu, MMU_CTRL), rd(mmu, MMU_CTRL_VM));
@@ -839,6 +867,11 @@ abox_route(void)
 		redwood_gpio_func(gpb1, pin, 2);
 	}
 
+	if (snd_calliope >= 2) {
+		snd_log("snd: calliope: routing and UAIF2 set by the AP; RDMA3 is Calliope's (ROUTE0 %#x FC0 %#x UAIF2 %#x %#x)\n",
+		    rd(abox, ABOX_ROUTE_CTRL0), rd(abox, ABOX_SPUS_CTRL_FC0), rd(abox, ABOX_UAIF_CTRL0), rd(abox, ABOX_UAIF_CTRL1));
+		return;
+	}
 	/* RDMA3: our ring, 16-bit stereo */
 	wr(abox, RDMA(RDMA_CTRL0), ABOX_FORMAT(16, 2) << 8 | (snd_burst & 0xfU) << 19 | (snd_bufupd ? 1U << 5 : 0));
 	if (snd_sblimit) {
@@ -1009,7 +1042,6 @@ static volatile uint8_t *cal_slog;              /* Calliope's own log, mapped fo
 #define CAL_HNDSHK_OFF          0x2f2e0U        /* samsung,handshake-area <0 0x2f2e0 0x20>: SRAM */
 #define MMU_CAPA0_V7            0x870U
 #define MMU_CAPA1_V7            0x874U
-static uint32_t snd_calliope;
 
 /*
  * A firmware file from the system image's /fw once iOS's root is mounted (A, 2026-11-06): Calliope's 3 MB do not fit
@@ -1095,7 +1127,50 @@ calliope_copy(volatile uint8_t *to, uint32_t room, const char *name, uint32_t of
  * each one is (ABOX_IPC_MSG: ipcid, task_id, then for IPC_SYSTEM msgtype, param1..3). BOOT_DONE's param3 is the
  * firmware's version, 4 characters ("Calliope is ready to sing").
  */
-static uint32_t cal_msgs;
+static uint32_t cal_msgs, cal_pointers;
+static volatile uint8_t *cal_dram, *cal_gicd, *cal_pt, *cal_gpr, *cal_timer;
+static uint32_t cal_inv;
+static volatile bool cal_booted;
+static bool cal_sgi_smc, cal_sgi_tested;
+static volatile uint32_t cal_logbuf;   /* ABOX_REPORT_LOG's address (IOVA in the DRAM firmware) */
+static volatile uint32_t cal_pointer;   /* the last PCM_PLTDAI_POINTER Calliope sent for RDMA3 */
+
+/* Calliope's own log (struct ABOX_LOG_BUFFER: index_writer, index_reader, size, text), what is new, line by line */
+static void
+calliope_log(void)
+{
+	volatile uint8_t *lb;
+	uint32_t wi, ri, size;
+	char line[160];
+	unsigned n = 0, lines = 0;
+
+	if (cal_dram == NULL || cal_logbuf == 0) {
+		return;
+	}
+	lb = cal_dram + (cal_logbuf - 0x80000000U);
+	wi = *(volatile uint32_t *)(lb + 0);
+	ri = *(volatile uint32_t *)(lb + 4);
+	size = *(volatile uint32_t *)(lb + 8);
+	if (size == 0 || size > 0x400000 || wi >= size || ri >= size) {
+		return;
+	}
+	while (ri != wi && lines < 60) {
+		char c = (char)lb[12 + ri];
+
+		ri = (ri + 1) % size;
+		if (c == '\n' || n + 1 >= sizeof(line)) {
+			line[n] = 0;
+			if (n > 0) {
+				snd_log("snd: calliope says: %s\n", line);
+				lines++;
+			}
+			n = 0;
+		} else if (c >= 0x20 && c < 0x7f) {
+			line[n++] = c;
+		}
+	}
+	*(volatile uint32_t *)(lb + 4) = ri;
+}
 
 static void
 calliope_drain(volatile uint8_t *dram)
@@ -1125,7 +1200,14 @@ calliope_drain(volatile uint8_t *dram)
 			w[i] = (size >= 4U * (i + 1)) ? *(volatile uint32_t *)(d + 4 + 4 * i) : 0;
 		}
 		cal_msgs++;
-		if (w[0] == 1 && w[2] == 3) {
+		if (w[0] == 2 && w[2] == 18) {                 /* IPC_PCMPLAYBACK, PCM_PLTDAI_POINTER: a period played */
+			cal_pointers++;
+			cal_pointer = w[4];
+		} else if (w[0] == 1 && w[2] == 0x10 && w[3] == 0 && w[4] >= 0x80000000U && w[4] < 0x80000000U + CAL_DRAM_SIZE) {
+			cal_logbuf = w[4];
+			snd_log("snd: calliope: its log buffer at %#x\n", w[4]);
+		} else if (w[0] == 1 && w[2] == 3) {
+			cal_booted = true;
 			snd_log("snd: calliope: Calliope is ready to sing (version %c%c%c%c), message %u\n", (char)(w[5] >> 24),
 			    (char)(w[5] >> 16), (char)(w[5] >> 8), (char)w[5], cal_msgs);
 		} else if (cal_msgs <= 80) {
@@ -1177,6 +1259,17 @@ calliope_boot(void)
 	wr(gicc, 0x04, 0xff);                   /* GIC_CPU_PRIMASK */
 	wr(gicd, 0x000, 0x3);                   /* GIC_DIST_CTRL */
 	wr(gicc, 0x000, 0x3);                   /* GIC_CPU_CTRL */
+	/* the secure GIC (A, 2026-11-06: stage 3's messages sat unread): the same three writes through EL3, as abox_gic.c */
+	{
+		uint64_t r1 = sfr_smc_write(CAL_GICC_PHYS + 0x04, 0xff), r2 = sfr_smc_write(CAL_GICD_PHYS + 0x000, 0x3),
+		    r3 = sfr_smc_write(CAL_GICC_PHYS + 0x000, 0x3);
+		uint32_t dctl = 0xfafafafa, cctl = 0xfafafafa;
+		bool ok1 = sfr_smc_read(CAL_GICD_PHYS, &dctl), ok2 = sfr_smc_read(CAL_GICC_PHYS, &cctl);
+
+		snd_log("snd: calliope: GIC by SMC: writes %lld %lld %lld; GICD_CTLR %#x (%s, plain %#x) GICC_CTLR %#x (%s)\n",
+		    (long long)r1, (long long)r2, (long long)r3, dctl, ok1 ? "read" : "unreadable", rd(gicd, 0), cctl,
+		    ok2 ? "read" : "unreadable");
+	}
 	wr(timer, 0x600 + 0x20 * 0, 1);         /* ABOX_TIMER_CTRL0(0): START */
 	wr(timer, 0x600 + 0x20 * 2, 1);         /* ABOX_TIMER_CTRL0(2) */
 	/* the firmware (abox_core_download_firmware): SRAM and DRAM cleared, the four images at the dts offsets */
@@ -1299,12 +1392,22 @@ calliope_boot(void)
 	upd(pmu, 0x3220, 1, 1);
 	snd_log("snd: calliope: cores powered %#x/%#x, enabled %#x/%#x; IPC rx word 0 before: %#x\n", rd(pmu, 0x3180), rd(pmu, 0x3200),
 	    rd(pmu, 0x31a0), rd(pmu, 0x3220), rx0);
+	cal_dram = dram;
+	cal_gpr = gpr;
+	cal_timer = timer;
+	cal_gicd = gicd;
+	cal_pt = pt;
+	cal_inv = inv;
 	/* signs of life for 30 s: its messages as they come (every 20 ms); every 500 ms for the first 5 s the GPR, a fault */
+	/* (snd_calliope=2: on to playback 1 s after its boot-done message; 10 s at most) */
 	for (int tick = 1; tick <= 1500; tick++) {
 		int t = tick / 25 - 1;
 
 		IOSleep(20);
 		calliope_drain(dram);
+		if (snd_calliope >= 2 && ((cal_booted && tick >= 50) || tick >= 500)) {
+			break;
+		}
 		if (tick % 25 != 0 || t >= 10) {
 			continue;
 		}
@@ -1333,6 +1436,215 @@ calliope_boot(void)
 			}
 		}
 	}
+}
+
+
+/*
+ * Stage 3 (snd_calliope=2): the AP's side of abox_msg_send + abox_ipc_send: the message (ABOX_IPC_MSG, 768 bytes) into
+ * the tx data queue, its command (id = ipcid, cmd = msgtype, args) into the tx command queue, then SGI 15 to Calliope
+ * through ABOX's GIC (abox_gic_generate_interrupt: GICD_SGIR = 1 << 16 | 15).
+ */
+#define CAL_MSG_BYTES           768U
+#define CAL_IOVA_RDMA3          (0x91000000U + 0x100000U * RDMA_ID)     /* IOVA_RDMA_BUFFER(n) (abox.h:39) */
+
+static bool
+calliope_send(uint32_t ipcid, uint32_t msgtype, const uint32_t *p, unsigned np)
+{
+	static uint32_t m[CAL_MSG_BYTES / 4];
+	volatile uint8_t *tx = cal_dram + CAL_IPC_TX_OFF, *c, *d;
+	uint32_t len = *(volatile uint32_t *)(tx + CAL_Q_DATA + 8), size = 4 + CAL_MSG_BYTES, e, sidx, blank;
+	int32_t cs, ce;
+
+	bzero(m, sizeof(m));
+	m[0] = ipcid;
+	m[1] = (ipcid == 2 || ipcid == 3) ? (np > 0 ? p[0] : 0) : 0;  /* task_id = the channel for PCM messages */
+	m[2] = msgtype;
+	for (unsigned i = 0; i < np && i < 64; i++) {
+		m[3 + i] = p[i];
+	}
+	for (int w = 0; ; w++) {
+		e = *(volatile uint32_t *)(tx + CAL_Q_DATA + 4);
+		sidx = *(volatile uint32_t *)(tx + CAL_Q_DATA + 0);
+		if (sidx > e) {
+			blank = sidx - e;
+		} else {
+			blank = len - e;
+			if (blank < size) {
+				e = 0;
+				blank = sidx;
+			}
+		}
+		cs = *(volatile int32_t *)(tx + 0);
+		ce = *(volatile int32_t *)(tx + 4);
+		if (blank >= size && cs != (ce + 1) % (int32_t)CAL_Q_CMD_LEN) {
+			break;
+		}
+		if (w >= 100) {
+			snd_log("snd: calliope: send %u/%u: the queue stays full (data s %u e %u, cmd s %d e %d)\n", ipcid, msgtype,
+			    sidx, e, cs, ce);
+			return false;
+		}
+		IOSleep(1);
+	}
+	d = tx + CAL_Q_DATA_ELEM + e;
+	*(volatile uint32_t *)d = CAL_MSG_BYTES;
+	for (uint32_t i = 0; i < CAL_MSG_BYTES / 4; i++) {
+		*(volatile uint32_t *)(d + 4 + 4 * i) = m[i];
+	}
+	*(volatile uint32_t *)(tx + CAL_Q_DATA + 4) = (e + size) % len;
+	c = tx + CAL_Q_CMD_ELEM + (uint32_t)ce * CAL_Q_CMD_SIZE;
+	for (uint32_t i = 0; i < CAL_Q_CMD_SIZE; i += 4) {
+		*(volatile uint32_t *)(c + i) = 0;
+	}
+	*(volatile uint32_t *)(c + 0) = ipcid;
+	*(volatile uint32_t *)(c + 4) = msgtype;
+	*(volatile uint32_t *)(c + 8) = np > 0 ? p[0] : 0;
+	if (ipcid == 1 || ipcid == 0xA) {
+		*(volatile uint32_t *)(c + 12) = np > 1 ? p[1] : 0;
+		*(volatile uint32_t *)(c + 16) = np > 2 ? p[2] : 0;
+	}
+	*(volatile uint32_t *)(c + 20) = e;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	*(volatile int32_t *)(tx + 4) = (ce + 1) % (int32_t)CAL_Q_CMD_LEN;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	/* run 4: a plain GICD_SGIR write is never taken (the GIC is secure); run 3: through EL3 the first one was */
+	{
+		uint64_t r = sfr_smc_write(CAL_GICD_PHYS + 0xf00, (1U << 16) | 15U);
+
+		if (r != 0) {
+			snd_log("snd: calliope: the SGI through EL3 answers %lld\n", (long long)r);
+		}
+	}
+	/*
+	 * A, run 3: the EL3 SGI (after a plain one not taken in 50 ms) was never taken; the first message was, late. Plain
+	 * only now, and how long each took (up to 500 ms) is logged.
+	 */
+	{
+		int i;
+
+		for (i = 0; i < 500 && *(volatile int32_t *)(tx + 0) == cs; i++) {
+			IOSleep(1);
+		}
+		snd_log("snd: calliope: sent %u/%u (%d): %s after %d ms\n", ipcid, msgtype, np > 0 ? (int)p[0] : -1,
+		    *(volatile int32_t *)(tx + 0) != cs ? "taken" : "NOT taken", i);
+	}
+	(void)cal_sgi_smc;
+	(void)cal_sgi_tested;
+	return true;
+}
+
+/* its answer: what it sent in the next `ms' milliseconds, and how far it took our queue */
+static void
+calliope_settle(const char *what, unsigned ms)
+{
+	volatile uint8_t *tx = cal_dram + CAL_IPC_TX_OFF;
+
+	for (unsigned i = 0; i < ms / 10; i++) {
+		IOSleep(10);
+		calliope_drain(cal_dram);
+	}
+	calliope_log();
+	snd_log("snd: calliope: %s: tx cmd s %d e %d; RDMA3 CTRL0 %#x STATUS %#x BUF %#x-%#x; UAIF2 STATUS %#x; GPR %08x %08x pc? %08x %08x\n",
+	    what, *(volatile int32_t *)(tx + 0), *(volatile int32_t *)(tx + 4), rd(abox, RDMA(RDMA_CTRL0)), rd(abox, RDMA(RDMA_STATUS)),
+	    rd(abox, RDMA(RDMA_BUF_STR)), rd(abox, RDMA(RDMA_BUF_END)), rd(abox, ABOX_UAIF_STATUS),
+	    cal_gpr ? rd(cal_gpr, 0x0) : 0, cal_gpr ? rd(cal_gpr, 0x4) : 0, cal_gpr ? rd(cal_gpr, 0x3c) : 0,
+	    cal_gpr ? rd(cal_gpr, 0x40) : 0);
+	/* abox_soc_3.h: ABOX_CA32_CORE0_R(x) 0x5000 + 4x, PC = R(31) at 0x7c; core 1 at 0x5080; status 0x5100 */
+	if (cal_gpr != NULL) {
+		for (int pass = 0; pass < 3; pass++) {
+			snd_log("snd: calliope: %s: core0 pc %08x r28-30 %08x %08x %08x r0-3 %08x %08x %08x %08x; core1 pc %08x; status %08x\n",
+			    what, rd(cal_gpr, 0x7c), rd(cal_gpr, 0x70), rd(cal_gpr, 0x74), rd(cal_gpr, 0x78), rd(cal_gpr, 0x0),
+			    rd(cal_gpr, 0x4), rd(cal_gpr, 0x8), rd(cal_gpr, 0xc), rd(cal_gpr, 0x80 + 0x7c), rd(cal_gpr, 0x100));
+			IOSleep(3);
+		}
+	}
+	{
+		/* ABOX's GIC as EL3 reads it: groups, enables, pending, active for IRQs 0-127 */
+		static const uint32_t offs[] = { 0x080, 0x084, 0x088, 0x08c, 0x100, 0x104, 0x108, 0x10c, 0x200, 0x204, 0x208, 0x20c,
+			                         0x300, 0x304, 0x308, 0x30c };
+		uint32_t v[16];
+
+		for (int i = 0; i < 16; i++) {
+			if (!sfr_smc_read(CAL_GICD_PHYS + offs[i], &v[i])) {
+				v[i] = 0xdeadbeef;
+			}
+		}
+		snd_log("snd: calliope: %s: GIC group %08x %08x %08x %08x en %08x %08x %08x %08x pend %08x %08x %08x %08x "
+		    "act %08x %08x %08x %08x\n", what, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11],
+		    v[12], v[13], v[14], v[15]);
+	}
+	if (rd(mmu, 0x060) != 0) {
+		snd_log("snd: calliope: %s: SysMMU fault: INT %#x FAULT_VA %#x %#x (INFO %#x)\n", what, rd(mmu, 0x060), rd(mmu, 0x1000),
+		    rd(mmu, 0x0070), rd(mmu, 0x1004));
+	}
+}
+
+/* abox_rdma.c's order: open, set_buffer + hw_params, prepare, trigger -- for RDMA3, our ring behind IOVA_RDMA_BUFFER(3) */
+static bool
+calliope_play(void)
+{
+	uint32_t ch = RDMA_ID, iova = CAL_IOVA_RDMA3 + (uint32_t)(buf_phys & 0xfffffU);
+	uint32_t a[4];
+
+	if (cal_dram == NULL || !cal_booted) {
+		snd_log("snd: calliope: not booted: no playback\n");
+		return false;
+	}
+	*(volatile uint32_t *)(cal_pt + 4 * (CAL_IOVA_RDMA3 >> 20)) = (uint32_t)((buf_phys & ~0xfffffULL) >> 4) | 2;
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(mmu, cal_inv, 1);
+	bzero(buf, BUF_BYTES);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	/*
+	 * ABOX_RESUME as abox_boot_done_work -> abox_cpu_pm_ipc: bundle.param_u64[0] = the AP's clock in ns,
+	 * [1] = ABOX timer 1 (26 MHz) in ns (atime * 500 / 13). Off with snd_cal_resume=0.
+	 */
+	a[0] = 1;
+	PE_parse_boot_argn("snd_cal_resume", a, sizeof(a[0]));
+	if (a[0] != 0) {
+		uint64_t kt, at = 0;
+		uint32_t r[7] = { 0, 0, 0, 0, 0, 0, 0 };
+
+		absolutetime_to_nanoseconds(mach_absolute_time(), &kt);
+		if (cal_timer != NULL) {
+			at = ((uint64_t)rd(cal_timer, 0x600 + 0x20 + 0x14) << 32) | rd(cal_timer, 0x600 + 0x20 + 0x10);
+			at = at * 500 / 13;
+		}
+		r[3] = (uint32_t)kt; r[4] = (uint32_t)(kt >> 32); r[5] = (uint32_t)at; r[6] = (uint32_t)(at >> 32);
+		(void)calliope_send(1, 2, r, 7);        /* ABOX_RESUME */
+		calliope_settle("resume", 100);
+	}
+	calliope_log();
+	/* the mixer's side, as abox_cmpnt.c's controls do: SIFS0 48 kHz, 32-bit stereo (IPC_ABOX_CONFIG) */
+	/* (run 5: SET_SIFS0_RATE hung its IPC thread at "Changing MIXER sample rate": only with snd_cal_cfg=1) */
+	if (PE_parse_boot_argn("snd_cal_cfg", a, sizeof(a[0])) && a[0] != 0) {
+		a[0] = 48000;
+		(void)calliope_send(0xA, 1, a, 1);      /* SET_SIFS0_RATE */
+		a[0] = 32; a[1] = 2;
+		(void)calliope_send(0xA, 0x10, a, 2);   /* SET_SIFS0_FORMAT */
+		calliope_settle("sifs0", 50);
+	}
+	a[0] = ch;
+	(void)calliope_send(2, 11, a, 1);               /* PCM_PLTDAI_OPEN */
+	calliope_settle("open", 100);
+	a[0] = ch; a[1] = iova; a[2] = PERIOD_BYTES; a[3] = BUF_BYTES / PERIOD_BYTES;
+	(void)calliope_send(2, 20, a, 4);               /* PCM_SET_BUFFER: phyaddr, period bytes, periods */
+	calliope_settle("set_buffer", 50);
+	{
+		uint32_t h[5] = { ch, 48000, 16, 2, 0 };
+
+		(void)calliope_send(2, 14, h, 5);       /* PCM_PLTDAI_HW_PARAMS: rate, width, channels, packed */
+	}
+	calliope_settle("hw_params", 100);
+	a[0] = ch;
+	(void)calliope_send(2, 16, a, 1);               /* PCM_PLTDAI_PREPARE */
+	calliope_settle("prepare", 100);
+	a[0] = ch; a[1] = 1;
+	(void)calliope_send(2, 17, a, 2);               /* PCM_PLTDAI_TRIGGER 1 */
+	calliope_settle("trigger", 200);
+	snd_log("snd: calliope: playback asked for (ring IOVA %#x = %#llx); %u pointer messages so far\n", iova, buf_phys,
+	    cal_pointers);
+	return true;
 }
 
 static void
@@ -1370,11 +1682,19 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			    waited * 500);
 		}
 		calliope_boot();                /* stage 1 of Samsung's way: the DSP firmware; no bypass playback this run */
-		return;
+		if (snd_calliope < 2) {
+			return;
+		}
 	}
 	abox_route();
 	amps_ok = amps_bring_up();      /* (their setup needs no clock; their power-up does) */
-	abox_start();
+	if (snd_calliope >= 2) {
+		if (!calliope_play()) {
+			return;
+		}
+	} else {
+		abox_start();
+	}
 	/* frames are counted on from where the DMA is now, in the ring's terms: ring index = count % BUF_FRAMES */
 	t0 = now_us();
 	last_pos = dma_position(NULL);
@@ -1395,6 +1715,15 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 
 		last_pos = pos;
 		status_consumed += delta;
+		if (cal_dram != NULL) {
+			static uint64_t cal_log_at;
+
+			calliope_drain(cal_dram);
+			if (now - cal_log_at >= 500000) {
+				cal_log_at = now;
+				calliope_log();
+			}
+		}
 		/* after a quarter second: does the DMA's own count agree with the clock? (it should, within a period) */
 		if (!decided && now - t0 >= 250000) {
 			int64_t diff = (int64_t)status_consumed - (int64_t)by_time;
@@ -1537,6 +1866,12 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
+	if (snd_calliope >= 2) {
+		snd_rdma = 0;
+	}
+	if (snd_calliope >= 2 && !PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone))) {
+		snd_tone = 2000;         /* stage 3's own test: 2 s of 1 kHz once the amplifiers are up */
+	}
 	if (snd_gain > REDWOOD_GUARD_MAX_GAIN) {
 		snd_gain = REDWOOD_GUARD_MAX_GAIN;
 	}
