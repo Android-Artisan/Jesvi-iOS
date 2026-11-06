@@ -3,6 +3,12 @@
 # x1slte-auto.sh --recovery      the same for out/x1slte-recovery.img (kernel, loader, root.apfs: uflash)
 # logs saved -> phone to Log access (rwlogd /menu?to=1) -> uroot -> cold restart -> wait for iOS on Wi-Fi again.
 cd "$(dirname "$0")/.."
+# several Claude sessions, one phone (2026-11-06): only the lock's holder deploys (tools/phone-lock.sh, CLAUDE_SESSION)
+if [ -n "${CLAUDE_SESSION:-}" ]; then
+	$HOME/ios-port-research/tools/phone-lock.sh acquire "$CLAUDE_SESSION" || exit 3
+else
+	st=$($HOME/ios-port-research/tools/phone-lock.sh status); case "$st" in *held*) echo "[auto] $st (set CLAUDE_SESSION=NAME to deploy as the holder)"; exit 3 ;; esac
+fi
 # the phone over the USB cable when its network is up there (tools/phone-ip), else Wi-Fi; asked again after the restart
 IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-192.168.137.106}); F=${1:-userland/system.apfs}; T=$(date +%Y%m%d-%H%M%S); D=logs/runs/$T; mkdir -p $D
 up() { [ "$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://$IP:8080/)" = 200 ]; }
