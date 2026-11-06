@@ -17,10 +17,15 @@
  * cut the power.
  *
  * Boot args: keys=1 on (default: follows touch_ts), keys=0 off, keys_escape=0 no escape.
+ *            keys_irq=0: poll only. Default 1 (B, 2026-11-06): each key's pin is an ALIVE wake-up EINT (both edges;
+ *            dts gpa0/gpa2 interrupts: gpa0-3 SPI 3, gpa0-4 SPI 4, gpa2-4 SPI 20), which wakes this thread; it then
+ *            polls every 16 ms while a key is down and for 100 ms after an interrupt (the debounce), and sleeps
+ *            otherwise, with a 500 ms fallback look once interrupts are seen. A storm (> 500/s) masks them: polling.
  */
 
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/sched_prim.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
@@ -47,11 +52,84 @@ static struct key {
 	bool                down;              /* as reported */
 	uint64_t            since;
 	uint32_t            presses;
+	uint32_t            eint_off, intid;       /* wake-up EINT: CON 0x700 / MASK 0x900 / PEND 0xA00 + eint_off; GIC */
 } keys[] = {
-	{ .name = "power", .bank_offset = BANK_GPA2, .pin = 4, .record = REDWOOD_BUTTON_LOCK },
-	{ .name = "volume up", .bank_offset = BANK_GPA0, .pin = 3, .record = REDWOOD_BUTTON_VOLUME_UP },
-	{ .name = "volume down", .bank_offset = BANK_GPA0, .pin = 4, .record = REDWOOD_BUTTON_VOLUME_DOWN },
+	{ .name = "power", .bank_offset = BANK_GPA2, .pin = 4, .record = REDWOOD_BUTTON_LOCK, .eint_off = 0x08, .intid = 32 + 20 },
+	{ .name = "volume up", .bank_offset = BANK_GPA0, .pin = 3, .record = REDWOOD_BUTTON_VOLUME_UP, .eint_off = 0x00, .intid = 32 + 3 },
+	{ .name = "volume down", .bank_offset = BANK_GPA0, .pin = 4, .record = REDWOOD_BUTTON_VOLUME_DOWN, .eint_off = 0x00, .intid = 32 + 4 },
 };
+
+#define EINT_EDGE_BOTH  4U
+#define NKEYS           (sizeof(keys) / sizeof(keys[0]))
+static volatile uint8_t *keys_alive;
+static volatile bool keys_irq_on;
+static volatile uint32_t keys_irqs, keys_storm, keys_window;
+static uint64_t keys_window_at, keys_irq_at;
+static int keys_wake;
+extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid),
+    void *context);
+
+static void
+keys_mask_all(void)
+{
+	for (unsigned i = 0; i < NKEYS; i++) {
+		*(volatile uint32_t *)(keys_alive + 0x900 + keys[i].eint_off) |= 1u << keys[i].pin;
+	}
+}
+
+static void
+keys_irq(void *context, __unused uint32_t intid)
+{
+	struct key *k = context;
+	uint64_t now = mach_absolute_time(), second;
+
+	*(volatile uint32_t *)(keys_alive + 0xA00 + k->eint_off) = 1u << k->pin;       /* write 1 to clear */
+	keys_irqs++;
+	keys_irq_at = now;
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	if (now - keys_window_at > second) {
+		keys_window_at = now;
+		keys_window = 0;
+	}
+	if (++keys_window > 500) {
+		keys_mask_all();
+		keys_irq_on = false;
+		keys_storm++;
+	}
+	thread_wakeup((event_t)&keys_wake);
+}
+
+static void
+keys_irq_setup(void)
+{
+	unsigned attached = 0;
+
+	keys_alive = keys[0].bank - keys[0].bank_offset;
+	keys_mask_all();
+	for (unsigned i = 0; i < NKEYS; i++) {
+		volatile uint32_t *con = (volatile uint32_t *)(keys_alive + 0x700 + keys[i].eint_off);
+
+		*con = (*con & ~(0x7u << (keys[i].pin * 4))) | (EINT_EDGE_BOTH << (keys[i].pin * 4));
+		*(volatile uint32_t *)(keys_alive + 0xA00 + keys[i].eint_off) = 1u << keys[i].pin;
+	}
+	for (unsigned i = 0; i < NKEYS; i++) {
+		redwood_gpio_func(keys[i].bank, keys[i].pin, 0xf);     /* EXT_INT (the level still reads in DAT) */
+		if (gic_v3_spi_attach(keys[i].intid, false, keys_irq, &keys[i]) == KERN_SUCCESS) {
+			attached++;
+		} else {
+			redwood_gpio_func(keys[i].bank, keys[i].pin, REDWOOD_GPIO_INPUT);
+		}
+	}
+	if (attached != NKEYS) {
+		printf("keys: %u of %lu interrupts attached: polling only\n", attached, NKEYS);
+		return;
+	}
+	keys_irq_on = true;
+	for (unsigned i = 0; i < NKEYS; i++) {
+		*(volatile uint32_t *)(keys_alive + 0x900 + keys[i].eint_off) &= ~(1u << keys[i].pin);
+	}
+	printf("keys: by interrupt (both edges; INTID %u, %u, %u)\n", keys[0].intid, keys[1].intid, keys[2].intid);
+}
 
 #define KEY_POWER       0
 #define KEY_VOLUME_DOWN 2
@@ -101,6 +179,14 @@ keys_thread(__unused void *parameter, __unused wait_result_t result)
 	}
 	printf("keys: power %s, volume up %s, volume down %s (polled every %u ms)\n",
 	    keys[0].last ? "down" : "up", keys[1].last ? "down" : "up", keys[2].last ? "down" : "up", POLL_MS);
+	{
+		uint32_t use_irq = 1;
+
+		PE_parse_boot_argn("keys_irq", &use_irq, sizeof(use_irq));
+		if (use_irq) {
+			keys_irq_setup();
+		}
+	}
 
 	for (;;) {
 		for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -122,7 +208,29 @@ keys_thread(__unused void *parameter, __unused wait_result_t result)
 		} else {
 			both_since = 0;
 		}
-		delay_for_interval(POLL_MS, NSEC_PER_MSEC);
+		{
+			/* busy: a key down, a state not yet settled, or an interrupt in the last 100 ms -- the 16 ms look */
+			bool busy = !keys_irq_on;
+			uint64_t now = mach_absolute_time(), settle;
+
+			nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &settle);
+			busy = busy || now - keys_irq_at < settle;
+			for (i = 0; !busy && i < NKEYS; i++) {
+				busy = keys[i].down || keys[i].last || !keys[i].live;
+			}
+			if (busy) {
+				delay_for_interval(POLL_MS, NSEC_PER_MSEC);
+			} else {
+				assert_wait_timeout((event_t)&keys_wake, THREAD_UNINT, keys_irqs != 0 ? 500 : POLL_MS, NSEC_PER_MSEC);
+				for (i = 0; i < NKEYS && redwood_gpio_get(keys[i].bank, keys[i].pin) != 0; i++) {
+				}
+				if (i < NKEYS) {
+					clear_wait(current_thread(), THREAD_AWAKENED);  /* pressed meanwhile */
+				} else {
+					thread_block(THREAD_CONTINUE_NULL);
+				}
+			}
+		}
 	}
 }
 
