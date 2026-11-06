@@ -3,10 +3,12 @@
 # x1slte-auto.sh --recovery      the same for out/x1slte-recovery.img (kernel, loader, root.apfs: uflash)
 # logs saved -> phone to Log access (rwlogd /menu?to=1) -> uroot -> cold restart -> wait for iOS on Wi-Fi again.
 cd "$(dirname "$0")/.."
-IP=${Y2S_IP:-192.168.137.106}; F=${1:-userland/system.apfs}; T=$(date +%Y%m%d-%H%M%S); D=logs/runs/$T; mkdir -p $D
+# the phone over the USB cable when its network is up there (tools/phone-ip), else Wi-Fi; asked again after the restart
+IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-192.168.137.106}); F=${1:-userland/system.apfs}; T=$(date +%Y%m%d-%H%M%S); D=logs/runs/$T; mkdir -p $D
 up() { [ "$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://$IP:8080/)" = 200 ]; }
 wake() { ping -c1 -t1 $IP >/dev/null 2>&1; }
-echo "[auto] phone at $IP"; for i in $(seq 1 20); do wake; up && break; sleep 3; done; up || { echo "[auto] phone not on Wi-Fi"; exit 1; }
+echo "[auto] phone at $IP ($([ "$IP" = "${Y2S_USB_IP:-10.77.0.2}" ] && echo USB cable || echo Wi-Fi))"
+for i in $(seq 1 20); do wake; up && break; sleep 3; IP=$(phone-ip 2>/dev/null || echo $IP); done; up || { echo "[auto] phone not reachable (USB or Wi-Fi)"; exit 1; }
 curl -s -m 60 http://$IP:8080/m2m > $D/m2m.txt; curl -s -m 90 http://$IP:8080/log > $D/kernel.txt
 echo "[auto] logs saved: $D ($(wc -l < $D/m2m.txt) m2m records, $(wc -c < $D/kernel.txt) bytes of kernel log)"
 echo "[auto] asking the phone for Log access"; curl -s -m 10 "http://$IP:8080/menu?to=1"; echo
@@ -15,5 +17,6 @@ fastboot devices | grep -q fastboot || { echo "[auto] the phone did not reach Lo
 ./x1slte.sh ulog > $D/lastlog.txt 2>&1 || true
 if [ "$F" = --recovery ]; then ./x1slte.sh uflash || exit 1; else ./x1slte.sh uroot "$F" || exit 1; fi
 ./x1slte.sh ureboot
-echo "[auto] waiting for iOS on Wi-Fi"; for i in $(seq 1 90); do sleep 4; wake; up && { echo "[auto] iOS is back on Wi-Fi after $((i*4)) s"; exit 0; }; done
-echo "[auto] iOS did not come back on Wi-Fi within 6 min"; exit 2
+echo "[auto] waiting for iOS (USB cable or Wi-Fi)"
+for i in $(seq 1 90); do sleep 4; IP=$(phone-ip 2>/dev/null) && { echo "[auto] iOS is back after $((i*4)) s, at $IP"; exit 0; }; done
+echo "[auto] iOS did not come back within 6 min"; exit 2

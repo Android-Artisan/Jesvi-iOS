@@ -476,6 +476,11 @@ phone_host() {
 		echo "$Y2S_IP"
 		return
 	fi
+	# the USB cable's network first (usb_ecm=1), then Wi-Fi (tools/phone-ip in ~/ios-port-research/tools)
+	if command -v phone-ip > /dev/null && host=$(phone-ip 2>/dev/null); then
+		echo "$host"
+		return
+	fi
 	# Bonjour: "HackiOS._http._tcp" -> "... can be reached at NAME.local.:8080"
 	host=$( (dns-sd -L HackiOS _http._tcp local & sleep 4; kill $! 2>/dev/null) 2>/dev/null |
 		sed -n 's/.*can be reached at \([^:]*\)\.:8080.*/\1/p' | head -1)
