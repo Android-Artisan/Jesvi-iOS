@@ -93,10 +93,12 @@ static const struct {
 	int zone;               /* the zone that throttles it (zones[]), -1: none */
 	int step1, step2;       /* degrees */
 } domains[] = {
-	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 1742000, 1053000, 1352000, 2, 86, 96 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2210000, 1066000, 1612000, 1, 86, 96 },
+	/* x1slte (2026-11-06): the tops are Samsung's (dtb cpufreq domains: A55 2002, A76 2504 as sold, M5 2730; gpu_max_clock
+	 * 800 MHz); the thermal steps below cap them as Samsung's thermal zones do */
+	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 86, 96 },
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 86, 96 },
 	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 0,       1196000, 1794000, 0, 86, 96 },  /* only with dvfs_cl2= and every core up */
-	{ D_G3D, "g3d",       "dvfs_g3d", 702000,  377000,  572000,  3, 88, 100 },
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 88, 100 },
 	{ D_MIF, "mif",       "dvfs_mif", 0,       0,       0,       -1, 0, 0 },
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
@@ -401,8 +403,14 @@ hottest(void)
  * takes the GPU to its top rung at once; it comes down as from any other jump.
  */
 int redwood_gov_wake;                   /* the event a touch or a slow GPU job wakes the governor with */
-#define GOV_TICK_MS     200
-#define GOV_RUNGS       6
+/*
+ * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
+ * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
+ * eight rungs of Samsung's own levels (ECT steps of the Exynos 990) up to the real tops.
+ */
+#define GOV_TICK_MS     50
+#define GOV_DOWN_TICKS  6
+#define GOV_RUNGS       8
 static const struct {
 	unsigned domain;
 	unsigned first_cpu, ncpus;      /* ncpus 0: the GPU */
@@ -410,10 +418,14 @@ static const struct {
 	unsigned aim, jump;             /* the busy % a rung is chosen for, and the % that takes the top at once */
 	uint32_t touch_head, touch_tail;        /* kHz the input booster holds at least (0: none) */
 } gov[] = {
-	{ D_CL0, 0, 4, { 806000, 1053000, 1352000, 1742000, 0, 0 }, 60, 70, 806000, 806000 },
-	{ D_CL1, 4, 2, { 1066000, 1612000, 2210000, 0, 0, 0 }, 60, 70, 1404000, 1222000 },
-	{ D_CL2, 6, 2, { 1196000, 1794000, 2304000, 0, 0, 0 }, 60, 70, 1066000, 858000 },
-	{ D_G3D, 0, 0, { 156000, 260000, 377000, 455000, 572000, 702000 }, 40, 60, 572000, 572000 },
+	/*
+	 * The A55s' touch floor is above Samsung's (806 MHz there): Samsung's scheduler keeps the UI off the little
+	 * cores (EMS), XNU here has one performance level for all eight (hw.nperflevels 1), so a UI thread can be on one.
+	 */
+	{ D_CL0, 0, 4, { 806000, 1053000, 1248000, 1456000, 1690000, 2002000, 0, 0 }, 60, 70, 1456000, 1248000 },
+	{ D_CL1, 4, 2, { 1066000, 1404000, 1794000, 2106000, 2304000, 2504000, 0, 0 }, 60, 70, 1404000, 1222000 },
+	{ D_CL2, 6, 2, { 1196000, 1586000, 1898000, 2208000, 2504000, 2730000, 0, 0 }, 60, 70, 1066000, 858000 },
+	{ D_G3D, 0, 0, { 156000, 260000, 377000, 455000, 572000, 702000, 800000, 0 }, 40, 60, 572000, 572000 },
 };
 #define TOUCH_HEAD_MS   130
 #define TOUCH_TAIL_MS   500
@@ -685,7 +697,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				if (fit > gov_rung[g]) {
 					want = fit;
 					gov_low[g] = 0;
-				} else if (fit < gov_rung[g] && ++gov_low[g] >= 3) {
+				} else if (fit < gov_rung[g] && ++gov_low[g] >= GOV_DOWN_TICKS) {
 					want = gov_rung[g] - 1;
 					gov_low[g] = 0;
 				}

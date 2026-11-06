@@ -319,7 +319,8 @@ SYSCTL_DECL(_kern_redwood);
 #define ECM_IN_OFF              0x8800u         /* 2048 bytes: a frame to it */
 #define ECM_NOTE_OFF            0x9000u         /* 16 bytes: a notification */
 #define ECM_BUF                 2048u
-#define ECM_BATCH               8u              /* frames per transfer, each direction */
+#define ECM_BATCH               8u
+#define POLL_IDLE_MS            8u              /* the poll when nothing has moved for 200 ms */              /* frames per transfer, each direction */
 #define ECM_TX_TRBS             0x9100u         /* ECM_BATCH TRBs, contiguous */
 #define ECM_RX_TRBS             0x9200u
 #define ECM_TX_BUFS             0x10000u        /* ECM_BATCH x ECM_BUF */
@@ -2249,7 +2250,29 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		return_check();
 	}
 again:
-	clock_interval_to_deadline(connected ? poll_ms : 20, NSEC_PER_MSEC, &deadline);
+	/*
+	 * x1slte (2026-11-06): poll_ms (1) only while something moves -- an event, a frame either way, the log going out --
+	 * and POLL_IDLE_MS after 200 ms without: 1000 wake-ups a second on a quiet cable kept a core awake (cpuidle: the
+	 * A76s asleep 4 s of 10, woken 600 times a second each).
+	 */
+	{
+		static uint64_t seen_events, seen_tx, seen_rx, seen_in, busy_until;
+		uint64_t now = mach_absolute_time(), window;
+		uint32_t period = poll_ms;
+
+		if (n_events != seen_events || ecm_tx_frames != seen_tx || ecm_rx_frames != seen_rx || n_in != seen_in) {
+			seen_events = n_events;
+			seen_tx = ecm_tx_frames;
+			seen_rx = ecm_rx_frames;
+			seen_in = n_in;
+			nanoseconds_to_absolutetime(200 * NSEC_PER_MSEC, &window);
+			busy_until = now + window;
+		}
+		if (now > busy_until && period < POLL_IDLE_MS) {
+			period = POLL_IDLE_MS;
+		}
+		clock_interval_to_deadline(connected ? period : 20, NSEC_PER_MSEC, &deadline);
+	}
 	thread_call_enter_delayed(call, deadline);
 }
 
