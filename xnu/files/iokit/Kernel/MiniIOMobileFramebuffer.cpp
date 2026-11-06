@@ -43,6 +43,8 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
 #include "MiniIOSurface.h"
 
 extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
+extern "C" uint64_t redwood_fb_swap_at;        /* the clock governor's frame floor (redwood_exynos_acpm.c, dvfs_frame=) */
+extern "C" int redwood_gov_wake;
 extern "C" void loader_log_line(const char * line);
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
@@ -106,6 +108,14 @@ static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
  * See modeSetFhd120().
  */
 static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
+/*
+ * fb_mode_lpref=1 (B, 2026-11-06): the gate lets DSIM_UNDERRUN_CTRL (the command-mode underrun reference, dtbo
+ * cmd_lp_ref) through whatever it holds. The first fb_mode=1 run found UEFI's 0x138b there, not the dtbo's 0x1e6e,
+ * every other DSIM and DECON register exactly the native mode's. Samsung's driver writes cmd_lp_ref from the dtbo at
+ * every mode set (cal_9830/dsim_reg.c dsim_reg_set_mres, dsim_reg_init), whatever was there: it depends on nothing the
+ * mode change leaves as it is. The FHD value (0x284d) is written as Samsung's is.
+ */
+static TUNABLE(uint32_t, gFbModeLpRef, "fb_mode_lpref", 0);
 /*
  * fb_swapwait=1: with the scaler on, SwapEnd returns only once its frame is on the panel (run 17's cure for
  * tearing: CoreAnimation draws its next frame into the surface the panel showed).
@@ -2617,6 +2627,16 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	if (gTouchLat) {
 		redwood_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
 	}
+	{
+		/* frames are coming: the governor's frame floor (dvfs_frame=1); woken at once when they start after a pause */
+		uint64_t last = redwood_fb_swap_at, gap;
+
+		nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &gap);
+		redwood_fb_swap_at = now;
+		if (last == 0 || now - last > gap) {
+			thread_wakeup((event_t) &redwood_gov_wake);
+		}
+	}
 	IOLockLock(fSwapLock);
 	fStatSwapsLate += fSwapTime != 0 && now - fSwapTime > period && now - fSwapTime < pause;
 	fSwapTime = now;
@@ -3900,6 +3920,12 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		uint32_t v = dpuRead(fDsim, dsim[i].off) & dsim[i].mask;
 
 		if (v != (dsim[i].native & dsim[i].mask)) {
+			if (gFbModeLpRef && dsim[i].off == DSIM_UNDERRUN_CTRL_R) {
+				fbSay("fb_mode: DSIM %#x (underrun reference) reads %#x, not the dtbo's %#x: let through "
+				    "(fb_mode_lpref=1; Samsung writes it at every mode set), %#x will be written\n", dsim[i].off, v,
+				    dsim[i].native, dsim[i].fhd);
+				continue;
+			}
 			fbSay("fb_mode: DSIM %#x reads %#x, not the native %#x: nothing written, stays 1440x3200 at 60 Hz\n",
 			    dsim[i].off, v, dsim[i].native);
 			ok = false;

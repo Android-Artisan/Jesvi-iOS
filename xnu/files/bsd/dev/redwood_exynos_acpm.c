@@ -431,6 +431,20 @@ static const struct {
 #define TOUCH_TAIL_MS   500
 extern uint64_t redwood_touch_down_at, redwood_touch_last_at;
 extern uint32_t redwood_mali_slow_jobs;
+/*
+ * dvfs_frame=1 (x1slte, 2026-11-06, B): while frames are coming (a swap on the display within FRAME_HOLD_MS), each
+ * cluster is held at least at its frame floor: the big cores at their tops. The window server's frame is CPU work in
+ * the Metal library (12-34 ms a frame measured: PLANS/10-mali2metal.md), so its speed is the big cores' clock; the
+ * touch floors (Samsung's input booster: A76 1404, M5 1066 MHz) assume Samsung's scheduler-driven clocks, which react
+ * within a frame -- this governor ticks every 50 ms. A still screen sends no swaps: idle is unchanged. The thermal
+ * steps still cap. MiniIOMobileFramebuffer::present() sets redwood_fb_swap_at and wakes this thread when frames
+ * start after a pause.
+ */
+#define FRAME_HOLD_MS   300
+uint64_t redwood_fb_swap_at;
+static uint32_t gov_frame;                      /* dvfs_frame= */
+static const uint32_t gov_frame_khz[] = { 1456000, 2504000, 2730000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
+static uint32_t gov_frame_ticks;                /* ticks with the frame floor on (for the 10 s line) */
 
 /* the lowest rung the touch booster holds cluster `g` at now (0: no boost) */
 static unsigned
@@ -444,6 +458,14 @@ gov_touch_floor(unsigned g)
 	nanoseconds_to_absolutetime(TOUCH_TAIL_MS * NSEC_PER_MSEC, &tail);
 	khz = redwood_touch_down_at != 0 && now - redwood_touch_down_at < head ? gov[g].touch_head :
 	    redwood_touch_last_at != 0 && now - redwood_touch_last_at < tail ? gov[g].touch_tail : 0;
+	if (gov_frame && redwood_fb_swap_at != 0 && g < sizeof(gov_frame_khz) / sizeof(gov_frame_khz[0])) {
+		uint64_t hold;
+
+		nanoseconds_to_absolutetime(FRAME_HOLD_MS * NSEC_PER_MSEC, &hold);
+		if (now - redwood_fb_swap_at < hold && gov_frame_khz[g] > khz) {
+			khz = gov_frame_khz[g];
+		}
+	}
 	while (khz != 0 && r + 1 < GOV_RUNGS && gov[g].rung[r + 1] != 0 && gov[g].rung[r] < khz) {
 		r++;
 	}
@@ -507,6 +529,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_gov", &govern, sizeof(govern));
 	PE_parse_boot_argn("fb_hot", &fb_hot, sizeof(fb_hot));
 	PE_parse_boot_argn("dvfs_gov_gpu", &govern_gpu, sizeof(govern_gpu));
+	PE_parse_boot_argn("dvfs_frame", &gov_frame, sizeof(gov_frame));
 	for (unsigned g = 0; g < NGOV; g++) {
 		gov_rung[g] = GOV_RUNGS - 1;
 		while (gov_rung[g] > 0 && gov[g].rung[gov_rung[g]] == 0) {
@@ -662,6 +685,12 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			}
 		}
 		/* the governor: every tick */
+		if (gov_frame && redwood_fb_swap_at != 0) {
+			uint64_t hold;
+
+			nanoseconds_to_absolutetime(FRAME_HOLD_MS * NSEC_PER_MSEC, &hold);
+			gov_frame_ticks += mach_absolute_time() - redwood_fb_swap_at < hold;
+		}
 		for (unsigned g = 0; govern && mode >= 2 && g < NGOV; g++) {
 			unsigned d = 0, top = GOV_RUNGS - 1, want;
 			int busy;
@@ -794,10 +823,13 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			unsigned n = 10000 / GOV_TICK_MS;
 
 			dlog("governor: 10 s: %u clock changes (%u raised the moment a finger came down, of %u touches; the GPU "
-			    "raised to its top %u times by %u jobs over 8 ms); average cl0 %llu cl1 %llu cl2 %llu g3d %llu MHz",
+			    "raised to its top %u times by %u jobs over 8 ms); average cl0 %llu cl1 %llu cl2 %llu g3d %llu MHz; "
+			    "frames held the floor %u %% of the time (dvfs_frame=%u)",
 			    gov_changes, gov_boosts, gov_touches, gov_slow_raises, redwood_mali_slow_jobs - gov_slow_last,
-			    gov_khz_sum[0] / n / 1000, gov_khz_sum[1] / n / 1000, gov_khz_sum[2] / n / 1000, gov_khz_sum[3] / n / 1000);
+			    gov_khz_sum[0] / n / 1000, gov_khz_sum[1] / n / 1000, gov_khz_sum[2] / n / 1000, gov_khz_sum[3] / n / 1000,
+			    gov_frame_ticks * 100 / n, gov_frame);
 			gov_boosts = gov_touches = gov_slow_raises = 0;
+			gov_frame_ticks = 0;
 			gov_slow_last = redwood_mali_slow_jobs;
 			gov_changes = 0;
 			for (unsigned g = 0; g < NGOV; g++) {
