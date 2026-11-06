@@ -31,6 +31,7 @@ int ufshc_read(uint8_t lun, uint64_t offset, uint8_t *dst, uint64_t len);
 bool ufshc_set_write_window(uint8_t lun, uint64_t first, uint64_t blocks);
 int ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len);
 int ufshc_sync(uint8_t lun);
+int ufshc_turbo_write(void);            /* ufs_tw=1: the SLC write cache on (B, 2026-11-06) */
 void ufshc_report(const char *when);
 void redwood_ufs_quiesce(void);
 

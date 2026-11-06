@@ -2359,6 +2359,12 @@ redwood_ufs_init(void)
 		RedwoodStorageReport(total);
 	}
 
+	check = 0;
+	if (ufs_native_only && ufs_write_part >= 0 && PE_parse_boot_argn("ufs_tw", &check, sizeof(check)) && check == 1) {
+		(void)ufshc_turbo_write();      /* the device's SLC write cache (Samsung TurboWrite) */
+	}
+	check = 0;
+
 	if (PE_parse_boot_argn("ufs_bench", &check, sizeof(check)) && check != 0) {
 		/* right here, in bsd_init's thread, and then back to the loader: nothing else is wanted */
 		ufs_bench(NULL, THREAD_AWAKENED);

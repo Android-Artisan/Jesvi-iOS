@@ -133,6 +133,15 @@ static bool hc_data_loader;                     /* the slots' data in the loader
 #define UPIU_RESPONSE       0x21
 #define UPIU_FLAG_READ      0x40
 #define UPIU_FLAG_WRITE     0x20
+#define UPIU_QUERY_REQ      0x16
+#define UPIU_QUERY_RSP      0x36
+#define QUERY_FN_STD_READ   0x01
+#define QUERY_FN_STD_WRITE  0x81
+#define QUERY_OP_READ_FLAG  0x05
+#define QUERY_OP_SET_FLAG   0x06
+#define FLAG_TW_EN          0x0e                /* Samsung TurboWrite / UFS WriteBooster: the SLC write cache */
+#define FLAG_TW_FLUSH       0x0f                /* ... flushed into the main flash when the device is idle */
+#define FLAG_TW_FLUSH_H8    0x10                /* ... and during hibernate */
 #define LUN_WELL_KNOWN      0x80
 
 #define SLOTS               32                  /* this kernel's list */
@@ -392,10 +401,38 @@ hc_is_write(const uint8_t *upiu)
 	return upiu[16] == 0x2a || upiu[16] == 0x35;
 }
 
+/*
+ * A QUERY REQUEST (ufs_tw=1, B 2026-11-06): only while ufshc_turbo_write() runs (hc_query_open), only SET FLAG or
+ * READ FLAG, only the three TurboWrite flags, index and selector 0, no data. Everything else stays refused.
+ */
+static volatile bool hc_query_open;
+
+static const char *
+hc_query_refusal(const uint8_t *upiu, uint32_t dw0)
+{
+	if (!hc_query_open) {
+		return "a query outside ufshc_turbo_write()";
+	}
+	if ((dw0 & UTRD_CT_MASK) != UTRD_CT_UFS || (dw0 & UTRD_DD_MASK) != UTRD_DD_NONE) {
+		return "a query with data or of another command type";
+	}
+	if (upiu[1] != 0 || upiu[2] != 0 || upiu[10] != 0 || upiu[11] != 0) {
+		return "a query with flags, a LUN or a data segment";
+	}
+	if (!((upiu[5] == QUERY_FN_STD_WRITE && upiu[12] == QUERY_OP_SET_FLAG) ||
+	    (upiu[5] == QUERY_FN_STD_READ && upiu[12] == QUERY_OP_READ_FLAG))) {
+		return "a query other than SET FLAG / READ FLAG";
+	}
+	if ((upiu[13] != FLAG_TW_EN && upiu[13] != FLAG_TW_FLUSH && upiu[13] != FLAG_TW_FLUSH_H8) || upiu[14] != 0 || upiu[15] != 0) {
+		return "a flag other than TurboWrite's";
+	}
+	return NULL;
+}
+
 static bool
 ufshc_permitted(const uint8_t *upiu, uint32_t dw0)
 {
-	const char *why = hc_is_write(upiu) ? hc_write_refusal(upiu, dw0, hc_wwin.set, hc_wwin.lun, hc_wwin.first, hc_wwin.end) :
+	const char *why = (upiu[0] & 0x3f) == UPIU_QUERY_REQ ? hc_query_refusal(upiu, dw0) : hc_is_write(upiu) ? hc_write_refusal(upiu, dw0, hc_wwin.set, hc_wwin.lun, hc_wwin.first, hc_wwin.end) :
 	    hc_refusal(upiu, dw0, hc_lun_mask, false);
 
 	if (why == NULL) {
@@ -1522,6 +1559,101 @@ ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len)
 		}
 	}
 	return error;
+}
+
+/* One flag query (SET or READ), waited for by spinning (a few at boot only); *value: the flag after it */
+static int
+hc_query_flag(uint8_t opcode, uint8_t idn, uint8_t *value)
+{
+	struct hc_slot *s;
+	struct hc_cmd c;
+	uint64_t t;
+	volatile const uint8_t *r;
+	uint32_t bit, ocs;
+	int e;
+
+	s = hc_take(true);
+	if (s == NULL) {
+		return ENXIO;
+	}
+	bit = 1u << s->number;
+	bzero(&c, sizeof(c));
+	c.upiu[0] = UPIU_QUERY_REQ;
+	c.upiu[3] = (uint8_t)s->number;
+	c.upiu[5] = opcode == QUERY_OP_SET_FLAG ? QUERY_FN_STD_WRITE : QUERY_FN_STD_READ;
+	c.upiu[12] = opcode;
+	c.upiu[13] = idn;
+	c.dw0 = UTRD_CT_UFS | UTRD_DD_NONE;
+	e = hc_place(s, &c, 0);
+	if (e == 0) {
+		e = hc_ring(s);
+	}
+	if (e == 0) {
+		for (t = mach_absolute_time(); hc_finished(bit) == 0 && hc_us_since(t) < 1000000;) {
+			__builtin_arm_yield();
+		}
+		if (hc_finished(bit) == 0) {
+			/*
+			 * Measured (11:35): the device did take SET FLAG TW_EN -- writes went 215 -> 650 MB/s at once -- but this
+			 * controller marked no completion (doorbell bit kept, OCS still invalid). The slot keeps its bit (never
+			 * rung again); hc_put_back() clears it at the end.
+			 */
+			hc_say("ufs: native: query %02x flag %02x: no completion marked in 1 s (doorbell %08x, OCS %x); "
+			    "the slot is not used again\n", opcode, idn, hc_read(UFSHC_UTRLDBR), s->utrd[2] & 0xff);
+			return ETIMEDOUT;
+		}
+		lck_mtx_lock(&hc_lock);
+		hc_retire(bit);
+		lck_mtx_unlock(&hc_lock);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		r = (volatile const uint8_t *)s->ucd + UCD_RESPONSE;
+		ocs = s->utrd[2] & 0xff;
+		if (ocs != OCS_SUCCESS || (r[0] & 0x3f) != UPIU_QUERY_RSP || r[3] != s->number || r[6] != 0) {
+			hc_say("ufs: native: query %02x flag %02x: OCS %x, response UPIU %02x tag %02x, query response %02x\n",
+			    opcode, idn, ocs, r[0], r[3], r[6]);
+			e = EIO;
+		} else if (value != NULL) {
+			*value = r[12 + 11];            /* the flag value: the last byte of the transaction fields */
+		}
+	}
+	hc_give(s);
+	return e;
+}
+
+/*
+ * ufs_tw=1: the device's SLC write cache (Samsung TurboWrite, UFS WriteBooster) on, flushed when idle and in
+ * hibernate -- what Samsung's driver sets (drivers/scsi/ufs/ufshcd.c ufshcd_tw_ctrl, QUERY_FLAG_IDN_TW_EN /
+ * _TW_FLUSH_HIBERN). The flags are the device's own and volatile (set again every boot). A device that does not
+ * have it answers an error and nothing changes.
+ */
+int
+ufshc_turbo_write(void)
+{
+	static const uint8_t flags[] = { FLAG_TW_EN, FLAG_TW_FLUSH_H8, FLAG_TW_FLUSH };
+	uint8_t v[3] = { 0xff, 0xff, 0xff };
+	int e = 0;
+
+	if (!hc_usable || !hc_in || hc_dead || hc_closed) {
+		return ENXIO;
+	}
+	int answered = 0;
+
+	hc_query_open = true;
+	/* each flag set even when the one before was not seen to complete (the device takes them all the same) */
+	for (unsigned i = 0; i < 3; i++) {
+		int r = hc_query_flag(QUERY_OP_SET_FLAG, flags[i], NULL);
+
+		if (r == 0) {
+			answered++;
+			(void)hc_query_flag(QUERY_OP_READ_FLAG, flags[i], &v[i]);
+		} else if (r != ETIMEDOUT) {
+			e = r;
+		}
+	}
+	hc_query_open = false;
+	hc_say("ufs: native: TurboWrite (ufs_tw=1): 3 flags sent, %d answered%s; read back (255: unknown): enable %u, flush in "
+	    "hibernate %u, flush when idle %u\n", answered, e != 0 ? ", one REFUSED" : "", v[0], v[1], v[2]);
+	return e;
 }
 
 /* What the unit holds in its cache, into the flash */
