@@ -342,7 +342,9 @@ open('out/.uflash-tail', 'wb').write(d[0x2000000:])"
 	rm -f out/.uflash-head out/.uflash-tail
 	echo "uflash: recovery written and read back by the phone, the last log kept ($(md5 -q out/x1slte-recovery.img))"
 	if [ -f out/.standalone ]; then
-		"$FASTBOOT" stage out/x1slte-embed.img > /dev/null 2>&1 || die "stage failed"
+		head -c $((0x255000)) out/x1slte-recovery.img > out/x1slte-boot.img     # (the dtb in a dt table: embed's raw FDT bricks BOOT)
+		[ "$(xxd -s $((0x201800)) -l 4 -p out/x1slte-boot.img)" = d7b7ab1e ] || die "out/x1slte-boot.img: no dt table at 0x201800"
+		"$FASTBOOT" stage out/x1slte-boot.img > /dev/null 2>&1 || die "stage failed"
 		out=$("$FASTBOOT" oem write boot 0 2>&1)
 		echo "$out" | grep -q "written and read back" || die "boot: $out"
 		echo "uflash: boot written and read back"
@@ -497,7 +499,9 @@ cmd_standalone() {
 	read -r answer
 	[ "$answer" = yes ] || die "nothing written"
 	fb_wait
-	"$FASTBOOT" stage out/x1slte-embed.img > /dev/null 2>&1 || die "stage failed"
+	head -c $((0x255000)) out/x1slte-recovery.img > out/x1slte-boot.img     # (the dtb in a dt table: embed's raw FDT bricks BOOT)
+		[ "$(xxd -s $((0x201800)) -l 4 -p out/x1slte-boot.img)" = d7b7ab1e ] || die "out/x1slte-boot.img: no dt table at 0x201800"
+		"$FASTBOOT" stage out/x1slte-boot.img > /dev/null 2>&1 || die "stage failed"
 	out=$("$FASTBOOT" oem write boot 0 2>&1)
 	echo "$out" | grep -q "written and read back" || die "boot: $out"
 	touch out/.standalone
