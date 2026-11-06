@@ -45,7 +45,9 @@ extern void gic_v3_irq_cpu_shutdown(void);
 void loader_log_putc(char c);
 void loader_return(void);
 extern void redwood_adreno_quiesce(void);
-extern void redwood_usb_gadget_quiesce(void);  /* bsd/dev/redwood_dwc3.c: the rest of the log out over USB, then the controller stopped */
+extern void redwood_usb_gadget_quiesce(void);
+extern void redwood_ssp_quiesce(void);
+extern void redwood_tcs3407_quiesce(void);  /* bsd/dev/redwood_dwc3.c: the rest of the log out over USB, then the controller stopped */
 extern void redwood_mali_quiesce(void);
 extern void redwood_adreno_stop(void);
 extern void redwood_adreno_minute(void);
@@ -452,6 +454,8 @@ loader_return(void)
 	redwood_ddr_quiesce();          /* and the vote for the memory's bandwidth taken away */
 	redwood_haptic_quiesce();       /* the vibration motor's chip back into reset, if it was let out */
 	redwood_torch_quiesce();        /* the flashlight off, if it was lit */
+	redwood_ssp_quiesce();          /* the sensor hub into standby (NSTDBY low) */
+	redwood_tcs3407_quiesce();      /* the rear light sensor's ALS off */
 	redwood_camera_quiesce();       /* the camera powered down, if it was powered up */
 	redwood_exynos_sound_quiesce(); /* the S20+'s amplifiers into reset and the audio DMA stopped: its ring is reused memory */
 	redwood_mic_quiesce();          /* (what the microphones' path did, said again: it happens in the log's middle) */

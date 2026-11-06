@@ -83,6 +83,33 @@
 #include <sys/redwood_bbi2c.h>
 #include <sys/redwood_input.h>
 #include <sys/systm.h>
+#include <sys/redwood_m2m.h>
+#include <stdarg.h>
+
+/*
+ * Every line into the kernel's log and into mali2metal's channel too (m2m: /m2m on rwlogd). The log keeps only the
+ * first 256 KB of a boot and the newest part, and this driver's lines come when the first part is full: on the first
+ * run on the phone not one of them was left (2026-11-06).
+ */
+static void hsay(const char *format, ...) __printflike(1, 2);
+
+static void
+hsay(const char *format, ...)
+{
+	char line[300];
+	va_list ap;
+	size_t n;
+
+	va_start(ap, format);
+	vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	printf("%s", line);
+	n = strlen(line);
+	if (n > 0 && line[n - 1] == '\n') {
+		line[n - 1] = 0;
+	}
+	m2m_klog('I', "DEV", "%s", line);
+}
 #include <sys/uio.h>
 
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
@@ -258,7 +285,7 @@ reset_is_high(void)
 static void
 give_up(const char *why)
 {
-	printf("haptic: cs40l25: %s (at: %s): the chip is put into reset, nothing more this run\n", why, step);
+	hsay("haptic: cs40l25: %s (at: %s): the chip is put into reset, nothing more this run\n", why, step);
 	broken = true;
 	if (reset_bank != NULL) {
 		reset_pin(false);
@@ -342,7 +369,7 @@ wr_raw(uint32_t reg, const uint8_t *data, uint32_t len)
 			return false;
 		}
 		if (verify && (!rd_raw(reg + done, vbuf, n) || memcmp(vbuf, data + done, n) != 0)) {
-			printf("haptic: cs40l25: %u bytes at %#010x do not read back as written\n", n, reg + done);
+			hsay("haptic: cs40l25: %u bytes at %#010x do not read back as written\n", n, reg + done);
 			give_up("a block does not read back");
 			return false;
 		}
@@ -379,7 +406,7 @@ wr(uint32_t reg, uint32_t v)
 		return false;
 	}
 	if (!rd(reg, &back) || back != v) {
-		printf("haptic: cs40l25: %#010x written %#010x, reads back %#010x\n", reg, v, back);
+		hsay("haptic: cs40l25: %#010x written %#010x, reads back %#010x\n", reg, v, back);
 		give_up("a write does not read back");
 		return false;
 	}
@@ -413,7 +440,7 @@ ack(uint32_t reg, uint32_t v, uint32_t reset)
 			return true;
 		}
 	}
-	printf("haptic: cs40l25: %#010x = %#010x, not taken (wanted %#010x)\n", reg, now, reset);
+	hsay("haptic: cs40l25: %#010x = %#010x, not taken (wanted %#010x)\n", reg, now, reset);
 	give_up("the chip did not take a command");
 	return false;
 }
@@ -449,7 +476,7 @@ show_pins(void)
 	uint32_t c1 = *(volatile uint32_t *)(gpp1 + REDWOOD_GPIO_CON), c4 = *(volatile uint32_t *)(reset_bank + REDWOOD_GPIO_CON);
 	uint32_t cm = *(volatile uint32_t *)(alert_bank + REDWOOD_GPIO_CON);
 
-	printf("haptic: cs40l25: gpp1-2/3 (HSI2C_5) function %u/%u (3: the I2C controller's), read %u/%u; gpp4-5 (reset) "
+	hsay("haptic: cs40l25: gpp1-2/3 (HSI2C_5) function %u/%u (3: the I2C controller's), read %u/%u; gpp4-5 (reset) "
 	    "function %u, reads %u; gpm27-0 (/ALERT) function %#x (0xf: EINT), reads %u\n", (c1 >> 8) & 0xf, (c1 >> 12) & 0xf,
 	    redwood_gpio_get(gpp1, 2), redwood_gpio_get(gpp1, 3), (c4 >> (PIN_RESET * 4)) & 0xf, redwood_gpio_get(reset_bank, PIN_RESET),
 	    cm & 0xf, redwood_gpio_get(alert_bank, 0));
@@ -467,7 +494,7 @@ look(const char *when, uint32_t *devid, uint32_t *revid, uint32_t regs[10])
 	uint32_t s3 = 0, s4 = 0;
 
 	if (!rd(R_DEVID, devid) || !rd(R_REVID, revid)) {
-		printf("haptic: cs40l25: %s: no answer at %#x\n", when, CS_ADDR);
+		hsay("haptic: cs40l25: %s: no answer at %#x\n", when, CS_ADDR);
 		return false;
 	}
 	for (unsigned i = 0; i < 10; i++) {
@@ -477,7 +504,7 @@ look(const char *when, uint32_t *devid, uint32_t *revid, uint32_t regs[10])
 	}
 	(void)rd(R_IRQ1_STATUS3, &s3);
 	(void)rd(R_IRQ1_STATUS4, &s4);
-	printf("haptic: cs40l25: %s: DEVID %#08x (CS40L25A: %#x) REVID %#04x (B1: %#x); OTP done %u error %u; ROM: halo "
+	hsay("haptic: cs40l25: %s: DEVID %#08x (CS40L25A: %#x) REVID %#04x (B1: %#x); OTP done %u error %u; ROM: halo "
 	    "state %u heartbeat %u state machine %u f0 %#x gpio-edge %#x BUZZ freq %u level %u duration %u trigger %u, "
 	    "amp status %#x\n", when, *devid, DEVID_L25A, *revid, REVID_B1, (s4 >> 1) & 1, s3 >> 31, regs[0], regs[1], regs[2],
 	    regs[3], regs[4], regs[5], regs[6], regs[7], regs[8], regs[9]);
@@ -498,11 +525,11 @@ rom_buzz(void)
 
 	if (!rom_alive || rom_regs[2] != 0 || (rom_regs[9] & BASIC_BOOT_DONE) == 0 || (rom_regs[9] & BASIC_ERRORS) != 0 ||
 	    rom_regs[5] == 0 || rom_regs[7] == 0) {
-		printf("haptic: cs40l25: ROM buzz not tried: the ROM is not idle with the bootloader's buzz in its registers\n");
+		hsay("haptic: cs40l25: ROM buzz not tried: the ROM is not idle with the bootloader's buzz in its registers\n");
 		return;
 	}
 	step = "the ROM's buzz (experimental)";
-	printf("haptic: cs40l25: ROM BUZZ (experimental): trigger written with the bootloader's freq %u level %u duration %u\n",
+	hsay("haptic: cs40l25: ROM BUZZ (experimental): trigger written with the bootloader's freq %u level %u duration %u\n",
 	    rom_regs[5], rom_regs[6], rom_regs[7]);
 	if (!wr_once(R_BASIC_BUZZ_TRIGGER, 1)) {
 		return;
@@ -514,7 +541,7 @@ rom_buzz(void)
 		}
 	}
 	(void)rd(R_BASIC_AMP_STATUS, &status);
-	printf("haptic: cs40l25: ROM buzz: state machine %s (playing in %u of 40 looks, now %u), amp status %#x\n",
+	hsay("haptic: cs40l25: ROM buzz: state machine %s (playing in %u of 40 looks, now %u), amp status %#x\n",
 	    seen_playing ? "WENT TO PLAY TONE" : "never left idle", seen_playing, state, status);
 	reset_pin(false);
 	delay_for_interval(2, NSEC_PER_MSEC);
@@ -595,7 +622,7 @@ rom_exit(void)
 	}
 	if (!rd(R_BASIC_AMP_STATUS, &v) || (v & BASIC_ERRORS)) {
 		/* Samsung releases amp and temperature errors here (hw_err_rls); this gives up */
-		printf("haptic: cs40l25: the ROM reports errors %#x\n", v);
+		hsay("haptic: cs40l25: the ROM reports errors %#x\n", v);
 		give_up("the ROM reports an error");
 		return false;
 	}
@@ -803,7 +830,7 @@ load_wmfw(const uint8_t *d, uint64_t size)
 			}
 			break;
 		default:
-			printf("haptic: cs40l25: cs40l25a.wmfw: block type %#x\n", type);
+			hsay("haptic: cs40l25: cs40l25a.wmfw: block type %#x\n", type);
 			give_up("cs40l25a.wmfw: an unknown block");
 			return false;
 		}
@@ -849,11 +876,11 @@ read_algorithms(void)
 		reg += 24 + (i == 0 ? 4 : 0);           /* the system algorithm has one more word (the count) */
 	}
 	if (!rd(reg, &term) || term != ALGO_LIST_TERM || algos[0].id != FW_ID_REMAP || algos[0].rev < FW_MIN_REV) {
-		printf("haptic: cs40l25: algorithm list: end %#x, firmware %#x revision %#x\n", term, algos[0].id, algos[0].rev);
+		hsay("haptic: cs40l25: algorithm list: end %#x, firmware %#x revision %#x\n", term, algos[0].id, algos[0].rev);
 		give_up("not the firmware Samsung's driver expects");
 		return false;
 	}
-	printf("haptic: cs40l25: firmware %#x revision %u.%u.%u, %u algorithms, %u controls\n", algos[0].id,
+	hsay("haptic: cs40l25: firmware %#x revision %u.%u.%u, %u algorithms, %u controls\n", algos[0].id,
 	    (algos[0].rev >> 16) & 0xff, (algos[0].rev >> 8) & 0xff, algos[0].rev & 0xff, nalgos, ncontrols);
 	return true;
 }
@@ -883,7 +910,7 @@ load_wmdr(const char *name, const uint8_t *d, uint64_t size)
 			for (i = 0; i < nalgos && algos[i].id != algo; i++) {
 			}
 			if (i == nalgos || ((rev >> 8) & ALGO_REV_MASK) != (algos[i].rev & ALGO_REV_MASK)) {
-				printf("haptic: cs40l25: %s: algorithm %#x revision %#x is not the firmware's\n", name, algo, rev);
+				hsay("haptic: cs40l25: %s: algorithm %#x revision %#x is not the firmware's\n", name, algo, rev);
 				give_up("a block for another firmware");
 				return false;
 			}
@@ -905,7 +932,7 @@ load_wmdr(const char *name, const uint8_t *d, uint64_t size)
 				reg = 0;
 			}
 		} else if (len >= 16 && memcmp(d + pos + 20, "Date: ", 6) == 0) {
-			printf("haptic: cs40l25: %s: %.10s\n", name, (const char *)(d + pos + 26));
+			hsay("haptic: cs40l25: %s: %.10s\n", name, (const char *)(d + pos + 26));
 		}
 		if (reg != 0 && !wr_raw(reg, d + pos + 20, len)) {
 			return false;
@@ -992,7 +1019,7 @@ dsp_start(void)
 		}
 	}
 	if (!rd(R_DSP1_SCRATCH1, &scratch) || i == 10 || scratch != 0) {
-		printf("haptic: cs40l25: DSP state %u (running: %u), scratch %u\n", state, FW_HALO_STATE_RUN, scratch);
+		hsay("haptic: cs40l25: DSP state %u (running: %u), scratch %u\n", state, FW_HALO_STATE_RUN, scratch);
 		give_up("the DSP did not start");
 		return false;
 	}
@@ -1028,7 +1055,7 @@ dsp_post_config(void)
 		give_up("no GAIN_CONTROL or ENDPLAYBACK");
 		return false;
 	}
-	printf("haptic: cs40l25: %u waveforms (Samsung's log: 143), the DSP runs; limits %u ms, %u %%\n", num_waves, max_ms, max_pct);
+	hsay("haptic: cs40l25: %u waveforms (Samsung's log: 143), the DSP runs; limits %u ms, %u %%\n", num_waves, max_ms, max_pct);
 	return hw_errors("after the start");
 }
 
@@ -1041,7 +1068,7 @@ load_firmware(void)
 	uint64_t t0 = mach_absolute_time(), ns;
 
 	if (fw == NULL || wt == NULL) {
-		printf("haptic: cs40l25: fw/cs40l25a.wmfw %s, fw/cs40l20.bin %s (../fw-haptic, userland/build.sh)\n",
+		hsay("haptic: cs40l25: fw/cs40l25a.wmfw %s, fw/cs40l20.bin %s (../fw-haptic, userland/build.sh)\n",
 		    fw ? "found" : "MISSING", wt ? "found" : "MISSING");
 		give_up("the firmware is not in the image");
 		return false;
@@ -1052,7 +1079,7 @@ load_firmware(void)
 		return false;
 	}
 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
-	printf("haptic: cs40l25: %llu + %llu bytes of firmware loaded in %llu ms (bit-banged)\n", size, wsize, ns / NSEC_PER_MSEC);
+	hsay("haptic: cs40l25: %llu + %llu bytes of firmware loaded in %llu ms (bit-banged)\n", size, wsize, ns / NSEC_PER_MSEC);
 	return true;
 }
 
@@ -1072,7 +1099,7 @@ hw_errors(const char *when)
 		return false;
 	}
 	if (st & HW_ERRORS) {
-		printf("haptic: cs40l25: %s: HARDWARE ERROR %#x (amp %u, temp %u, temp rise %u, boost short %u, uv %u, ov %u)\n",
+		hsay("haptic: cs40l25: %s: HARDWARE ERROR %#x (amp %u, temp %u, temp rise %u, boost short %u, uv %u, ov %u)\n",
 		    when, st, !!(st & ERR_AMP), !!(st & ERR_TEMP), !!(st & ERR_TEMP_RISE), !!(st & ERR_BST_SHORT),
 		    !!(st & ERR_BST_UVP), !!(st & ERR_BST_OVP));
 		give_up("a hardware error");
@@ -1126,7 +1153,7 @@ static bool
 play_click(uint32_t index, uint32_t pct)
 {
 	if (index == 0 || index >= num_waves) {
-		printf("haptic: cs40l25: no waveform %u (1..%u)\n", index, num_waves - 1);
+		hsay("haptic: cs40l25: no waveform %u (1..%u)\n", index, num_waves - 1);
 		return false;
 	}
 	return set_strength(pct) && ack(R_MBOX_TRIGGERINDEX, index, MBOX_TRIGGERRESET);
@@ -1158,13 +1185,13 @@ one_effect(void)
 	PE_parse_boot_argn("haptic_effect", &effect, sizeof(effect));
 	step = "one effect";
 	if (effect == 0) {
-		printf("haptic: cs40l25: waveform 0 for 80 ms at %u %% (Samsung's recovery: 80 ms at 100 %%)\n", max_pct);
+		hsay("haptic: cs40l25: waveform 0 for 80 ms at %u %% (Samsung's recovery: 80 ms at 100 %%)\n", max_pct);
 		if (start_buzz(max_pct)) {
 			delay_for_interval(80, NSEC_PER_MSEC);
 			(void)stop();
 		}
 	} else {
-		printf("haptic: cs40l25: click %u at %u %%\n", effect, max_pct);
+		hsay("haptic: cs40l25: click %u at %u %%\n", effect, max_pct);
 		(void)play_click(effect, max_pct);
 		delay_for_interval(200, NSEC_PER_MSEC);
 	}
@@ -1269,10 +1296,10 @@ serve(void)
 	int major = cdevsw_add(-1, &cs_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-haptic") == NULL) {
-		printf("haptic: cs40l25: /dev/redwood-haptic cannot be made\n");
+		hsay("haptic: cs40l25: /dev/redwood-haptic cannot be made\n");
 		return;
 	}
-	printf("haptic: cs40l25: THE MOTOR PLAYS WHAT IOS PLAYS ON ITS ACTUATOR (/dev/redwood-haptic): at most %u ms, %u %%\n",
+	hsay("haptic: cs40l25: THE MOTOR PLAYS WHAT IOS PLAYS ON ITS ACTUATOR (/dev/redwood-haptic): at most %u ms, %u %%\n",
 	    max_ms, max_pct);
 	step = "serving iOS";
 	while (!broken) {
@@ -1295,7 +1322,7 @@ serve(void)
 				state = TAP;
 				since = now;
 				if (++taps + loops <= TOLD_EVENTS) {
-					printf("haptic: cs40l25: tap %u: iOS peaks at %u of 32768: %s %u at %u %%\n", taps, peak,
+					hsay("haptic: cs40l25: tap %u: iOS peaks at %u of 32768: %s %u at %u %%\n", taps, peak,
 					    tap_index ? "click" : "waveform 0 for 30 ms,", tap_index, pct);
 				}
 				break;
@@ -1312,7 +1339,7 @@ serve(void)
 					since = followed = now;
 					heard_peak = 0;
 					if (taps + ++loops <= TOLD_EVENTS) {
-						printf("haptic: cs40l25: vibration %u (peak %u): waveform 0 at %u %%, %u ms at most\n", loops,
+						hsay("haptic: cs40l25: vibration %u (peak %u): waveform 0 at %u %%, %u ms at most\n", loops,
 						    peak, pct, max_ms);
 					}
 				}
@@ -1338,7 +1365,7 @@ serve(void)
 				if (stop()) {
 					state = rest_until > now ? REST : IDLE;
 					if (taps + loops <= TOLD_EVENTS + 1) {
-						printf("haptic: cs40l25: vibration %u: %s after %llu ms\n", loops,
+						hsay("haptic: cs40l25: vibration %u: %s after %llu ms\n", loops,
 						    cut ? "CUT at the limit" : "iOS stopped, and so does the motor", (now - since) / 1000);
 					}
 				}
@@ -1356,7 +1383,7 @@ serve(void)
 		}
 		delay_for_interval(4, NSEC_PER_MSEC);
 	}
-	printf("haptic: cs40l25: given up on (%u taps, %u vibrations, %u cut at %u ms)\n", taps, loops, capped, max_ms);
+	hsay("haptic: cs40l25: given up on (%u taps, %u vibrations, %u cut at %u ms)\n", taps, loops, capped, max_ms);
 }
 
 /* ---- the thread ------------------------------------------------------------------------------------------------ */
@@ -1370,22 +1397,22 @@ cs_thread(__unused void *parameter, __unused wait_result_t result)
 	reset_bank = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, BANK_GPP4);
 	alert_bank = redwood_gpio_bank(REDWOOD_PINCTRL_CMGP, BANK_GPM27);
 	bus.bank = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, BANK_GPP1);
-	printf("haptic: cs40l25: level %u: %s\n", level, level == 1 ? "a look, reading only" : level == 2 ?
+	hsay("haptic: cs40l25: level %u: %s\n", level, level == 1 ? "a look, reading only" : level == 2 ?
 	    "out of reset, registers read" : level == 3 ? "configured and the firmware loaded, nothing played" :
 	    level == 4 ? "one effect played" : "the motor for iOS");
 	show_pins();
 	/* the board's pull-ups only (hsi2c5-bus-vib: pin-pud 0); see NOTES.md for why not the SoC's */
 	if (!redwood_bbi2c_setup(&bus, false, line, sizeof(line))) {
-		printf("haptic: cs40l25: %s: the bus is not usable\n", line);
+		hsay("haptic: cs40l25: %s: the bus is not usable\n", line);
 		redwood_bbi2c_restore(&bus);
 		return;
 	}
 	bus_taken = true;
-	printf("haptic: cs40l25: %s\n", line);
+	hsay("haptic: cs40l25: %s\n", line);
 	if (reset_is_high()) {
 		rom_alive = look("as the bootloader left it", &devid, &revid, rom_regs);
 	} else {
-		printf("haptic: cs40l25: the reset pin does not drive high: the chip is held in reset (nothing read)\n");
+		hsay("haptic: cs40l25: the reset pin does not drive high: the chip is held in reset (nothing read)\n");
 	}
 	if (level >= 2 && rom_test) {
 		rom_buzz();
@@ -1398,11 +1425,11 @@ cs_thread(__unused void *parameter, __unused wait_result_t result)
 		}
 	}
 	if (!broken && level >= 3) {
-		printf("haptic: cs40l25: done; the chip stays out of reset (standby) until the run ends\n");
+		hsay("haptic: cs40l25: done; the chip stays out of reset (standby) until the run ends\n");
 	} else if (!broken && bus_taken) {
 		redwood_bbi2c_restore(&bus);
 		bus_taken = false;
-		printf("haptic: cs40l25: done\n");
+		hsay("haptic: cs40l25: done\n");
 	}
 }
 
@@ -1435,7 +1462,7 @@ redwood_cs40l25_quiesce(void)
 {
 	if (released && reset_bank != NULL) {
 		reset_pin(false);
-		printf("haptic: cs40l25: at the run's end: %u taps, %u vibrations (%u cut), %llu frames from iOS; the chip is "
+		hsay("haptic: cs40l25: at the run's end: %u taps, %u vibrations (%u cut), %llu frames from iOS; the chip is "
 		    "held in reset\n", taps, loops, capped, written_frames);
 	}
 }

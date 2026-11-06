@@ -225,6 +225,8 @@ static const struct cdevsw touch_cdevsw = {
 };
 
 void redwood_hfs_init(void);
+extern void redwood_tcs3407_init(void);
+extern void redwood_ssp_init(void);
 void redwood_exynos_bt_init(void);
 void redwood_m2m_init(void);
 
@@ -256,7 +258,9 @@ redwood_input_init(void)
 	redwood_adreno_init();
 	redwood_wifi_init();
 	redwood_exynos_pcie_init();     /* boot-arg wifi_pcie=1|2: the BCM4375's PCIe link, W2 of PLANS/06-wireless.md */
-	redwood_exynos_acpm_init();     /* boot-arg dvfs=1|2: CPU/GPU/memory clocks and temperatures through ACPM (P5) */
+	redwood_exynos_acpm_init();
+	redwood_tcs3407_init();         /* boot-arg als=1..3: the rear light sensor (bsd/dev/redwood_tcs3407.c) */
+	redwood_ssp_init();             /* boot-arg shub=1..6: the sensor hub (bsd/dev/redwood_ssp.c) */     /* boot-arg dvfs=1|2: CPU/GPU/memory clocks and temperatures through ACPM (P5) */
 	redwood_exynos_bt_init();       /* boot-arg bt=1: the BCM4375's Bluetooth on UART1, for iOS's bluetoothd */
 	redwood_adsp_init();
 }
