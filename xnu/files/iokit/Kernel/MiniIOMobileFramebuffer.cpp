@@ -3820,6 +3820,49 @@ publishBacklight(IOMobileFramebuffer * fb)
 		backlight->fValue = kBacklightMax / 2;
 		backlight->setName("backlight");
 		backlight->setProperty("backlight-control", kOSBooleanTrue);
+		/*
+		 * What CoreBrightness reads before it builds its Display (B, 2026-11-06; found by the Pixel 10 port,
+		 * git/TheAndersMadsen__ios-on-pixel-10/research/ios26-phaseb-r1/corebrightness/FINDINGS.md; the same names in
+		 * iOS 16.5's cache): -[CBBacklightNode getBacklightCalibration:] reads "backlight-calibration-parameters" (16.16
+		 * numbers); without it, a fallback interpolates "backlight-marketing-table" before that table is loaded -- the
+		 * NULL read at +0x1c8 that crashed backboardd with an ambient light sensor (sens_als=1). Values: a consistent model
+		 * of this panel (2..420 nits on Samsung's curve points), not measured.
+		 */
+		{
+			static const uint32_t nits[] = { 2, 5, 10, 20, 40, 70, 100, 140, 180, 230, 280, 340, 420 };
+			const unsigned n = sizeof(nits) / sizeof(nits[0]);
+			int32_t table[sizeof(nits) / sizeof(nits[0])];
+			OSDictionary * calib = OSDictionary::withCapacity(9);
+
+			for (unsigned i = 0; i < n; i++) {
+				table[i] = (int32_t) (nits[i] << 16);
+			}
+			OSData * marketing = OSData::withBytes(table, sizeof(table));
+			if (marketing != NULL) {
+				backlight->setProperty("backlight-marketing-table", marketing);
+				marketing->release();
+			}
+			if (calib != NULL) {
+				int32_t lmax = table[n - 1], lmin = table[0], lmid = table[(n - 1) / 2];
+				int32_t imax = 20 << 16, imid = (int32_t) ((int64_t) imax * lmid / lmax);
+				const struct { const char * key; int32_t value; } v[] = {
+					{ "current-for-max-backlight", imax }, { "current-for-mid-backlight", imid },
+					{ "hardware-max-current-limit", imax }, { "lMaxProduct", lmax }, { "lMidProduct", lmid },
+					{ "lMinProduct", lmin }, { "lMaxPanel", lmax }, { "lMidPanel", lmid }, { "lMinPanel", lmin },
+				};
+
+				for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++) {
+					OSNumber * num = OSNumber::withNumber((uint64_t) (uint32_t) v[i].value, 32);
+
+					if (num != NULL) {
+						calib->setObject(v[i].key, num);
+						num->release();
+					}
+				}
+				backlight->setProperty("backlight-calibration-parameters", calib);
+				calib->release();
+			}
+		}
 		backlight->publishParameters();
 		backlight->registerService();
 		fbSay("fb: bl: AppleARMBacklight published%s\n", gBL ? "" : " (fb_bl=0: requests only logged)");
