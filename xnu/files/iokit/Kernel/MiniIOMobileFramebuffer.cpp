@@ -116,6 +116,14 @@ static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
  */
 static TUNABLE(uint32_t, gFade, "fb_fade", 1);
 /*
+ * fb_dim=1 (default; B, 2026-11-06): the panel's own smooth dimming (WRCTRLD 0x53 bit 3, DD) with every brightness
+ * write, so the DDIC blends between the fade's steps over its frames: ten 20 % steps of a 185 ms fade had shown as
+ * stairs. fb_dim=0: 0x53 = 0 as Samsung's table has it (dimming off).
+ */
+static TUNABLE(uint32_t, gDim, "fb_dim", 1);
+/* fb_offhold=1: DCS 28 held 300 ms after the last brightness write. Tried: the user found it worse (dark but on). Off. */
+static TUNABLE(uint32_t, gOffHold, "fb_offhold", 0);
+/*
  * fb_mode_lpref=1 (B, 2026-11-06): the gate lets DSIM_UNDERRUN_CTRL (the command-mode underrun reference, dtbo
  * cmd_lp_ref) through whatever it holds. The first fb_mode=1 run found UEFI's 0x138b there, not the dtbo's 0x1e6e,
  * every other DSIM and DECON register exactly the native mode's. Samsung's driver writes cmd_lp_ref from the dtbo at
@@ -717,6 +725,11 @@ public:
 	IOLock *        fDsimLock;              /* one DSIM command sequence at a time */
 	bool            fDsimReads;             /* DCS reads work (a read timed out: none tried again) */
 	bool            fDisplayOff;
+	/* the display off held until the panel's dimming has settled (fb_dim): its thread call, when brightness was last sent */
+	thread_call_t   fOffCall;
+	uint64_t        fBLSentAt;
+	bool            fOffPending;
+	static void     offWork(thread_call_param_t self, thread_call_param_t unused);
 	static void blWork(thread_call_param_t self, thread_call_param_t unused);
 	virtual IOReturn setProperties(OSObject * properties) APPLE_KEXT_OVERRIDE;
 	/* where a frame's time in the driver goes (5 s sums) */
@@ -2136,7 +2149,7 @@ bool
 IOMobileFramebuffer::blSend(uint32_t dbv, uint32_t aor)
 {
 	static const uint8_t keyOn[] = { 0xF0, 0x5A, 0x5A }, keyOff[] = { 0xF0, 0xA5, 0xA5 }, update[] = { 0xF7, 0x0F };
-	static const uint8_t hbmOff[] = { 0x53, 0x00 };
+	const uint8_t hbmOff[] = { 0x53, (uint8_t) (gDim ? 0x08 : 0x00) };     /* HBM off; DD (smooth dimming) with fb_dim */
 	const uint8_t level[] = { 0x6A, (uint8_t) (dbv >> 8 & 0x07), (uint8_t) (dbv & 0xff), 0x01 };
 	const uint8_t offRatio[] = { 0xB1, (uint8_t) (aor >> 8), (uint8_t) aor };
 	bool ok;
@@ -2149,6 +2162,25 @@ IOMobileFramebuffer::blSend(uint32_t dbv, uint32_t aor)
 	return dsimWrite(keyOff, sizeof(keyOff)) && ok;
 }
 
+/* the held display off (fb_dim): sent once the panel has dimmed, unless woken meanwhile */
+void
+IOMobileFramebuffer::offWork(thread_call_param_t self, thread_call_param_t unused __unused)
+{
+	IOMobileFramebuffer * fb = (IOMobileFramebuffer *) self;
+	const uint8_t command[] = { 0x28 };
+	bool ok;
+
+	if (!fb->fOffPending) {
+		return;
+	}
+	fb->fOffPending = false;
+	IOLockLock(fb->fDsimLock);
+	ok = fb->dsimWrite(command, sizeof(command));
+	fb->fDisplayOff = true;
+	IOLockUnlock(fb->fDsimLock);
+	fbSay("fb: bl: display off (DCS 28, held for the panel's dimming) %s\n", ok ? "sent" : "NOT SENT");
+}
+
 /* The framebuffer's power (IOMobileFramebuffer selector 12: 0 off, 1 on): the panel's display off / on (DCS 28 / 29). */
 void
 IOMobileFramebuffer::displayPower(bool on)
@@ -2156,11 +2188,40 @@ IOMobileFramebuffer::displayPower(bool on)
 	const uint8_t command[] = { (uint8_t) (on ? 0x29 : 0x28) };
 	bool ok;
 
+	if (on && fOffPending) {
+		/* woken again before the held display off went out: it never goes */
+		fOffPending = false;
+		if (fOffCall != NULL) {
+			thread_call_cancel(fOffCall);
+		}
+		redwood_gov_boost(1000);
+		fbSay("fb: bl: display off cancelled (woken before it went out)\n");
+		return;
+	}
 	if (fDsim == NULL || !gBL || fDisplayOff == !on) {
 		return;
 	}
 	if (on) {
 		redwood_gov_boost(1000);                /* the wake animation at full clocks from its first frame */
+	}
+	if (!on && gDim && gOffHold && !fOffPending) {
+		/*
+		 * The panel blends brightness over its own frames (fb_dim): DCS 28 right at the end of the fade cut the last
+		 * of it off. Held until 300 ms after the last brightness write (the fade itself is ~185 ms).
+		 */
+		uint64_t settle, at;
+
+		if (fOffCall == NULL) {
+			fOffCall = thread_call_allocate_with_options(&IOMobileFramebuffer::offWork, this, THREAD_CALL_PRIORITY_KERNEL,
+			    THREAD_CALL_OPTIONS_ONCE);
+		}
+		nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &settle);
+		at = fBLSentAt + settle;
+		if (fOffCall != NULL && at > mach_absolute_time()) {
+			fOffPending = true;
+			thread_call_enter_delayed(fOffCall, at);
+			return;
+		}
 	}
 	IOLockLock(fDsimLock);
 	ok = dsimWrite(command, sizeof(command));
@@ -2263,6 +2324,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		ok = fb->blSend(dbv, aor);
 		fb->fBLSent = aor;
 		fb->fBLCurrent = target;
+		fb->fBLSentAt = mach_absolute_time();
 		fb->fBLWrites++;
 		fb->fBLFailures += !ok;
 		if (fb->fBLWrites <= 2) {
