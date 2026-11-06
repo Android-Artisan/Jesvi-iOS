@@ -303,6 +303,87 @@ supports_camera(id self, SEL cmd)
 	return v;
 }
 
+/* the volume buttons (x1slte, 2026-11-06: "on the lock screen they do nothing"): what SpringBoard does with them, logged */
+static void (*original_vol_up)(id, SEL), (*original_vol_down)(id, SEL);
+
+static void
+vol_up(id self, SEL cmd)
+{
+	say("redwood: -[SBVolumeControl increaseVolume] (the volume now %d)\n", sysctl_int("kern.redwood.audio_volume"));
+	if (original_vol_up) {
+		original_vol_up(self, cmd);
+	}
+}
+
+static void
+vol_down(id self, SEL cmd)
+{
+	say("redwood: -[SBVolumeControl decreaseVolume] (the volume now %d)\n", sysctl_int("kern.redwood.audio_volume"));
+	if (original_vol_down) {
+		original_vol_down(self, cmd);
+	}
+}
+
+/* what a press does on the lock screen (2026-11-06: "on the home screen it works, locked it does not"): logged only */
+static void (*original_handle_button)(id, SEL, long, BOOL);
+static BOOL (*original_hud_displayable)(id, SEL, id, id *);
+
+static void
+cf_text(id object, char *out, size_t size)
+{
+	out[0] = 0;
+	if (object != nil && CFGetTypeID((CFTypeRef)object) == CFStringGetTypeID()) {
+		CFStringGetCString((CFStringRef)object, out, (CFIndex)size, kCFStringEncodingUTF8);
+	} else if (object != nil) {
+		snprintf(out, size, "(%s)", object_getClassName(object));
+	}
+}
+
+static void
+handle_button(id self, SEL cmd, long type, BOOL down)
+{
+	static unsigned said;
+
+	if (said++ < 40) {
+		say("redwood: -[SBVolumeControl handleVolumeButtonWithType:%ld down:%d]\n", type, down);
+	}
+	if (original_handle_button) {
+		original_handle_button(self, cmd, type, down);
+	}
+}
+
+static BOOL
+hud_displayable(id self, SEL cmd, id category, id *reason)
+{
+	static unsigned said;
+	BOOL v = original_hud_displayable ? original_hud_displayable(self, cmd, category, reason) : NO;
+
+	if (said++ < 40) {
+		char c[64], r[96];
+
+		cf_text(category, c, sizeof(c));
+		cf_text(reason ? *reason : nil, r, sizeof(r));
+		say("redwood: -[SBVolumeControl _isHUDDisplayableForCategory:%s] -> %d (%s)\n", c, v, r);
+	}
+	return v;
+}
+
+static void
+volume_watch_start(void)
+{
+	static const char *const words[] = { "volume", "hud", "press", "button", "ringer", "category" };
+
+	say_methods("SBVolumeControl", words, 6);
+	say_methods("SBVolumeHardwareButton", words, 6);
+	say_methods("SBVolumeHardwareButtonActions", words, 6);
+	original_vol_up = (void (*)(id, SEL))replace_method_by_name("SBVolumeControl", "increaseVolume", (IMP)vol_up);
+	original_handle_button = (void (*)(id, SEL, long, BOOL))replace_method_by_name("SBVolumeControl",
+	    "handleVolumeButtonWithType:down:", (IMP)handle_button);
+	original_hud_displayable = (BOOL (*)(id, SEL, id, id *))replace_method_by_name("SBVolumeControl",
+	    "_isHUDDisplayableForCategory:outReason:", (IMP)hud_displayable);
+	original_vol_down = (void (*)(id, SEL))replace_method_by_name("SBVolumeControl", "decreaseVolume", (IMP)vol_down);
+}
+
 static void
 quick_actions_start(void)
 {
@@ -1458,6 +1539,7 @@ redwood_springboard_init(void)
 	    poster_switcher ? "not offered" : "NOT withheld");
 	wifi_bars_start();
 	quick_actions_start();
+	volume_watch_start();
 	say("redwood: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
 	    original_battery_view_shows_percentage ? "ok" : "NO",
 	    original_battery_view_set_shows_percentage ? "ok" : "NO",

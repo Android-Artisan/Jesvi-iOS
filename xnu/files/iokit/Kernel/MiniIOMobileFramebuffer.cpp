@@ -101,6 +101,12 @@ static TUNABLE(uint32_t, gDPU, "fb_dpu", 0);
  */
 static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
 /*
+ * fb_mode (x1slte, SM-G980F, 2026-11-06): 1 = the panel switched to 1080x2400 at 120 Hz (HS), Samsung's "mres" at start;
+ * 0 = as UEFI leaves it (1440x3200 at 60 Hz). Needs fb_scaler=1 (the frame is scaled to the panel's size by DPP 5).
+ * See modeSetFhd120().
+ */
+static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
+/*
  * fb_swapwait=1: with the scaler on, SwapEnd returns only once its frame is on the panel (run 17's cure for
  * tearing: CoreAnimation draws its next frame into the surface the panel showed).
  * By default SwapEnd returns once the swap is queued and the wait is where CoreAnimation asks for it: before
@@ -448,9 +454,15 @@ micros(uint64_t absolute)
 	return ns / 1000;
 }
 
+/* x1slte: the refresh the panel was switched to (fb_mode=1: 120), which wins over fb_hz; 0 while none was */
+static uint32_t gModeHz;
+
 static inline uint32_t
 refreshHz(void)
 {
+	if (gModeHz != 0) {
+		return gModeHz;
+	}
 	return gRefreshHz >= 1 && gRefreshHz <= 240 ? gRefreshHz : kFBRefreshHz;
 }
 static inline uint32_t
@@ -671,6 +683,9 @@ public:
 	void teReport(uint64_t nanos);
 	void blSetup(void);
 	bool dsimWrite(const uint8_t * bytes, uint32_t length);
+	bool dsimPacket(uint8_t type, const uint8_t * bytes, uint32_t length);
+	bool panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_t offset);
+	bool modeSetFhd120(void);
 	int dsimRead(uint8_t command, uint8_t * out, uint32_t max);
 	void panelReport(const char * when);
 	bool blSend(uint32_t dbv, uint32_t aor);
@@ -1204,6 +1219,9 @@ IOMobileFramebuffer::dpuProbe(void)
 	}
 	if (gScaler && !gFlip) {
 		fScanCh = ch;
+		if (gFbMode == 1) {
+			(void) modeSetFhd120();         /* the scaler's target follows it (fPanelWidth/Height) */
+		}
 		scalerSetup();
 	}
 	base = dpuRead(fDma, IDMA_BASE_Y8_REG);
@@ -3749,4 +3767,249 @@ MiniIOMobileFramebufferStart(IOService * provider)
 		fb->detach(provider);
 	}
 	fb->release();
+}
+
+/* ---- 1080x2400 at 120 Hz (x1slte, SM-G980F, fb_mode=1) ------------------------------------------------------------ */
+
+/*
+ * Samsung's runtime resolution and refresh change ("mres", dpu30), for the S20's S6E3HAB "hubble1" panel, as Android's
+ * own driver does it, with every number from Samsung's sources for this panel and this phone's dtbo:
+ *   the panel  drivers/video/fbdev/exynos/panel/s6e3hab/s6e3hab_hubble1_a3_s0_panel.h: the display-mode command
+ *              set (osc_86_4m / osc_96_5m_display_mode_cmdtbl), its tables (scaler, caset, paset, pps, osc, ltps,
+ *              fps), the 120 HS row of S6E3HAB_VRR_DIM (s6e3hab.h: vfp 16), the variant by the panel's ID
+ *              (0x8100x1..x3: OSC 96.5 MHz; 0x810041/42: the default one); "B0 offset register" before a write at an
+ *              offset (ddi_props.gpara WRITE|POINT, panel.c panel_dsi_write_cmd), DCS long writes for 2+ bytes
+ *              (dpu30/panels/common_mipi_lcd.c), DSC "PRA" type 0x07 and PPS type 0x0A
+ *   DSIM       cal_9830/dsim_reg.c dsim_reg_set_mres: threshold = enc_sw x slices, RESOL, transfers = lines,
+ *              SLICE01 = dec_sw, the command-mode underrun reference (dtbo cmd_lp_ref)
+ *   DECON      cal_9830/decon_reg.c decon_reg_set_mres: blender background, scaled size, DSC encoders + OUTFIFO
+ *   the modes  dtbo panel_display_mode 1440x3200_60NS (slice 720x40, cmd_lp_ref 0x1e6e) and 1080x2400_120HS (slice
+ *              540x40, cmd_lp_ref 0x284d); 2 encoders, 2 slices; enc_sw (exynos_panel_calc_slice_width) 240 / 180
+ * It goes only from the state it was measured against: every DSIM register it changes must read UEFI's native-mode
+ * value first, or nothing at all is written and the panel stays at 1440x3200 at 60 Hz.
+ */
+#define DSIM_NUM_OF_TRANSFER_R  0x0030
+#define DSIM_UNDERRUN_CTRL_R    0x0034
+#define DSIM_THRESHOLD_R        0x0038
+#define DSIM_RESOL_R            0x003C
+#define DSIM_SLICE01_R          0x0078
+#define DSI_DSC_PRA             0x07
+#define DSI_DSC_PPS             0x0A
+
+/* the 128-byte PPS of 1080x2400, slice 540x40 (hubble1_a3_s0_pps_table[0][S6E3HAB_SCALER_x1_78]) */
+static const uint8_t kPpsFhd[128] = {
+	0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x09, 0x60, 0x04, 0x38, 0x00, 0x28, 0x02, 0x1C, 0x02, 0x1C,
+	0x02, 0x00, 0x02, 0x0E, 0x00, 0x20, 0x03, 0xDD, 0x00, 0x07, 0x00, 0x0C, 0x02, 0x77, 0x02, 0x8B,
+	0x18, 0x00, 0x10, 0xF0, 0x03, 0x0C, 0x20, 0x00, 0x06, 0x0B, 0x0B, 0x33, 0x0E, 0x1C, 0x2A, 0x38,
+	0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79, 0x7B, 0x7D, 0x7E, 0x01, 0x02, 0x01, 0x00, 0x09, 0x40,
+	0x09, 0xBE, 0x19, 0xFC, 0x19, 0xFA, 0x19, 0xF8, 0x1A, 0x38, 0x1A, 0x78, 0x1A, 0xB6, 0x2A, 0xF6,
+	0x2B, 0x34, 0x2B, 0x74, 0x3B, 0x74, 0x6B, 0xF4,
+};
+
+/* the HS rows of the LTPS tables, per oscillator */
+static const uint8_t kLtps1Osc96[8] = { 0x17, 0x53, 0x00, 0x00, 0x00, 0x40, 0x17, 0x53 };
+static const uint8_t kLtps2Osc96[8] = { 0x18, 0x1C, 0x00, 0x00, 0x00, 0xD8, 0x18, 0x1C };
+static const uint8_t kLtps1Osc86[8] = { 0x15, 0x4A, 0x00, 0x00, 0x00, 0x40, 0x15, 0x4A };
+static const uint8_t kLtps2Osc86[8] = { 0x16, 0x19, 0x00, 0x00, 0x00, 0xD8, 0x16, 0x19 };
+
+/* the DECON half (blender, scaled size, OUTFIFO, the two DSC encoders, the window): see deconModeRegs below */
+struct mode_reg { uint32_t off, native, fhd, mask; };
+#include "MiniIOMobileFramebufferMode.h"
+
+/* A DSI packet of the given data type: short (type 0x05 / 0x15 / 0x07: up to two bytes) or long (0x39, 0x0A). */
+bool
+IOMobileFramebuffer::dsimPacket(uint8_t type, const uint8_t * bytes, uint32_t length)
+{
+	uint64_t began = mach_absolute_time(), limit;
+	uint32_t header;
+	bool longp = type == DSI_DCS_LONG_WRITE || type == DSI_DSC_PPS;
+
+	nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &limit);
+	while (dpuRead(fDsim, DSIM_FIFOCTRL) & (DSIM_FIFO_PH_FULL | DSIM_FIFO_PL_FULL)) {
+		if (mach_absolute_time() - began > limit) {
+			return false;
+		}
+		delay(10);
+	}
+	if (longp) {
+		for (uint32_t i = 0; i < length; i += 4) {
+			uint32_t word = 0;
+
+			for (uint32_t b = 0; b < 4 && i + b < length; b++) {
+				word |= (uint32_t) bytes[i + b] << (8 * b);
+			}
+			dpuWrite(fDsim, DSIM_PAYLOAD, word);
+		}
+		header = type | (length & 0xff) << 8 | (length >> 8 & 0xff) << 16;
+	} else {
+		header = type | (uint32_t) (length > 0 ? bytes[0] : 0) << 8 | (uint32_t) (length > 1 ? bytes[1] : 0) << 16;
+	}
+	dpuWrite(fDsim, DSIM_PKTHDR, header);
+	while (!(dpuRead(fDsim, DSIM_FIFOCTRL) & DSIM_FIFO_PH_EMPTY)) {
+		if (mach_absolute_time() - began > limit) {
+			return false;
+		}
+		delay(10);
+	}
+	return true;
+}
+
+/* A write of the panel's register bytes[0] at an offset: "B0 offset register" first when the offset is not 0. */
+bool
+IOMobileFramebuffer::panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_t offset)
+{
+	if (offset != 0) {
+		const uint8_t gpara[3] = { 0xB0, offset, bytes[0] };
+
+		if (!dsimPacket(DSI_DCS_LONG_WRITE, gpara, sizeof(gpara))) {
+			return false;
+		}
+	}
+	return dsimPacket(length == 1 ? DSI_DCS_SHORT_WRITE : DSI_DCS_LONG_WRITE, bytes, length);
+}
+
+bool
+IOMobileFramebuffer::modeSetFhd120(void)
+{
+	static const struct { uint32_t off, native, fhd, mask; } dsim[] = {
+		{ DSIM_THRESHOLD_R,       480,                 360,                 0xffffffffu },
+		{ DSIM_RESOL_R,           (3200u << 16) | 480, (2400u << 16) | 360, (0x1fffu << 16) | 0x1fffu },
+		{ DSIM_NUM_OF_TRANSFER_R, 3200,                2400,                0xffffffffu },
+		{ DSIM_SLICE01_R,         (720u << 16) | 720,  (540u << 16) | 540,  0xffffffffu },
+		{ DSIM_UNDERRUN_CTRL_R,   0x1e6e,              0x284d,              0xffffu },
+	};
+	unsigned ndecon = 0;                    /* the entries with a mask: an all-zero one only holds the place */
+
+	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]); i++) {
+		ndecon += deconModeRegs[i].mask != 0;
+	}
+	uint8_t id[3] = { 0 };
+	bool osc96, ok = true;
+	uint32_t trig, global;
+	uint64_t began, limit;
+
+	if (fDsim == NULL) {
+		fDsim = (volatile uint8_t *) ml_io_map((vm_offset_t) DSIM0_PHYS, 0x1000);
+	}
+	if (fDsim == NULL || fDecon == NULL) {
+		fbSay("fb_mode: DSIM or DECON not mapped: stays 1440x3200 at 60 Hz\n");
+		return false;
+	}
+	/* the gate: the native mode, exactly as measured, or nothing */
+	for (unsigned i = 0; i < sizeof(dsim) / sizeof(dsim[0]); i++) {
+		uint32_t v = dpuRead(fDsim, dsim[i].off) & dsim[i].mask;
+
+		if (v != (dsim[i].native & dsim[i].mask)) {
+			fbSay("fb_mode: DSIM %#x reads %#x, not the native %#x: nothing written, stays 1440x3200 at 60 Hz\n",
+			    dsim[i].off, v, dsim[i].native);
+			ok = false;
+		}
+	}
+	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]) && deconModeRegs[i].mask; i++) {
+		uint32_t v = dpuRead(fDecon, deconModeRegs[i].off) & deconModeRegs[i].mask;
+
+		if (v != (deconModeRegs[i].native & deconModeRegs[i].mask)) {
+			fbSay("fb_mode: DECON %#x reads %#x, not the native %#x: nothing written, stays 1440x3200 at 60 Hz\n",
+			    deconModeRegs[i].off, v, deconModeRegs[i].native);
+			ok = false;
+		}
+	}
+	if (ndecon == 0) {
+		fbSay("fb_mode: no DECON register list in this build: nothing written\n");
+		ok = false;
+	}
+	/* S-Boot's window (the scaler's from here on) ends at the panel's corner: (1439, 3199) -> (1079, 2399) */
+	if (fWin < 0 || fWin > 5 || dpuRead(fDecon, 0x100C + 0x30 * (uint32_t) fWin) != ((3199u << 16) | 1439u)) {
+		fbSay("fb_mode: window %d does not end at 1439,3199 (%#x): nothing written\n", fWin,
+		    fWin >= 0 && fWin <= 5 ? dpuRead(fDecon, 0x100C + 0x30 * (uint32_t) fWin) : 0);
+		ok = false;
+	}
+	if (!ok) {
+		return false;
+	}
+	/* the panel's variant: its ID (DCS 0x04) */
+	{
+		static const uint8_t keyOn[] = { 0xF0, 0x5A, 0x5A }, keyOff[] = { 0xF0, 0xA5, 0xA5 };
+
+		fDsimReads = true;
+		(void) dsimWrite(keyOn, sizeof(keyOn));
+		if (dsimRead(0x04, id, 3) != 3) {
+			(void) dsimWrite(keyOff, sizeof(keyOff));
+			fbSay("fb_mode: the panel's ID did not come: nothing written\n");
+			return false;
+		}
+		(void) dsimWrite(keyOff, sizeof(keyOff));
+	}
+	osc96 = (id[2] & 0x40) == 0;
+	fbSay("fb_mode: panel ID %02x %02x %02x (%s): to 1080x2400 at 120 Hz\n", id[0], id[1], id[2],
+	    osc96 ? "OSC 96.5 MHz" : "OSC 86.4 MHz");
+
+	/* the trigger masked, DECON idle: no frame goes out while the two ends change */
+	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &limit);
+	began = mach_absolute_time();
+	while (dpuRead(fDecon, DECON_SHADOW_UPDATE) != 0 && mach_absolute_time() - began < limit) {
+		delay(50);                      /* Samsung: no shadow update pending before the trigger is masked */
+	}
+	trig = dpuRead(fDecon, DECON_TRIG_CONTROL);
+	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig | DECON_TRIG_MASK);
+	began = mach_absolute_time();
+	while (!((global = dpuRead(fDecon, DECON_GLOBAL_CONTROL)) & DECON_GLOBAL_IDLE) && mach_absolute_time() - began < limit) {
+		delay(50);
+	}
+	if (!(global & DECON_GLOBAL_IDLE)) {
+		dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
+		fbSay("fb_mode: DECON not idle in 100 ms (global %#x): nothing written\n", global);
+		return false;
+	}
+
+	/* the panel: Samsung's display-mode command set for 1080x2400_120HS */
+	{
+		static const uint8_t key1On[] = { 0x9F, 0xA5, 0xA5 }, key2On[] = { 0xF0, 0x5A, 0x5A };
+		static const uint8_t key2Off[] = { 0xF0, 0xA5, 0xA5 }, key1Off[] = { 0x9F, 0x5A, 0x5A };
+		static const uint8_t aidHs[] = { 0xB1, 0x40 };                   /* AID 2 cycles in HS (offset 0x06) */
+		static const uint8_t dsc[] = { 0x01 };
+		static const uint8_t caset[] = { 0x2A, 0x00, 0x00, 0x04, 0x37 }, paset[] = { 0x2B, 0x00, 0x00, 0x09, 0x5F };
+		static const uint8_t scaler[] = { 0xBA, 0x02, 0x26, 0x08, 0x08, 0xF3 };
+		static const uint8_t osc[] = { 0xF2, 0xC0 }, vfpNm[] = { 0xF2, 0x00, 0x10 }, vfpHs[] = { 0xF2, 0x00, 0x10 };
+		static const uint8_t pwrGen[] = { 0xF3, 0x00 }, srcAmp[] = { 0xF6, 0x01 }, ltps0[] = { 0xCB, 0x85 };
+		static const uint8_t fps[] = { 0x60, 0x20 }, gammaUpdate[] = { 0xF7, 0x0F };
+		uint8_t ltps1[9] = { 0xCB }, ltps2[9] = { 0xCB };
+
+		memcpy(ltps1 + 1, osc96 ? kLtps1Osc96 : kLtps1Osc86, 8);
+		memcpy(ltps2 + 1, osc96 ? kLtps2Osc96 : kLtps2Osc86, 8);
+		ok = panelWriteAt(key1On, sizeof(key1On), 0) && panelWriteAt(key2On, sizeof(key2On), 0) &&
+		    panelWriteAt(aidHs, sizeof(aidHs), 0x06);
+		IOSleep(17);                                                    /* Samsung: wait 1 vsync */
+		ok = ok && dsimPacket(DSI_DSC_PRA, dsc, 1) && dsimPacket(DSI_DSC_PPS, kPpsFhd, sizeof(kPpsFhd)) &&
+		    panelWriteAt(caset, sizeof(caset), 0) && panelWriteAt(paset, sizeof(paset), 0) &&
+		    panelWriteAt(scaler, sizeof(scaler), 0) &&
+		    panelWriteAt(osc, sizeof(osc), 0) && panelWriteAt(vfpNm, sizeof(vfpNm), 0x0B) &&
+		    panelWriteAt(vfpHs, sizeof(vfpHs), 0x06) && panelWriteAt(pwrGen, sizeof(pwrGen), 0x06) &&
+		    panelWriteAt(srcAmp, sizeof(srcAmp), 0x18) && panelWriteAt(ltps0, sizeof(ltps0), 0x03) &&
+		    panelWriteAt(ltps1, sizeof(ltps1), 0x54) && panelWriteAt(ltps2, sizeof(ltps2), 0x8E) &&
+		    panelWriteAt(fps, sizeof(fps), 0) && panelWriteAt(gammaUpdate, sizeof(gammaUpdate), 0) &&
+		    panelWriteAt(key2Off, sizeof(key2Off), 0) && panelWriteAt(key1Off, sizeof(key1Off), 0);
+		if (!ok) {
+			fbSay("fb_mode: a panel command did not go out (FIFO %#x): the panel may be half-switched\n",
+			    dpuRead(fDsim, DSIM_FIFOCTRL));
+		}
+	}
+	/* DSIM, then DECON (dsim_reg_set_mres, decon_reg_set_mres), then one shadow update */
+	for (unsigned i = 0; i < sizeof(dsim) / sizeof(dsim[0]); i++) {
+		dpuWrite(fDsim, dsim[i].off, (dpuRead(fDsim, dsim[i].off) & ~dsim[i].mask) | (dsim[i].fhd & dsim[i].mask));
+	}
+	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]) && deconModeRegs[i].mask; i++) {
+		dpuWrite(fDecon, deconModeRegs[i].off,
+		    (dpuRead(fDecon, deconModeRegs[i].off) & ~deconModeRegs[i].mask) | (deconModeRegs[i].fhd & deconModeRegs[i].mask));
+	}
+	dpuWrite(fDecon, 0x100C + 0x30 * (uint32_t) fWin, (2399u << 16) | 1079u);       /* WIN_END_POSITION */
+	dpuWrite(fDecon, DECON_SHADOW_UPDATE, DECON_SHADOW_GLOBAL | (1u << fWin));
+	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
+	fPanelWidth = 1080;
+	fPanelHeight = 2400;
+	gModeHz = 120;
+	fbSay("fb_mode: 1080x2400 at 120 Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
+	    ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
+	    dpuRead(fDsim, DSIM_SLICE01_R), ndecon);
+	return ok;
 }
