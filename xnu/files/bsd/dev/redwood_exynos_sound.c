@@ -1161,6 +1161,7 @@ calliope_copy(volatile uint8_t *to, uint32_t room, const char *name, uint32_t of
  */
 static uint32_t cal_msgs, cal_pointers;
 static volatile uint8_t *cal_dram, *cal_gicd, *cal_pt, *cal_gpr, *cal_timer;
+static void calliope_timers(const char *what);
 static uint32_t cal_inv;
 static volatile bool cal_booted;
 static bool cal_timers;
@@ -1485,9 +1486,12 @@ calliope_boot(void)
 			 * wait in the firmware hangs (the mixer rate, PCM open after one message).
 			 */
 			cal_timers = true;
-			wr(timer, 0x600 + 0x20 * 0, 0x3);
-			wr(timer, 0x600 + 0x20 * 2, 0x3);
+			wr(timer, 0x600 + 0x20 * 0, 0x4);       /* clear, then start (see calliope_timer_kick) */
+			wr(timer, 0x600 + 0x20 * 0, 0x1);
+			wr(timer, 0x600 + 0x20 * 2, 0x4);
+			wr(timer, 0x600 + 0x20 * 2, 0x1);
 			snd_log("snd: calliope: its tick timers started (timer 0 now %#x)\n", rd(timer, 0x600 + 0x10));
+			calliope_timers("boot done");
 		}
 		if (snd_calliope >= 2 && ((cal_booted && tick >= 50) || tick >= 500)) {
 			break;
@@ -1618,6 +1622,57 @@ calliope_send(uint32_t ipcid, uint32_t msgtype, const uint32_t *p, unsigned np)
 }
 
 /* its answer: what it sent in the next `ms' milliseconds, and how far it took our queue */
+/*
+ * Calliope's timers (B, 2026-11-06): ABOX_TIMER_*(x) at timer + 0x600 + 0x20 x: CTRL0 (+0, START 0 / FLUSH 1),
+ * CTRL1 (+4, MODE), PRESET_LSB (+8), CURVALUD_LSB (+0x10) -- the registers Samsung's abox.c reads (timer_regmap,
+ * abox_cpu_pm_ipc). Timer 1's PRESET_LSB is the firmware's WFI flag (-2 = in WFI, abox_cpu_suspend_complete).
+ * On a fresh boot Samsung never starts them (abox_start_timer only on a wake from WFI): the firmware does.
+ */
+static uint32_t snd_cal_kick = 1, cal_kicks, cal_t0_last;
+static void
+calliope_timers(const char *what)
+{
+	volatile uint8_t *t = cal_timer;
+
+	if (t == NULL) {
+		return;
+	}
+	snd_log("snd: calliope: %s: timers CTRL0/CTRL1/PRESET/CUR: 0 %x/%x/%x/%x 1 %x/%x/%x/%x 2 %x/%x/%x/%x 3 %x/%x/%x/%x\n", what,
+	    rd(t, 0x600), rd(t, 0x604), rd(t, 0x608), rd(t, 0x610), rd(t, 0x620), rd(t, 0x624), rd(t, 0x628), rd(t, 0x630),
+	    rd(t, 0x640), rd(t, 0x644), rd(t, 0x648), rd(t, 0x650), rd(t, 0x660), rd(t, 0x664), rd(t, 0x668), rd(t, 0x670));
+}
+
+/* timer 0 (the firmware's 1 ms tick) set up (CTRL1 or PRESET non-zero) but not counting: FLUSH | START it again */
+static void
+calliope_timer_kick(void)
+{
+	volatile uint8_t *t = cal_timer;
+	uint32_t now;
+
+	if (t == NULL || !cal_booted || snd_cal_kick == 0) {
+		return;
+	}
+	now = rd(t, 0x610);
+	if (now == cal_t0_last && (rd(t, 0x604) != 0 || rd(t, 0x608) != 0)) {
+		/*
+		 * B, 2026-11-06 (live): a periodic timer whose interrupt was not cleared stops at 0, and neither START nor
+		 * FLUSH|START takes it out of that; CTRL0 = 4 (the firmware's own "clear", 0x800421e4) then 1 (start) does.
+		 * Calliope's RTX tick (timer 0 for core 0, IRQ 34; timer 2 for core 1, IRQ 36: OS_Tick_Setup at SRAM 0x868)
+		 * then runs, and Calliope takes every message (PCM open .. trigger, all within 1 ms).
+		 */
+		wr(t, 0x600, 0x4);
+		wr(t, 0x600, 0x1);
+		if (rd(t, 0x644) != 0) {
+			wr(t, 0x640, 0x4);
+			wr(t, 0x640, 0x1);
+		}
+		if (++cal_kicks <= 5) {
+			calliope_timers("timer 0 stopped: kicked");
+		}
+	}
+	cal_t0_last = rd(t, 0x610);
+}
+
 static void
 calliope_settle(const char *what, unsigned ms)
 {
@@ -1628,6 +1683,7 @@ calliope_settle(const char *what, unsigned ms)
 		calliope_drain(cal_dram);
 	}
 	calliope_log();
+	calliope_timers(what);
 	snd_log("snd: calliope: %s: tx cmd s %d e %d; RDMA3 CTRL0 %#x STATUS %#x BUF %#x-%#x; UAIF2 STATUS %#x; GPR %08x %08x pc? %08x %08x\n",
 	    what, *(volatile int32_t *)(tx + 0), *(volatile int32_t *)(tx + 4), rd(abox, RDMA(RDMA_CTRL0)), rd(abox, RDMA(RDMA_STATUS)),
 	    rd(abox, RDMA(RDMA_BUF_STR)), rd(abox, RDMA(RDMA_BUF_END)), rd(abox, ABOX_UAIF_STATUS),
@@ -1843,6 +1899,59 @@ dbg_snd_amp(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 }
 
+/*
+ * snd.cal 0|1|2|3 (B, 2026-11-06): Calliope driven live, no reboot -- 1 boots it now (firmware from /fw, its own
+ * IPC, tick timers), 2 asks it for playback (open .. trigger on RDMA0), 3 says its timers, 0 halts it (cores off,
+ * SysMMU off). The loader stops a Calliope left running at every power-on, and the run's end halts it too.
+ */
+static void calliope_halt(volatile uint8_t *p, volatile uint8_t *m);
+static void
+dbg_snd_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint32_t what = n >= 1 ? (uint32_t)v[0] : 3;
+
+	if (what == 0) {
+		calliope_halt(pmu, mmu);
+		cal_booted = false;
+		cal_timers = false;
+		cal_dram = NULL;
+		snprintf(out, cap, "Calliope halted (cores %#x/%#x)\n", rd(pmu, 0x31a0), rd(pmu, 0x3220));
+	} else if (what == 1) {
+		if (cal_booted) {
+			snprintf(out, cap, "Calliope is up already (0 halts it)\n");
+			return;
+		}
+		snd_calliope = 2;
+		snd_rdma = 0;
+		cal_poker = current_thread();
+		cal_poking = true;
+		calliope_boot();
+		cal_poking = false;
+		snprintf(out, cap, "Calliope %s; %u messages; its log and timers are in the kernel log\n",
+		    cal_booted ? "booted" : "NOT booted", cal_msgs);
+	} else if (what == 2) {
+		bool ok;
+
+		cal_poker = current_thread();
+		cal_poking = true;
+		ok = calliope_play();
+		cal_poking = false;
+		snprintf(out, cap, "playback %s; RDMA0 CTRL0 %08x STATUS %08x; %u messages, %u pointers\n", ok ? "asked for" : "NOT asked",
+		    rd(abox, 0x1000), rd(abox, 0x1030), cal_msgs, cal_pointers);
+	} else {
+		volatile uint8_t *t = cal_timer;
+
+		if (t == NULL) {
+			snprintf(out, cap, "Calliope was not booted this run (no timer mapping)\n");
+			return;
+		}
+		/* (timers 0-3 only: Samsung's timer_regmap names no more; a read of a hole can hang the bus) */
+		snprintf(out, cap, "timers CTRL1/PRESET/CUR: 0 %x/%x/%x 1 %x/%x/%x 2 %x/%x/%x; kicks %u; booted %d, %u msgs\n",
+		    rd(t, 0x604), rd(t, 0x608), rd(t, 0x610), rd(t, 0x624), rd(t, 0x628), rd(t, 0x630), rd(t, 0x644), rd(t, 0x648),
+		    rd(t, 0x650), cal_kicks, cal_booted, cal_msgs);
+	}
+}
+
 static void
 dbg_snd_amps(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -1881,6 +1990,60 @@ dbg_snd_prep(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	    amps[0].present ? "ok" : "missing", amps[1].present ? "ok" : "missing");
 }
 
+/*
+ * One-shot arming for the DSP route (B, 2026-11-06, after two boot loops): snd_calliope runs only if
+ * /private/var/root/calliope.arm starts with '1', and this overwrites it with '0' (synced) before Calliope starts --
+ * so a run that hangs or loops comes back without the DSP on the next boot by itself. Arm from the Mac:
+ *   ssh s20 'echo 1 > /private/var/root/calliope.arm'   (then deploy or restart with snd_calliope=2)
+ * Waits up to 150 s for /private/var (mounted by init). snd_cal_arm=0 skips the check.
+ */
+#define CAL_ARM_PATH            "/private/var/root/calliope.arm"
+static bool
+calliope_armed(void)
+{
+	vfs_context_t context = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	char c = 0, zero = '0';
+	int left = 0, error = ENOENT;
+	uint32_t check = 1;
+
+	PE_parse_boot_argn("snd_cal_arm", &check, sizeof(check));
+	if (check == 0) {
+		return true;
+	}
+	for (unsigned waited = 0; waited < 300; waited++) {
+		if (rootvnode != NULLVP && vnode_lookup("/private/var/root", 0, &vp, context) == 0) {
+			vnode_put(vp);
+			vp = NULLVP;
+			error = vnode_open(CAL_ARM_PATH, FREAD | FWRITE, 0, 0, &vp, context);
+			if (error != ENOENT || waited >= 120) {
+				break;          /* /var is there: the file is or is not (2 s more for a late mount) */
+			}
+		}
+		delay_for_interval(500, NSEC_PER_MSEC);
+	}
+	if (error != 0 || vp == NULLVP) {
+		snd_log("snd: calliope: not armed (%s: %d): the AP-only path this boot\n", CAL_ARM_PATH, error);
+		return false;
+	}
+	error = vn_rdwr(UIO_READ, vp, &c, 1, 0, UIO_SYSSPACE, 0, vfs_context_ucred(context), &left, vfs_context_proc(context));
+	if (error == 0 && left == 0 && c == '1') {
+		error = vn_rdwr(UIO_WRITE, vp, &zero, 1, 0, UIO_SYSSPACE, IO_SYNC, vfs_context_ucred(context), &left,
+		    vfs_context_proc(context));
+		(void)VNOP_FSYNC(vp, MNT_WAIT, context);
+	} else {
+		c = 0;
+	}
+	vnode_close(vp, FREAD | FWRITE, context);
+	if (c != '1' || error != 0) {
+		snd_log("snd: calliope: not armed (%s holds '%c', disarm %d): the AP-only path this boot\n", CAL_ARM_PATH,
+		    c ? c : '?', error);
+		return false;
+	}
+	snd_log("snd: calliope: armed by %s (now disarmed for the next boot)\n", CAL_ARM_PATH);
+	return true;
+}
+
 static void
 sound_thread(__unused void *parameter, __unused wait_result_t result)
 {
@@ -1891,6 +2054,10 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 
 	if (!aud_power_on() || !aud_clocks()) {
 		return;
+	}
+	if (snd_calliope != 0 && !calliope_armed()) {
+		snd_calliope = 0;
+		snd_rdma = 3;
 	}
 	if (snd_calliope != 0) {
 		/*
@@ -1964,6 +2131,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 
 			calliope_drain(cal_dram);
 			calliope_trigger_word();
+			calliope_timer_kick();
 			if (now - cal_log_at >= 500000) {
 				cal_log_at = now;
 				calliope_log();
@@ -2146,12 +2314,14 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
 	PE_parse_boot_argn("snd_cal_trig", &snd_cal_trig, sizeof(snd_cal_trig));
+	PE_parse_boot_argn("snd_cal_kick", &snd_cal_kick, sizeof(snd_cal_kick));
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
 	redwood_dbgport_add("snd.log", ": Calliope's new log lines into the kernel log", dbg_snd_log);
 	redwood_dbgport_add("snd.state", ": the DMA, UAIF2, routing, amplifiers, Calliope at a glance", dbg_snd_state);
 	redwood_dbgport_add("snd.amp", "SIDE REG [VALUE]: a CS35L41 register (0 top, 1 bottom)", dbg_snd_amp);
 	redwood_dbgport_add("snd.supply", "[1]: the amplifiers' 1.8 V (sub-PMIC LDO4S), read / switched on", dbg_snd_supply);
 	redwood_dbgport_add("snd.prep", ": the amplifiers reset and set up again", dbg_snd_prep);
+	redwood_dbgport_add("snd.cal", "0|1|2|3: Calliope halted / booted now / playback asked / its timers", dbg_snd_cal);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
 	if (snd_calliope >= 2) {
 		snd_rdma = 0;

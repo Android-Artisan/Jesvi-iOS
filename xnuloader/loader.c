@@ -5287,6 +5287,32 @@ ramfb_phone_screen(void)
 	SCREEN.stride = PHONE_WIDTH * 4;
 }
 
+/*
+ * y2s/x1s: ABOX's Calliope DSP (two Cortex-A32s) is not reset by a warm restart. One left running by the last run
+ * (snd_calliope) keeps fetching through mappings the new kernel no longer owns and can write into its memory before
+ * the kernel's own stop (bsd/dev/redwood_exynos_sound.c) runs: the boot loops of 2026-11-06. Stop both cores first
+ * thing, every boot: PMU (0x15860000) core enable 0x31a0/0x3220 bit 0, then core power 0x3180/0x3200 bit 0
+ * (exynos9830.dts abox-core@18c55000/@18c55080 samsung,pmu_enable / pmu_power).
+ */
+static void
+y2s_calliope_stop(void)
+{
+	static const uint32_t regs[4] = { 0x31a0, 0x3220, 0x3180, 0x3200 };
+	uint32_t before[4];
+
+	for (unsigned i = 0; i < 4; i++) {
+		volatile uint32_t *r = (volatile uint32_t *)(uintptr_t)(0x15860000ULL + regs[i]);
+
+		before[i] = *r;
+		if (before[i] & 1) {
+			*r = before[i] & ~1U;
+		}
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	print("calliope: enable %x/%x power %x/%x%s\n", (uint64_t)before[0], (uint64_t)before[1], (uint64_t)before[2],
+	    (uint64_t)before[3], ((before[0] | before[1] | before[2] | before[3]) & 1) ? ": was running, stopped" : "");
+}
+
 efi_status EFIAPI
 efi_main(efi_handle image, efi_system_table *st)
 {
@@ -5320,6 +5346,9 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	if (PLAT == &platform_y2s) {
+		y2s_calliope_stop();
+	}
 
 	install_exception_hook();
 	wdt_arm();
