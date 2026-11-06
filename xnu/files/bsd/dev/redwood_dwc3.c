@@ -337,6 +337,12 @@ static uint32_t steps, poll_ms = 2, drain_ms = 1000, crlf = 1, full_speed, susph
 static const struct redwood_usb_glue *glue;
 static uint32_t ecm_on;                 /* usb_ecm=1 */
 static int ecm_note_next;
+/*
+ * x1slte (2026-11-06): set on the way back to the loader. The other processors are stopped by then, maybe holding a
+ * lock of the network stack's: from here on nothing is handed to it (no ifnet_input, no link events) -- a return
+ * that did hung the phone with the screen dark, iOS gone and the loader never back.
+ */
+static volatile bool quiescing;
 static unsigned ecm_rx_next, ecm_tx_count;
 static uint64_t ecm_tx_frames, ecm_rx_frames, ecm_tx_batches;               /* the notification to send after the one under way: 0 none, 1 speed */
 extern void redwood_usbnet_link(bool up);
@@ -768,7 +774,9 @@ bulk_down(void)
 		end_xfer(PEP_ECM_IN);
 		end_xfer(PEP_ECM_NOTIFY);
 		wr(DALEPENA, rd(DALEPENA) & ~((1u << PEP_ECM_OUT) | (1u << PEP_ECM_IN) | (1u << PEP_ECM_NOTIFY)));
-		redwood_usbnet_link(false);
+		if (!quiescing) {
+			redwood_usbnet_link(false);
+		}
 	}
 }
 
@@ -842,7 +850,7 @@ pump_ecm(void)
 	uint32_t mps = high_speed ? USBACM_HS_BULK : USBACM_FS_BULK, lens[ECM_BATCH];
 	unsigned n = 0;
 
-	if (!ecm_on || acm.config == 0 || acm.ecm_alt != 1 || pep[PEP_ECM_IN].active || (acm.halted & 16)) {
+	if (!ecm_on || quiescing || acm.config == 0 || acm.ecm_alt != 1 || pep[PEP_ECM_IN].active || (acm.halted & 16)) {
 		return;
 	}
 	while (n < ECM_BATCH) {
@@ -888,7 +896,7 @@ ecm_rx_scan(void)
 	while (ecm_rx_next < ECM_BATCH && !(t[ecm_rx_next].ctrl & TRB_CTRL_HWO)) {
 		uint32_t left = t[ecm_rx_next].size & TRB_SIZE_MASK, done = ECM_BUF - left;
 
-		if (done > 0 && left <= ECM_BUF) {
+		if (done > 0 && left <= ECM_BUF && !quiescing) {
 			redwood_usbnet_rx((const uint8_t *)(uintptr_t)(dma + ECM_RX_BUFS + ecm_rx_next * ECM_BUF), done);
 			ecm_rx_frames++;
 		}
@@ -900,7 +908,7 @@ ecm_rx_scan(void)
 static void
 ecm_alt_changed(void)
 {
-	if (!ecm_on) {
+	if (!ecm_on || quiescing) {
 		return;
 	}
 	if (acm.ecm_alt == 1) {
@@ -2256,6 +2264,7 @@ redwood_usb_gadget_quiesce(void)
 	if (stage < 3 || regs == 0) {
 		return;
 	}
+	quiescing = true;
 	for (int i = 0; i < 1000 && !os_atomic_cmpxchg(&busy, 0, 1, acquire); i++) {
 		delay(100);     /* the poll is mid-way; after 100 ms it is taken to be gone with its processor */
 	}
