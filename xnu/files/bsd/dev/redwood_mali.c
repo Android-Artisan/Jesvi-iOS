@@ -918,6 +918,15 @@ job_failed(const struct job *j, const char *what)
  * looked; the scheduler arms it again for the next job.
  */
 static bool use_irq;
+/*
+ * mali_spin_us=N (default 2000; 0: off). With other jobs already waiting, the scheduler looks at JOB_INT_RAWSTAT
+ * for up to N us for the running job's end instead of sleeping until the interrupt: a frame of the lock screen's
+ * transition is ~25 render passes = ~50 jobs (vertex/tiler + fragment, one at a time), and a sleep + wake-up per
+ * job (a powered-down core coming back, the thread scheduled) was most of its ~10 ms with the GPU 60 % idle.
+ * An empty queue still sleeps on the interrupt: idle is unchanged.
+ */
+static uint32_t mali_spin_us = 2000;
+static uint64_t stat_spun, stat_spin_hits;
 static int job_irq_event;
 static uint64_t stat_irqs;
 
@@ -1080,7 +1089,29 @@ scheduler(__unused void *parameter, __unused wait_result_t result)
 		unsigned slot = (running->requirements & REDWOOD_MALI_JOB_FS) ? 0 : 1;
 
 		lck_mtx_unlock(&mali_lock);
-		if (use_irq) {
+		bool spun_done = false;
+
+		if (mali_spin_us != 0 && job_tail - job_head > 1) {
+			/* more jobs wait: look for this one's end without sleeping (see mali_spin_us) */
+			uint32_t bits = (1U << slot) | (1U << (16 + slot));
+			uint64_t until, now;
+
+			nanoseconds_to_absolutetime((uint64_t)mali_spin_us * NSEC_PER_USEC, &until);
+			until += mach_absolute_time();
+			stat_spun++;
+			do {
+				if ((mr(JOB_INT_RAWSTAT) & bits) != 0 || mr(MMU_INT_RAWSTAT) != 0) {
+					spun_done = true;
+					stat_spin_hits++;
+					break;
+				}
+				__builtin_arm_yield();
+				now = mach_absolute_time();
+			} while (now < until);
+		}
+		if (spun_done) {
+			/* done while looking: straight on to the next job */
+		} else if (use_irq) {
 			/*
 			 * mali_irq=1: asleep until the job interrupt (SPI 0x12d) says this slot is done or
 			 * failed, instead of looking every POLL_US -- which kept one of the six slow cores
@@ -1121,7 +1152,7 @@ scheduler(__unused void *parameter, __unused wait_result_t result)
 		gpu_time_done(slot, mach_absolute_time() - started, mach_absolute_time());
 		stat_jobs++;
 		if (use_irq && (stat_jobs == 1000 || stat_jobs == 100000)) {
-			mali_log("mali: %llu jobs, %llu job interrupts taken\n", stat_jobs, stat_irqs);
+			mali_log("mali: %llu jobs, %llu job interrupts taken; %llu ends looked for with jobs waiting, %llu seen without sleeping (mali_spin_us=%u)\n", stat_jobs, stat_irqs, stat_spun, stat_spin_hits, mali_spin_us);
 		}
 		job_head++;
 		os_atomic_store(&completed, running->seqno, release);
@@ -1258,6 +1289,7 @@ bringup(__unused void *parameter, __unused wait_result_t result)
 		uint32_t irq = 0;
 
 		PE_parse_boot_argn("mali_irq", &irq, sizeof(irq));
+		PE_parse_boot_argn("mali_spin_us", &mali_spin_us, sizeof(mali_spin_us));
 		if (irq != 0) {
 			kern_return_t kr = gic_v3_spi_attach(MALI_JOB_INTID, false, job_irq, NULL);
 

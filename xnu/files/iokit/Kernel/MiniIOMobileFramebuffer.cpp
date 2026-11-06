@@ -2253,24 +2253,22 @@ nitsToDBV(uint32_t level)
 	return gPanelDBV[steps - 1];
 }
 
+/* the integer cube root (floor) */
 static uint64_t
-isqrt64(uint64_t v)
+icbrt64(uint64_t v)
 {
-	uint64_t r = 0, bit = 1ULL << 62;
+	uint64_t lo = 0, hi = 2097152;          /* 2^21: its cube is 2^63 */
 
-	while (bit > v) {
-		bit >>= 2;
-	}
-	while (bit != 0) {
-		if (v >= r + bit) {
-			v -= r + bit;
-			r = (r >> 1) + bit;
+	while (lo < hi) {
+		uint64_t mid = (lo + hi + 1) / 2;
+
+		if (mid * mid * mid <= v) {
+			lo = mid;
 		} else {
-			r >>= 1;
+			hi = mid - 1;
 		}
-		bit >>= 2;
 	}
-	return r;
+	return lo;
 }
 
 void
@@ -2294,12 +2292,16 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		flen = fb->fFadeLen;
 		IOLockUnlock(fb->fBLLock);
 		if (flen != 0 && now - fstart < flen) {
-			/* the fade: even to the eye -- linear in the square root of nits */
-			uint64_t sf = isqrt64((uint64_t) from << 16), st = isqrt64((uint64_t) target << 16), sv;
+			/*
+			 * the fade: even to the eye -- linear in the cube root of nits (CIE lightness L*), so the dim end gets its
+			 * share of the steps. In the square root the last steps were 11 -> 4.6 -> 0.16 nits -> off: a snap to black,
+			 * plainest over the lock screen's bright wallpaper.
+			 */
+			uint64_t sf = icbrt64((uint64_t) from << 24), st = icbrt64((uint64_t) target << 24), sv;
 			uint64_t done = now - fstart;
 
 			sv = st >= sf ? sf + (st - sf) * done / flen : sf - (sf - st) * done / flen;
-			target = (uint32_t) ((sv * sv) >> 16);
+			target = (uint32_t) ((sv * sv * sv) >> 24);
 			more = true;
 		}
 		if (gBLThermalCap != 0 && target > gBLThermalCap) {

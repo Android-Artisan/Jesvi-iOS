@@ -97,7 +97,7 @@ static const struct {
 	 * 800 MHz); the thermal steps below cap them as Samsung's thermal zones do */
 	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 86, 96 },
 	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 86, 96 },
-	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 0,       1196000, 1794000, 0, 86, 96 },  /* only with dvfs_cl2= and every core up */
+	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 86, 96 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
 	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 88, 100 },
 	{ D_MIF, "mif",       "dvfs_mif", 2730000, 0,       0,       -1, 0, 0 },  /* LPDDR5 top (Samsung mode_1); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
