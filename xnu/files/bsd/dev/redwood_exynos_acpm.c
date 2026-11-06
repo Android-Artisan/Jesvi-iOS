@@ -99,7 +99,7 @@ static const struct {
 	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 86, 96 },
 	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 0,       1196000, 1794000, 0, 86, 96 },  /* only with dvfs_cl2= and every core up */
 	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 88, 100 },
-	{ D_MIF, "mif",       "dvfs_mif", 0,       0,       0,       -1, 0, 0 },
+	{ D_MIF, "mif",       "dvfs_mif", 2730000, 0,       0,       -1, 0, 0 },  /* LPDDR5 top (Samsung mode_1); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
 };
@@ -442,8 +442,9 @@ extern uint32_t redwood_mali_slow_jobs;
  */
 #define FRAME_HOLD_MS   300
 uint64_t redwood_fb_swap_at;
-static uint32_t gov_frame;                      /* dvfs_frame= */
-static const uint32_t gov_frame_khz[] = { 1456000, 2504000, 2730000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
+static uint32_t gov_frame = 1;                  /* dvfs_frame= (on by default; 0 off) */
+/* M5 at 2208, not its 2730 top: held at the top through the tour it reached 89 C and was throttled to 1794 (step 1) */
+static const uint32_t gov_frame_khz[] = { 1456000, 2504000, 2208000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
 static uint32_t gov_frame_ticks;                /* ticks with the frame floor on (for the 10 s line) */
 
 /* the lowest rung the touch booster holds cluster `g` at now (0: no boost) */

@@ -106,6 +106,10 @@ cmd_payload() {
 			die "VAR_UD_FIRST/VAR_UD_BLOCKS are empty in common/devices/x1slte.conf: create /data/darwin/var.img first" ;;
 	esac
 	[ -n "${BT_ADDR:-}" ] && case " $cmdline " in *" bt_addr="*) ;; *) cmdline="$cmdline bt_addr=$BT_ADDR" ;; esac
+	# boot_args.CommandLine is 608 bytes (xnuloader BOOT_LINE_LENGTH, pexpert arm64/boot.h) and the loader puts
+	# "debug=0x8 rd=md0 ufs_shared_pa=0x...  " (~52) in front: past ~550 here the END of the line is cut off silently
+	# (2026-11-06: touch_lat and bt_addr were lost that way)
+	[ ${#cmdline} -le 550 ] || die "boot line is ${#cmdline} characters (most 550: the loader adds ~52 and XNU keeps 607): shorten x1slte.cmdline"
 	cmdline=${cmdline//@ROOT_PART@/$ROOT_PART}
 	cmdline=${cmdline//@ROOT_OFF@/$ROOT_UD_OFF_HEX}
 	cmdline=${cmdline//@ROOT_LEN@/$ROOT_UD_LEN_HEX}

@@ -3869,6 +3869,19 @@ index 8b46efb05c86..e161ca426b1a 100644
  extern kern_return_t
  kern_work_interval_set_workload_id(mach_port_name_t port_name,
      struct kern_work_interval_workload_id_args *workload_id_args);
+diff --git a/osfmk/vm/vm_pageout.c b/osfmk/vm/vm_pageout.c
+index ca071de0efb6..d9389d8010be 100644
+--- a/osfmk/vm/vm_pageout.c
++++ b/osfmk/vm/vm_pageout.c
+@@ -5342,7 +5342,7 @@ vm_pageout_internal_start(void)
+ 	assert(hinfo.max_cpus > 0);
+ 
+ #if !XNU_TARGET_OS_OSX
+-	vm_pageout_state.vm_compressor_thread_count = 1;
++	vm_pageout_state.vm_compressor_thread_count = 4;       /* redwood: 8 cores, no AMP binding -- the compressor on 4 (vmcomp_threads= to change) */
+ #else /* !XNU_TARGET_OS_OSX */
+ 	if (hinfo.max_cpus > 4) {
+ 		vm_pageout_state.vm_compressor_thread_count = 2;
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
 index db1d61332643..c88e6c21a919 100644
 --- a/osfmk/vm/vm_shared_region.c
