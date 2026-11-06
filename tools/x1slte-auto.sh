@@ -24,5 +24,10 @@ fastboot devices | grep -q fastboot || { echo "[auto] the phone did not reach Lo
 if [ "$F" = --recovery ]; then ./x1slte.sh uflash || exit 1; else ./x1slte.sh uroot "$F" || exit 1; fi
 ./x1slte.sh ureboot
 echo "[auto] waiting for iOS (USB cable or Wi-Fi)"
-for i in $(seq 1 90); do sleep 4; IP=$(phone-ip 2>/dev/null) && { echo "[auto] iOS is back after $((i*4)) s, at $IP"; exit 0; }; done
+for i in $(seq 1 90); do sleep 4; IP=$(phone-ip 2>/dev/null) && {
+	# the user's rule: the USB cable first. Wi-Fi often answers a few seconds before USB networking is up after a
+	# restart: wait up to 40 s more for the cable before settling for Wi-Fi
+	U=${Y2S_USB_IP:-10.77.0.2}
+	for j in $(seq 1 10); do [ "$IP" = "$U" ] && break; sleep 4; IP=$(phone-ip 2>/dev/null || echo $IP); done
+	echo "[auto] iOS is back after $((i*4)) s, at $IP ($([ "$IP" = "$U" ] && echo USB cable || echo "Wi-Fi: USB networking did not come up"))"; exit 0; }; done
 echo "[auto] iOS did not come back within 6 min"; exit 2
