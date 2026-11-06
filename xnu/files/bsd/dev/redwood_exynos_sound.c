@@ -61,6 +61,8 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
 extern void IOSleep(unsigned int milliseconds);
 extern void loader_log_line(const char *line);
 extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size);
+extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);    /* (redwood_acpm_pmic.c: the sub-PMIC) */
+extern int redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value);
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);   /* (redwood_image.c) */
 
 /* ---- addresses ------------------------------------------------------------------------------------------------ */
@@ -647,11 +649,40 @@ amps_faults(void)
 	return faults;
 }
 
+/*
+ * The amplifiers' VA (1.8 V): the sub-PMIC's LDO4S (dtbo: cs35l41 VA-supply = <&s_ldo4_reg>, "regulator-always-on",
+ * 1.6-1.95 V; S2MPS22 CTRL 0x2D: enable [7:6], 0xC0 on). Some boots it is off and neither chip answers (B, 2026-11-06:
+ * "does not answer" / "OTP_BOOT_DONE never came" on about half the boots since 15:05). On here when it is not.
+ */
+#define SPMIC_LDO4S_CTRL        0x2d
+static void
+amps_supply(char *report, size_t cap)
+{
+	uint8_t before = 0, after = 0;
+	int r = redwood_spmic_read(1, SPMIC_LDO4S_CTRL, &before);
+
+	if (r != 0) {
+		snprintf(report, cap, "LDO4S not read (%d)", r);
+		return;
+	}
+	after = before;
+	if ((before & 0xc0) != 0xc0) {
+		if (redwood_spmic_write(1, SPMIC_LDO4S_CTRL, before | 0xc0) == 0) {
+			(void)redwood_spmic_read(1, SPMIC_LDO4S_CTRL, &after);
+		}
+		IOSleep(5);
+	}
+	snprintf(report, cap, "LDO4S (amps' VA) CTRL %#04x%s%#04x", before, before == after ? " kept " : " -> ", after);
+}
+
 static bool
 amps_bring_up(void)
 {
 	char report[200];
 	bool any = false;
+
+	amps_supply(report, sizeof(report));
+	snd_log("snd: %s\n", report);
 
 	gpb2 = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC1, PINCTRL_PERIC1_GPB2);
 	amp_bus.bank = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, PINCTRL_PERIC0_GPP4);
@@ -1760,6 +1791,29 @@ dbg_snd_state(__unused const uint64_t *v, __unused unsigned n, char *out, size_t
 }
 
 static void
+dbg_snd_amp(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint32_t x = 0;
+	struct amp *a;
+
+	if (n < 2 || v[0] > 1) {
+		snprintf(out, cap, "snd.amp SIDE(0 left/top, 1 right/bottom) REG [VALUE]\n");
+		return;
+	}
+	a = &amps[v[0]];
+	if (n >= 3) {
+		bool ok = amp_write(a, (uint32_t)v[1], (uint32_t)v[2]);
+
+		(void)amp_read(a, (uint32_t)v[1], &x);
+		snprintf(out, cap, "%s %#llx <- %#x: %s, reads %#x\n", a->name, v[1], (uint32_t)v[2], ok ? "ok" : "FAILED", x);
+	} else {
+		bool ok = amp_read(a, (uint32_t)v[1], &x);
+
+		snprintf(out, cap, "%s %#llx: %#010x%s\n", a->name, v[1], x, ok ? "" : " (no answer)");
+	}
+}
+
+static void
 dbg_snd_amps(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	if (n >= 1 && v[0] != 0) {
@@ -1772,6 +1826,30 @@ dbg_snd_amps(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 }
 
+
+/* snd.supply [1]: the amplifiers' supply, read (and switched on with 1); snd.prep: their reset and setup again */
+static void
+dbg_snd_supply(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint8_t c = 0;
+
+	if (n >= 1 && v[0] != 0) {
+		amps_supply(out, cap);
+		return;
+	}
+	int r = redwood_spmic_read(1, SPMIC_LDO4S_CTRL, &c);
+
+	snprintf(out, cap, "LDO4S CTRL %#04x (answer %d)\n", c, r);
+}
+
+static void
+dbg_snd_prep(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	bool ok = amps_bring_up();
+
+	snprintf(out, cap, "amplifiers %s: left %s, right %s (details in the log)\n", ok ? "prepared" : "NOT prepared",
+	    amps[0].present ? "ok" : "missing", amps[1].present ? "ok" : "missing");
+}
 
 static void
 sound_thread(__unused void *parameter, __unused wait_result_t result)
@@ -1814,6 +1892,16 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	}
 	abox_route();
 	amps_ok = amps_bring_up();      /* (their setup needs no clock; their power-up does) */
+	/*
+	 * At boot about half the bring-ups fail ("does not answer" / "OTP_BOOT_DONE never came") and the same code a
+	 * minute later always works (B, 2026-11-06, snd.prep x3 on a running phone): try again, a little later each time.
+	 */
+	for (unsigned tries = 1; (!amps[0].present || !amps[1].present) && tries <= 6; tries++) {
+		IOSleep(250 * tries);
+		amps_ok = amps_bring_up();
+		snd_log("snd: amplifiers, try %u: left %s, right %s\n", tries + 1, amps[0].present ? "ok" : "missing",
+		    amps[1].present ? "ok" : "missing");
+	}
 	if (snd_calliope >= 2) {
 		if (!calliope_play()) {
 			return;
@@ -1968,6 +2056,31 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	}
 }
 
+
+/*
+ * Calliope's cores off (PMU: enable 0x31a0/0x3220 bit 0, then power 0x3180/0x3200 bit 0) and ABOX's SysMMU off. A warm
+ * restart (a panic, the menu's Reboot) does not power the audio block down: a DSP left running writes into memory the
+ * next kernel owns (A, 2026-11-06: boot loop after a run with Calliope up).
+ */
+static void
+calliope_halt(volatile uint8_t *p, volatile uint8_t *m)
+{
+	if (p == NULL) {
+		return;
+	}
+	for (unsigned c = 0; c < 2; c++) {
+		uint32_t en = 0x31a0 + 0x80 * c, pw = 0x3180 + 0x80 * c;
+
+		*(volatile uint32_t *)(p + en) &= ~1U;
+		*(volatile uint32_t *)(p + pw) &= ~1U;
+	}
+	if (m != NULL) {
+		*(volatile uint32_t *)(m + 0x8000) = 0;     /* CTRL_VM */
+		*(volatile uint32_t *)(m + 0x0) = 0;        /* CTRL */
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+
 /* ---- entry points --------------------------------------------------------------------------------------------- */
 
 void
@@ -1979,6 +2092,15 @@ redwood_exynos_sound_init(void)
 	size_t pool_size;
 	thread_t thread;
 
+	{
+		/* whatever the boot-args: a Calliope left running by the last run is stopped first */
+		volatile uint8_t *p = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+
+		if (p != NULL && (rd(p, 0x31a0) & 1)) {
+			calliope_halt(p, (volatile uint8_t *)ml_io_map(SYSMMU_PHYS, 0x9000));
+			snd_log("snd: Calliope was still running from the last run: stopped\n");
+		}
+	}
 	if (!PE_parse_boot_argn("snd", &on, sizeof(on)) || on == 0) {
 		return;
 	}
@@ -1995,6 +2117,9 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
 	redwood_dbgport_add("snd.log", ": Calliope's new log lines into the kernel log", dbg_snd_log);
 	redwood_dbgport_add("snd.state", ": the DMA, UAIF2, routing, amplifiers, Calliope at a glance", dbg_snd_state);
+	redwood_dbgport_add("snd.amp", "SIDE REG [VALUE]: a CS35L41 register (0 top, 1 bottom)", dbg_snd_amp);
+	redwood_dbgport_add("snd.supply", "[1]: the amplifiers' 1.8 V (sub-PMIC LDO4S), read / switched on", dbg_snd_supply);
+	redwood_dbgport_add("snd.prep", ": the amplifiers reset and set up again", dbg_snd_prep);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
 	if (snd_calliope >= 2) {
 		snd_rdma = 0;
@@ -2047,6 +2172,9 @@ redwood_exynos_sound_quiesce(void)
 	if (abox != NULL && (rd(pmu, PMU_AUD_STATUS) & 1)) {
 		upd(abox, RDMA(RDMA_CTRL0), 1, 0);
 		upd(abox, ABOX_UAIF_CTRL0, 1, 0);
+	}
+	if (cal_dram != NULL) {
+		calliope_halt(pmu, mmu);
 	}
 	started = false;
 }

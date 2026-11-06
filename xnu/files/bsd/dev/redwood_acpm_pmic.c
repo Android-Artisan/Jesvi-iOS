@@ -172,6 +172,40 @@ ipc(uint32_t cmd[4])
 	return -1;
 }
 
+/*
+ * The sub-PMIC (S2MPS22, the dtbo's s2mps22mfd@00 on speedy1: acpm-ipc-channel 2, acpm-speedy-channel 1; Samsung's
+ * s2mps22_core.c channel 1, I2C_ADDR_PMIC 1). Its LDO4S (CTRL 0x2D, s2mps22-regulator.h) feeds both CS35L41s' VA.
+ */
+int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
+int redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value);
+int
+redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value)
+{
+	uint32_t cmd[4] = { reg | (uint32_t)(type & 0xf) << 8 | 1U << 12, FUNC_READ, 0, 0 };
+	int r;
+
+	lck_mtx_lock(&pmic_lock);
+	r = ipc(cmd);
+	lck_mtx_unlock(&pmic_lock);
+	if (r != 0) {
+		return -1;
+	}
+	*value = (uint8_t)(cmd[1] >> 8);
+	return (int)((cmd[1] >> 24) & 0xff);
+}
+
+int
+redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value)
+{
+	uint32_t cmd[4] = { reg | (uint32_t)(type & 0xf) << 8 | 1U << 12, FUNC_WRITE | (uint32_t)value << 8, 0, 0 };
+	int r;
+
+	lck_mtx_lock(&pmic_lock);
+	r = ipc(cmd);
+	lck_mtx_unlock(&pmic_lock);
+	return r != 0 ? -1 : (int)((cmd[1] >> 24) & 0xff);
+}
+
 int
 redwood_pmic_read(uint8_t type, uint8_t reg, uint8_t *value)
 {
