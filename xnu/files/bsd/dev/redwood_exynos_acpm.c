@@ -46,6 +46,7 @@
 #include <sys/redwood_m2m.h>
 #include <mach/processor_info.h>
 #include <mach/machine.h>
+#include <sys/redwood_dbgport.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -294,6 +295,33 @@ ipc(struct channel *c, uint32_t cmd[4])
 	dlog("channel %u: no answer to %#x %#x %#x %#x in 20 ms (status %#x, from ACPM front %u rear %u)",
 	    c->id, cmd[0], cmd[1], cmd[2], cmd[3], rd(intr + INTSR1), rd(c->rx_front), rd(c->rx_rear));
 	return -1;
+}
+
+static int set_rate(unsigned domain, uint32_t khz);
+/*
+ * The debug port's `acpm.rate DOMAIN KHZ' (A, 2026-11-07): any ACPM DVFS domain (MIF 0, INT 1, CL0 2, CL1 3, CL2 4,
+ * NPU 5, DISP 6, DSP 7, AUD 8, CP 9, G3D 10, ...; acpm_dvfs_exynos9830.h), carried out by the ACPM thread on its next
+ * tick so it never races the governor's own requests.
+ */
+static volatile uint32_t dbg_domain = ~0u, dbg_khz, dbg_result = ~0u;
+extern int redwood_gov_wake;
+
+static void
+dbg_acpm_rate(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n < 2) {
+		snprintf(out, cap, "acpm.rate DOMAIN KHZ (AUD 8, INT 1, MIF 0); last result %d\n", (int)dbg_result);
+		return;
+	}
+	dbg_result = ~0u;
+	dbg_khz = (uint32_t)v[1];
+	dbg_domain = (uint32_t)v[0];
+	thread_wakeup((event_t)&redwood_gov_wake);
+	for (int i = 0; i < 40 && dbg_result == ~0u; i++) {
+		delay_for_interval(10, NSEC_PER_MSEC);
+	}
+	snprintf(out, cap, "domain %llu to %llu kHz: %s\n", v[0], v[1], dbg_result == 0 ? "sent and answered" :
+	    dbg_result == ~0u ? "not done yet (the ACPM thread did not run)" : "FAILED");
 }
 
 static int
@@ -661,8 +689,16 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 		report("after cluster 2");
 	}
+	redwood_dbgport_add("acpm.rate", "DOMAIN KHZ: an ACPM DVFS request (AUD 8, INT 1, MIF 0, G3D 10)", dbg_acpm_rate);
 	for (;; tick++) {
 		uint64_t tick_end;
+
+		if (dbg_domain != ~0u) {
+			uint32_t d = dbg_domain;
+
+			dbg_domain = ~0u;
+			dbg_result = (uint32_t)set_rate(d, dbg_khz);
+		}
 
 		/* a tick, or sooner a finger coming down or a slow GPU job: its boost at once */
 		clock_interval_to_deadline(GOV_TICK_MS, NSEC_PER_MSEC, &tick_end);
