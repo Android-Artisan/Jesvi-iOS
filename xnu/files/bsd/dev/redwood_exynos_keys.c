@@ -134,7 +134,6 @@ keys_irq_setup(void)
 #define KEY_POWER       0
 #define KEY_VOLUME_DOWN 2
 
-extern void redwood_gov_boost(uint32_t ms);     /* redwood_exynos_acpm.c: the wake boost */
 
 static void
 key_look(struct key *k, bool pressed)
@@ -165,9 +164,11 @@ key_look(struct key *k, bool pressed)
 		absolutetime_to_nanoseconds(now - k->since, &held);
 		printf("keys: %s released after %llu ms\n", k->name, held / NSEC_PER_MSEC);
 	}
-	if (pressed) {
-		redwood_gov_boost(1000);        /* whatever the key wakes is drawn at full clocks */
-	}
+	/*
+	 * (no clock boost here: on a lock press it changed every cluster's and the GPU's clock just as the lock screen's
+	 * frames were drawn -- 33-54 ms frames seen between press and release; a wake is boosted by the display coming on,
+	 * 6 ms after the press, in MiniIOMobileFramebuffer::displayPower)
+	 */
 	redwood_touch_post(pressed ? REDWOOD_BUTTON_DOWN : REDWOOD_BUTTON_UP, k->record, 0, 0);
 }
 

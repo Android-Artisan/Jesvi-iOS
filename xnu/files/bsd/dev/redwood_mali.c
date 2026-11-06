@@ -994,7 +994,12 @@ redwood_mali_busy_pct(void)
  * by each: the GPU's load comes in bursts, and a 200 ms average left a heavy frame's jobs at the lowest
  * clocks (27 October, cold: GPU 85-93 % idle, single fragment jobs of 17-23 ms at 156-260 MHz).
  */
-#define GPU_SLOW_JOB_NS         (8 * NSEC_PER_MSEC)
+/*
+ * 3 ms (was 8, B 2026-11-06): the lock screen's press transition draws frames of ~10 ms GPU time (median 9.9, vs
+ * 1.4 ms for ordinary frames) in jobs of several ms, none over 8: the GPU stayed at the frame floor (572 MHz) and
+ * every other frame was dropped (33-50 ms gaps). Ordinary frames' jobs end in 1-2 ms.
+ */
+#define GPU_SLOW_JOB_NS         (3 * NSEC_PER_MSEC)
 uint32_t redwood_mali_slow_jobs;
 extern int redwood_gov_wake;
 
