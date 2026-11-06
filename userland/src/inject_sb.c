@@ -157,6 +157,216 @@ replace_method_of_kind(char kind, const char *class_name, const char *selector, 
 	return original;
 }
 
+/*
+ * x1slte (2026-11-06): a method replaced by name only, its address said so it can be pinned (the S20's Wi-Fi bars, whose
+ * methods were not looked up in the cache yet). Only for selectors whose shape is known: no arguments, an int back.
+ */
+static IMP
+replace_method_by_name(const char *class_name, const char *selector, IMP replacement)
+{
+	Class cls = objc_getClass(class_name);
+	Method method = cls == NULL ? NULL : class_getInstanceMethod(cls, sel_registerName(selector));
+	IMP original = method ? method_getImplementation(method) : NULL;
+
+	say("redwood: -[%s %s] %s at %#lx (unslid)\n", class_name, selector, original ? "replaced by name" : "not found",
+	    original ? (uintptr_t)original - slide : 0);
+	if (original != NULL) {
+		method_setImplementation(method, replacement);
+	}
+	return original;
+}
+
+/* the selectors of a class whose names hold one of the words, with their addresses: to pin hooks later */
+static void
+say_methods(const char *class_name, const char *const *words, unsigned nwords)
+{
+	Class cls = objc_getClass(class_name);
+	unsigned count = 0;
+	Method *list = cls ? class_copyMethodList(cls, &count) : NULL;
+
+	for (unsigned i = 0; i < count; i++) {
+		const char *name = sel_getName(method_getName(list[i]));
+
+		for (unsigned w = 0; w < nwords; w++) {
+			if (strcasestr(name, words[w]) != NULL) {
+				say("redwood: -[%s %s] at %#lx\n", class_name, name, (uintptr_t)method_getImplementation(list[i]) - slide);
+				break;
+			}
+		}
+	}
+	free(list);
+}
+
+static int sysctl_int(const char *name);
+
+/* the status bar's Wi-Fi strength from the kernel's live RSSI (kern.redwood.wifi_rssi, redwood_bcm4375.c) */
+static int (*original_wifi_bars)(id, SEL);
+static int (*original_wifi_rssi)(id, SEL);
+
+static int
+wifi_bars_for(int rssi)
+{
+	return rssi >= -60 ? 3 : rssi >= -70 ? 2 : 1;
+}
+
+static int
+wifi_bars(id self, SEL cmd)
+{
+	int rssi = sysctl_int("kern.redwood.wifi_rssi");
+
+	if (rssi < 0) {
+		return wifi_bars_for(rssi);
+	}
+	return original_wifi_bars ? original_wifi_bars(self, cmd) : 0;
+}
+
+static int
+wifi_rssi(id self, SEL cmd)
+{
+	int rssi = sysctl_int("kern.redwood.wifi_rssi");
+
+	if (rssi < 0) {
+		return rssi;
+	}
+	return original_wifi_rssi ? original_wifi_rssi(self, cmd) : 0;
+}
+
+/*
+ * The cover sheet's flashlight and camera buttons (x1slte, 2026-11-06: "the shortcut is missing as a whole"). They are
+ * shown on a phone without a home button, which the cover sheet decides by itself before it asks about a flashlight:
+ * +[CSQuickActionsViewController deviceSupportsButtons] (and the instance's _quickActionsSupported). What they answer
+ * is said, and YES is given -- an iPhone X, which this image is, has the buttons.
+ */
+static BOOL (*original_supports_buttons_class)(id, SEL);
+static BOOL (*original_quick_supported)(id, SEL);
+
+static BOOL
+yes_supports_buttons(id self, SEL cmd)
+{
+	static int said;
+
+	if (!said++ && original_supports_buttons_class) {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] would have said %d; YES\n",
+		    original_supports_buttons_class(self, cmd));
+	}
+	return YES;
+}
+
+static BOOL
+yes_quick_supported(id self, SEL cmd)
+{
+	static int said;
+
+	if (!said++ && original_quick_supported) {
+		say("redwood: -[CSQuickActionsViewController _quickActionsSupported] would have said %d; YES\n",
+		    original_quick_supported(self, cmd));
+	}
+	return YES;
+}
+
+static BOOL (*original_has_flashlight)(id, SEL), (*original_allows_flashlight)(id, SEL), (*original_supports_camera)(id, SEL);
+
+static BOOL
+has_flashlight(id self, SEL cmd)
+{
+	static int said;
+	struct stat st;
+	BOOL was = original_has_flashlight ? original_has_flashlight(self, cmd) : NO, now = was || stat("/dev/redwood-torch", &st) == 0;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController hasFlashlight]: iOS says %d, the kernel's light makes it %d\n", was, now);
+	}
+	return now;
+}
+
+static BOOL
+allows_flashlight(id self, SEL cmd)
+{
+	static int said;
+	BOOL v = original_allows_flashlight ? original_allows_flashlight(self, cmd) : NO;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController allowsFlashlight]: %d\n", v);
+	}
+	return v;
+}
+
+static BOOL
+supports_camera(id self, SEL cmd)
+{
+	static int said;
+	BOOL v = original_supports_camera ? original_supports_camera(self, cmd) : NO;
+
+	if (said++ < 3) {
+		say("redwood: -[CSQuickActionsViewController _supportsCamera]: %d\n", v);
+	}
+	return v;
+}
+
+static void
+quick_actions_start(void)
+{
+	static const char *const words[] = { "support", "flashlight", "button", "allowed" };
+	Class cls = objc_getClass("CSQuickActionsViewController");
+	Method m;
+
+	say_methods("CSQuickActionsViewController", words, 4);
+	if (cls != nil && (m = class_getClassMethod(cls, sel_registerName("deviceSupportsButtons"))) != NULL) {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] at %#lx, replaced by name\n",
+		    (uintptr_t)method_getImplementation(m) - slide);
+		original_supports_buttons_class = (BOOL (*)(id, SEL))method_getImplementation(m);
+		method_setImplementation(m, (IMP)yes_supports_buttons);
+	} else {
+		say("redwood: +[CSQuickActionsViewController deviceSupportsButtons] not found\n");
+	}
+	original_quick_supported = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController",
+	    "_quickActionsSupported", (IMP)yes_quick_supported);
+	original_has_flashlight = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "hasFlashlight",
+	    (IMP)has_flashlight);
+	original_allows_flashlight = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "allowsFlashlight",
+	    (IMP)allows_flashlight);
+	original_supports_camera = (BOOL (*)(id, SEL))replace_method_by_name("CSQuickActionsViewController", "_supportsCamera",
+	    (IMP)supports_camera);
+}
+
+static void
+wifi_bars_start(void)
+{
+	static const char *const words[] = { "signal", "rssi", "strength", "updateData", "wifi", "network" };
+	__block int shown = -1;
+
+	say_methods("SBWiFiManager", words, 6);
+	say_methods("SBStatusBarStateAggregator", words, 6);
+	original_wifi_bars = (int (*)(id, SEL))replace_method_by_name("SBWiFiManager", "signalStrengthBars", (IMP)wifi_bars);
+	original_wifi_rssi = (int (*)(id, SEL))replace_method_by_name("SBWiFiManager", "signalStrengthRSSI", (IMP)wifi_rssi);
+	/* every 3 s: when the bars would change, the status bar's network item made again */
+	dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
+	dispatch_source_set_event_handler(timer, ^{
+		static int why_said;
+		int rssi = sysctl_int("kern.redwood.wifi_rssi"), bars = rssi < 0 ? wifi_bars_for(rssi) : 0;
+		Class mgr = objc_getClass("SBWiFiManager");
+		SEL shared = sel_registerName("sharedInstance"), update = sel_registerName("_updateSignalStrength");
+		id m;
+
+		if (bars == shown) {
+			return;
+		}
+		/* SpringBoard's own refresh: it reads the strength again (wifi_bars above) and tells the status bar */
+		if (mgr == nil || !class_respondsToSelector(object_getClass((id)mgr), shared) || !class_respondsToSelector(mgr, update) ||
+		    (m = ((id (*)(Class, SEL))objc_msgSend)(mgr, shared)) == nil) {
+			if (!why_said++) {
+				say("redwood: Wi-Fi bars: no +[SBWiFiManager sharedInstance] / -_updateSignalStrength to refresh with\n");
+			}
+			return;
+		}
+		((void (*)(id, SEL))objc_msgSend)(m, update);
+		say("redwood: Wi-Fi bars %d (%d dBm), the status bar told\n", bars, rssi);
+		shown = bars;
+	});
+	dispatch_resume(timer);
+}
+
 static IMP
 replace_method(const char *class_name, const char *selector, uintptr_t expected, IMP replacement)
 {
@@ -1246,6 +1456,8 @@ redwood_springboard_init(void)
 	    snapshot_format ? "as JPEG" : "NOT changed", original_lock_long_press ? "checked" : "NOT checked",
 	    battery_lvl ? "from QG" : "NOT replaced", battery_st ? "from QG" : "NOT replaced",
 	    poster_switcher ? "not offered" : "NOT withheld");
+	wifi_bars_start();
+	quick_actions_start();
 	say("redwood: battery UI: shows%% %s, set-shows%% %s, bolt %s, chargePercent %s, setChargePercent %s, lockscreen ring %s\n",
 	    original_battery_view_shows_percentage ? "ok" : "NO",
 	    original_battery_view_set_shows_percentage ? "ok" : "NO",

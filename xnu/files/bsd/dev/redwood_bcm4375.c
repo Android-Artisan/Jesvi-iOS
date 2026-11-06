@@ -40,6 +40,7 @@
 #include <sys/redwood_net.h>
 #include <sys/redwood_sta.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
 #include <vm/memory_types.h>
 
 #include "lx_wpa.h"
@@ -172,6 +173,8 @@ static const uint16_t ring_item_len_pre7[RINGS] = { 40, 32, 24, 16, 32 };
 #define WLC_GET_BSSID           23
 #define WLC_SET_SSID            26
 #define WLC_DISASSOC            52
+#define WLC_GET_PM              85
+#define WLC_SET_PM              86              /* 0 off, 1 PM_MAX, 2 PM_FAST (brcmf: BRCMF_C_SET_PM) */
 #define WLC_GET_RSSI            127             /* BRCMF_C_GET_RSSI: brcmf_scb_val_le, the val is dBm */
 #define WLC_GET_PHY_NOISE       135             /* BRCMF_C_GET_PHY_NOISE: an int, dBm */
 #define WLC_GET_BSS_INFO        136             /* BRCMF_C_GET_BSS_INFO: a length word, then one brcmf_bss_info_le */
@@ -2138,6 +2141,94 @@ security_name(const struct redwood_sta_bss *b)
 
 static struct redwood_sta_bss join_bss;
 
+/*
+ * x1slte (2026-11-06): the signal, live. The join's numbers were all iOS ever had (the status bar's Wi-Fi stuck at one
+ * bar): every 3 s while joined the firmware is asked for the RSSI of the network (WLC_GET_RSSI, a brcmf_scb_val_le with
+ * no address: the BSS's) and the noise floor (WLC_GET_PHY_NOISE), and both go into the station's state, which is what
+ * wifid's CURRENT_NETWORK answers are made of; kern.redwood.wifi_rssi / wifi_noise for SpringBoard (inject_sb.c).
+ */
+static int wifi_rssi_now, wifi_noise_now;
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_rssi, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_rssi_now, 0,
+    "the joined network's signal in dBm, live (0: not joined)");
+SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_noise, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_noise_now, 0,
+    "the noise floor in dBm, live (0: not known)");
+
+static int ioctl(uint32_t cmd, void *buf, uint32_t len, uint32_t in_len);
+static int iovar_int(const char *name, int32_t value);
+
+/*
+ * Power save (x1slte, 2026-11-06): never set before, so the firmware's own default (pings 4 to 208 ms). On a charger or
+ * the computer's cable: off (PM 0), the lowest latency; on the battery: PM_FAST (2), Android's, which sleeps only after
+ * pm2_sleep_ret ms of quiet (200, Android's). wifi_pm=0|1|2 fixes one instead.
+ */
+extern int redwood_battery_external(void);
+static int32_t pm_fixed = -1, pm_now = -1;
+
+static void
+power_save_follow(void)
+{
+	int ext = redwood_battery_external();
+	int32_t want = pm_fixed >= 0 ? pm_fixed : ext == 1 ? 0 : 2, got = -1;
+
+	if (want == pm_now) {
+		return;
+	}
+	if (want == 2) {
+		(void)iovar_int("pm2_sleep_ret", 200);
+	}
+	if (ioctl(WLC_SET_PM, &want, sizeof(want), sizeof(want)) == 0) {
+		(void)ioctl(WLC_GET_PM, &got, sizeof(got), sizeof(got));
+		blog("power save: PM %d (%s), reads %d", want, pm_fixed >= 0 ? "wifi_pm=" : ext == 1 ? "on a charger" : "on the battery",
+		    got);
+		pm_now = want;
+	}
+}
+
+static void
+signal_thread(__unused void *p, __unused wait_result_t w)
+{
+	uint32_t said = 0;
+
+	PE_parse_boot_argn("wifi_pm", &pm_fixed, sizeof(pm_fixed));
+	for (;;) {
+		delay_for_interval(3, NSEC_PER_SEC);
+		if (sta_state.phase == REDWOOD_STA_JOINED) {
+			power_save_follow();
+		}
+		if (sta_state.phase != REDWOOD_STA_JOINED) {
+			wifi_rssi_now = 0;
+			continue;
+		}
+		uint8_t scb[12] = { 0 };
+		int32_t rssi, noise = 0;
+
+		if (ioctl(WLC_GET_RSSI, scb, sizeof(scb), sizeof(scb)) != 0) {
+			continue;
+		}
+		rssi = (int32_t)(scb[0] | scb[1] << 8 | scb[2] << 16 | (uint32_t)scb[3] << 24);
+		if (rssi >= 0 || rssi < -120) {
+			continue;
+		}
+		if (ioctl(WLC_GET_PHY_NOISE, &noise, sizeof(noise), sizeof(noise)) != 0 || noise >= 0 || noise < -128) {
+			noise = 0;
+		}
+		lck_spin_lock(&state_lock);
+		if (sta_state.phase == REDWOOD_STA_JOINED) {
+			sta_state.bss.rssi = (int16_t)rssi;
+			if (noise != 0) {
+				sta_state.bss.noise = (int16_t)noise;
+			}
+		}
+		lck_spin_unlock(&state_lock);
+		wifi_rssi_now = rssi;
+		wifi_noise_now = noise;
+		if (said++ % 20 == 0) {
+			blog("signal: %d dBm, noise %d dBm (every 3 s while joined)", rssi, noise);
+		}
+	}
+}
+
 static void
 state_set(enum redwood_sta_phase phase, const struct redwood_sta_bss *bss, int error)
 {
@@ -2647,6 +2738,17 @@ sta_join(const struct redwood_sta_join *what)
 	joined_bss_from_firmware();
 	state_set(REDWOOD_STA_JOINED, &join_bss, 0);
 	blog("W6 PASS: joined (%d dBm, %u MHz): en0's link is up", join_bss.rssi, join_bss.frequency);
+	{
+		static bool signal_started;
+		thread_t thread;
+
+		wifi_rssi_now = join_bss.rssi;
+		wifi_noise_now = join_bss.noise;
+		if (!signal_started && kernel_thread_start(signal_thread, NULL, &thread) == KERN_SUCCESS) {
+			signal_started = true;
+			thread_deallocate(thread);
+		}
+	}
 	redwood_net_link_state(true);
 	return 0;
 
