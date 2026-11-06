@@ -61,6 +61,10 @@
 #define CHG_INT_OK              0xB2U
 #define CHG_DETAILS_00          0xB3U
 #define CHG_DETAILS_01          0xB4U
+#define CHG_CNFG_00             0xB7U           /* bits 3:0 MODE (5: charger + buck) */
+#define CHG_CNFG_02             0xB9U           /* bits 5:0 CHG_CC, fast-charge current, 50 mA steps */
+#define CHG_CNFG_06             0xBDU           /* bits 3:2 CHGPROT (3: config registers unlocked) */
+#define CHG_CNFG_09             0xC0U           /* bits 6:0 CHGIN_LIM, input limit, (n + 1) x 25 mA */
 
 #define CHG_INT_OK_WCIN         (1U << 5)
 #define CHG_INT_OK_CHGIN        (1U << 6)
@@ -77,7 +81,8 @@
 #define PS_STATUS_FULL          4
 
 static struct redwood_bbi2c bus = { .name = "max77705 bus gpp1-6/7", .scl = 6, .sda = 7, .half_us = 4 };
-static uint32_t trace;
+static uint32_t trace, wdt_kick;
+static uint64_t wdt_kicks, wdt_expired_seen;
 
 static bool
 fg_word(uint8_t reg, uint16_t *value)
@@ -151,6 +156,29 @@ poll_once(bool say)
 	if (!chg_byte(CHG_INT_OK, &int_ok) || !chg_byte(CHG_DETAILS_00, &d00) || !chg_byte(CHG_DETAILS_01, &d01)) {
 		return false;
 	}
+	/*
+	 * The charger's watchdog (x1slte, 2026-11-06): Samsung's kernel enables it (CNFG_00 WDTEN) and kicks it
+	 * from its charger driver (max77705_chg_set_wdtmr_kick: CNFG_06 WDTCLR = 01). Nobody kicks it under iOS,
+	 * so about a minute after boot CHG_DTLS reads 0xB, "WDT expired": the charger stops charging and the
+	 * phone runs from the cable while the battery drains. bms_wdt=1 kicks it at every poll, as Samsung's
+	 * kernel does: a read-modify-write of WDTCLR (bits 1:0) only, nothing about currents or voltages.
+	 */
+	if (wdt_kick) {
+		uint8_t c6 = 0, after = 0;
+
+		if ((d01 & 0x0fU) == 0x0bU && wdt_expired_seen++ < 5) {
+			m2m_klog('W', "DEV", "bms: the charger's watchdog had expired (CHG_DTLS 0xB): kicking it");
+		}
+		if (chg_byte(CHG_CNFG_06, &c6) &&
+		    redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_06, (uint8_t)((c6 & ~0x03U) | 0x01U))) {
+			if (wdt_kicks++ == 0) {
+				chg_byte(CHG_CNFG_06, &after);
+				m2m_klog('I', "DEV", "bms: watchdog kicked: CNFG_06 %#x -> wrote %#x, reads %#x", c6,
+				    (c6 & ~0x03U) | 0x01U, after);
+			}
+		}
+	}
+
 	/* a cable or a pad: its OK bit and its input valid, as Samsung's driver reads it (max77705_get_vbus_state) */
 	external = ((int_ok & CHG_INT_OK_CHGIN) && CHG_CHGIN_DTLS(d00) == 3) ||
 	    ((int_ok & CHG_INT_OK_WCIN) && CHG_WCIN_DTLS(d00) == 3);
@@ -196,6 +224,20 @@ poll_once(bool say)
 		}
 	}
 
+	if (say) {
+		/* read only: what the bootloader left the charger at (x1slte: input 879 mA at 4.8 V does not keep up) */
+		uint8_t c0 = 0, c2 = 0, c6 = 0, c9 = 0;
+
+		if (chg_byte(CHG_CNFG_00, &c0) && chg_byte(CHG_CNFG_02, &c2) && chg_byte(CHG_CNFG_06, &c6) &&
+		    chg_byte(CHG_CNFG_09, &c9)) {
+			m2m_klog('I', "DEV", "bms: charger config: CNFG_00 %#x (mode %u), CNFG_02 %#x (charge %u mA), CNFG_06 %#x "
+			    "(prot %u), CNFG_09 %#x (input limit %u mA); battery %d mA, input %d mV %d mA",
+			    c0, c0 & 0xfU, c2, (c2 & 0x3fU) * 50, c6, (c6 >> 2) & 3U, c9, ((c9 & 0x7fU) + 1) * 25,
+			    b.current_ua / 1000, b.usb_voltage_uv / 1000, b.usb_current_ua / 1000);
+		} else {
+			m2m_klog('W', "DEV", "bms: charger config registers did not answer");
+		}
+	}
 	if (say || trace) {
 		printf("bms: %d.%02d %% %d mV %d mA (now %d), %d.%02d C, %d/%d mAh (design %d, gauge %u), %u cycles, "
 		    "%s%s, input %d mV %d mA; INT_OK %#x DTLS %#x %#x\n",
@@ -217,6 +259,7 @@ bms_thread(__unused void *parameter, __unused wait_result_t result)
 
 	PE_parse_boot_argn("bms_secs", &secs, sizeof(secs));
 	PE_parse_boot_argn("bms_trace", &trace, sizeof(trace));
+	PE_parse_boot_argn("bms_wdt", &wdt_kick, sizeof(wdt_kick));
 	if (secs < 1 || secs > 600) {
 		secs = 5;
 	}
@@ -233,10 +276,27 @@ bms_thread(__unused void *parameter, __unused wait_result_t result)
 		bool say = polls == 0 || (polls * secs) % 60 < secs;
 
 		if (poll_once(say)) {
+			if (failures) {
+				m2m_klog('I', "DEV", "bms: the MAX77705 answers again after %u failed reads", failures);
+			}
 			failures = 0;
-		} else if (failures++ < 5) {
-			m2m_klog('W', "DEV", "bms: no answer from the MAX77705 (%u, %u stretched clocks given up on so far): the "
-			    "battery's state is not updated", failures, bus.stretch_timeouts);
+		} else {
+			/*
+			 * x1slte (2026-11-06): the first read at boot worked, then never again (the percentage froze at
+			 * its boot value). The touch driver bit-bangs its PMIC bus on this same bank at the same time,
+			 * and a transfer cut short leaves the gauge holding SDA low. Set the bus up again (DAT preset to
+			 * 0, up to 9 clocks to free a stuck slave, a stop) and read again at once.
+			 */
+			bool ok = redwood_bbi2c_setup(&bus, false, line, sizeof(line)) && poll_once(say);
+
+			if (failures++ < 5 || failures % 60 == 0) {
+				m2m_klog(ok ? 'I' : 'W', "DEV", "bms: no answer from the MAX77705 (%u, %u stretched clocks given up on "
+				    "so far); bus set up again: %s: %s", failures, bus.stretch_timeouts, line,
+				    ok ? "answers again" : "still no answer");
+			}
+			if (ok) {
+				failures = 0;
+			}
 		}
 		delay_for_interval(secs, NSEC_PER_SEC);
 	}
