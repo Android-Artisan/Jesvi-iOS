@@ -4984,6 +4984,9 @@ stage_last_log(void)
 #ifndef USERDATA_WIN_OFF
 #define USERDATA_WIN_OFF 0ULL
 #endif
+#ifndef SUPER_ROOT_LEN
+#define SUPER_ROOT_LEN 0ULL             /* -DSUPER_ROOT_LEN: super [0, LEN) is the iOS system volume's (x1slte, iOS only) */
+#endif
 #ifndef USERDATA_WIN_LEN
 #define USERDATA_WIN_LEN 0ULL
 #endif
@@ -4999,6 +5002,8 @@ stage_write(const char *part, uint64_t off)
 		if (USERDATA_WIN_LEN == 0 || off < USERDATA_WIN_OFF || off + len > USERDATA_WIN_OFF + USERDATA_WIN_LEN) {
 			return "refused: userdata only inside the port's own window (USERDATA_WIN_OFF/LEN)";
 		}
+	} else if (str_eq(part, "super") && SUPER_ROOT_LEN != 0 && off + len <= SUPER_ROOT_LEN && SUPER_ROOT_LEN <= SUPER_TAIL_START) {
+		/* x1slte, iOS only (2026-11-06): the system volume at the head of super (Android's system/vendor are gone) */
 	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= SUPER_TAIL_START))) {
 		return "refused: only recovery, boot, super's free tail (SUPER_TAIL_START) and the userdata window";
 	}

@@ -86,16 +86,20 @@ cmd_payload() {
 	[ -f common/devices/x1slte.local.conf ] && . common/devices/x1slte.local.conf
 	[ -n "${ROOT_UD_OFF:-}" ] && [ -n "${ROOT_UD_LEN:-}" ] ||
 		die "ROOT_UD_OFF/ROOT_UD_LEN are empty in common/devices/x1slte.conf: create /data/darwin/system.img with tools/phone/pinfile first"
-	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_UD_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_UD_LEN")
-	# the loader for this phone: super's real tail, and userdata writable only in system.img's extent (x1slte.sh uroot)
-	GIC_V2=1 SUPER_TAIL_START="$SUPER_TAIL_START" USERDATA_WIN_OFF="$(printf '0x%x' "$ROOT_UD_OFF")" \
-		USERDATA_WIN_LEN="$(printf '0x%x' "$ROOT_UD_LEN")" xnuloader/build.sh > /dev/null
+	root_window
+	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_LEN")
+	# the loader: super's real tail always; super+0..ROOT_SUPER_LEN when the conf has it (iOS only, 2026-11-06: the
+	# system volume where Android's system/vendor were); userdata only in system.img's extent while that is in use
+	env GIC_V2=1 SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
+		${ROOT_UD_LEN:+USERDATA_WIN_OFF="$(printf '0x%x' "$ROOT_UD_OFF")" USERDATA_WIN_LEN="$(printf '0x%x' "$ROOT_UD_LEN")"} \
+		xnuloader/build.sh > /dev/null
 	# the placeholders of x1slte.cmdline: the root window (read only) and /private/var's write window
 	case "$cmdline" in *@VAR_WIN@*)
 		[ -n "${VAR_UD_FIRST:-}" ] && [ -n "${VAR_UD_BLOCKS:-}" ] ||
 			die "VAR_UD_FIRST/VAR_UD_BLOCKS are empty in common/devices/x1slte.conf: create /data/darwin/var.img first" ;;
 	esac
 	[ -n "${BT_ADDR:-}" ] && case " $cmdline " in *" bt_addr="*) ;; *) cmdline="$cmdline bt_addr=$BT_ADDR" ;; esac
+	cmdline=${cmdline//@ROOT_PART@/$ROOT_PART}
 	cmdline=${cmdline//@ROOT_OFF@/$ROOT_UD_OFF_HEX}
 	cmdline=${cmdline//@ROOT_LEN@/$ROOT_UD_LEN_HEX}
 	cmdline=${cmdline//@VAR_WIN@/${VAR_UD_FIRST:-}:${VAR_UD_BLOCKS:-}}
@@ -241,6 +245,18 @@ open(sys.argv[2], 'wb').write(h)
 PY
 	rm -f out/.avb-head.img
 	python3 -I "$avb" info_image --image out/x1slte-recovery.img | sed -n '1,4p;/Algorithm/p;/Partition Name/p'
+}
+
+# the system volume's window: ROOT_PART=super (iOS only: super+ROOT_SUPER_OFF, ROOT_SUPER_LEN) or Android's userdata
+# pinned file (ROOT_UD_OFF/LEN); sets ROOT_PART ROOT_OFF ROOT_LEN
+root_window() {
+	ROOT_PART=${ROOT_PART:-userdata}
+	if [ "$ROOT_PART" = super ]; then
+		ROOT_OFF=${ROOT_SUPER_OFF:-0}; ROOT_LEN=${ROOT_SUPER_LEN:?ROOT_SUPER_LEN unset in x1slte.conf}
+		[ $((ROOT_OFF + ROOT_LEN)) -le $((SUPER_TAIL_START)) ] || die "the root window runs into super's log tail"
+	else
+		ROOT_OFF=$ROOT_UD_OFF; ROOT_LEN=$ROOT_UD_LEN
+	fi
 }
 
 adb_root() {
@@ -412,20 +428,21 @@ cmd_uroot() {
 	local f=${1:-userland/system.apfs} chunk=$((64 << 20)) size off i n out
 	# shellcheck disable=SC1091
 	. common/devices/x1slte.conf
+	root_window
 	size=$(wc -c < "$f")
-	[ "$size" -le "$ROOT_UD_LEN" ] || die "$f ($size B) is larger than system.img ($ROOT_UD_LEN B)"
+	[ "$size" -le "$ROOT_LEN" ] || die "$f ($size B) is larger than the root window ($ROOT_LEN B)"
 	fb_wait
 	n=$(( (size + chunk - 1) / chunk ))
 	for ((i = 0; i < n; i++)); do
-		off=$((ROOT_UD_OFF + i * chunk))
+		off=$((ROOT_OFF + i * chunk))
 		dd if="$f" of=out/.uroot-chunk bs=1048576 skip=$((i * 64)) count=64 2>/dev/null
 		"$FASTBOOT" stage out/.uroot-chunk > /dev/null 2>&1 || die "stage failed at chunk $i"
-		out=$("$FASTBOOT" oem write userdata "$(printf '%x' $off)" 2>&1)
-		echo "$out" | grep -q "written and read back" || die "chunk $i of $n (userdata+$(printf '%x' $off)): $out"
+		out=$("$FASTBOOT" oem write "$ROOT_PART" "$(printf '%x' $off)" 2>&1)
+		echo "$out" | grep -q "written and read back" || die "chunk $i of $n ($ROOT_PART+$(printf '%x' $off)): $out"
 		printf '\ruroot: %d/%d chunks written and read back (%d MiB)' $((i + 1)) $n $(( (i + 1) * 64 ))
 	done
 	rm -f out/.uroot-chunk
-	echo; echo "uroot: $f ($((size >> 20)) MiB) is in /data/darwin/system.img"
+	echo; echo "uroot: $f ($((size >> 20)) MiB) is in $ROOT_PART+$(printf '%x' "$ROOT_OFF")"
 }
 
 cmd_uboot() {
