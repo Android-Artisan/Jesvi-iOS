@@ -153,14 +153,178 @@ status_name(int status)
  * outside the range gets the bootloader's own values back. Every write is read back; on a mismatch the
  * feature switches itself off.
  */
+/*
+ * bms_hv=1 (x1slte, 2026-11-06): 9 V charging, as Samsung's kernel does it through the MAX77705's USB-C firmware (the
+ * "MUIC" at 0x25), from drivers/muic/max77705-muic-afc.c, drivers/usb/typec/maxim/max77705/max77705_pd.c and _usbc.c,
+ * include/linux/muic/max77705-muic.h, include/linux/usb/typec/maxim/max77705.h:
+ *   an opcode goes to OPCODE_WRITE (0x21) with its data, then OPCODE_WRITE_END (0x41) = 0; the firmware's answer is
+ *   flagged by UIC_INT (0x02) bit 7 APCmdResI and waits at OPCODE_READ (0x51), the opcode first.
+ *   USB-PD (PD_STATUS1 0x0d bit 4 PSRDY: a contract): OPCODE_CURRENT_SRCCAP (0x30) gives [1] bits 5:3 the PDO in use,
+ *   bits 2:0 how many, then 4 bytes each (a fixed PDO: bits 31:30 0, 19:10 volts x 50 mV, 9:0 amps x 10 mA);
+ *   OPCODE_SRCCAP_REQUEST (0x32) [n] asks for PDO n; [1] 0 = sent.
+ *   AFC (a wall charger without PD): COMMAND_AFC_RESULT_READ (0x21) [0x46] asks for 9 V 1.65 A ([0x08]: 5 V); the
+ *   answer's [1] 0 = done, [2] the VBUS ADC.
+ *   USBC_STATUS1 (0x06) bits 7:4: VBUS's ADC (2 = 4.5-5.5 V, 6 = 8.5-9.5 V, 7 = 9.5-10.5 V, 8+ = over 10.5 V).
+ * Samsung's numbers for this phone (dtbo battery/cable-info): pre_afc_input_current 500 mA while VBUS changes, HV TA
+ * input 1650 mA, pd_charging_charge_power 15000 mW (so 1650 mA at 9 V), max_input_voltage 9000 mV. The charge current
+ * on 9 V is 2500 mA between 15 and 40 C (Samsung's goes to 3150 with its temperature steps, which this kernel lacks),
+ * 1500 mA otherwise, and outside 10..42 C the phone asks for 5 V back. Over 10.5 V on VBUS: 5 V asked for, bootloader
+ * limits, and no 9 V again until the cable is replugged. Two failed tries per plug-in.
+ */
+#define MUIC_UIC_INT            0x02U
+#define  UIC_INT_APCMDRES       0x80U
+#define MUIC_USBC_STATUS1       0x06U
+#define MUIC_PD_STATUS1         0x0dU
+#define  PD_PSRDY               0x10U
+#define MUIC_OPCODE_WRITE       0x21U
+#define MUIC_OPCODE_END         0x41U
+#define MUIC_OPCODE_READ        0x51U
+#define OP_AFC                  0x21U
+#define OP_CURRENT_SRCCAP       0x30U
+#define OP_SRCCAP_REQUEST       0x32U
+#define VBADC(st1)              (((st1) >> 4) & 0xfU)
+
+enum hv_state { HV_IDLE, HV_ACTIVE, HV_FAILED, HV_FAULT };
+static uint32_t hv_on;
+static enum hv_state hv_state;
+static unsigned hv_tries, hv_pdo, pd5_ma;   /* pd5_ma: the 5 V PD contract's current, when 9 V is not had */
+static bool hv_pd;
+
+static bool
+muic_opcode(uint8_t op, const uint8_t *data, unsigned len, uint8_t *answer, unsigned answer_len, unsigned wait_ms)
+{
+	uint8_t w[34], intr = 0;
+
+	if (len > 32 || answer_len > 33) {
+		return false;
+	}
+	(void)redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_UIC_INT, &intr, 1);       /* (clears an old answer's flag) */
+	w[0] = MUIC_OPCODE_WRITE;
+	w[1] = op;
+	for (unsigned i = 0; i < len; i++) {
+		w[2 + i] = data[i];
+	}
+	if (!redwood_bbi2c_xfer(&bus, MUIC_ADDR, w, len + 2, NULL, 0) ||
+	    (len < 32 && !redwood_bbi2c_write_reg(&bus, MUIC_ADDR, MUIC_OPCODE_END, 0))) {
+		return false;
+	}
+	for (unsigned ms = 0; ms < wait_ms; ms += 20) {
+		delay_for_interval(20, NSEC_PER_MSEC);
+		if (redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_UIC_INT, &intr, 1) && (intr & UIC_INT_APCMDRES)) {
+			return redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_OPCODE_READ, answer, answer_len) && answer[0] == op;
+		}
+	}
+	return false;
+}
+
+static unsigned
+vbus_adc(void)
+{
+	uint8_t st1 = 0;
+
+	return redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_USBC_STATUS1, &st1, 1) ? VBADC(st1) : 0;
+}
+
+static void charger_write_limits(unsigned in_ma, unsigned cc_ma);
+
+/* VBUS between 8.5 and 10.5 V within 3 s */
+static bool
+hv_wait_9v(void)
+{
+	unsigned adc = 0;
+
+	for (unsigned ms = 0; ms < 3000; ms += 100) {
+		adc = vbus_adc();
+		if (adc == 6 || adc == 7) {
+			return true;
+		}
+		if (adc >= 8) {
+			break;
+		}
+		delay_for_interval(100, NSEC_PER_MSEC);
+	}
+	m2m_klog('W', "DEV", "bms: hv: VBUS ADC %u after the request, not 9 V", adc);
+	return false;
+}
+
+/* back to 5 V: AFC 0x08, or PD's first PDO (always 5 V) */
+static void
+hv_back_to_5v(const char *why)
+{
+	uint8_t a[12] = { 0 }, b = hv_pd ? 1 : 0x08;
+
+	charger_write_limits(500, 0);
+	(void)muic_opcode(hv_pd ? OP_SRCCAP_REQUEST : OP_AFC, &b, 1, a, hv_pd ? 2 : 11, 1500);
+	m2m_klog('W', "DEV", "bms: hv: back to 5 V (%s): answer %#x %#x, VBUS ADC %u", why, a[0], a[1], vbus_adc());
+}
+
+/* a try at 9 V: true when VBUS is there */
+static bool
+hv_try(unsigned charger_type)
+{
+	uint8_t pd1 = 0, a[33] = { 0 }, n;
+
+	hv_pd = redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_PD_STATUS1, &pd1, 1) && (pd1 & PD_PSRDY);
+	if (hv_pd) {
+		unsigned count, now, best = 0, best_ma = 0;
+
+		if (!muic_opcode(OP_CURRENT_SRCCAP, NULL, 0, a, 30, 1000)) {
+			m2m_klog('W', "DEV", "bms: hv: PD contract, but its source capabilities did not come");
+			return false;
+		}
+		now = (a[1] >> 3) & 7U;
+		count = a[1] & 7U;
+		for (unsigned i = 0; i < count && 5 + i * 4 < sizeof(a); i++) {
+			uint32_t pdo = a[2 + i * 4] | (a[3 + i * 4] << 8) | (a[4 + i * 4] << 16) | ((uint32_t)a[5 + i * 4] << 24);
+			unsigned mv = ((pdo >> 10) & 0x3ffU) * 50, ma = (pdo & 0x3ffU) * 10;
+
+			m2m_klog('I', "DEV", "bms: hv: PDO %u: %#x: %s %u mV %u mA%s", i + 1, pdo, (pdo >> 30) ? "not fixed," : "fixed",
+			    mv, ma, i + 1 == now ? " (in use)" : "");
+			if (i + 1 == now && (pdo >> 30) == 0 && mv == 5000) {
+				pd5_ma = ma;
+			}
+			if ((pdo >> 30) == 0 && mv == 9000 && ma >= 1500) {
+				best = i + 1;
+				best_ma = ma;
+			}
+		}
+		if (best == 0) {
+			m2m_klog('I', "DEV", "bms: hv: this PD charger offers no fixed 9 V of 1.5 A or more: staying at 5 V");
+			hv_tries = 99;
+			return false;
+		}
+		hv_pdo = best;
+		charger_write_limits(500, 0);
+		n = (uint8_t)best;
+		if (!muic_opcode(OP_SRCCAP_REQUEST, &n, 1, a, 2, 1500) || a[1] != 0) {
+			m2m_klog('W', "DEV", "bms: hv: PDO %u (9 V %u mA) request: answer %#x %#x", best, best_ma, a[0], a[1]);
+			return false;
+		}
+		m2m_klog('I', "DEV", "bms: hv: PDO %u (9 V %u mA) asked for", best, best_ma);
+		return hv_wait_9v();
+	}
+	if (charger_type != 3) {
+		return false;
+	}
+	charger_write_limits(500, 0);
+	n = 0x46;               /* 9 V, 1.65 A */
+	if (!muic_opcode(OP_AFC, &n, 1, a, 11, 3000)) {
+		m2m_klog('W', "DEV", "bms: hv: AFC: no answer from the USB-C firmware in 3 s");
+		return false;
+	}
+	m2m_klog('I', "DEV", "bms: hv: AFC answer: result %u, VBUS ADC %u (rx %02x %02x %02x %02x)", a[1], a[2], a[3], a[4], a[5],
+	    a[6]);
+	return a[1] == 0 && hv_wait_9v();
+}
+
 static int16_t boot_c2 = -1, boot_c9 = -1;
 
+/* in_ma 0: the bootloader's values; cc_ma 0 with in_ma: 1500 */
 static void
-charger_limits(bool external, int32_t temp_hundredths)
+charger_write_limits(unsigned in_ma, unsigned cc_ma)
 {
-	uint8_t bc = 0, c2 = 0, c9 = 0, want2, want9, r2 = 0, r9 = 0;
-	unsigned type, in_ma = 0;
-	static int last_in = -1;
+	uint8_t c2 = 0, c9 = 0, want2, want9, r2 = 0, r9 = 0;
+	static unsigned last_in = ~0U, last_cc = ~0U;
 
 	if (!ilim || !chg_byte(CHG_CNFG_02, &c2) || !chg_byte(CHG_CNFG_09, &c9)) {
 		return;
@@ -169,16 +333,10 @@ charger_limits(bool external, int32_t temp_hundredths)
 		boot_c2 = c2;
 		boot_c9 = c9;
 	}
-	if (!redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_BC_STATUS, &bc, 1)) {
-		bc = 0;                 /* unknown: treated as no charger */
-	}
-	type = bc & 3U;
-	if (external && (bc & 0x80U) && temp_hundredths >= 1000 && temp_hundredths <= 4200) {
-		in_ma = type == 3 ? 1650 : type == 2 ? 1500 : 0;
-	}
 	if (in_ma) {
+		cc_ma = cc_ma ? cc_ma : 1500;
 		want9 = (uint8_t)((c9 & 0x80U) | ((in_ma / 25 - 1) & 0x7fU));
-		want2 = (uint8_t)((c2 & ~0x3fU) | ((1500 / 50) & 0x3fU));
+		want2 = (uint8_t)((c2 & ~0x3fU) | ((cc_ma / 50) & 0x3fU));
 	} else {
 		want9 = (uint8_t)boot_c9;
 		want2 = (uint8_t)boot_c2;
@@ -190,18 +348,83 @@ charger_limits(bool external, int32_t temp_hundredths)
 	    !redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_02, want2) ||
 	    !chg_byte(CHG_CNFG_09, &r9) || !chg_byte(CHG_CNFG_02, &r2) || r9 != want9 || r2 != want2) {
 		m2m_klog('W', "DEV", "bms: charger limits did not take (CNFG_09 %#x -> %#x reads %#x, CNFG_02 %#x -> %#x reads "
-		    "%#x): bms_ilim switched off, bootloader values put back", c9, want9, r9, c2, want2, r2);
+		    "%#x): bms_ilim and bms_hv switched off, bootloader values put back", c9, want9, r9, c2, want2, r2);
 		ilim = 0;
+		hv_on = 0;
 		redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_09, (uint8_t)boot_c9);
 		redwood_bbi2c_write_reg(&bus, CHG_ADDR, CHG_CNFG_02, (uint8_t)boot_c2);
 		return;
 	}
-	if ((int)in_ma != last_in) {
-		m2m_klog('I', "DEV", "bms: charger type %u (BC_STATUS %#x), %d.%02d C: input limit %u mA, charge %u mA "
-		    "(CNFG_09 %#x, CNFG_02 %#x)", type, bc, temp_hundredths / 100, temp_hundredths % 100,
-		    ((r9 & 0x7fU) + 1) * 25, (r2 & 0x3fU) * 50, r9, r2);
-		last_in = (int)in_ma;
+	if (in_ma != last_in || cc_ma != last_cc) {
+		m2m_klog('I', "DEV", "bms: charger limits: input %u mA, charge %u mA (CNFG_09 %#x, CNFG_02 %#x)%s",
+		    ((r9 & 0x7fU) + 1) * 25, (r2 & 0x3fU) * 50, r9, r2, in_ma ? "" : " -- the bootloader's");
+		last_in = in_ma;
+		last_cc = cc_ma;
 	}
+}
+
+static void
+charger_limits(bool external, int32_t temp_hundredths)
+{
+	uint8_t bc = 0;
+	unsigned type, in_ma = 0, cc_ma = 0;
+	bool warm_ok = temp_hundredths >= 1000 && temp_hundredths <= 4200;
+
+	if (!ilim) {
+		return;
+	}
+	if (!redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_BC_STATUS, &bc, 1)) {
+		bc = 0;                 /* unknown: treated as no charger */
+	}
+	type = bc & 3U;
+	if (!external || !(bc & 0x80U)) {
+		/* unplugged: the charger is back at 5 V by itself; a new plug-in may try again */
+		if (hv_state != HV_IDLE) {
+			m2m_klog('I', "DEV", "bms: hv: cable out");
+		}
+		hv_state = HV_IDLE;
+		hv_tries = 0;
+		pd5_ma = 0;
+		charger_write_limits(0, 0);
+		return;
+	}
+	if (hv_on && hv_state == HV_ACTIVE) {
+		unsigned adc = vbus_adc();
+
+		if (adc >= 8) {
+			hv_back_to_5v("VBUS over 10.5 V");
+			hv_state = HV_FAULT;
+		} else if (!warm_ok) {
+			hv_back_to_5v("battery temperature outside 10..42 C");
+			hv_state = HV_FAILED;
+		} else if (adc <= 3) {
+			m2m_klog('W', "DEV", "bms: hv: VBUS fell back to 5 V (ADC %u): the charger ended it", adc);
+			hv_state = HV_FAILED;
+		}
+	}
+	if (hv_on && hv_state == HV_IDLE && warm_ok && (type == 3 || type == 0 || type == 2)) {
+		if (hv_try(type)) {
+			hv_state = HV_ACTIVE;
+			m2m_klog('I', "DEV", "bms: hv: 9 V by %s, VBUS ADC %u", hv_pd ? "USB PD" : "AFC", vbus_adc());
+		} else if (++hv_tries >= 2) {
+			hv_state = HV_FAILED;
+			m2m_klog('I', "DEV", "bms: hv: no 9 V on this plug-in (%u tries): 5 V charging", hv_tries);
+		}
+	}
+	if (warm_ok) {
+		if (hv_state == HV_ACTIVE) {
+			in_ma = 1650;
+			cc_ma = temp_hundredths >= 1500 && temp_hundredths <= 4000 ? 2500 : 1500;
+		} else {
+			in_ma = type == 3 ? 1650 : type == 2 ? 1500 : 0;
+			/* a 5 V USB PD contract (a USB-C laptop: 5 V 3 A) says what may be taken: up to Samsung's 3000 mA */
+			if (pd5_ma >= 1500) {
+				in_ma = pd5_ma > 3000 ? 3000 : pd5_ma;
+				cc_ma = temp_hundredths >= 1500 && temp_hundredths <= 4000 ? 2500 : 1500;
+			}
+		}
+	}
+	charger_write_limits(in_ma, cc_ma);
 }
 
 static bool
@@ -336,6 +559,7 @@ bms_thread(__unused void *parameter, __unused wait_result_t result)
 	PE_parse_boot_argn("bms_trace", &trace, sizeof(trace));
 	PE_parse_boot_argn("bms_wdt", &wdt_kick, sizeof(wdt_kick));
 	PE_parse_boot_argn("bms_ilim", &ilim, sizeof(ilim));
+	PE_parse_boot_argn("bms_hv", &hv_on, sizeof(hv_on));
 	if (secs < 1 || secs > 600) {
 		secs = 5;
 	}
