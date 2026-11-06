@@ -45,10 +45,15 @@
  *                    -- is computed from those timestamps
  *   touch_flip=N     bit 0 mirrors X, bit 1 mirrors Y
  *   touch_trace=1    print every raw event
+ *   touch_irq=0      no interrupt: poll only (default 1: the attention line's falling edge wakes the thread at
+ *                    once -- gpa1-0 as a wake-up EINT, GIC SPI 8; B 2026-11-06). The polls stay as a fallback; once
+ *                    interrupts are seen, the idle poll is touch_irq_poll_us (default 50000). A storm (over 2000 in a
+ *                    second) masks the EINT and goes back to polling.
  */
 
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/sched_prim.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
@@ -270,6 +275,66 @@ static struct redwood_bbi2c ts_bus = { .name = "touch bus gpp5-6/7", .scl = 6, .
 static volatile uint8_t *attn_bank;
 static uint32_t use_attn = 1;
 static uint32_t touch_trace;
+
+/* the attention line as an interrupt (touch_irq=1): ALIVE pinctrl wake-up EINT of gpa1 (exynos9830_pin_banks0: eint
+ * offset 0x04, fltcon 0x08; Exynos7-style wake-up chip: CON 0x700, MASK 0x900, PEND 0xA00) -> GIC SPI 8 (dts gpa1) */
+#define EINT_CON_GPA1       0x704U
+#define EINT_MASK_GPA1      0x904U
+#define EINT_PEND_GPA1      0xA04U
+#define EINT_EDGE_FALLING   2U
+#define TS_IRQ_INTID        (32U + 8U)
+static uint32_t touch_irq = 1, irq_poll_us = 50000;
+static volatile uint8_t *alive_block;
+static volatile bool ts_irq_on;
+static volatile uint32_t ts_irqs, ts_irq_storm, ts_irq_window;
+static uint64_t ts_irq_window_at;
+static int ts_wake;
+extern kern_return_t gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint32_t intid),
+    void *context);
+
+static void
+ts_irq(__unused void *context, __unused uint32_t intid)
+{
+	uint64_t now = mach_absolute_time(), second;
+
+	*(volatile uint32_t *)(alive_block + EINT_PEND_GPA1) = 1u << ATTN_PIN;          /* write 1 to clear */
+	ts_irqs++;
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	if (now - ts_irq_window_at > second) {
+		ts_irq_window_at = now;
+		ts_irq_window = 0;
+	}
+	if (++ts_irq_window > 2000) {
+		/* a storm: masked for good, the thread polls as before */
+		*(volatile uint32_t *)(alive_block + EINT_MASK_GPA1) |= 1u << ATTN_PIN;
+		ts_irq_on = false;
+		ts_irq_storm++;
+	}
+	thread_wakeup((event_t)&ts_wake);
+}
+
+static void
+ts_irq_setup(volatile uint8_t *bank)
+{
+	volatile uint32_t *con, *mask;
+
+	alive_block = bank - BANK_GPA1;
+	con = (volatile uint32_t *)(alive_block + EINT_CON_GPA1);
+	mask = (volatile uint32_t *)(alive_block + EINT_MASK_GPA1);
+	*mask |= 1u << ATTN_PIN;
+	*con = (*con & ~(0x7u << (ATTN_PIN * 4))) | (EINT_EDGE_FALLING << (ATTN_PIN * 4));
+	*(volatile uint32_t *)(alive_block + EINT_PEND_GPA1) = 1u << ATTN_PIN;
+	redwood_gpio_func(bank, ATTN_PIN, 0xf);                 /* EXT_INT (the level still reads in DAT) */
+	if (gic_v3_spi_attach(TS_IRQ_INTID, false, ts_irq, NULL) != KERN_SUCCESS) {
+		redwood_gpio_func(bank, ATTN_PIN, REDWOOD_GPIO_INPUT);
+		m2m_klog('W', "DEV", "sec_ts: interrupt %u not attached: polling only", TS_IRQ_INTID);
+		return;
+	}
+	ts_irq_on = true;
+	*mask &= ~(1u << ATTN_PIN);
+	m2m_klog('I', "DEV", "sec_ts: attention line as an interrupt (gpa1-0 falling edge, INTID %u); idle poll %u us once "
+	    "interrupts come", TS_IRQ_INTID, irq_poll_us);
+}
 static uint32_t flip;
 static uint32_t max_x = 4095, max_y = 4095;  /* sec,max_coords; replaced by the panel info */
 
@@ -525,6 +590,11 @@ sec_ts_thread(__unused void *parameter, __unused wait_result_t result)
 	PE_parse_boot_argn("touch_pullup", &pullup, sizeof(pullup));
 	PE_parse_boot_argn("touch_poll_us", &poll_us, sizeof(poll_us));
 	PE_parse_boot_argn("touch_active_us", &active_us, sizeof(active_us));
+	PE_parse_boot_argn("touch_irq", &touch_irq, sizeof(touch_irq));
+	PE_parse_boot_argn("touch_irq_poll_us", &irq_poll_us, sizeof(irq_poll_us));
+	if (irq_poll_us < 1000 || irq_poll_us > 1000000) {
+		irq_poll_us = 50000;
+	}
 	if (active_us < 500 || active_us > poll_us) {
 		active_us = poll_us;
 	}
@@ -580,6 +650,9 @@ sec_ts_thread(__unused void *parameter, __unused wait_result_t result)
 	}
 	m2m_klog('I', "DEV", "sec_ts: polling every %u us, %u us while touched (%s)", poll_us, active_us,
 	    use_attn ? "when the attention line is low" : "always");
+	if (touch_irq && use_attn) {
+		ts_irq_setup(attn_bank);
+	}
 
 	/*
 	 * Every 30 s a line in mali2metal's channel: whether the controller is still heard (reads,
@@ -624,10 +697,11 @@ sec_ts_thread(__unused void *parameter, __unused wait_result_t result)
 		if (mach_absolute_time() >= report_at) {
 			{
 				m2m_klog('I', "DEV", "sec_ts: 30 s: %llu reads (%u failed), %llu events, %u presses, %u controller "
-				    "resets; attention low %llu of %llu looks, now %s; %u bus stretch timeouts", reads - last_reads,
+				    "resets; attention low %llu of %llu looks, now %s; %u bus stretch timeouts; interrupts %u (%s%s)",
+				    reads - last_reads,
 				    note_failed_reads - last_failed, events - last_events, note_presses - last_presses,
 				    note_resets - last_resets, low, looks, attn_pending() ? "low" : "high",
-				    ts_bus.stretch_timeouts);
+				    ts_bus.stretch_timeouts, ts_irqs, ts_irq_on ? "on" : "off", ts_irq_storm ? ", masked after a storm" : "");
 			}
 			last_reads = reads;
 			last_events = events;
@@ -644,7 +718,18 @@ sec_ts_thread(__unused void *parameter, __unused wait_result_t result)
 			for (unsigned i = 0; !touched && i < TS_MAX_FINGERS; i++) {
 				touched = finger[i].down;
 			}
-			sleep_us(touched ? active_us : poll_us);
+			if (touched || !ts_irq_on || stuck != 0) {
+				sleep_us(touched ? active_us : poll_us);
+			} else {
+				/* idle: until the attention line falls (the interrupt), at most the fallback poll */
+				assert_wait_timeout((event_t)&ts_wake, THREAD_UNINT, ts_irqs != 0 ? irq_poll_us : poll_us,
+				    NSEC_PER_USEC);
+				if (attn_pending()) {
+					clear_wait(current_thread(), THREAD_AWAKENED);  /* fell meanwhile: no edge to wait for */
+				} else {
+					thread_block(THREAD_CONTINUE_NULL);
+				}
+			}
 		}
 	}
 }
