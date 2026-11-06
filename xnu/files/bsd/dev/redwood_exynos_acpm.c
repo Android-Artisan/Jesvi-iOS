@@ -442,6 +442,23 @@ extern uint32_t redwood_mali_slow_jobs;
  */
 #define FRAME_HOLD_MS   300
 uint64_t redwood_fb_swap_at;
+/*
+ * The wake boost (B, 2026-11-06): the frame floor held until redwood_boost_until -- set for 1 s by a power/volume key
+ * press (redwood_exynos_keys.c) and by the display coming on (MiniIOMobileFramebuffer::displayPower), so the lock
+ * screen's wake animation (wallpaper zoom and unblur) is drawn at full clocks from its first frame, not from the
+ * first swap after the cores had dropped to idle.
+ */
+uint64_t redwood_boost_until;
+void redwood_gov_boost(uint32_t ms);
+void
+redwood_gov_boost(uint32_t ms)
+{
+	uint64_t len;
+
+	nanoseconds_to_absolutetime((uint64_t) ms * NSEC_PER_MSEC, &len);
+	redwood_boost_until = mach_absolute_time() + len;
+	thread_wakeup((event_t)&redwood_gov_wake);
+}
 static uint32_t gov_frame = 1;                  /* dvfs_frame= (on by default; 0 off) */
 /* M5 at 2208, not its 2730 top: held at the top through the tour it reached 89 C and was throttled to 1794 (step 1) */
 static const uint32_t gov_frame_khz[] = { 1456000, 2504000, 2208000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
@@ -463,7 +480,7 @@ gov_touch_floor(unsigned g)
 		uint64_t hold;
 
 		nanoseconds_to_absolutetime(FRAME_HOLD_MS * NSEC_PER_MSEC, &hold);
-		if (now - redwood_fb_swap_at < hold && gov_frame_khz[g] > khz) {
+		if ((now - redwood_fb_swap_at < hold || now < redwood_boost_until) && gov_frame_khz[g] > khz) {
 			khz = gov_frame_khz[g];
 		}
 	}

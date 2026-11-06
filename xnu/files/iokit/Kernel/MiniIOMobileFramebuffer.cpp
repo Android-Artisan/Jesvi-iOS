@@ -45,6 +45,7 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
 extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
 extern "C" uint64_t redwood_fb_swap_at;        /* the clock governor's frame floor (redwood_exynos_acpm.c, dvfs_frame=) */
 extern "C" int redwood_gov_wake;
+extern "C" void redwood_gov_boost(uint32_t ms);  /* the wake boost (redwood_exynos_acpm.c) */
 extern "C" void loader_log_line(const char * line);
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
@@ -2157,6 +2158,9 @@ IOMobileFramebuffer::displayPower(bool on)
 
 	if (fDsim == NULL || !gBL || fDisplayOff == !on) {
 		return;
+	}
+	if (on) {
+		redwood_gov_boost(1000);                /* the wake animation at full clocks from its first frame */
 	}
 	IOLockLock(fDsimLock);
 	ok = dsimWrite(command, sizeof(command));

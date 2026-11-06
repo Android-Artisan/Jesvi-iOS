@@ -134,6 +134,8 @@ keys_irq_setup(void)
 #define KEY_POWER       0
 #define KEY_VOLUME_DOWN 2
 
+extern void redwood_gov_boost(uint32_t ms);     /* redwood_exynos_acpm.c: the wake boost */
+
 static void
 key_look(struct key *k, bool pressed)
 {
@@ -162,6 +164,9 @@ key_look(struct key *k, bool pressed)
 	} else {
 		absolutetime_to_nanoseconds(now - k->since, &held);
 		printf("keys: %s released after %llu ms\n", k->name, held / NSEC_PER_MSEC);
+	}
+	if (pressed) {
+		redwood_gov_boost(1000);        /* whatever the key wakes is drawn at full clocks */
 	}
 	redwood_touch_post(pressed ? REDWOOD_BUTTON_DOWN : REDWOOD_BUTTON_UP, k->record, 0, 0);
 }
