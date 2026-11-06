@@ -4,4 +4,7 @@
 /redwood/bin/prefset com.apple.mobilesafari VP9DecoderEnabled 1 VP9SWDecoderEnabledOnBattery 1 VP8DecoderEnabled 1 WebKitVP9DecoderEnabled 1 WebKitVP9SWDecoderEnabledOnBattery 1 WebKitVP8DecoderEnabled 1
 /redwood/bin/prefset com.apple.WebKit VP9DecoderEnabled 1 VP9SWDecoderEnabledOnBattery 1 VP8DecoderEnabled 1 WebKitVP9DecoderEnabled 1 WebKitVP9SWDecoderEnabledOnBattery 1 WebKitVP8DecoderEnabled 1
 /redwood/bin/prefset com.apple.SafariViewService VP9DecoderEnabled 1 VP9SWDecoderEnabledOnBattery 1 VP8DecoderEnabled 1 WebKitVP9DecoderEnabled 1 WebKitVP9SWDecoderEnabledOnBattery 1 WebKitVP8DecoderEnabled 1
+# x1slte (2026-11-06): SSH and SFTP over the USB cable (10.77.0.2, usb_ecm=1) and Wi-Fi: keys only (ssh/authorized_keys,
+# never in the repository), no passwords. From the Mac: ssh -i ~/.ssh/s20_ed25519 root@10.77.0.2
+/var/jb/usr/sbin/sshd -D -e -h /var/root/.ssh/ssh_host_ed25519_key -o UsePAM=no -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AuthorizedKeysFile=/var/root/.ssh/authorized_keys &
 /redwood/bin/hello_dyn ==== MANUAL RUN: use the phone as you like; when done, hold Vol-Down + Power for 3 s and go to Download Mode ====

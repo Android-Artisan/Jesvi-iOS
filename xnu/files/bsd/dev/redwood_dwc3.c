@@ -288,6 +288,7 @@ SYSCTL_DECL(_kern_redwood);
 /* events (core.h:52-66, 1095-1205): bit 0 clear, an endpoint's: [5:1] the endpoint, [9:6] the event, [15:12] status */
 #define DEPEVT_XFERCOMPLETE     1u              /* :1103 */
 #define DEPEVT_XFERNOTREADY     3u              /* :1105 */
+#define DEPEVT_XFERINPROGRESS   2u              /* :1104 */
 #define DEPEVT_STATUS_CONTROL_DATA   1u         /* :1150 */
 #define DEPEVT_STATUS_CONTROL_STATUS 2u         /* :1151 */
 #define DEVT_DISCONNECT         0u              /* :56-59 */
@@ -299,10 +300,14 @@ SYSCTL_DECL(_kern_redwood);
 #define PEP_OUT                 2
 #define PEP_IN                  3
 #define PEP_NOTIFY              5
-#define NPEPS                   6
+/* x1slte: the network function (usb_ecm=1): 4 EP2 OUT, 7 EP3 IN, 9 EP4 IN (its notifications) */
+#define PEP_ECM_OUT             4
+#define PEP_ECM_IN              7
+#define PEP_ECM_NOTIFY          9
+#define NPEPS                   10
 
 /* memory the controller reaches: one 32 KB block below 4 GB, mapped uncached */
-#define DMA_SIZE                (32 * 1024)
+#define DMA_SIZE                (128 * 1024)
 #define EVT_OFF                 0x0000u
 #define EVT_SIZE                4096u
 #define TRB_OFF(slot)           (0x1000u + (slot) * 64u)       /* one TRB per cache line */
@@ -310,6 +315,15 @@ SYSCTL_DECL(_kern_redwood);
 #define OUT_OFF                 0x2400u         /* 512 bytes */
 #define IN_OFF                  0x4000u
 #define IN_CHUNK                16384u
+#define ECM_OUT_OFF             0x8000u         /* 2048 bytes: a frame from the computer */
+#define ECM_IN_OFF              0x8800u         /* 2048 bytes: a frame to it */
+#define ECM_NOTE_OFF            0x9000u         /* 16 bytes: a notification */
+#define ECM_BUF                 2048u
+#define ECM_BATCH               8u              /* frames per transfer, each direction */
+#define ECM_TX_TRBS             0x9100u         /* ECM_BATCH TRBs, contiguous */
+#define ECM_RX_TRBS             0x9200u
+#define ECM_TX_BUFS             0x10000u        /* ECM_BATCH x ECM_BUF */
+#define ECM_RX_BUFS             0x14000u
 
 #define RING_SIZE               (1024u * 1024u)        /* the log on its way out; a power of two */
 
@@ -321,6 +335,16 @@ enum { EP0_IDLE, EP0_SETUP, EP0_DATA, EP0_STATUS_WAIT, EP0_STATUS };
 
 static uint32_t steps, poll_ms = 2, drain_ms = 1000, crlf = 1, full_speed, susphy, glue_flags;
 static const struct redwood_usb_glue *glue;
+static uint32_t ecm_on;                 /* usb_ecm=1 */
+static int ecm_note_next;
+static unsigned ecm_rx_next, ecm_tx_count;
+static uint64_t ecm_tx_frames, ecm_rx_frames, ecm_tx_batches;               /* the notification to send after the one under way: 0 none, 1 speed */
+extern void redwood_usbnet_link(bool up);
+extern void redwood_usbnet_rx(const uint8_t *frame, size_t length);
+extern size_t redwood_usbnet_tx_take(uint8_t *buf, size_t cap);
+static void ecm_alt_changed(void);
+static void pump_ecm(void);
+static void ecm_rx_start(void);
 static vm_offset_t regs;
 static volatile uint8_t *dma;
 static uint64_t dma_pa;
@@ -433,15 +457,13 @@ wr(uint32_t off, uint32_t value)
 static inline volatile struct trb *
 trb_of(int p)
 {
-	int slot = p == PEP_NOTIFY ? 4 : p;
-
-	return (volatile struct trb *)(dma + TRB_OFF(slot));
+	return (volatile struct trb *)(dma + TRB_OFF(p));      /* x1slte: each its own (4 is EP2 OUT now) */
 }
 
 static inline uint64_t
 trb_pa(int p)
 {
-	return dma_pa + TRB_OFF(p == PEP_NOTIFY ? 4 : p);
+	return dma_pa + TRB_OFF(p);
 }
 
 /* ---- the log's way out: a ring the log fills (under its lock) and the poll empties ---- */
@@ -613,7 +635,8 @@ apply(const struct usbacm_reply *r)
 		}
 	}
 	if (r->effects & (USBACM_EFF_HALT | USBACM_EFF_CLEAR_HALT)) {
-		int p = r->ep == USBACM_EP_OUT ? PEP_OUT : r->ep == USBACM_EP_IN ? PEP_IN : PEP_NOTIFY;
+		int p = r->ep == USBACM_EP_OUT ? PEP_OUT : r->ep == USBACM_EP_IN ? PEP_IN : r->ep == USBECM_EP_OUT ? PEP_ECM_OUT :
+		    r->ep == USBECM_EP_IN ? PEP_ECM_IN : r->ep == USBECM_EP_NOTIFY ? PEP_ECM_NOTIFY : PEP_NOTIFY;
 
 		if (r->effects & USBACM_EFF_HALT) {
 			end_xfer(p);
@@ -623,7 +646,13 @@ apply(const struct usbacm_reply *r)
 			if (p == PEP_OUT && steps >= 5 && !pep[PEP_OUT].active) {
 				(void)start_xfer(PEP_OUT, dma_pa + OUT_OFF, 512, TRBCTL_NORMAL);
 			}
+			if (p == PEP_ECM_OUT && acm.ecm_alt == 1 && !pep[PEP_ECM_OUT].active) {
+				ecm_rx_start();
+			}
 		}
+	}
+	if (r->effects & USBACM_EFF_ECM_ALT) {
+		ecm_alt_changed();
 	}
 	if (r->effects & USBACM_EFF_LINES) {
 		say("usb: the host %s the port (DTR %u RTS %u)\n", (acm.lines & 1) ? "opened" : "closed", acm.lines & 1, (acm.lines >> 1) & 1);
@@ -734,6 +763,159 @@ bulk_down(void)
 	end_xfer(PEP_IN);
 	end_xfer(PEP_NOTIFY);
 	wr(DALEPENA, rd(DALEPENA) & ~((1u << PEP_OUT) | (1u << PEP_IN) | (1u << PEP_NOTIFY)));
+	if (ecm_on) {
+		end_xfer(PEP_ECM_OUT);
+		end_xfer(PEP_ECM_IN);
+		end_xfer(PEP_ECM_NOTIFY);
+		wr(DALEPENA, rd(DALEPENA) & ~((1u << PEP_ECM_OUT) | (1u << PEP_ECM_IN) | (1u << PEP_ECM_NOTIFY)));
+		redwood_usbnet_link(false);
+	}
+}
+
+/* ---- the network function (x1slte, usb_ecm=1) ---- */
+
+/* a notification on EP4 IN: NETWORK_CONNECTION (connected or not), or CONNECTION_SPEED_CHANGE (480 Mbit/s both ways) */
+static void
+ecm_notify(bool speed, bool connected_now)
+{
+	volatile uint8_t *n = dma + ECM_NOTE_OFF;
+	uint32_t len = 8, bps = high_speed ? 480000000u : 12000000u;
+
+	if (pep[PEP_ECM_NOTIFY].active) {
+		ecm_note_next = speed ? 1 : 0;
+		return;
+	}
+	n[0] = 0xa1;
+	n[1] = speed ? 0x2a : 0x00;
+	n[2] = speed ? 0 : (connected_now ? 1 : 0);
+	n[3] = 0;
+	n[4] = 2;                       /* interface 2 */
+	n[5] = 0;
+	n[6] = speed ? 8 : 0;
+	n[7] = 0;
+	if (speed) {
+		for (int i = 0; i < 2; i++) {
+			n[8 + i * 4] = (uint8_t)bps;
+			n[9 + i * 4] = (uint8_t)(bps >> 8);
+			n[10 + i * 4] = (uint8_t)(bps >> 16);
+			n[11 + i * 4] = (uint8_t)(bps >> 24);
+		}
+		len = 16;
+	}
+	(void)start_xfer(PEP_ECM_NOTIFY, dma_pa + ECM_NOTE_OFF, len, TRBCTL_NORMAL);
+}
+
+/*
+ * Several TRBs in one transfer (x1slte): each its own frame, no chain bit, so each ends in a short packet; the last has
+ * LST and IOC (TX) -- or every one IOC, so a frame that came in is said by an XferInProgress event at once (RX).
+ */
+static int
+start_batch(int p, uint32_t trbs, uint32_t bufs, const uint32_t *lens, unsigned n, bool ioc_each)
+{
+	volatile struct trb *t = (volatile struct trb *)(dma + trbs);
+	uint64_t tp = dma_pa + trbs;
+	uint32_t v = 0;
+
+	for (unsigned i = 0; i < n; i++) {
+		uint64_t b = dma_pa + bufs + i * ECM_BUF;
+
+		t[i].bpl = (uint32_t)b;
+		t[i].bph = (uint32_t)(b >> 32);
+		t[i].size = lens[i] & TRB_SIZE_MASK;
+		t[i].ctrl = TRBCTL_NORMAL | TRB_CTRL_ISP_IMI | TRB_CTRL_HWO | (ioc_each || i + 1 == n ? TRB_CTRL_IOC : 0) |
+		    (i + 1 == n ? TRB_CTRL_LST : 0);
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	if (depcmd(p, CMD_STARTTRANSFER, (uint32_t)(tp >> 32), (uint32_t)tp, 0, &v) != 0) {
+		return EIO;
+	}
+	pep[p].active = true;
+	pep[p].rsc = DEPCMD_RSC_IDX(v);
+	pep[p].len = 0;
+	return 0;
+}
+
+/* frames from the queue to the computer, up to ECM_BATCH at a time, when EP3 IN is free */
+static void
+pump_ecm(void)
+{
+	uint32_t mps = high_speed ? USBACM_HS_BULK : USBACM_FS_BULK, lens[ECM_BATCH];
+	unsigned n = 0;
+
+	if (!ecm_on || acm.config == 0 || acm.ecm_alt != 1 || pep[PEP_ECM_IN].active || (acm.halted & 16)) {
+		return;
+	}
+	while (n < ECM_BATCH) {
+		volatile uint8_t *b = dma + ECM_TX_BUFS + n * ECM_BUF;
+		size_t len = redwood_usbnet_tx_take((uint8_t *)(uintptr_t)b, ECM_BUF - 1);
+
+		if (len == 0) {
+			break;
+		}
+		if (len % mps == 0) {
+			b[len++] = 0;           /* a short packet ends the frame (a byte past an IP packet is not read) */
+		}
+		lens[n++] = (uint32_t)len;
+	}
+	if (n == 0) {
+		return;
+	}
+	ecm_tx_count = n;
+	ecm_tx_frames += n;
+	ecm_tx_batches++;
+	(void)start_batch(PEP_ECM_IN, ECM_TX_TRBS, ECM_TX_BUFS, lens, n, false);
+}
+
+/* the receive ring: ECM_BATCH buffers, each frame said as it comes */
+static void
+ecm_rx_start(void)
+{
+	uint32_t lens[ECM_BATCH];
+
+	for (unsigned i = 0; i < ECM_BATCH; i++) {
+		lens[i] = ECM_BUF;
+	}
+	ecm_rx_next = 0;
+	(void)start_batch(PEP_ECM_OUT, ECM_RX_TRBS, ECM_RX_BUFS, lens, ECM_BATCH, true);
+}
+
+/* the frames the controller has finished with since the last look; true when the ring is used up */
+static bool
+ecm_rx_scan(void)
+{
+	volatile struct trb *t = (volatile struct trb *)(dma + ECM_RX_TRBS);
+
+	while (ecm_rx_next < ECM_BATCH && !(t[ecm_rx_next].ctrl & TRB_CTRL_HWO)) {
+		uint32_t left = t[ecm_rx_next].size & TRB_SIZE_MASK, done = ECM_BUF - left;
+
+		if (done > 0 && left <= ECM_BUF) {
+			redwood_usbnet_rx((const uint8_t *)(uintptr_t)(dma + ECM_RX_BUFS + ecm_rx_next * ECM_BUF), done);
+			ecm_rx_frames++;
+		}
+		ecm_rx_next++;
+	}
+	return ecm_rx_next >= ECM_BATCH;
+}
+
+static void
+ecm_alt_changed(void)
+{
+	if (!ecm_on) {
+		return;
+	}
+	if (acm.ecm_alt == 1) {
+		say("usb: the computer switched the network function on\n");
+		if (!pep[PEP_ECM_OUT].active) {
+			ecm_rx_start();
+		}
+		ecm_notify(false, true);
+		ecm_note_next = 1;
+		redwood_usbnet_link(true);
+	} else {
+		end_xfer(PEP_ECM_OUT);
+		end_xfer(PEP_ECM_IN);
+		redwood_usbnet_link(false);
+	}
 }
 
 static void
@@ -747,6 +929,14 @@ bulk_up(void)
 		return;
 	}
 	wr(DALEPENA, rd(DALEPENA) | (1u << PEP_OUT) | (1u << PEP_IN) | (1u << PEP_NOTIFY));
+	if (ecm_on) {
+		if (ep_config(PEP_ECM_OUT, 2, mps, DEPCFG_ACTION_INIT, 0) != 0 || ep_config(PEP_ECM_IN, 2, mps, DEPCFG_ACTION_INIT, 0) != 0 ||
+		    ep_config(PEP_ECM_NOTIFY, 3, 16, DEPCFG_ACTION_INIT, high_speed ? 8 : 0) != 0) {
+			say("usb: the network function's endpoints could not be configured\n");
+		} else {
+			wr(DALEPENA, rd(DALEPENA) | (1u << PEP_ECM_OUT) | (1u << PEP_ECM_IN) | (1u << PEP_ECM_NOTIFY));
+		}
+	}
 	if (steps >= 5) {
 		(void)start_xfer(PEP_OUT, dma_pa + OUT_OFF, mps, TRBCTL_NORMAL);
 		pump_in();
@@ -1069,6 +1259,24 @@ bulk_complete(int p)
 	volatile struct trb *t = trb_of(p);
 	uint32_t left = t->size & TRB_SIZE_MASK, done = pep[p].len > left ? pep[p].len - left : 0;
 
+	if (p == PEP_ECM_OUT) {
+		(void)ecm_rx_scan();
+		if (acm.config != 0 && acm.ecm_alt == 1 && !(acm.halted & 8)) {
+			ecm_rx_start();
+		}
+		return;
+	}
+	if (p == PEP_ECM_IN) {
+		pump_ecm();
+		return;
+	}
+	if (p == PEP_ECM_NOTIFY) {
+		if (ecm_note_next == 1) {
+			ecm_note_next = 0;
+			ecm_notify(true, true);
+		}
+		return;
+	}
 	if (p == PEP_IN) {
 		n_in += done;
 		pump_in();
@@ -1112,7 +1320,7 @@ on_reset(void)
 	}
 	bulk_down();
 	for (int p = 2; p < NPEPS; p++) {
-		if (p != 4) {
+		if (p == 2 || p == 3 || p == 5 || (ecm_on && (p == 4 || p == 7 || p == 9))) {
 			(void)depcmd(p, CMD_CLEARSTALL, 0, 0, 0, NULL);
 		}
 	}
@@ -1164,6 +1372,8 @@ events(void)
 				} else {
 					bulk_complete(p);
 				}
+			} else if (p == PEP_ECM_OUT && type == DEPEVT_XFERINPROGRESS) {
+				(void)ecm_rx_scan();
 			} else if (p <= 1 && type == DEPEVT_XFERNOTREADY) {
 				ep0_notready(p, status & 3);
 			}
@@ -1731,6 +1941,10 @@ core_init(void)
 	}
 	wr(DALEPENA, 3);
 	usbacm_init(&acm);
+	acm.ecm = ecm_on != 0;
+	if (ecm_on) {
+		acm.strings[2] = "iOS on Galaxy S20: kernel log, console and network";
+	}
 	ep0_setup_start();
 	if (ep0_state != EP0_SETUP) {
 		return EIO;
@@ -2004,6 +2218,7 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 	if (!link_stopped) {
 		events();
 		pump_in();
+		pump_ecm();
 	}
 	if (!connected && !link_stopped && glue->phy_state != NULL) {
 		uint64_t now = mach_absolute_time(), ns;
@@ -2085,6 +2300,7 @@ usb_gadget_init(void)
 	(void)PE_parse_boot_argn("usb_gadget_fs", &full_speed, sizeof(full_speed));
 	(void)PE_parse_boot_argn("usb_gadget_susphy", &susphy, sizeof(susphy));
 	(void)PE_parse_boot_argn("usb_gadget_crlf", &crlf, sizeof(crlf));
+	(void)PE_parse_boot_argn("usb_ecm", &ecm_on, sizeof(ecm_on));
 	if (PE_parse_boot_argn("usb_gadget_poll", &value, sizeof(value)) && value >= 1 && value <= 50) {
 		poll_ms = value;
 	}

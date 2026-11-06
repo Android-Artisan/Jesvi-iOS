@@ -40,7 +40,17 @@
 #define USBACM_HS_BULK          512
 #define USBACM_FS_BULK          64
 #define USBACM_CONFIG_LEN       67
-#define USBACM_STRINGS          5
+#define USBACM_STRINGS          7
+/*
+ * x1slte (2026-11-06): a second function, CDC-ECM (USB Ethernet: macOS's and Linux's own drivers, no install), when
+ * usbacm.ecm is set: interfaces 2 (control, notify on 0x84) and 3 (data: alternate 0 empty, 1 with bulk 0x83 IN and
+ * 0x02 OUT), each function under an interface association; the device then says "composite" (EF/02/01).
+ */
+#define USBECM_EP_OUT           0x02
+#define USBECM_EP_IN            0x83
+#define USBECM_EP_NOTIFY        0x84
+#define USBECM_CONFIG_LEN       154
+#define USBACM_EFF_ECM_ALT      0x80u   /* SET_INTERFACE on interface 3: r.value the alternate (1: frames can pass) */
 
 /* what the controller is to do with a setup packet */
 enum usbacm_action {
@@ -74,7 +84,9 @@ struct usbacm {
 	uint8_t         config;
 	uint16_t        lines;          /* DTR bit 0, RTS bit 1 */
 	uint8_t         line_coding[7]; /* dwDTERate (LE), bCharFormat, bParityType, bDataBits */
-	uint8_t         halted;         /* bit 0: 0x01, bit 1: 0x81, bit 2: 0x82 */
+	uint8_t         halted;         /* bit 0: 0x01, bit 1: 0x81, bit 2: 0x82; ECM: bit 3 0x02, bit 4 0x83, bit 5 0x84 */
+	bool            ecm;            /* the network function too */
+	uint8_t         ecm_alt;        /* interface 3's alternate */
 	uint8_t         out_request;    /* the request whose OUT data stage is under way, 0 if none */
 	const char      *strings[USBACM_STRINGS];      /* 1-4 used; ASCII */
 	uint8_t         buf[256];       /* answers are built here */
@@ -87,6 +99,19 @@ static const uint8_t usbacm_device_desc[18] = {
 	USBACM_VID & 0xff, USBACM_VID >> 8, USBACM_PID & 0xff, USBACM_PID >> 8,
 	0x00, 0x01,                     /* bcdDevice 1.00 */
 	1, 2, 3, 1                      /* iManufacturer, iProduct, iSerialNumber, bNumConfigurations */
+};
+
+static const uint8_t usbacm_device_desc_composite[18] = {
+	18, 1, 0x00, 0x02,
+	0xef, 0x02, 0x01,               /* miscellaneous, common class, interface association */
+	USBACM_EP0_MPS,
+	USBACM_VID & 0xff, USBACM_VID >> 8, (USBACM_PID + 1) & 0xff, (USBACM_PID + 1) >> 8,
+	0x00, 0x01,
+	1, 2, 3, 1
+};
+
+static const uint8_t usbacm_qualifier_desc_composite[10] = {
+	10, 6, 0x00, 0x02, 0xef, 0x02, 0x01, USBACM_EP0_MPS, 1, 0
 };
 
 static const uint8_t usbacm_qualifier_desc[10] = {
@@ -107,6 +132,8 @@ usbacm_init(struct usbacm *s)
 	s->strings[2] = "HakiOS kernel log and console";
 	s->strings[3] = "0";
 	s->strings[4] = "log";
+	s->strings[5] = "025257000001";     /* the host's end of the network function (locally administered) */
+	s->strings[6] = "network";
 }
 
 /* the configuration descriptor at a speed (type 2, or 7 for "other speed"); USBACM_CONFIG_LEN bytes into out */
@@ -131,6 +158,38 @@ usbacm_config_desc(uint8_t *out, bool high_speed, uint8_t type)
 	return sizeof(d);
 }
 
+static inline size_t
+usbacm_config_desc_composite(uint8_t *out, bool high_speed, uint8_t type)
+{
+	uint16_t bulk = high_speed ? USBACM_HS_BULK : USBACM_FS_BULK;
+	const uint8_t d[USBECM_CONFIG_LEN] = {
+		9, type, USBECM_CONFIG_LEN, 0, 4, 1, 0, 0xc0, 50,     /* 4 interfaces */
+		8, 0x0b, 0, 2, 0x02, 0x02, 0x00, 4,                     /* association: interfaces 0-1, ACM */
+		9, 4, 0, 0, 1, 0x02, 0x02, 0x00, 4,
+		5, 0x24, 0x00, 0x10, 0x01,
+		5, 0x24, 0x01, 0x00, 1,
+		4, 0x24, 0x02, 0x02,
+		5, 0x24, 0x06, 0, 1,
+		7, 5, USBACM_EP_NOTIFY, 3, 16, 0, (uint8_t)(high_speed ? 9 : 32),
+		9, 4, 1, 0, 2, 0x0a, 0x00, 0x00, 0,
+		7, 5, USBACM_EP_OUT, 2, (uint8_t)(bulk & 0xff), (uint8_t)(bulk >> 8), 0,
+		7, 5, USBACM_EP_IN, 2, (uint8_t)(bulk & 0xff), (uint8_t)(bulk >> 8), 0,
+		8, 0x0b, 2, 2, 0x02, 0x06, 0x00, 6,                     /* association: interfaces 2-3, ECM */
+		9, 4, 2, 0, 1, 0x02, 0x06, 0x00, 6,                     /* interface 2: CDC, Ethernet networking */
+		5, 0x24, 0x00, 0x10, 0x01,                              /* header, CDC 1.10 */
+		5, 0x24, 0x06, 2, 3,                                    /* union: control 2, data 3 */
+		13, 0x24, 0x0f, 5, 0, 0, 0, 0, 0xea, 0x05, 0, 0, 0,     /* Ethernet: MAC string 5, no statistics, 1514 */
+		7, 5, USBECM_EP_NOTIFY, 3, 16, 0, (uint8_t)(high_speed ? 9 : 32),
+		9, 4, 3, 0, 0, 0x0a, 0x00, 0x00, 0,                     /* interface 3, alternate 0: no endpoints */
+		9, 4, 3, 1, 2, 0x0a, 0x00, 0x00, 0,                     /* alternate 1: the frames */
+		7, 5, USBECM_EP_IN, 2, (uint8_t)(bulk & 0xff), (uint8_t)(bulk >> 8), 0,
+		7, 5, USBECM_EP_OUT, 2, (uint8_t)(bulk & 0xff), (uint8_t)(bulk >> 8), 0,
+	};
+
+	memcpy(out, d, sizeof(d));
+	return sizeof(d);
+}
+
 /* a string descriptor of ASCII text (UTF-16LE), at most cap bytes; its length */
 static inline size_t
 usbacm_string_desc(uint8_t *out, size_t cap, const char *ascii)
@@ -149,7 +208,8 @@ usbacm_string_desc(uint8_t *out, size_t cap, const char *ascii)
 static inline uint8_t
 usbacm_ep_bit(uint8_t ep)
 {
-	return ep == USBACM_EP_OUT ? 1 : ep == USBACM_EP_IN ? 2 : ep == USBACM_EP_NOTIFY ? 4 : 0;
+	return ep == USBACM_EP_OUT ? 1 : ep == USBACM_EP_IN ? 2 : ep == USBACM_EP_NOTIFY ? 4 :
+	       ep == USBECM_EP_OUT ? 8 : ep == USBECM_EP_IN ? 16 : ep == USBECM_EP_NOTIFY ? 32 : 0;
 }
 
 static inline void
@@ -188,7 +248,7 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 			if (recipient == 0) {
 				s->buf[0] = 1;  /* self-powered */
 			} else if (recipient == 1) {
-				if (s->config == 0 || index > 1) {
+				if (s->config == 0 || index > (s->ecm ? 3 : 1)) {
 					break;
 				}
 			} else if (recipient == 2) {
@@ -249,7 +309,11 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 			}
 			switch (dtype) {
 			case 1:
-				usbacm_in(r, usbacm_device_desc, sizeof(usbacm_device_desc), length);
+				if (s->ecm) {
+					usbacm_in(r, usbacm_device_desc_composite, sizeof(usbacm_device_desc_composite), length);
+				} else {
+					usbacm_in(r, usbacm_device_desc, sizeof(usbacm_device_desc), length);
+				}
 				break;
 			case 2:
 			case 7:
@@ -257,7 +321,8 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 					break;
 				}
 				/* 7, other speed: the configuration at the speed this is not running at */
-				n = usbacm_config_desc(s->buf, dtype == 2 ? s->high_speed : !s->high_speed, dtype);
+				n = s->ecm ? usbacm_config_desc_composite(s->buf, dtype == 2 ? s->high_speed : !s->high_speed, dtype) :
+				    usbacm_config_desc(s->buf, dtype == 2 ? s->high_speed : !s->high_speed, dtype);
 				usbacm_in(r, s->buf, n, length);
 				break;
 			case 3:
@@ -270,7 +335,11 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 				break;
 			case 6:
 				/* a high-speed capable device answers it at either speed */
-				usbacm_in(r, usbacm_qualifier_desc, sizeof(usbacm_qualifier_desc), length);
+				if (s->ecm) {
+					usbacm_in(r, usbacm_qualifier_desc_composite, sizeof(usbacm_qualifier_desc_composite), length);
+				} else {
+					usbacm_in(r, usbacm_qualifier_desc, sizeof(usbacm_qualifier_desc), length);
+				}
 				break;
 			default:                        /* BOS (15) and the rest: not had */
 				break;
@@ -290,20 +359,31 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 			}
 			s->config = (uint8_t)value;
 			s->halted = 0;
+			if (s->ecm_alt != 0) {
+				s->ecm_alt = 0;
+				r->effects |= USBACM_EFF_ECM_ALT;
+			}
 			r->effects |= USBACM_EFF_CONFIG;
 			r->value = (uint8_t)value;
 			r->action = USBACM_STATUS;
 			break;
 		case 0x0a:                      /* GET_INTERFACE */
-			if (!in || recipient != 1 || s->config == 0 || index > 1 || length < 1) {
+			if (!in || recipient != 1 || s->config == 0 || index > (s->ecm ? 3 : 1) || length < 1) {
 				break;
 			}
-			s->buf[0] = 0;
+			s->buf[0] = index == 3 ? s->ecm_alt : 0;
 			usbacm_in(r, s->buf, 1, length);
 			break;
-		case 0x0b:                      /* SET_INTERFACE: alternate 0 only */
-			if (in || recipient != 1 || s->config == 0 || index > 1 || value != 0 || length != 0) {
+		case 0x0b:                      /* SET_INTERFACE: alternate 0, and on ECM's data interface 0 or 1 */
+			if (in || recipient != 1 || s->config == 0 || index > (s->ecm ? 3 : 1) || length != 0 ||
+			    value > (index == 3 ? 1 : 0)) {
 				break;
+			}
+			if (index == 3) {
+				s->ecm_alt = (uint8_t)value;
+				s->halted &= (uint8_t)~(8 | 16);
+				r->effects |= USBACM_EFF_ECM_ALT;
+				r->value = (uint8_t)value;
 			}
 			r->action = USBACM_STATUS;
 			break;
@@ -313,6 +393,19 @@ usbacm_setup(struct usbacm *s, const uint8_t p[8], struct usbacm_reply *r)
 		return r->action;
 	}
 
+	if (s->ecm && (type & 0x60) == 0x20 && recipient == 1 && index == 2) {  /* class, to the ECM interface */
+		/* the filters (0x40 multicast, 0x41 power management, 0x43 packet): everything passes anyway, so all are taken */
+		if (!in && req >= 0x40 && req <= 0x43) {
+			if (length == 0) {
+				r->action = USBACM_STATUS;
+			} else if (length <= 64) {
+				s->out_request = req;
+				r->len = length;
+				r->action = USBACM_OUT;
+			}
+		}
+		return r->action;
+	}
 	if ((type & 0x60) == 0x20 && recipient == 1 && index == 0) {    /* class, to the ACM interface */
 		switch (req) {
 		case 0x20:                      /* SET_LINE_CODING */
@@ -362,6 +455,8 @@ usbacm_out_done(struct usbacm *s, const uint8_t *data, size_t len, struct usbacm
 		memcpy(s->line_coding, data, 7);
 		r->effects |= USBACM_EFF_LINE_CODING;
 		r->action = USBACM_STATUS;
+	} else if (s->out_request >= 0x40 && s->out_request <= 0x43) {
+		r->action = USBACM_STATUS;      /* an ECM filter: taken, nothing to do */
 	}
 	s->out_request = 0;
 	return r->action;
@@ -374,6 +469,7 @@ usbacm_reset(struct usbacm *s)
 	s->address = 0;
 	s->config = 0;
 	s->halted = 0;
+	s->ecm_alt = 0;
 	s->lines = 0;
 	s->out_request = 0;
 }
