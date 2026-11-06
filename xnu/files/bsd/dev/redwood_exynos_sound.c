@@ -52,6 +52,7 @@
 #include <sys/kauth.h>
 #include <sys/vnode.h>
 #include <sys/vnode_internal.h>
+#include <sys/redwood_dbgport.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
@@ -1131,6 +1132,7 @@ static uint32_t cal_msgs, cal_pointers;
 static volatile uint8_t *cal_dram, *cal_gicd, *cal_pt, *cal_gpr, *cal_timer;
 static uint32_t cal_inv;
 static volatile bool cal_booted;
+static bool cal_timers;
 static bool cal_sgi_smc, cal_sgi_tested;
 static volatile uint32_t cal_logbuf;   /* ABOX_REPORT_LOG's address (IOVA in the DRAM firmware) */
 static volatile uint32_t cal_pointer;   /* the last PCM_PLTDAI_POINTER Calliope sent for RDMA3 */
@@ -1172,11 +1174,51 @@ calliope_log(void)
 	*(volatile uint32_t *)(lb + 4) = ri;
 }
 
+/*
+ * The AP's side of ABOX's GIC, as abox_gic_irq_handler: what Calliope raised for the AP (its IPC SGI) acknowledged and
+ * ended -- IAR read, EOI, and for SGIs DIR -- through EL3 (the GIC is secure). Polled with the message queue: without it
+ * the SGI stays pending on the AP's interface and Calliope takes one message, then waits (run 9: ISPENDR0 bit 15).
+ */
+static uint32_t cal_acks, cal_ack_ids[4];
+static volatile bool cal_poking;
+static thread_t cal_poker;
+
+static void
+calliope_ack(void)
+{
+	for (int n = 0; n < 16; n++) {
+		uint32_t iar = 1023, id;
+
+		if (!sfr_smc_read(CAL_GICC_PHYS + 0x0c, &iar)) {
+			return;
+		}
+		id = iar & 0x3ff;
+		if (id >= 1020) {
+			return;
+		}
+		(void)sfr_smc_write(CAL_GICC_PHYS + 0x10, iar);                 /* GIC_CPU_EOI */
+		if (id < 16) {
+			(void)sfr_smc_write(CAL_GICC_PHYS + 0x1000, iar);       /* GIC_CPU_DEACTIVATE */
+		}
+		if (cal_acks < 4) {
+			cal_ack_ids[cal_acks] = iar;
+		}
+		if (++cal_acks <= 4) {
+			snd_log("snd: calliope: the AP acknowledged its interrupt %u (IAR %#x)\n", id, iar);
+		}
+	}
+}
+
 static void
 calliope_drain(volatile uint8_t *dram)
 {
 	volatile uint8_t *rx = dram + CAL_IPC_RX_OFF;
 	uint32_t data_len = *(volatile uint32_t *)(rx + CAL_Q_DATA + 8);
+
+	if (cal_poking && current_thread() != cal_poker) {
+		return;
+	}
+	calliope_ack();
 
 	for (int n = 0; n < 32; n++) {
 		int32_t s = *(volatile int32_t *)(rx + 0), e = *(volatile int32_t *)(rx + 4);
@@ -1405,6 +1447,17 @@ calliope_boot(void)
 
 		IOSleep(20);
 		calliope_drain(dram);
+		if (cal_booted && !cal_timers) {
+			/*
+			 * A, run 13: Calliope sets timers 0 and 2 up (1 ms, mode 1) as its scheduler's tick and leaves them stopped;
+			 * the AP starts them (abox_start_timer). START alone does not take: FLUSH | START does. Without it every
+			 * wait in the firmware hangs (the mixer rate, PCM open after one message).
+			 */
+			cal_timers = true;
+			wr(timer, 0x600 + 0x20 * 0, 0x3);
+			wr(timer, 0x600 + 0x20 * 2, 0x3);
+			snd_log("snd: calliope: its tick timers started (timer 0 now %#x)\n", rd(timer, 0x600 + 0x10));
+		}
 		if (snd_calliope >= 2 && ((cal_booted && tick >= 50) || tick >= 500)) {
 			break;
 		}
@@ -1595,6 +1648,11 @@ calliope_play(void)
 	wr(mmu, cal_inv, 1);
 	bzero(buf, BUF_BYTES);
 	__asm__ volatile ("dsb sy" ::: "memory");
+	if (snd_calliope >= 3) {
+		snd_log("snd: calliope: snd_calliope=3: no messages from here; kern.redwood.snd_poke drives it (ring IOVA %#x)\n",
+		    iova);
+		return true;
+	}
 	/*
 	 * ABOX_RESUME as abox_boot_done_work -> abox_cpu_pm_ipc: bundle.param_u64[0] = the AP's clock in ns,
 	 * [1] = ABOX timer 1 (26 MHz) in ns (atime * 500 / 13). Off with snd_cal_resume=0.
@@ -1646,6 +1704,74 @@ calliope_play(void)
 	    cal_pointers);
 	return true;
 }
+
+/*
+ * ---- the debug port (A, 2026-11-06): experiments without a reboot ------------------------------------------------
+ * kern.redwood.snd_poke (root; write a command, read the answer). From the Mac: ssh s20 rwsys kern.redwood.snd_poke 'CMD'
+ *   r PA [N]          N words (at most 64) at physical PA            w PA V        one word
+ *   sr PA / sw PA V   the same through EL3 (Samsung's SMC_CMD_REG: the secure GIC and such)
+ *   send ID TYPE [a0..a6]   one message to Calliope (ABOX_IPC_MSG: ipcid, msgtype, then the words after msgtype),
+ *                     then 200 ms of its messages and log into the kernel log; the answer says if it was taken
+ *   log               Calliope's log now                             ack           the AP's GIC acknowledged now
+ * Physical pages are mapped once and kept (32 at most).
+ */
+static void
+dbg_snd_send(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint32_t a[8] = { 0 };
+	int32_t before;
+
+	if (cal_dram == NULL || n < 2) {
+		snprintf(out, cap, cal_dram == NULL ? "Calliope is not up\n" : "snd.send ID TYPE [a0..a7]\n");
+		return;
+	}
+	before = *(volatile int32_t *)(cal_dram + CAL_IPC_TX_OFF);
+	for (unsigned i = 2; i < n && i < 10; i++) {
+		a[i - 2] = (uint32_t)v[i];
+	}
+	cal_poker = current_thread();
+	cal_poking = true;
+	(void)calliope_send((uint32_t)v[0], (uint32_t)v[1], a, n > 2 ? n - 2 : 0);
+	calliope_settle("poke", 200);
+	cal_poking = false;
+	snprintf(out, cap, "sent %llu/%llu: %s (tx s %d -> %d, e %d); its words are in the log\n", v[0], v[1],
+	    *(volatile int32_t *)(cal_dram + CAL_IPC_TX_OFF) != before ? "taken" : "NOT taken", before,
+	    *(volatile int32_t *)(cal_dram + CAL_IPC_TX_OFF), *(volatile int32_t *)(cal_dram + CAL_IPC_TX_OFF + 4));
+}
+
+static void
+dbg_snd_log(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	calliope_log();
+	snprintf(out, cap, "Calliope's new lines are in the kernel log\n");
+}
+
+static void
+dbg_snd_state(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	uint32_t st = rd(abox, RDMA(RDMA_STATUS));
+
+	snprintf(out, cap, "RDMA%u CTRL0 %08x STATUS %08x (progress %u, offset %#x, count %u); UAIF2 CTRL0 %08x CTRL1 %08x STATUS %08x; "
+	    "ROUTE0 %08x FC0 %08x SPUS1 %08x; amps %s; frames from iOS %llu; Calliope %s, %u messages, %u pointers\n", RDMA_ID,
+	    rd(abox, RDMA(RDMA_CTRL0)), st, st >> 31, ((st >> 12) & 0xffff) << 4, st & 0xfff, rd(abox, ABOX_UAIF_CTRL0),
+	    rd(abox, ABOX_UAIF_CTRL1), rd(abox, ABOX_UAIF_STATUS), rd(abox, ABOX_ROUTE_CTRL0), rd(abox, ABOX_SPUS_CTRL_FC0),
+	    rd(abox, ABOX_SPUS_CTRL1), amps_on ? "on" : amps_ok ? "ready" : "missing", ios_frames, cal_booted ? "up" : "down",
+	    cal_msgs, cal_pointers);
+}
+
+static void
+dbg_snd_amps(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1 && v[0] != 0) {
+		amps_on = amps_up();
+		snprintf(out, cap, "amplifiers %s\n", amps_on ? "on" : "FAILED (see the log)");
+	} else {
+		amps_down();
+		amps_on = false;
+		snprintf(out, cap, "amplifiers off\n");
+	}
+}
+
 
 static void
 sound_thread(__unused void *parameter, __unused wait_result_t result)
@@ -1866,6 +1992,10 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
+	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
+	redwood_dbgport_add("snd.log", ": Calliope's new log lines into the kernel log", dbg_snd_log);
+	redwood_dbgport_add("snd.state", ": the DMA, UAIF2, routing, amplifiers, Calliope at a glance", dbg_snd_state);
+	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
 	if (snd_calliope >= 2) {
 		snd_rdma = 0;
 	}

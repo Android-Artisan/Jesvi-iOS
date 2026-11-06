@@ -407,6 +407,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/net_test ] && cp obj/net_test root/bin/
 	[ -f obj/rwlogd ] && cp obj/rwlogd root/bin/
 	[ -f obj/m2m_mark ] && cp obj/m2m_mark root/bin/
+	[ -f obj/rwsys ] && cp obj/rwsys root/bin/          # (sysctl strings from the Mac: the sound debug port)
 	[ -f obj/bluetool_stub ] && cp obj/bluetool_stub root/bin/
 	[ -f obj/store_test ] && cp obj/store_test root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
