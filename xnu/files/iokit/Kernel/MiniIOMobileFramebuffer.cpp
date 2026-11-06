@@ -109,6 +109,12 @@ static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
  */
 static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
 /*
+ * fb_fade=1 (default; B, 2026-11-06): a brightness change with CoreBrightness's FadePeriod (16.16 seconds: the
+ * lock's 12124 = 185 ms) is ramped as Apple's backlight does, one step a frame, even to the eye (in the square root
+ * of nits). Before, every change was one jump: the screen snapped off and on with the power button.
+ */
+static TUNABLE(uint32_t, gFade, "fb_fade", 1);
+/*
  * fb_mode_lpref=1 (B, 2026-11-06): the gate lets DSIM_UNDERRUN_CTRL (the command-mode underrun reference, dtbo
  * cmd_lp_ref) through whatever it holds. The first fb_mode=1 run found UEFI's 0x138b there, not the dtbo's 0x1e6e,
  * every other DSIM and DECON register exactly the native mode's. Samsung's driver writes cmd_lp_ref from the dtbo at
@@ -650,6 +656,9 @@ public:
 	thread_call_t   fBLCall;
 	uint32_t        fBLTarget;              /* nits in 16.16, as CoreBrightness gives it */
 	uint32_t        fBLSent;                /* DBV last sent, 0: none */
+	uint32_t        fBLCurrent;             /* nits in 16.16 last sent (where a fade starts from) */
+	uint32_t        fFadeFrom;              /* the fade: from, when it began, how long (absolute time; 0: none) */
+	uint64_t        fFadeStart, fFadeLen;
 	uint32_t        fBLRequests, fBLWrites, fBLFailures;
 	bool            fBLOff;
 
@@ -702,7 +711,7 @@ public:
 	uint32_t aorRead(void);
 	uint32_t        fAor0;                  /* the AOR (B1) the panel was found with: its full brightness */
 	bool            fPacketGo;              /* DSIM writes with PKT_GO, as Samsung's dsim_write_data() does */
-	void brightnessRequest(uint32_t level);
+	void brightnessRequest(uint32_t level, uint32_t fade16 = 0);
 	void displayPower(bool on);
 	IOLock *        fDsimLock;              /* one DSIM command sequence at a time */
 	bool            fDsimReads;             /* DCS reads work (a read timed out: none tried again) */
@@ -2179,6 +2188,26 @@ nitsToDBV(uint32_t level)
 	return gPanelDBV[steps - 1];
 }
 
+static uint64_t
+isqrt64(uint64_t v)
+{
+	uint64_t r = 0, bit = 1ULL << 62;
+
+	while (bit > v) {
+		bit >>= 2;
+	}
+	while (bit != 0) {
+		if (v >= r + bit) {
+			v -= r + bit;
+			r = (r >> 1) + bit;
+		} else {
+			r >>= 1;
+		}
+		bit >>= 2;
+	}
+	return r;
+}
+
 void
 IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused __unused)
 {
@@ -2189,9 +2218,25 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		uint64_t began, nits;
 		bool ok;
 
+		uint64_t fstart, flen, now = mach_absolute_time();
+		uint32_t from;
+		bool more = false;
+
 		IOLockLock(fb->fBLLock);
 		target = fb->fBLTarget;
+		from = fb->fFadeFrom;
+		fstart = fb->fFadeStart;
+		flen = fb->fFadeLen;
 		IOLockUnlock(fb->fBLLock);
+		if (flen != 0 && now - fstart < flen) {
+			/* the fade: even to the eye -- linear in the square root of nits */
+			uint64_t sf = isqrt64((uint64_t) from << 16), st = isqrt64((uint64_t) target << 16), sv;
+			uint64_t done = now - fstart;
+
+			sv = st >= sf ? sf + (st - sf) * done / flen : sf - (sf - st) * done / flen;
+			target = (uint32_t) ((sv * sv) >> 16);
+			more = true;
+		}
 		if (gBLThermalCap != 0 && target > gBLThermalCap) {
 			target = gBLThermalCap;
 		}
@@ -2201,12 +2246,19 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		    PANEL_AOR_DARKEST - (uint32_t) ((uint64_t) (PANEL_AOR_DARKEST - fb->fAor0) * nits / ((uint64_t) kPanelMaxNits << 16)) :
 		    fb->fAor0;
 		if (aor == fb->fBLSent && fb->fBLWrites != 0) {
+			if (more) {
+				uint64_t next;
+
+				clock_interval_to_deadline(16, kMillisecondScale, &next);
+				thread_call_enter_delayed(fb->fBLCall, next);
+			}
 			return;
 		}
 		began = mach_absolute_time();
 		IOLockLock(fb->fDsimLock);
 		ok = fb->blSend(dbv, aor);
 		fb->fBLSent = aor;
+		fb->fBLCurrent = target;
 		fb->fBLWrites++;
 		fb->fBLFailures += !ok;
 		if (fb->fBLWrites <= 2) {
@@ -2221,6 +2273,14 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 			fbSay("fb: bl: %u.%03u nits -> AOR %#x (read back %#x%s), DBV %#x %s in %llu us (write %u, %u failed)\n", target >> 16,
 			    (uint32_t) (((uint64_t) (target & 0xffff) * 1000) >> 16), aor, back, fb->fPacketGo ? ", PKT_GO" : "", dbv,
 			    ok ? "sent" : "NOT SENT", micros(mach_absolute_time() - began), fb->fBLWrites, fb->fBLFailures);
+		}
+		if (more) {
+			/* the next step a frame from now */
+			uint64_t next;
+
+			clock_interval_to_deadline(16, kMillisecondScale, &next);
+			thread_call_enter_delayed(fb->fBLCall, next);
+			return;
 		}
 	}
 }
@@ -2262,12 +2322,22 @@ IOMobileFramebuffer::setProperties(OSObject * properties)
 
 /* a brightness, in nits 16.16, for the panel: sent from the thread call (requests come in bursts: the last one wins) */
 void
-IOMobileFramebuffer::brightnessRequest(uint32_t level)
+IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 {
+	uint64_t len = 0;
+
 	if (fBLCall == NULL || fDsim == NULL) {
 		return;
 	}
+	if (gFade && fade16 != 0 && fBLWrites != 0) {
+		uint64_t ns = (uint64_t) fade16 * NSEC_PER_SEC / 65536;
+
+		nanoseconds_to_absolutetime(ns > NSEC_PER_SEC ? NSEC_PER_SEC : ns, &len);
+	}
 	IOLockLock(fBLLock);
+	fFadeFrom = fBLCurrent;
+	fFadeStart = mach_absolute_time();
+	fFadeLen = len;
 	fBLTarget = level;
 	IOLockUnlock(fBLLock);
 	thread_call_enter(fBLCall);
@@ -3610,6 +3680,8 @@ AppleARMBacklight::publishParameters(void)
 }
 
 /* a "brightness": a number of 0..max, or { value = N } */
+static uint32_t gPendingFade;           /* FadePeriod of the request being taken (16.16 s) */
+
 bool
 AppleARMBacklight::takeBrightness(OSObject * value, const char * name)
 {
@@ -3625,7 +3697,7 @@ AppleARMBacklight::takeBrightness(OSObject * value, const char * name)
 	fValue = number->unsigned32BitValue() > kBacklightMax ? kBacklightMax : number->unsigned32BitValue();
 	publishParameters();
 	if (fFB != NULL) {
-		fFB->brightnessRequest((uint32_t) ((uint64_t) fValue * kPanelMaxNits));     /* value / max * 420 nits, in 16.16 */
+		fFB->brightnessRequest((uint32_t) ((uint64_t) fValue * kPanelMaxNits), gPendingFade);     /* value / max * 420 nits, in 16.16 */
 	}
 	fbSay("fb: bl: backlight %s = %u of %u\n", name, fValue, kBacklightMax);
 	return true;
@@ -3643,6 +3715,11 @@ AppleARMBacklight::setProperties(OSObject * properties)
 		return kIOReturnBadArgument;
 	}
 	fRequests++;
+	{
+		OSNumber * fade = OSDynamicCast(OSNumber, dict->getObject("FadePeriod"));
+
+		gPendingFade = fade != NULL ? fade->unsigned32BitValue() : 0;
+	}
 	keys = OSCollectionIterator::withCollection(dict);
 	while (keys != NULL && (key = OSDynamicCast(OSSymbol, keys->getNextObject())) != NULL) {
 		OSObject * value = dict->getObject(key);
