@@ -48,6 +48,10 @@
 #include <sys/redwood_bbi2c.h>
 #include <sys/systm.h>
 #include <vm/memory_types.h>
+#include <kern/kalloc.h>
+#include <sys/kauth.h>
+#include <sys/vnode.h>
+#include <sys/vnode_internal.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
@@ -56,6 +60,7 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
 extern void IOSleep(unsigned int milliseconds);
 extern void loader_log_line(const char *line);
 extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size);
+extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);   /* (redwood_image.c) */
 
 /* ---- addresses ------------------------------------------------------------------------------------------------ */
 
@@ -960,6 +965,376 @@ fill(uint64_t at, uint32_t n)
 
 /* ---- the thread ----------------------------------------------------------------------------------------------- */
 
+/* ---- Calliope (snd_calliope=1, B 2026-11-06): Samsung's DSP firmware, stage 1 -- load, map, start, see it live ------ */
+/*
+ * proposals/sound-calliope/NOTES.md. On the S20 Linux never programs an RDMA; Calliope does (abox_rdma.c only sends IPC),
+ * and the bypass (above) stays idle on ABOX v3. Samsung's order (abox.c abox_enable): ABOX's GIC (abox_gic_init_gic),
+ * the CPU clock, the timer (abox_start_timer), the firmware (abox_core_download_firmware), DRAM on (SYSPOWER), the cores'
+ * PMU power then enable. Calliope sees its DRAM at IOVA 0x80000000 through ABOX's SysMMU (abox.c: IOVA_DRAM_FIRMWARE ->
+ * abox_rmem, DRAM_FIRMWARE_SIZE 0x2A00000, and 0x10000000 one to one), so the SysMMU is turned ON here with a first-level
+ * table of 1 MB sections (exynos-iommu.h: mk_lv1ent_sect(pa) = pa >> 4 | 2; FLPT base by page number, the VM register
+ * set when CAPA1 says VCR). Facts: exynos9830.dts abox@18c50000, abox-core@18c55000/@18c55080, abox-gic@18cf0000,
+ * abox-rmem 0xF8000000 (free in UEFI's map: f2195000-100000000 type 7, read 2026-11-06).
+ */
+#define CAL_SRAM_PHYS           0x18d00000U
+#define CAL_SRAM_SIZE           0x78c00U
+#define CAL_DRAM_PHYS           0xf8000000ULL
+#define CAL_DRAM_SIZE           0x2a00000U
+#define CAL_IOVA_DRAM           0x80000000U
+#define CAL_IOVA_SLOG           0xE0000000U     /* IOVA_SILENT_LOG */
+#define CAL_SLOG_PHYS           0xF2200000ULL
+#define CAL_SLOG_SIZE           0x2800000U
+#define CAL_IOVA_DUMP           0xD0000000U     /* IOVA_DUMP_BUFFER */
+#define CAL_DUMP_PHYS           0xFAA00000ULL
+#define CAL_DUMP_SIZE           0x5600000U
+#define CAL_IOVA_VSS            0xA0000000U     /* IOVA_VSS_FIRMWARE; VSS_PARAMETER +16 MB, VSS_PCI +32 MB, doorbell +48 MB */
+#define CAL_IOVA_PCI            0xA2000000U     /* IOVA_VSS_PCI */
+#define CAL_PCI_PHYS            0xF4A00000ULL   /* Samsung's abox-pci-rmem is 0xF4200000, under our silent log: moved up */
+#define CAL_PCI_SIZE            0x800000U
+#define CAL_VSS_SPARE_PHYS      0xF5200000ULL   /* one cleared MB behind every other voice-call section */
+static volatile uint8_t *cal_slog;              /* Calliope's own log, mapped for us to read */
+#define CAL_GPR_PHYS            0x18c55000U
+#define CAL_GICD_PHYS           0x18cf1000U
+#define CAL_GICC_PHYS           0x18cf2000U
+#define CAL_TIMER_PHYS          0x18ce0000U
+#define CAL_IPC_RX_OFF          0x868000U       /* samsung,ipc-rx-area <1 0x868000 0x18000>: DRAM */
+#define CAL_IPC_TX_OFF          0x850000U       /* samsung,ipc-tx-area <1 0x850000 0x18000>: DRAM */
+#define CAL_IPC_AREA            0x18000U
+/* abox_msg.h: struct abox_msg_queue = cmd queue (idx_s, idx_e, 128 cmds of 56 bytes), then data queue (idx_s, idx_e, len, bytes) */
+#define CAL_Q_CMD_ELEM          8U
+#define CAL_Q_CMD_SIZE          56U
+#define CAL_Q_CMD_LEN           128U
+#define CAL_Q_DATA              (8U + CAL_Q_CMD_LEN * CAL_Q_CMD_SIZE)
+#define CAL_Q_DATA_ELEM         (CAL_Q_DATA + 12U)
+#define CAL_HNDSHK_OFF          0x2f2e0U        /* samsung,handshake-area <0 0x2f2e0 0x20>: SRAM */
+#define MMU_CAPA0_V7            0x870U
+#define MMU_CAPA1_V7            0x874U
+static uint32_t snd_calliope;
+
+/*
+ * A firmware file from the system image's /fw once iOS's root is mounted (A, 2026-11-06): Calliope's 3 MB do not fit
+ * in the small image beside everything else (its slot is 14.4 MB), so userland/build.sh puts them in the system image
+ * (on super), as redwood_adsp.c's root_file does for the Qualcomm DSP. Returns kalloc'd memory (*owned set) or NULL.
+ */
+static uint8_t *
+calliope_root_file(const char *name, uint64_t *size)
+{
+	char path[64];
+	vfs_context_t context = vfs_context_kernel();
+	vnode_t vnode = NULLVP;
+	struct vnode_attr attributes;
+	uint8_t *data;
+	int left = 0, error;
+
+	if (rootvnode == NULLVP) {
+		return NULL;
+	}
+	snprintf(path, sizeof(path), "/fw/%s", name);
+	if (vnode_lookup(path, 0, &vnode, context) != 0) {
+		return NULL;
+	}
+	VATTR_INIT(&attributes);
+	VATTR_WANTED(&attributes, va_data_size);
+	if (vnode_getattr(vnode, &attributes, context) != 0 || attributes.va_data_size == 0 ||
+	    attributes.va_data_size > 64 * 1024 * 1024) {
+		vnode_put(vnode);
+		return NULL;
+	}
+	data = kalloc_data(attributes.va_data_size, Z_WAITOK);
+	if (data == NULL) {
+		vnode_put(vnode);
+		return NULL;
+	}
+	error = vn_rdwr(UIO_READ, vnode, (caddr_t)data, (int)attributes.va_data_size, 0, UIO_SYSSPACE, 0,
+	    vfs_context_ucred(context), &left, vfs_context_proc(context));
+	vnode_put(vnode);
+	if (error != 0 || left != 0) {
+		kfree_data(data, attributes.va_data_size);
+		return NULL;
+	}
+	*size = attributes.va_data_size;
+	return data;
+}
+
+static bool
+calliope_copy(volatile uint8_t *to, uint32_t room, const char *name, uint32_t offset)
+{
+	uint64_t size = 0;
+	const uint8_t *fw = redwood_image_file("fw", name, &size, NULL);
+	uint8_t *owned = NULL;
+
+	if (fw == NULL) {
+		fw = owned = calliope_root_file(name, &size);
+	}
+	if (fw == NULL || size == 0 || offset + size > room) {
+		snd_log("snd: calliope: %s: %s\n", name, fw == NULL ? "neither in the small image's fw/ nor in /fw" : "does not fit");
+		if (owned != NULL) {
+			kfree_data(owned, size);
+		}
+		return false;
+	}
+	for (uint64_t i = 0; i + 4 <= size; i += 4) {
+		uint32_t w;
+
+		memcpy(&w, fw + i, 4);
+		*(volatile uint32_t *)(to + offset + i) = w;
+	}
+	for (uint64_t i = size & ~3ULL; i < size; i++) {
+		to[offset + i] = fw[i];
+	}
+	snd_log("snd: calliope: %s (%llu bytes) at +%#x%s\n", name, size, offset, owned ? " (from the system image)" : "");
+	if (owned != NULL) {
+		kfree_data(owned, size);
+	}
+	return true;
+}
+
+
+/*
+ * Stage 2: read Calliope's messages to the AP the way abox_msg_recv does (the AP owns the rx queue's idx_s) and say what
+ * each one is (ABOX_IPC_MSG: ipcid, task_id, then for IPC_SYSTEM msgtype, param1..3). BOOT_DONE's param3 is the
+ * firmware's version, 4 characters ("Calliope is ready to sing").
+ */
+static uint32_t cal_msgs;
+
+static void
+calliope_drain(volatile uint8_t *dram)
+{
+	volatile uint8_t *rx = dram + CAL_IPC_RX_OFF;
+	uint32_t data_len = *(volatile uint32_t *)(rx + CAL_Q_DATA + 8);
+
+	for (int n = 0; n < 32; n++) {
+		int32_t s = *(volatile int32_t *)(rx + 0), e = *(volatile int32_t *)(rx + 4);
+		volatile uint8_t *cmd, *d;
+		uint32_t idx, size, w[6];
+
+		if (s == e || s < 0 || s >= (int32_t)CAL_Q_CMD_LEN || data_len == 0 || data_len > CAL_IPC_AREA) {
+			return;
+		}
+		cmd = rx + CAL_Q_CMD_ELEM + (uint32_t)s * CAL_Q_CMD_SIZE;
+		idx = *(volatile uint32_t *)(cmd + 20);
+		if (idx >= data_len) {
+			snd_log("snd: calliope: message %u: data index %#x is beyond the queue (%#x): reading stops\n", cal_msgs, idx,
+			    data_len);
+			*(volatile int32_t *)(rx + 0) = e;
+			return;
+		}
+		d = rx + CAL_Q_DATA_ELEM + idx;
+		size = *(volatile uint32_t *)d;
+		for (int i = 0; i < 6; i++) {
+			w[i] = (size >= 4U * (i + 1)) ? *(volatile uint32_t *)(d + 4 + 4 * i) : 0;
+		}
+		cal_msgs++;
+		if (w[0] == 1 && w[2] == 3) {
+			snd_log("snd: calliope: Calliope is ready to sing (version %c%c%c%c), message %u\n", (char)(w[5] >> 24),
+			    (char)(w[5] >> 16), (char)(w[5] >> 8), (char)w[5], cal_msgs);
+		} else if (cal_msgs <= 80) {
+			snd_log("snd: calliope: message %u: id %d cmd %d, %u bytes: ipc %u task %d type %#x p %#x %#x %#x\n", cal_msgs,
+			    *(volatile int32_t *)cmd, *(volatile int32_t *)(cmd + 4), size, w[0], (int)w[1], w[2], w[3], w[4], w[5]);
+		}
+		*(volatile int32_t *)(rx + 0) = (s + 1) % (int32_t)CAL_Q_CMD_LEN;
+		*(volatile int32_t *)(rx + CAL_Q_DATA + 0) = (int32_t)((idx + size + 4) % data_len);
+		__asm__ volatile ("dsb sy" ::: "memory");
+	}
+}
+
+static void
+calliope_boot(void)
+{
+	volatile uint8_t *sram, *dram, *gpr, *gicd, *gicc, *timer, *pt;
+	uint64_t pool_phys = 0, pool_size = 0, pt_phys;
+	vm_offset_t pool_virt = 0;
+	uint32_t capa0, capa1 = 0, flpt, inv, rx0;
+	bool vcr = false;
+	static const struct { uint32_t off; const char *name; } gates[] = {
+		{ 0x2040, "CCLK_CA32" }, { 0x2084, "RSTNSYNC CPU_ACLK" }, { 0x2088, "RSTNSYNC CPU" }, { 0x208c, "RSTNSYNC CPU_PCLKDBG" },
+		{ 0x207c, "CPU0 SW_RESET" }, { 0x2080, "CPU1 SW_RESET" },
+	};
+
+	sram = (volatile uint8_t *)ml_io_map(CAL_SRAM_PHYS, CAL_SRAM_SIZE);
+	dram = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_DRAM_PHYS, CAL_DRAM_SIZE, VM_WIMG_WCOMB);
+	gpr = (volatile uint8_t *)ml_io_map(CAL_GPR_PHYS, 0x1000);
+	gicd = (volatile uint8_t *)ml_io_map(CAL_GICD_PHYS, 0x1000);
+	gicc = (volatile uint8_t *)ml_io_map(CAL_GICC_PHYS, 0x1000);
+	timer = (volatile uint8_t *)ml_io_map(CAL_TIMER_PHYS, 0x1000);
+	if (sram == NULL || dram == NULL || gpr == NULL || gicd == NULL || gicc == NULL || timer == NULL ||
+	    redwood_wifi_dma_pool(&pool_phys, &pool_virt, &pool_size) < 0 || pool_size < (8U << 20)) {
+		snd_log("snd: calliope: cannot map (or no DMA pool for the SysMMU table)\n");
+		return;
+	}
+	/* the CPU's clocks (Samsung: clk_cpu, abox_request_cpu_gear): gates passed, the CPU Q-channel asked for */
+	for (unsigned i = 0; i < sizeof(gates) / sizeof(gates[0]); i++) {
+		uint32_t was = rd(cmu, gates[i].off), now = (was & GATE_MANUAL) ? (was | GATE_CG_VAL) : (was & ~GATE_AUTO);
+
+		if (now != was) {
+			wr(cmu, gates[i].off, now);
+		}
+	}
+	wr(cmu, 0x3000, (rd(cmu, 0x3000) & ~QCH_ENABLE) | QCH_CLOCK_REQ);
+	snd_log("snd: calliope: CPU clock mux %u (0 PLL divider, 1 CMU_TOP), ACLK div %#x, CA32 gate %#x, QCH CPU %#x\n",
+	    rd(cmu, 0x1004) & 1, rd(cmu, 0x1810), rd(cmu, 0x2040), rd(cmu, 0x3000));
+	/* ABOX's GIC and timer, as abox_enable */
+	wr(gicc, 0x04, 0xff);                   /* GIC_CPU_PRIMASK */
+	wr(gicd, 0x000, 0x3);                   /* GIC_DIST_CTRL */
+	wr(gicc, 0x000, 0x3);                   /* GIC_CPU_CTRL */
+	wr(timer, 0x600 + 0x20 * 0, 1);         /* ABOX_TIMER_CTRL0(0): START */
+	wr(timer, 0x600 + 0x20 * 2, 1);         /* ABOX_TIMER_CTRL0(2) */
+	/* the firmware (abox_core_download_firmware): SRAM and DRAM cleared, the four images at the dts offsets */
+	for (uint32_t i = 0; i < CAL_SRAM_SIZE; i += 4) {
+		*(volatile uint32_t *)(sram + i) = 0;
+	}
+	for (uint32_t i = 0; i < CAL_DRAM_SIZE; i += 4) {
+		*(volatile uint32_t *)(dram + i) = 0;
+	}
+	if (!calliope_copy(sram, CAL_SRAM_SIZE, "calliope_sram.bin", 0) || !calliope_copy(dram, CAL_DRAM_SIZE, "calliope_dram.bin", 0) ||
+	    !calliope_copy(sram, CAL_SRAM_SIZE, "calliope_sram_2.bin", 0x32000) ||
+	    !calliope_copy(dram, CAL_DRAM_SIZE, "calliope_dram_2.bin", 0x280000)) {
+		return;
+	}
+	*(volatile uint32_t *)(sram + CAL_HNDSHK_OFF) = 0x656b6177;   /* hndshk_tag->suspend_wait_flag = "wake" */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	/* the SysMMU on, IOVA 0x80000000 -> abox_rmem: a 16 KB first-level table 64 KB below the sound ring in the pool */
+	pt_phys = pool_phys + pool_size - 0x30000;
+	pt = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)pt_phys, 0x4000, VM_WIMG_WCOMB);
+	if (pt == NULL) {
+		snd_log("snd: calliope: cannot map the SysMMU table\n");
+		return;
+	}
+	for (uint32_t i = 0; i < 4096; i++) {
+		*(volatile uint32_t *)(pt + 4 * i) = 0;
+	}
+	for (uint32_t mb = 0; mb < CAL_DRAM_SIZE >> 20; mb++) {
+		*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_DRAM >> 20) + mb)) = (uint32_t)((CAL_DRAM_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+	}
+	*(volatile uint32_t *)(pt + 4 * (0x10000000U >> 20)) = (0x10000000U >> 4) | 2;
+	/*
+	 * A, 2026-11-06: Calliope's first access beyond its firmware faulted at 0xE0803000 (SysMMU INT 0x2): its silent log,
+	 * IOVA_SILENT_LOG 0xE0000000 (abox.h:55), Samsung's reserved "exynos,abox_slog" of 0x2800000 (exynos9830.dts:2640;
+	 * abox_dbg.c:139 maps it). Also its dump buffer, IOVA_DUMP_BUFFER 0xD0000000, "exynos,abox_dbg" 0x5600000
+	 * (abox_dbg.c:392). Both in the low bank's free run after the framebuffer (UEFI's map: f2195000-100000000 free):
+	 * the log at 0xF2200000 (1 MB aligned, cleared), the dump buffer from 0xFAA00000 to the 4 GB line, right after
+	 * abox_rmem -- the same hole Samsung's sizes fill exactly.
+	 */
+	{
+		volatile uint8_t *slog = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_SLOG_PHYS, CAL_SLOG_SIZE,
+		    VM_WIMG_WCOMB);
+
+		if (slog != NULL) {
+			for (uint32_t i = 0; i < CAL_SLOG_SIZE; i += 4) {
+				*(volatile uint32_t *)(slog + i) = 0;
+			}
+			cal_slog = slog;
+		}
+		for (uint32_t mb = 0; mb < CAL_SLOG_SIZE >> 20; mb++) {
+			*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_SLOG >> 20) + mb)) = (uint32_t)((CAL_SLOG_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+		}
+		for (uint32_t mb = 0; mb < CAL_DUMP_SIZE >> 20; mb++) {
+			*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_DUMP >> 20) + mb)) = (uint32_t)((CAL_DUMP_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+		}
+		/*
+		 * A, 2026-11-06: next fault 0xA2000002, IOVA_VSS_PCI (abox.h:52; abox_pci.c:140 maps abox-pci-rmem, 8 MB,
+		 * cleared). The voice-call regions (VSS firmware/parameter in the modem's shared memory, the PCI doorbell) have
+		 * no modem behind them here: their 64 MB of IOVA all point at one cleared spare MB, the PCI 8 MB at its own.
+		 */
+		{
+			volatile uint8_t *pci = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_PCI_PHYS,
+			    CAL_PCI_SIZE + (1U << 20), VM_WIMG_WCOMB);
+
+			if (pci != NULL) {
+				for (uint32_t i = 0; i < CAL_PCI_SIZE + (1U << 20); i += 4) {
+					*(volatile uint32_t *)(pci + i) = 0;
+				}
+			}
+			for (uint32_t mb = 0; mb < 64; mb++) {
+				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_VSS >> 20) + mb)) = (uint32_t)(CAL_VSS_SPARE_PHYS >> 4) | 2;
+			}
+			for (uint32_t mb = 0; mb < CAL_PCI_SIZE >> 20; mb++) {
+				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((CAL_PCI_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+			}
+		}
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	capa0 = rd(mmu, MMU_CAPA0_V7);
+	if ((capa0 >> 11) & 1) {
+		capa1 = rd(mmu, MMU_CAPA1_V7);
+		vcr = (capa1 >> 14) & 1;
+	}
+	flpt = vcr ? 0x800c : 0x000c;
+	inv = vcr ? 0x8010 : 0x0010;
+	wr(mmu, MMU_CTRL, 0x7);                 /* CTRL_BLOCK while it is set up */
+	wr(mmu, MMU_CFG, 0);
+	if (vcr) {
+		wr(mmu, 0x8004, 0);             /* REG_MMU_CFG_VM */
+	}
+	wr(mmu, flpt, (uint32_t)(pt_phys >> 12));
+	wr(mmu, inv, 1);                        /* all TLBs invalidated */
+	wr(mmu, MMU_CTRL, 0x5);                 /* CTRL_ENABLE */
+	if (vcr) {
+		wr(mmu, MMU_CTRL_VM, 0x5 | 0x8);        /* CTRL_ENABLE | CTRL_FAULT_STALL_MODE */
+	}
+	snd_log("snd: calliope: SysMMU on: CAPA0 %#x CAPA1 %#x (VCR %u), table at %#llx, CTRL %#x CTRL_VM %#x FLPT %#x\n", capa0, capa1,
+	    vcr, pt_phys, rd(mmu, MMU_CTRL), rd(mmu, MMU_CTRL_VM), rd(mmu, flpt));
+	/* DRAM on, then the cores: power, then enable (abox_core_power, abox_core_enable) */
+	wr(abox, ABOX_SYSPOWER_CTRL, 1);
+	wait_bits(abox, ABOX_SYSPOWER_STATUS, 1, 1, 10000);
+	rx0 = *(volatile uint32_t *)(dram + CAL_IPC_RX_OFF);
+	/*
+	 * A, 2026-11-06, stage 2: Samsung's abox_msg_init sets up both message queues before the DSP runs (empty, and the
+	 * data queue's length = the area less the headers). Without it the first run's queue length was 0.
+	 */
+	for (uint32_t q = 0; q < 2; q++) {
+		volatile uint8_t *a = dram + (q ? CAL_IPC_RX_OFF : CAL_IPC_TX_OFF);
+
+		*(volatile int32_t *)(a + 0) = 0;
+		*(volatile int32_t *)(a + 4) = 0;
+		*(volatile int32_t *)(a + CAL_Q_DATA + 0) = 0;
+		*(volatile int32_t *)(a + CAL_Q_DATA + 4) = 0;
+		*(volatile uint32_t *)(a + CAL_Q_DATA + 8) = CAL_IPC_AREA - CAL_Q_DATA_ELEM;
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	upd(pmu, 0x3180, 1, 1);
+	upd(pmu, 0x3200, 1, 1);
+	IOSleep(2);
+	upd(pmu, 0x31a0, 1, 1);
+	upd(pmu, 0x3220, 1, 1);
+	snd_log("snd: calliope: cores powered %#x/%#x, enabled %#x/%#x; IPC rx word 0 before: %#x\n", rd(pmu, 0x3180), rd(pmu, 0x3200),
+	    rd(pmu, 0x31a0), rd(pmu, 0x3220), rx0);
+	/* signs of life for 30 s: its messages as they come (every 20 ms); every 500 ms for the first 5 s the GPR, a fault */
+	for (int tick = 1; tick <= 1500; tick++) {
+		int t = tick / 25 - 1;
+
+		IOSleep(20);
+		calliope_drain(dram);
+		if (tick % 25 != 0 || t >= 10) {
+			continue;
+		}
+		snd_log("snd: calliope: +%d ms: GPR0 %08x %08x %08x %08x .. pc? %08x %08x; rx %08x %08x %08x %08x; SysMMU INT %#x FAULT_VA %#x\n",
+		    (t + 1) * 500, rd(gpr, 0x0), rd(gpr, 0x4), rd(gpr, 0x8), rd(gpr, 0xc), rd(gpr, 0x3c), rd(gpr, 0x40),
+		    *(volatile uint32_t *)(dram + CAL_IPC_RX_OFF), *(volatile uint32_t *)(dram + CAL_IPC_RX_OFF + 4),
+		    *(volatile uint32_t *)(dram + CAL_IPC_RX_OFF + 8), *(volatile uint32_t *)(dram + CAL_IPC_RX_OFF + 12),
+		    rd(mmu, 0x060), rd(mmu, vcr ? 0x1000 : 0x0070));
+		/* Calliope's own words: the printable text in its silent log so far (the first 4 KB with something in them) */
+		if (cal_slog != NULL) {
+			char text[200];
+			unsigned n = 0;
+
+			for (uint32_t i = 0; i < 0x100000 && n + 1 < sizeof(text); i++) {
+				char c = (char)cal_slog[i];
+
+				if (c >= 0x20 && c < 0x7f) {
+					text[n++] = c;
+				} else if (c == '\n' && n > 0 && text[n - 1] != '|') {
+					text[n++] = '|';
+				}
+			}
+			text[n] = 0;
+			if (n > 0) {
+				snd_log("snd: calliope: its log: %s\n", text);
+			}
+		}
+	}
+}
+
 static void
 sound_thread(__unused void *parameter, __unused wait_result_t result)
 {
@@ -969,6 +1344,32 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	bool muted = false, decided = false;
 
 	if (!aud_power_on() || !aud_clocks()) {
+		return;
+	}
+	if (snd_calliope != 0) {
+		/*
+		 * The firmware is in the system image's /fw, which is the root only once init has switched to iOS's volume (the
+		 * small image is the root before): wait until the file is there (120 s at most), unless the small image has it.
+		 */
+		{
+			uint64_t sz = 0;
+			unsigned waited = 0;
+			bool there = redwood_image_file("fw", "calliope_dram_2.bin", &sz, NULL) != NULL;
+
+			while (!there && waited++ < 240) {
+				vnode_t vn = NULLVP;
+
+				if (rootvnode != NULLVP && vnode_lookup("/fw/calliope_dram_2.bin", 0, &vn, vfs_context_kernel()) == 0) {
+					vnode_put(vn);
+					there = true;
+					break;
+				}
+				delay_for_interval(500, NSEC_PER_MSEC);
+			}
+			snd_log("snd: calliope: the firmware is %s (after %u ms)\n", there ? "there" : "NOT there after 120 s",
+			    waited * 500);
+		}
+		calliope_boot();                /* stage 1 of Samsung's way: the DSP firmware; no bypass playback this run */
 		return;
 	}
 	abox_route();
@@ -1135,6 +1536,7 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_sblimit", &snd_sblimit, sizeof(snd_sblimit));
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
+	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
 	if (snd_gain > REDWOOD_GUARD_MAX_GAIN) {
 		snd_gain = REDWOOD_GUARD_MAX_GAIN;
 	}
@@ -1148,7 +1550,7 @@ redwood_exynos_sound_init(void)
 	}
 	buf_phys = pool_phys + pool_size - 0x10000;
 	buf = (int16_t *)ml_io_map_unmappable((vm_offset_t)buf_phys, 0x10000, VM_WIMG_WCOMB);
-	pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x2000);
+	pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);        /* (to 0x3224: the Calliope cores' power, snd_calliope) */
 	cmu = (volatile uint8_t *)ml_io_map(CMU_AUD_PHYS, 0x4000);
 	mmu = (volatile uint8_t *)ml_io_map(SYSMMU_PHYS, 0x9000);
 	abox = (volatile uint8_t *)ml_io_map(ABOX_PHYS, 0x2000);

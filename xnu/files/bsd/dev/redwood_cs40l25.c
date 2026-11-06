@@ -239,6 +239,19 @@ static volatile bool released, broken;
 static bool bus_taken;
 static const char *step = "start";
 
+/*
+ * kern.redwood.haptic (x1slte, 2026-11-06): how far the bring-up got and why it stopped, readable at any time
+ * (a boot's first lines are gone from the log within the hour; the user's "it stopped vibrating" had nothing to read).
+ */
+#include <sys/sysctl.h>
+static char haptic_state[160] = "not started";
+static uint32_t haptic_attempts;
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_STRING(_kern_redwood, OID_AUTO, haptic, CTLFLAG_RD | CTLFLAG_LOCKED, haptic_state, 0,
+    "the vibration motor: serving, or where its bring-up stopped");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, haptic_attempts, CTLFLAG_RD | CTLFLAG_LOCKED, &haptic_attempts, 0,
+    "bring-up attempts this boot (3 at most)");
+
 /* ROM values as found before anything was done (haptic=1's look) */
 static bool rom_alive;
 static uint32_t rom_regs[10];
@@ -287,7 +300,8 @@ reset_is_high(void)
 static void
 give_up(const char *why)
 {
-	hsay("haptic: cs40l25: %s (at: %s): the chip is put into reset, nothing more this run\n", why, step);
+	hsay("haptic: cs40l25: %s (at: %s): the chip is put into reset\n", why, step);
+	snprintf(haptic_state, sizeof(haptic_state), "stopped at %s: %s (attempt %u)", step, why, haptic_attempts);
 	broken = true;
 	if (reset_bank != NULL) {
 		reset_pin(false);
@@ -331,6 +345,31 @@ le32(const uint8_t *p)
 	return le24(p) | (uint32_t)p[3] << 24;
 }
 
+/*
+ * One I2C transfer, sent again (the bus freed first) up to twice more when it is not acknowledged (x1slte, 2026-11-06:
+ * a single lost read while serving iOS put the motor in reset for the rest of the boot; the bus is bit-banged on a
+ * GPIO bank the battery gauge's bus shares). The chip only acts on a transfer it acknowledged, so a retry is safe.
+ */
+static uint32_t xfer_retries;
+
+static bool
+xfer_retry(const uint8_t *w, uint32_t wlen, uint8_t *r, uint32_t rlen)
+{
+	for (int tries = 0; tries < 3; tries++) {
+		if (tries > 0) {
+			char why[160];
+
+			delay_for_interval(2, NSEC_PER_MSEC);
+			(void) redwood_bbi2c_setup(&bus, false, why, sizeof(why));
+			xfer_retries++;
+		}
+		if (redwood_bbi2c_xfer(&bus, CS_ADDR, w, wlen, r, rlen)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /* one register; false (and no give_up) if nobody answers: a look may ask a chip held in reset */
 static bool
 rd(uint32_t reg, uint32_t *v)
@@ -341,7 +380,7 @@ rd(uint32_t reg, uint32_t *v)
 		return false;
 	}
 	put_be32(a, reg);
-	if (!redwood_bbi2c_xfer(&bus, CS_ADDR, a, 4, b, 4)) {
+	if (!xfer_retry(a, 4, b, 4)) {
 		return false;
 	}
 	*v = be32(b);
@@ -409,7 +448,7 @@ wr_once(uint32_t reg, uint32_t v)
 	}
 	put_be32(b, reg);
 	put_be32(b + 4, v);
-	if (!redwood_bbi2c_xfer(&bus, CS_ADDR, b, 8, NULL, 0)) {
+	if (!xfer_retry(b, 8, NULL, 0)) {
 		give_up("a write was not acknowledged");
 		return false;
 	}
@@ -1448,11 +1487,41 @@ cs_thread(__unused void *parameter, __unused wait_result_t result)
 	if (level >= 2 && rom_test) {
 		rom_buzz();
 	}
-	if (level >= 2 && come_out_of_reset() && level >= 3 && configure() && load_firmware()) {
-		if (level == 4) {
-			one_effect();
-		} else if (level == 5) {
-			serve();
+	/*
+	 * Up to three bring-ups (x1slte, 2026-11-06): one run served iOS, a later boot left no /dev/redwood-haptic. A bring-up
+	 * that gives up (the chip in reset) is started again from the reset, with the bus set up afresh.
+	 */
+	for (haptic_attempts = 1; level >= 2 && haptic_attempts <= 3; haptic_attempts++) {
+		if (haptic_attempts > 1) {
+			char again[192];
+
+			delay_for_interval(500, NSEC_PER_MSEC);
+			broken = false;
+			nwseq = 0;
+			ncontrols = 0;
+			nalgos = 0;
+			step = "start";
+			if (!redwood_bbi2c_setup(&bus, false, again, sizeof(again))) {
+				break;
+			}
+			bus_taken = true;
+			hsay("haptic: cs40l25: attempt %u, from the reset\n", haptic_attempts);
+		}
+		if (come_out_of_reset() && level >= 3 && configure() && load_firmware()) {
+			snprintf(haptic_state, sizeof(haptic_state), "%s (attempt %u, %u block retries, %u transfer retries)",
+			    level == 5 ? "serving iOS" : "firmware loaded", haptic_attempts, block_retries, xfer_retries);
+			if (level == 4) {
+				one_effect();
+			} else if (level == 5) {
+				serve();
+				if (broken && haptic_attempts < 3) {
+					continue;       /* serving stopped on a fault: the bring-up again, from the reset */
+				}
+			}
+			break;
+		}
+		if (!broken || level < 3) {
+			break;
 		}
 	}
 	if (!broken && level >= 3) {

@@ -813,6 +813,15 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
 	fi
+	# x1slte: ABOX's Calliope DSP firmware (bsd/dev/redwood_exynos_sound.c, snd_calliope=1), the phone's /vendor/firmware
+	# calliope_*.bin and abox_tplg.bin, from ../fw-sound (Samsung's: never committed). In the system image: 4 MB that do not
+	# fit in the small one's 14.4 MB slot; the kernel reads them from /fw once iOS's volume is the root.
+	for f in calliope_sram.bin calliope_dram.bin calliope_sram_2.bin calliope_dram_2.bin abox_tplg.bin; do
+		if [ -f ../fw-sound/$f ]; then
+			mkdir -p sysroot/fw
+			install -m 0644 ../fw-sound/$f sysroot/fw/
+		fi
+	done
 	# ... and the speaker amplifiers' configuration, the phone's /vendor/etc/aw882xx_acf.bin (bsd/dev/redwood_speaker.c,
 	# for sound=3): Android's own register values, which are not in the repository either
 	if [ -f ../fw-audio/aw882xx_acf.bin ]; then
