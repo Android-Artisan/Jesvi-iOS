@@ -26,9 +26,9 @@ mkdir "$HERE/files.new"
 while IFS= read -r f; do
 	[ -f "$f" ] || [ -L "$f" ] || continue      # added in a commit, deleted since
 	mkdir -p "$HERE/files.new/$(dirname "$f")"
-	cp -P --preserve=mode "$f" "$HERE/files.new/$f"
+	cp -pP "$f" "$HERE/files.new/$f"
 done < "$HERE/files.list"
-rm -rf "$HERE/files" "$HERE/files.list"
+rm -rf "$HERE/files"
 mv "$HERE/files.new" "$HERE/files"
 
 echo "xnu/redwood.patch: $(grep -c '^diff --git' "$HERE/redwood.patch") files changed, $(wc -c < "$HERE/redwood.patch") bytes"

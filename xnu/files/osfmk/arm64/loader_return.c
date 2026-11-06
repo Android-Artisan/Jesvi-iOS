@@ -45,6 +45,7 @@ extern void gic_v3_irq_cpu_shutdown(void);
 void loader_log_putc(char c);
 void loader_return(void);
 extern void redwood_adreno_quiesce(void);
+extern void redwood_usb_gadget_quiesce(void);  /* bsd/dev/redwood_dwc3.c: the rest of the log out over USB, then the controller stopped */
 extern void redwood_mali_quiesce(void);
 extern void redwood_adreno_stop(void);
 extern void redwood_adreno_minute(void);
@@ -91,6 +92,39 @@ uint64_t        loader_log_total;        /* characters ever put in the log (redw
 static uint32_t loader_log_lock;
 
 static void loader_log_put_locked(char c);
+
+/*
+ * A second reader of every character the log gets, as it gets it: the USB gadget driver's (bsd/dev/redwood_dwc3.c,
+ * from Scion's hakios.dwc3.c), which streams the log to a host. Called under the lock, interrupts off: it only copies.
+ */
+static void (*volatile loader_log_tap)(char c);
+
+uint32_t loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len));
+
+/* install (or with NULL remove) the tap; history first gets the log's kept start, under the same lock */
+uint32_t
+loader_log_tap_set(void (*tap)(char c), void (*history)(const char *text, uint32_t len))
+{
+	uint64_t daif;
+	bool locked = false;
+	uint32_t len;
+
+	daif = __builtin_arm_rsr64("DAIF");
+	__builtin_arm_wsr("DAIFSet", DAIFSC_IRQF | DAIFSC_FIQF);
+	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
+		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
+	}
+	len = loader_log_len;
+	if (history != NULL) {
+		history(loader_log, len < LOADER_LOG_HEAD || loader_log_linear || !loader_log_wrapped ? len : LOADER_LOG_HEAD);
+	}
+	loader_log_tap = tap;
+	if (locked) {
+		os_atomic_store(&loader_log_lock, 0, release);
+	}
+	__builtin_arm_wsr64("DAIF", daif);
+	return len;
+}
 
 void
 loader_log_putc(char c)
@@ -144,6 +178,11 @@ loader_log_line(const char *line)
 static void
 loader_log_put_locked(char c)
 {
+	void (*tap)(char) = loader_log_tap;
+
+	if (tap != NULL) {
+		tap(c);
+	}
 	loader_log_total++;
 	if (loader_log_linear || loader_log_len < LOADER_LOG_HEAD) {
 		if (loader_log_len < LOADER_LOG_SIZE) {
@@ -433,6 +472,7 @@ loader_return(void)
 			loader_log_putc(*c);
 		}
 	}
+	redwood_usb_gadget_quiesce();   /* last: the panic text above goes out over USB too, before the controller stops */
 	loader_jump(loader_return_reason, 0);
 }
 

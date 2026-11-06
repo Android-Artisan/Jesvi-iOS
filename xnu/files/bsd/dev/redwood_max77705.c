@@ -40,6 +40,8 @@
 #include <sys/redwood_m2m.h>
 #include <sys/systm.h>
 
+void redwood_usb_gadget_vbus(bool present);    /* redwood_dwc3.c: the cable, for the USB link's restarts */
+
 #define BANK_GPP1               0x20U           /* PERIC0 */
 
 #define FG_ADDR                 0x36U
@@ -253,6 +255,13 @@ poll_once(bool say)
 		temp_hundredths = 2500;
 	}
 
+	{
+		uint8_t bc;
+
+		if (redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_BC_STATUS, &bc, 1)) {
+			redwood_usb_gadget_vbus((bc & 0x80U) != 0);
+		}
+	}
 	charger_limits(external, temp_hundredths);
 
 	bzero(&b, sizeof(b));
