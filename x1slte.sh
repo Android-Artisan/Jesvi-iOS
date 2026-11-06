@@ -84,7 +84,7 @@ cmd_payload() {
 	. common/devices/x1slte.conf
 	# this phone's own identifiers (EFS): kept out of git in x1slte.local.conf
 	[ -f common/devices/x1slte.local.conf ] && . common/devices/x1slte.local.conf
-	[ -n "${ROOT_UD_OFF:-}" ] && [ -n "${ROOT_UD_LEN:-}" ] ||
+	[ "${ROOT_PART:-userdata}" = super ] || { [ -n "${ROOT_UD_OFF:-}" ] && [ -n "${ROOT_UD_LEN:-}" ]; } ||
 		die "ROOT_UD_OFF/ROOT_UD_LEN are empty in common/devices/x1slte.conf: create /data/darwin/system.img with tools/phone/pinfile first"
 	root_window
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_LEN")
@@ -255,7 +255,7 @@ root_window() {
 		ROOT_OFF=${ROOT_SUPER_OFF:-0}; ROOT_LEN=${ROOT_SUPER_LEN:?ROOT_SUPER_LEN unset in x1slte.conf}
 		[ $((ROOT_OFF + ROOT_LEN)) -le $((SUPER_TAIL_START)) ] || die "the root window runs into super's log tail"
 	else
-		ROOT_OFF=$ROOT_UD_OFF; ROOT_LEN=$ROOT_UD_LEN
+		ROOT_OFF=${ROOT_UD_OFF:?}; ROOT_LEN=${ROOT_UD_LEN:?}
 	fi
 }
 

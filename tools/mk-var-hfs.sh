@@ -6,8 +6,14 @@
 set -e
 cd "$(dirname "$0")/.."
 . common/devices/x1slte.conf
-[ -n "$VAR_UD_BLOCKS" ] || { echo "mk-var-hfs.sh: VAR_UD_BLOCKS is empty in x1slte.conf (tools/x1slte-pinfiles.sh create)"; exit 1; }
-BYTES=$((VAR_UD_BLOCKS * 4096))
+# mk-var-hfs.sh [BYTES]: x1slte iOS only (2026-11-06): the whole userdata (116253523968: 28382208 blocks of 4096,
+# the size redwood_ufs.c checks) for /dev/ufs_userdata with ufs_userdata_all=1; without BYTES, the pinned var.img
+if [ -n "$1" ]; then
+	BYTES=$1
+else
+	[ -n "$VAR_UD_BLOCKS" ] || { echo "mk-var-hfs.sh: VAR_UD_BLOCKS is empty in x1slte.conf (tools/x1slte-pinfiles.sh create)"; exit 1; }
+	BYTES=$((VAR_UD_BLOCKS * 4096))
+fi
 D=$(mktemp -d)
 trap 'diskutil eject "$DEV" >/dev/null 2>&1 || hdiutil detach "$DEV" >/dev/null 2>&1; rm -rf "$D"' EXIT
 diskutil image create blank --format ASIF --size "$BYTES" --fs None "$D/var.asif" >/dev/null
