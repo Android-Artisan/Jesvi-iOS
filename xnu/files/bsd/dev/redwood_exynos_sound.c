@@ -1663,6 +1663,34 @@ calliope_settle(const char *what, unsigned ms)
 	}
 }
 
+/*
+ * The RDMA "update trigger" (Bentlybro/z3s-mainline-linux docs/AUDIO_DSP.md, B 2026-11-06): the firmware's
+ * __rdma_primcom_source_update (VA 0x8000bd40, the same build as ours) returns "update trigger not ready" unless
+ * (word & 0x1111) == 0x1111, word = DSP VA 0x81004038 + rdma * 0x170 + 0xa8 (0x81004530 for RDMA3; checked in our
+ * calliope_dram.bin: movw 0x4038 / movt 0x8100, mla 0x170, ldr [#0xa8], movw 0x1111). Nothing we send sets it: set it,
+ * and again whenever the firmware clears it. snd_cal_trig=0 leaves it alone.
+ */
+static uint32_t snd_cal_trig = 1, cal_trig_sets;
+static void
+calliope_trigger_word(void)
+{
+	volatile uint32_t *w;
+
+	if (cal_dram == NULL || !cal_booted || snd_cal_trig == 0) {
+		return;
+	}
+	w = (volatile uint32_t *)(cal_dram + 0x1004038U + RDMA_ID * 0x170U + 0xa8U);
+	if ((*w & 0x1111U) != 0x1111U) {
+		uint32_t was = *w;
+
+		*w = was | 0x1111U;
+		__asm__ volatile ("dsb sy" ::: "memory");
+		if (++cal_trig_sets <= 5) {
+			snd_log("snd: calliope: RDMA%u update trigger %#x -> %#x (set %u)\n", RDMA_ID, was, *w, cal_trig_sets);
+		}
+	}
+}
+
 /* abox_rdma.c's order: open, set_buffer + hw_params, prepare, trigger -- for RDMA3, our ring behind IOVA_RDMA_BUFFER(3) */
 static bool
 calliope_play(void)
@@ -1730,7 +1758,9 @@ calliope_play(void)
 	calliope_settle("prepare", 100);
 	a[0] = ch; a[1] = 1;
 	(void)calliope_send(2, 17, a, 2);               /* PCM_PLTDAI_TRIGGER 1 */
+	calliope_trigger_word();
 	calliope_settle("trigger", 200);
+	calliope_trigger_word();
 	snd_log("snd: calliope: playback asked for (ring IOVA %#x = %#llx); %u pointer messages so far\n", iova, buf_phys,
 	    cal_pointers);
 	return true;
@@ -1933,6 +1963,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			static uint64_t cal_log_at;
 
 			calliope_drain(cal_dram);
+			calliope_trigger_word();
 			if (now - cal_log_at >= 500000) {
 				cal_log_at = now;
 				calliope_log();
@@ -2114,6 +2145,7 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
+	PE_parse_boot_argn("snd_cal_trig", &snd_cal_trig, sizeof(snd_cal_trig));
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
 	redwood_dbgport_add("snd.log", ": Calliope's new log lines into the kernel log", dbg_snd_log);
 	redwood_dbgport_add("snd.state", ": the DMA, UAIF2, routing, amplifiers, Calliope at a glance", dbg_snd_state);

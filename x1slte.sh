@@ -304,6 +304,7 @@ print(d)"
 
 FASTBOOT=${FASTBOOT:-fastboot}
 HEIMDALL=../heimdall-arm64/heimdall-frontend.app/Contents/MacOS/heimdall
+[ -x "$HEIMDALL" ] || HEIMDALL=$HOME/ios-port-research/tools/bin/heimdall      # (the tools/build-heimdall.sh build, when the app is not there)
 fb() {
 	"$FASTBOOT" "$@" 2>&1 | grep -v "^Finished\.\|^Sending\|^Total time" || true
 }
