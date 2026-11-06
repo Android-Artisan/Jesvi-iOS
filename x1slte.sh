@@ -468,7 +468,11 @@ cmd_uboot() {
 }
 cmd_hflash() {
 	if [ -f out/.standalone ]; then
-		"$HEIMDALL" flash --RECOVERY out/x1slte-recovery.img --BOOT out/x1slte-embed.img --stdout-errors
+		# BOOT gets the recovery image's head, whose dtb pack wrapped in a dt table: out/x1slte-embed.img's dtb is a raw
+		# FDT, and S-Boot refuses it ("dt table header check fail: FDT_ERR_BADMAGIC, ufdt dtb load fail", 2026-11-06)
+		head -c $((0x255000)) out/x1slte-recovery.img > out/x1slte-boot.img
+		[ "$(xxd -s $((0x201800)) -l 4 -p out/x1slte-boot.img)" = d7b7ab1e ] || die "out/x1slte-boot.img: no dt table at 0x201800"
+		"$HEIMDALL" flash --RECOVERY out/x1slte-recovery.img --BOOT out/x1slte-boot.img --stdout-errors
 	else
 		"$HEIMDALL" flash --RECOVERY out/x1slte-recovery.img --stdout-errors
 	fi
