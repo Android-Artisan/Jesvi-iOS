@@ -95,7 +95,7 @@ extern void RedwoodBluetoothStart(const uint8_t *address, uint32_t speed);      
  * the interrupt was late now and then and overran it, and bluetoothd quit on the broken packet as audio started).
  * Headphones' audio needs some 40 KB/s of the 100 KB/s; the FIFO now lasts 2.6 ms.
  */
-static uint32_t bt_fast = 1000000;
+static uint32_t bt_fast = 3000000;     /* (back from 1 Mbaud: the chip sends ~100 KB/s of vendor events with audio) */
 #define BT_FAST         bt_fast
 #define CTL_NAME        "com.apple.uart.bluetooth"
 #define RING            (64u << 10)
@@ -380,6 +380,33 @@ rx_parse(uint8_t c)
 		break;
 	}
 	default:                                /* the body: of events, the first 4 bytes kept */
+		if (rxp.type == 0x04 && rxp.hdr[0] == 0xff) {   /* vendor events: the first's 16 bytes, then a rate */
+			static uint8_t vb[16];
+			static uint32_t vn, vsec;
+			static uint64_t vlast;
+
+			if (rxp.got < 16) {
+				vb[rxp.got] = c;
+			}
+			if (rxp.got + 1 == rxp.len || rxp.got == 15) {
+				if (rxp.got + 1 == rxp.len || rxp.got == 15) {
+					uint64_t now = mach_absolute_time(), sec;
+
+					nanoseconds_to_absolutetime(NSEC_PER_SEC, &sec);
+					if (rxp.got == 15 || rxp.len < 16) {
+						vn++;
+						if (vn == 1 || now - vlast > sec) {
+							bt_log("bt: vendor event %u (%u in the last second), %u bytes: %02x %02x %02x %02x %02x %02x %02x "
+							    "%02x %02x %02x %02x %02x %02x %02x %02x %02x\n", vn, vsec, rxp.len, vb[0], vb[1], vb[2], vb[3],
+							    vb[4], vb[5], vb[6], vb[7], vb[8], vb[9], vb[10], vb[11], vb[12], vb[13], vb[14], vb[15]);
+							vlast = now;
+							vsec = 0;
+						}
+						vsec++;
+					}
+				}
+			}
+		}
 		if (rxp.type == 0x04 && rxp.got < 4) {
 			static uint8_t body[4];
 
