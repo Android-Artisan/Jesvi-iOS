@@ -1236,7 +1236,8 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_token = 0, lock_s = 10, auto_s = 60;
+	int lock_s = 10, auto_s = 60;
+	uint64_t woke_at = 0;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
 	size_t size = sizeof(arguments) - 1;
@@ -1252,28 +1253,35 @@ idle_thread(__unused void *argument)
 			lock_s = atoi(at + 12);
 		}
 	}
-	notify_register_check("com.apple.springboard.lockstate", &lock_token);
-	say("redwood: idle timer: %d s on the lock screen, Auto-Lock's time when unlocked\n", lock_s);
+	say("redwood: idle timer: %d s after a wake with no touch, Auto-Lock's time once touched\n", lock_s);
 	for (;;) {
-		uint64_t now = mach_absolute_time(), idle_ns, locked = 0;
-		/* touch detection mode: 0xfe/0xff the display off; 0x1/0x101 the lock screen (pocket touches); 0 unlocked */
-		bool on = (touch_mode & 0xff) != TOUCH_MODE_WAKE && (touch_mode & 0xff) != TOUCH_MODE_OFF && booted;
+		uint64_t now, idle_ns, locked = 0, input_at;
+		bool on;
 		int limit, quiet = -1;
 		size_t len = sizeof(quiet);
 
 		sleep(1);
+		/* (the clock read AFTER the sleep: read before it, a touch during the sleep was "newer than now" and the
+		 * unsigned difference wrapped to a huge idle time -- touching locked the phone) */
+		now = mach_absolute_time();
 		booted |= touch_mode != 0;      /* (0 before the window server has said anything) */
+		/* touch detection mode: 0xfe/0xff the display off; 0x1/0x101 the lock screen (pocket touches); 0 unlocked */
+		on = (touch_mode & 0xff) != TOUCH_MODE_WAKE && (touch_mode & 0xff) != TOUCH_MODE_OFF && booted;
 		if (!on) {
 			was_on = false;
 			continue;
 		}
 		if (!was_on) {                  /* the display just came on: count from here, Auto-Lock read again */
 			was_on = true;
-			last_input_at = now;
+			last_input_at = woke_at = now;
 			auto_s = auto_lock_seconds();
 			continue;
 		}
-		notify_get_state(lock_token, &locked);
+		/*
+		 * SpringBoard's lock state (com.apple.springboard.lockstate) stayed 1 after unlocking here, so it is not
+		 * used: woken and not touched since -> lock_s (a glance, a wake in the pocket); touched since -> Auto-Lock.
+		 */
+		locked = last_input_at <= woke_at;
 		limit = locked ? lock_s : auto_s;
 		if (!locked && (limit <= 0 || limit > 24 * 3600)) {
 			continue;                       /* Auto-Lock: Never */
@@ -1283,11 +1291,12 @@ idle_thread(__unused void *argument)
 			last_input_at = now;            /* sound playing: as if touched */
 			continue;
 		}
-		idle_ns = (now - last_input_at) * timebase.numer / timebase.denom;
+		input_at = last_input_at;
+		idle_ns = input_at >= now ? 0 : (now - input_at) * timebase.numer / timebase.denom;
 		if (idle_ns >= (uint64_t)limit * NSEC_PER_SEC && idle_buttons != NULL) {
 			struct redwood_touch press = { .time = now, .type = REDWOOD_BUTTON_DOWN, .finger = REDWOOD_BUTTON_LOCK };
 
-			say("redwood: idle timer: %d s without a touch %s: the display off\n", limit, locked ? "on the lock screen" :
+			say("redwood: idle timer: %d s without a touch %s: the display off\n", limit, locked ? "since the wake" :
 			    "(Auto-Lock)");
 			send_button(idle_buttons, &press);
 			press.type = REDWOOD_BUTTON_UP;

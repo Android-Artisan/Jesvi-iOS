@@ -5,6 +5,7 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## Open (known issues)
+- The screen timeout is our stand-in (backboardd), not iOS's own idle timer: native fix is TASKS R1b.
 - Mic: the kernel's diagnostic peak counter reads full scale on every capture although recorded files do not clip (only
   with `snd_debug=1`).
 - The thermal fix below was confirmed on one cold start after the flash (peak 83 C, no restart); watch the
@@ -15,8 +16,8 @@ this file is the changelog; "Open" lists what a release must mention as known is
 ### Sleep: screen timeout, screen-off power profile, Low Power Mode
 - **Screen timeout works** (it never did): SpringBoard's idle timer depends on AttentionAwareness, which hands it an
   untagged lost-attention event here ("attention client lost event tag is not a number") and it never dims. Our own
-  idle timer in backboardd (`userland/src/inject.c`) presses the lock button after **10 s** untouched on the lock screen
-  (`idle_lock_s=`) or the **Auto-Lock** time when unlocked (Settings value; Never = off), not while sound played in the
+  idle timer in backboardd (`userland/src/inject.c`) presses the lock button after **10 s** when woken and not touched
+  (`idle_lock_s=`), or the **Auto-Lock** time once touched (SpringBoard's lock state is unreliable here) (Settings value; Never = off), not while sound played in the
   last 5 s (`kern.redwood.snd_quiet_ms`). `idle_lock=0` turns it off. Tested by the user: lock screen 10 s, home screen 60 s. Known gap: a silent video unlocked still locks.
 - **Screen-off profile** (automatic, no switch): memory 421 MHz (was 2730 always; 2.7 vs 15.7 GB/s measured), every
   CPU cluster at its low step, GPU lowest (`bsd/dev/redwood_exynos_acpm.c`, `dvfs_sleep=0` off). Full clocks again
