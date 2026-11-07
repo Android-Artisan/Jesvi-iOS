@@ -212,7 +212,7 @@ static uint64_t buf_phys;
 static int16_t *buf;
 static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
-static uint32_t snd_below = 144, snd_gain = 12 * 8, snd_tone;
+static uint32_t snd_below = 72, snd_gain = 12 * 8, snd_tone;     /* (B, 2026-11-07: 9 dB under full, was 18; the guard stays) */
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
 
 struct amp {
