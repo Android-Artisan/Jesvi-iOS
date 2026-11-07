@@ -2295,6 +2295,20 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 		redwood_gpio_func(gpv0, 3, 2);
 		redwood_gpio_pull(gpv0, 3, 1);
 	}
+	/* the main microphone's 1.8 V (MICBIAS1: regulator-fixed main_micbias_1p8, gpp4-1 high; Android's DMIC1 -> MICBIAS1) */
+	{
+		volatile uint8_t *gpp4 = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, PINCTRL_PERIC0_GPP4);
+
+		if (gpp4 != NULL) {
+			redwood_gpio_func(gpp4, 1, 1);
+			redwood_gpio_set(gpp4, 1, 1);
+		}
+	}
+	/* VTS's DMIC_IF: the AUD path's DMIC_AUD0..2 on (vts_s_lif_dmic_if_en: sfr +0x1000 bits 6..8) */
+	wr(mic_sys, 0x00, rd(mic_sys, 0x00) | 0x1c0);
+	/* UAIF6's bit clock from the serial LIF (CMU_AUD MUX_CLK_AUD_UAIF6 = AUDIO_LIF_BCLKI, its divider / 1) */
+	wr(cmu, 0x1024, 1);
+	wr(cmu, 0x1844, 0);
 	wr(mic_sys, 0x10, 7);                   /* SEL_PAD_AUD */
 	wr(mic_sys, 0x14, 0x38);                /* SEL_DIV2_CLK */
 	wr(mic_dmic, 0x04, 0x8C63004CU);        /* CONTROL_DMIC_AUD */
@@ -2879,6 +2893,16 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
 	PE_parse_boot_argn("snd_samsung", &snd_samsung, sizeof(snd_samsung));
 	PE_parse_boot_argn("snd_gate", &snd_gate, sizeof(snd_gate));
+	{
+		/* the watchdog Samsung's bootloader leaves running after a cold start: off (wdt=0 keeps it; confirmed
+		 * 2026-11-07: WTCON 0x18021 counting from 0x8000, the restarts at the lock screen) */
+		uint32_t wdt = 1;
+
+		PE_parse_boot_argn("wdt_off", &wdt, sizeof(wdt));
+		if (wdt != 0) {
+			snd_log("snd: watchdog WDT_CLUSTER0 %s\n", wdt_disable() ? "found running: off" : "clock would not come on");
+		}
+	}
 	PE_parse_boot_argn("snd_cal_trig", &snd_cal_trig, sizeof(snd_cal_trig));
 	PE_parse_boot_argn("snd_cal_kick", &snd_cal_kick, sizeof(snd_cal_kick));
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
