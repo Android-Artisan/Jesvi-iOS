@@ -302,6 +302,99 @@ bt_irq(__unused void *context, __unused uint32_t intid)
 	thread_wakeup((event_t)&bt_event);
 }
 
+/*
+ * bluetoothd's vendor commands and the chip's answers (B, 2026-11-07: bluetoothd quit 3 s after Apple's audio set-up
+ * commands -- one went unanswered, it seems). Each vendor command is remembered; the answer's status is logged when it
+ * is not 0; one with no answer after 500 ms is answered here (Command Complete, status 0: bt_fake=1, `bt.fake 0|1`)
+ * and logged, so that bluetoothd goes on.
+ */
+#define PENDING 8
+static struct { uint16_t op; uint64_t at; } pending[PENDING];
+static uint32_t bt_fake = 1, faked, bt_reup;    /* bt_reup=1: bring-up again per client (it failed: 2026-11-07) */
+static struct { uint8_t state, type, hdr[4]; uint32_t got, len; } rxp;   /* the H4 stream to the client, parsed */
+
+static void
+pending_answered(uint16_t op, uint8_t status, const char *how)
+{
+	for (unsigned i = 0; i < PENDING; i++) {
+		if (pending[i].op == op && pending[i].at != 0) {
+			pending[i].at = 0;
+			if (status != 0) {
+				bt_log("bt: the chip answers vendor command %#06x with status %#x (%s)\n", op, status, how);
+			}
+			return;
+		}
+	}
+}
+
+/* one byte of what goes to the client: an H4 packet's type, header and body */
+static void
+rx_parse(uint8_t c)
+{
+	switch (rxp.state) {
+	case 0:                                 /* the type */
+		rxp.type = c;
+		rxp.got = 0;
+		rxp.state = (c == 0x04 || c == 0x02 || c == 0x03) ? 1 : 0;
+		break;
+	case 1: {                               /* the header: event 2 bytes, ACL 4, SCO 3 */
+		uint32_t hl = rxp.type == 0x04 ? 2 : rxp.type == 0x02 ? 4 : 3;
+
+		rxp.hdr[rxp.got++] = c;
+		if (rxp.got == hl) {
+			rxp.len = rxp.type == 0x04 ? rxp.hdr[1] : rxp.type == 0x02 ? (uint32_t)(rxp.hdr[2] | (rxp.hdr[3] << 8)) :
+			    rxp.hdr[2];
+			rxp.got = 0;
+			rxp.state = rxp.len != 0 ? 2 : 0;
+		}
+		break;
+	}
+	default:                                /* the body: of events, the first 4 bytes kept */
+		if (rxp.type == 0x04 && rxp.got < 4) {
+			static uint8_t body[4];
+
+			body[rxp.got] = c;
+			if (rxp.got == 3) {
+				if (rxp.hdr[0] == 0x0e) {               /* Command Complete: n, opcode, status */
+					pending_answered((uint16_t)(body[1] | (body[2] << 8)), body[3], "complete");
+				} else if (rxp.hdr[0] == 0x0f) {        /* Command Status: status, n, opcode */
+					pending_answered((uint16_t)(body[2] | (body[3] << 8)), body[0], "status");
+				}
+			}
+		}
+		if (++rxp.got >= rxp.len) {
+			rxp.state = 0;
+		}
+		break;
+	}
+}
+
+/* (the reader thread) a vendor command with no answer after 500 ms: answered here, between packets */
+static void
+pending_check(uint32_t unit)
+{
+	uint64_t now = mach_absolute_time(), limit;
+
+	nanoseconds_to_absolutetime(500 * NSEC_PER_MSEC, &limit);
+	for (unsigned i = 0; i < PENDING; i++) {
+		if (pending[i].at != 0 && now - pending[i].at > limit) {
+			uint16_t op = pending[i].op;
+
+			pending[i].at = 0;
+			if (bt_fake && unit != 0 && rxp.state == 0) {
+				uint8_t ev[7] = { 0x04, 0x0e, 0x04, 0x01, (uint8_t)op, (uint8_t)(op >> 8), 0x00 };
+
+				(void)ctl_enqueuedata(bt_ctl, unit, ev, sizeof(ev), 0);
+				faked++;
+				bt_log("bt: vendor command %#06x got no answer in 500 ms: answered for the chip (success; %u so far)\n",
+				    op, faked);
+			} else {
+				bt_log("bt: vendor command %#06x got no answer in 500 ms\n", op);
+			}
+		}
+	}
+}
+
 /* to the client, as much as it will take */
 static void
 bt_deliver(void)
@@ -324,8 +417,12 @@ bt_deliver(void)
 		if (e != 0) {
 			break;                          /* (full: the rest the next time round) */
 		}
+		for (uint32_t k = 0; k < n; k++) {
+			rx_parse(ring[at + k]);
+		}
 		ring_tail += n;
 	}
+	pending_check(unit);
 	if (unit == 0 && !bt_ready) {
 		return;                                 /* the bring-up takes its own bytes */
 	}
@@ -606,6 +703,15 @@ bt_bringup(void)
 #define TIOCSETAW_64    0x80487415u
 #define TIOCSETAF_64    0x80487416u
 
+static void
+dbg_bt_fake(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1) {
+		bt_fake = v[0] != 0;
+	}
+	snprintf(out, cap, "bt: unanswered vendor commands answered here: %s (%u so far)\n", bt_fake ? "yes" : "no", faked);
+}
+
 /* bt.state, bt.baud [N] (used at the next bring-up: when bluetoothd starts again -- `killall bluetoothd`) */
 static void
 dbg_bt_baud(const uint64_t *v, unsigned n, char *out, size_t cap)
@@ -629,7 +735,7 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 	 * A client after the first: bluetoothd started again, and the chip may be wedged by what the last one left (it
 	 * fell silent when audio started): powered off and brought up again, patchram and all (B, 2026-11-07)
 	 */
-	if (bt_had_client) {
+	if (bt_had_client && bt_reup) {
 		bool ok;
 
 		bt_ready = false;
@@ -639,6 +745,8 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 		bt_log("bt: brought up again for the new client: %s\n", ok ? "ok" : "FAILED");
 	}
 	bt_had_client = true;
+	bzero(&rxp, sizeof(rxp));
+	bzero(pending, sizeof(pending));
 	bt_unit = sac->sc_unit;
 	bt_log("bt: %s: a client connected (unit %u)\n", CTL_NAME, sac->sc_unit);
 	return 0;
@@ -668,6 +776,14 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 
 		if ((op >> 10) == 0x3f) {
 			uint32_t plen = h[3], have = (uint32_t)mbuf_len(m) - 4;
+
+			for (unsigned i = 0; i < PENDING; i++) {
+				if (pending[i].at == 0) {
+					pending[i].op = op;
+					pending[i].at = mach_absolute_time();
+					break;
+				}
+			}
 
 			if (op == 0xfc18 && plen >= 6 && have >= 6) {
 				uint32_t want = (uint32_t)h[6] | ((uint32_t)h[7] << 8) | ((uint32_t)h[8] << 16) | ((uint32_t)h[9] << 24);
@@ -774,6 +890,8 @@ redwood_exynos_bt_init(void)
 	thread_t thread;
 
 	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
+	(void)PE_parse_boot_argn("bt_fake", &bt_fake, sizeof(bt_fake));
+	redwood_dbgport_add("bt.fake", "0|1: answer vendor commands the chip leaves unanswered (500 ms)", dbg_bt_fake);
 	redwood_dbgport_add("bt.baud", "[N]: the BT UART's speed now and at the next bring-up (killall bluetoothd), counters", dbg_bt_baud);
 	if (!PE_parse_boot_argn("bt", &on, sizeof(on)) || on == 0) {
 		return;
