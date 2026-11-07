@@ -436,6 +436,24 @@ rx_parse(uint8_t *cp)
 			if (rxp.got < 16) {
 				vb[rxp.got] = c;
 			}
+			/* the crash dump's readable text (the firmware's assert, file names): runs of 8+ printable bytes, logged */
+			if (trace_frozen) {
+				static char run[64];
+				static uint32_t rl, shown;
+
+				if (c >= 0x20 && c < 0x7f) {
+					if (rl < sizeof(run) - 1) {
+						run[rl++] = (char)c;
+					}
+				} else {
+					if (rl >= 8 && shown < 40) {
+						run[rl] = 0;
+						shown++;
+						bt_log("bt: crash dump text: %s\n", run);
+					}
+					rl = 0;
+				}
+			}
 			if (rxp.got == 0 && c == 0x1b && !trace_frozen) {
 				trace_frozen = 1;       /* the chip's firmware crashed and dumps its memory: keep what led to it */
 				bt_log("bt: the chip's firmware crashed (memory dump, vendor event 0x1b): bt.trace has the 48 packets before\n");
