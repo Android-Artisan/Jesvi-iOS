@@ -219,6 +219,39 @@ make_sensor(IOHIDEventSystemClientRef client, const char *product, int usage, bo
 	CFDictionarySetValue(properties, CFSTR("Transport"), CFSTR("SPI"));
 	CFDictionarySetValue(properties, CFSTR("Manufacturer"), CFSTR("redwood"));
 	CFDictionarySetValue(properties, CFSTR("Product"), name);
+	if (usage == HID_USAGE_AMBIENT_LIGHT) {
+		/*
+		 * Auto-brightness's lux -> nits curve (B, 2026-11-07): CoreBrightness asks the ALS service for ALSCurveInfo
+		 * (-copyPropertyForKey:, cache 0x1af0369b0) and takes floats E0a E0b E1 E2 (lux) and L0a L0b L1 L2 (nits)
+		 * and Prefs.thirdSlope; without it: "Failed to obtain ALS Curve info". The panel's own range: ~2-420 nits.
+		 */
+		static const char *keys[] = { "E0a", "E0b", "E1", "E2", "L0a", "L0b", "L1", "L2" };
+		static const float values[] = { 0, 10, 150, 1500, 3, 30, 150, 420 };
+		CFMutableDictionaryRef curve = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+		CFMutableDictionaryRef prefs = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+		    &kCFTypeDictionaryValueCallBacks);
+		float slope = 0;
+
+		for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+			CFStringRef k = CFStringCreateWithCString(NULL, keys[i], kCFStringEncodingUTF8);
+			CFNumberRef v = CFNumberCreate(NULL, kCFNumberFloatType, &values[i]);
+
+			CFDictionarySetValue(curve, k, v);
+			CFRelease(k);
+			CFRelease(v);
+		}
+		{
+			CFNumberRef v = CFNumberCreate(NULL, kCFNumberFloatType, &slope);
+
+			CFDictionarySetValue(prefs, CFSTR("thirdSlope"), v);
+			CFRelease(v);
+		}
+		CFDictionarySetValue(curve, CFSTR("Prefs"), prefs);
+		CFDictionarySetValue(properties, CFSTR("ALSCurveInfo"), curve);
+		CFRelease(prefs);
+		CFRelease(curve);
+	}
 	CFDictionarySetValue(properties, CFSTR("VendorID"), zero);
 	CFDictionarySetValue(properties, CFSTR("ProductID"), zero);
 	if (top) {

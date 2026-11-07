@@ -155,6 +155,7 @@ static uint32_t gFadeDD = 1, gOffFadeMs = 0;
  * panel's gamma/AOR rows on every step and read as a stutter (the user, 21:58). fb.fade dd offms alpha.
  */
 static uint32_t gOffAlpha = 1;
+static uint32_t gOnFadeMs = 0;          /* power on: the picture fades in over this many ms (fb.fade 4th number; 0 off: off by default, the user saw no difference) */
 static TUNABLE(uint32_t, gOffMask, "fb_offmask", 1);    /* display off: DECON's trigger masked (fb_offmask=0 keeps frames going) */
 /*
  * fb_mode_lpref=1 (B, 2026-11-06): the gate lets DSIM_UNDERRUN_CTRL (the command-mode underrun reference, dtbo
@@ -771,6 +772,8 @@ public:
 	uint64_t        fAlphaStart, fAlphaLen; /* mach time; len 0: no fade running */
 	thread_call_t   fAlphaCall;
 	void alphaSet(uint32_t alpha);
+	bool            fAlphaUp;               /* the fade runs up (power on), not down */
+	void alphaFadeIn(void);
 	void alphaRestore(void);
 	bool            fFramesMasked;          /* DECON's trigger masked while the display is off (no frames into a dark panel) */
 	void offFrames(bool off);
@@ -2276,20 +2279,17 @@ IOMobileFramebuffer::displayPower(bool on)
 	const uint8_t command[] = { (uint8_t)(on ? 0x29 : 0x28) };
 	if (fDsim == NULL || !gBL) return;
 	IOLockLock(fDsimLock);
-	if (on && fAlphaOn) {
-		fAlphaLen = 0;
-		alphaRestore();                 /* the picture back before the panel lights */
-	}
 	if (on && fOffPending) {
 		fOffPending = false;
 		if (fOffCall != NULL) thread_call_cancel(fOffCall);
+		alphaFadeIn();                  /* (the picture had been fading out) */
 		redwood_gov_boost(1000);
 		IOLockUnlock(fDsimLock);
 		fbSay("fb: bl: display off cancelled by wake\n");
 		return;
 	}
 	if (fDisplayOff == !on || (!on && fOffPending)) { IOLockUnlock(fDsimLock); return; }
-	if (on) { offFrames(false); redwood_dvfs_display(1); redwood_gov_boost(1000); }
+	if (on) { offFrames(false); alphaFadeIn(); redwood_dvfs_display(1); redwood_gov_boost(1000); }
 	if (!on) {
 		uint64_t at = 0, settle;
 		IOLockLock(fBLLock);
@@ -2530,13 +2530,14 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 			    THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
 		}
 		if (fAlphaCall != NULL) {
+			fAlphaUp = false;
 			fAlphaStart = mach_absolute_time();
 			fAlphaLen = len;
 			thread_call_enter(fAlphaCall);
 			return;                         /* the backlight stays where it is */
 		}
 	}
-	if (level != 0 && fAlphaOn) {
+	if (level != 0 && fAlphaOn && !fAlphaUp) {
 		fAlphaLen = 0;
 		alphaRestore();
 	}
@@ -2581,6 +2582,32 @@ IOMobileFramebuffer::offFrames(bool off)
 	fFramesMasked = off;
 }
 
+/* power on: the window starts black and comes up over gOnFadeMs (fDsimLock held) */
+void
+IOMobileFramebuffer::alphaFadeIn(void)
+{
+	if (!gOffAlpha || gOnFadeMs == 0 || fDecon == NULL || fWin < 0 || fWin > 5) {
+		if (fAlphaOn) {
+			fAlphaLen = 0;
+			alphaRestore();
+		}
+		return;
+	}
+	if (fAlphaCall == NULL) {
+		fAlphaCall = thread_call_allocate_with_options(&IOMobileFramebuffer::alphaWork, this,
+		    THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
+	}
+	if (fAlphaCall == NULL) {
+		alphaRestore();
+		return;
+	}
+	alphaSet(0);
+	fAlphaUp = true;
+	fAlphaStart = mach_absolute_time();
+	nanoseconds_to_absolutetime((uint64_t) gOnFadeMs * NSEC_PER_MSEC, &fAlphaLen);
+	thread_call_enter(fAlphaCall);
+}
+
 void
 IOMobileFramebuffer::alphaRestore(void)
 {
@@ -2605,6 +2632,28 @@ IOMobileFramebuffer::alphaWork(thread_call_param_t self, thread_call_param_t unu
 		return;                                 /* (restored meanwhile: a wake, a brightness) */
 	}
 	done = now - start;
+	if (fb->fAlphaUp) {
+		/* power on: 0 -> 255, then the window's own registers back exactly */
+		alpha = done >= len ? 255 : (uint32_t) (255 * done / len);
+		IOLockLock(fb->fDsimLock);
+		if (fb->fAlphaLen != 0 && fb->fAlphaUp) {
+			if (alpha >= 255) {
+				fb->fAlphaLen = 0;
+				fb->fAlphaUp = false;
+				fb->alphaRestore();
+			} else {
+				fb->alphaSet(alpha);
+			}
+		}
+		IOLockUnlock(fb->fDsimLock);
+		if (alpha < 255) {
+			uint64_t next;
+
+			clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
+			thread_call_enter_delayed(fb->fAlphaCall, next);
+		}
+		return;
+	}
 	alpha = done >= len ? 0 : (uint32_t) (255 - 255 * done / len);
 	IOLockLock(fb->fDsimLock);
 	if (fb->fAlphaLen != 0) {
@@ -4750,6 +4799,9 @@ dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap)
 	}
 	if (n > 2) {
 		gOffAlpha = v[2] != 0;
+	}
+	if (n > 3) {
+		gOnFadeMs = v[3] > 2000 ? 2000 : (uint32_t) v[3];
 	}
 	snprintf(out, cap, "fb.fade: panel dimming during fades %s, power-off fade %s, on the %s\n", gFadeDD ? "on" : "off",
 	    gOffFadeMs ? "stretched" : "as iOS asks (185 ms)", gOffAlpha ? "picture (window alpha)" : "backlight");
