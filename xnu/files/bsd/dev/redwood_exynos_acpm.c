@@ -821,6 +821,12 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 					dlog("power: %s: memory %u MHz%s", prof == PROF_OFF ? "screen off" : prof == PROF_LPM ?
 					    "Low Power Mode" : "normal", khz / 1000, prof == PROF_NORMAL ? "" : ", clusters and GPU capped");
 					mif_prof = prof;
+				} else if (khz != 0) {
+					static uint32_t told;
+
+					if (told++ < 5) {
+						dlog("power: memory %u MHz NOT taken (profile %d): tried again next tick", khz / 1000, prof);
+					}
 				}
 			}
 		}

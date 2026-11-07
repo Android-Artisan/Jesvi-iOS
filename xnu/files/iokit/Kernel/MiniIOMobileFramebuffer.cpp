@@ -49,6 +49,7 @@ extern "C" {
 typedef void (*redwood_dbgport_fn)(const uint64_t *v, unsigned n, char *out, size_t cap);  /* (bsd/sys/redwood_dbgport.h) */
 int redwood_dbgport_add(const char *name, const char *help, redwood_dbgport_fn fn);
 void dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap);
+void dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_cal(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap);
 }
@@ -141,6 +142,20 @@ static TUNABLE(uint32_t, gFade, "fb_fade", 1);
 static TUNABLE(uint32_t, gDim, "fb_dim", 1);
 /* fb_offhold=1: DCS 28 held 300 ms after the last brightness write. Tried: the user found it worse (dark but on). Off. */
 static TUNABLE(uint32_t, gOffHold, "fb_offhold", 0);
+/*
+ * Fade tuning, live with fb.fade (B, 2026-11-07: the power-off fade read as a stutter at low brightness -- a 185 ms fade
+ * from ~4 nits has only ~20 DBV levels): gFadeDD 1 keeps the panel's own dimming (DD) on during software fades, so it
+ * blends between the steps; gOffFadeMs > 0 stretches a fade to zero (the power button) to at least that long.
+ */
+static uint32_t gFadeDD = 1, gOffFadeMs = 0;
+/*
+ * gOffAlpha 1 (default; B, 2026-11-07): the power-off fade is done on the PICTURE, not the backlight: DECON's window
+ * plane alpha (WIN_CONTROL_0 [23:16], blend FG x alpha0 + BG x 0 against the black background) goes 255 -> 0, one step
+ * a frame, while DBV/AOR/the factory gamma rows stay as they are; then DCS 28. Stepping the backlight switched the
+ * panel's gamma/AOR rows on every step and read as a stutter (the user, 21:58). fb.fade dd offms alpha.
+ */
+static uint32_t gOffAlpha = 1;
+static TUNABLE(uint32_t, gOffMask, "fb_offmask", 1);    /* display off: DECON's trigger masked (fb_offmask=0 keeps frames going) */
 /*
  * fb_mode_lpref=1 (B, 2026-11-06): the gate lets DSIM_UNDERRUN_CTRL (the command-mode underrun reference, dtbo
  * cmd_lp_ref) through whatever it holds. The first fb_mode=1 run found UEFI's 0x138b there, not the dtbo's 0x1e6e,
@@ -307,7 +322,7 @@ static const uint16_t gPanelDBV[] = {
 static_assert(sizeof(gPanelNits) / sizeof(gPanelNits[0]) == sizeof(gPanelDBV) / sizeof(gPanelDBV[0]), "one DBV per step");
 
 #include "MiniIOMobileFramebufferCalibration.h"
-static TUNABLE(uint32_t, gFactoryAuto, "fb_cal", 0);
+static TUNABLE(uint32_t, gFactoryAuto, "fb_cal", 1);      /* (on by default: user-verified 2026-11-07; checksum-gated) */
 static uint8_t gFactoryData[2][7392], gFactorySavedGamma[34];
 static bool gFactoryReady, gFactoryEnabled, gFactoryRestore;
 static uint16_t gFactoryChecksums[2];
@@ -750,6 +765,16 @@ public:
 	volatile bool   fModeDone;
 	char            fModeReport[1536];
 	void modeLive(int mode);
+	/* the power-off fade on the picture (gOffAlpha) */
+	bool            fAlphaOn;               /* the window's blend registers are ours (saved below) */
+	uint32_t        fWinCtl0Saved, fWinCtl1Saved;
+	uint64_t        fAlphaStart, fAlphaLen; /* mach time; len 0: no fade running */
+	thread_call_t   fAlphaCall;
+	void alphaSet(uint32_t alpha);
+	void alphaRestore(void);
+	bool            fFramesMasked;          /* DECON's trigger masked while the display is off (no frames into a dark panel) */
+	void offFrames(bool off);
+	static void alphaWork(thread_call_param_t self, thread_call_param_t unused);
 	void modeCounters(const char * when, char * out, size_t cap);
 	int dsimRead(uint8_t command, uint8_t * out, uint32_t max);
 	void panelReport(const char * when);
@@ -951,6 +976,8 @@ IOMobileFramebuffer::start(IOService * provider)
 
 	fModeWant = -1;
 	gFbLive = this;
+	redwood_dbgport_add("fb.fade", "[dd [offms [alpha]]]: panel dimming during fades, the power-off fade at least offms (0: iOS's), on the picture (alpha 1) or the backlight (0)",
+	    dbg_fb_fade);
 	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	redwood_dbgport_add("fb.cal", "[address length]: read panel calibration SPI flash (JEDEC ID if no args; factory range 0xf0000..0xf8fff, max 128 bytes)", dbg_fb_cal);
@@ -1975,7 +2002,7 @@ IOMobileFramebuffer::tePresent(int32_t y0, int32_t y1)
 	__asm__ volatile ("dsb sy" ::: "memory");
 	fTeRaced += dpuRead(fDecon, DECON_FRAME_COUNT) != frames ||
 	    (fTeStartFlag && frameStartSince(startsAtIdle));
-	dpuWrite(fDecon, DECON_TRIG_CONTROL, fTeTrig);
+	dpuWrite(fDecon, DECON_TRIG_CONTROL, fFramesMasked ? (fTeTrig | DECON_TRIG_MASK) : fTeTrig);   /* (display off: stays masked) */
 	waited = idleAt - began;
 	fTeFrames++;
 	fTeRows += (uint64_t) (y1 - y0);
@@ -2224,6 +2251,10 @@ IOMobileFramebuffer::offWork(thread_call_param_t self, thread_call_param_t unuse
 	uint64_t end = fb->fFadeStart + fb->fFadeLen, grace;
 	bool unfinished = fb->fFadeLen && fb->fBLTarget == 0 && fb->fBLCurrent != 0;
 	IOLockUnlock(fb->fBLLock);
+	if (fb->fAlphaLen != 0) {
+		end = fb->fAlphaStart + fb->fAlphaLen;
+		unfinished = true;
+	}
 	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &grace);
 	if (unfinished && mach_absolute_time() < end + grace) {
 		uint64_t next;
@@ -2234,7 +2265,7 @@ IOMobileFramebuffer::offWork(thread_call_param_t self, thread_call_param_t unuse
 	}
 	fb->fOffPending = false;
 	bool ok = fb->dsimWrite(command, sizeof(command));
-	if (ok) { fb->fDisplayOff = true; redwood_dvfs_display(0); }
+	if (ok) { fb->fDisplayOff = true; fb->offFrames(true); redwood_dvfs_display(0); }
 	IOLockUnlock(fb->fDsimLock);
 	fbSay("fb: bl: display off after fade (DCS 28) %s\n", ok ? "sent" : "NOT SENT");
 }
@@ -2245,6 +2276,10 @@ IOMobileFramebuffer::displayPower(bool on)
 	const uint8_t command[] = { (uint8_t)(on ? 0x29 : 0x28) };
 	if (fDsim == NULL || !gBL) return;
 	IOLockLock(fDsimLock);
+	if (on && fAlphaOn) {
+		fAlphaLen = 0;
+		alphaRestore();                 /* the picture back before the panel lights */
+	}
 	if (on && fOffPending) {
 		fOffPending = false;
 		if (fOffCall != NULL) thread_call_cancel(fOffCall);
@@ -2254,13 +2289,17 @@ IOMobileFramebuffer::displayPower(bool on)
 		return;
 	}
 	if (fDisplayOff == !on || (!on && fOffPending)) { IOLockUnlock(fDsimLock); return; }
-	if (on) { redwood_dvfs_display(1); redwood_gov_boost(1000); }
+	if (on) { offFrames(false); redwood_dvfs_display(1); redwood_gov_boost(1000); }
 	if (!on) {
 		uint64_t at = 0, settle;
 		IOLockLock(fBLLock);
 		bool software = gFade && fFadeLen != 0 && fBLTarget == 0;
 		if (software) at = fFadeStart + fFadeLen;
 		IOLockUnlock(fBLLock);
+		if (fAlphaLen != 0) {
+			software = true;
+			at = fAlphaStart + fAlphaLen;   /* the picture's fade: off once it is black */
+		}
 		if (software) {
 			nanoseconds_to_absolutetime(NSEC_PER_SEC / refreshHz(), &settle);
 			at += settle; /* one frame for the final zero write */
@@ -2280,7 +2319,7 @@ IOMobileFramebuffer::displayPower(bool on)
 		}
 	}
 	bool ok = dsimWrite(command, sizeof(command));
-	if (ok) { fDisplayOff = !on; redwood_dvfs_display(on); }
+	if (ok) { fDisplayOff = !on; if (!on) offFrames(true); redwood_dvfs_display(on); }
 	IOLockUnlock(fDsimLock);
 	fbSay("fb: bl: display %s (DCS %02x) %s\n", on ? "on" : "off", command[0], ok ? "sent" : "NOT SENT");
 }
@@ -2388,7 +2427,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 			return;
 		}
 		began = mach_absolute_time();
-		ok = fb->blSend(dbv, aor, gammaToSend, flen == 0);
+		ok = fb->blSend(dbv, aor, gammaToSend, flen == 0 || gFadeDD);
 		fb->fBLValid = ok;
 		if (ok) {
 			fb->fBLSent = aor;
@@ -2479,7 +2518,27 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	if (gFade && fade16 != 0 && fBLWrites != 0) {
 		uint64_t ns = (uint64_t) fade16 * NSEC_PER_SEC / 65536;
 
+		if (level == 0 && gOffFadeMs != 0 && ns < (uint64_t) gOffFadeMs * NSEC_PER_MSEC) {
+			ns = (uint64_t) gOffFadeMs * NSEC_PER_MSEC;     /* (fb.fade: the power-off fade stretched) */
+		}
+
 		nanoseconds_to_absolutetime(ns > NSEC_PER_SEC ? NSEC_PER_SEC : ns, &len);
+	}
+	if (gOffAlpha && level == 0 && len != 0 && fDecon != NULL && fWin >= 0 && fWin <= 5 && !fDisplayOff) {
+		if (fAlphaCall == NULL) {
+			fAlphaCall = thread_call_allocate_with_options(&IOMobileFramebuffer::alphaWork, this,
+			    THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
+		}
+		if (fAlphaCall != NULL) {
+			fAlphaStart = mach_absolute_time();
+			fAlphaLen = len;
+			thread_call_enter(fAlphaCall);
+			return;                         /* the backlight stays where it is */
+		}
+	}
+	if (level != 0 && fAlphaOn) {
+		fAlphaLen = 0;
+		alphaRestore();
 	}
 	IOLockLock(fBLLock);
 	fFadeFrom = fBLCurrent;
@@ -2488,6 +2547,76 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	fBLTarget = level;
 	IOLockUnlock(fBLLock);
 	thread_call_enter(fBLCall);
+}
+
+/* the window's plane alpha (0 black .. 255 the picture as it is), taken at the next frame */
+void
+IOMobileFramebuffer::alphaSet(uint32_t alpha)
+{
+	uint32_t c0 = 0x1000 + 0x30 * (uint32_t) fWin, c1 = 0x1004 + 0x30 * (uint32_t) fWin;
+
+	if (!fAlphaOn) {
+		fWinCtl0Saved = dpuRead(fDecon, c0);
+		fWinCtl1Saved = dpuRead(fDecon, c1);
+		fAlphaOn = true;
+		/* FG colour x plane alpha0, BG x 0; alpha likewise; user-defined function (0xd), alpha-mult from alpha0 */
+		dpuWrite(fDecon, c1, (6u << 24) | (0u << 16) | (6u << 8) | 0u);
+		dpuWrite(fDecon, c0, (fWinCtl0Saved & ~((0xFu << 8) | 0x3u)) | (0xDu << 8) | 0u);
+	}
+	dpuWrite(fDecon, c0, (dpuRead(fDecon, c0) & ~(0xFFu << 16)) | ((alpha & 0xFFu) << 16));
+	dpuWrite(fDecon, DECON_SHADOW_UPDATE, dpuRead(fDecon, DECON_SHADOW_UPDATE) | (1u << fWin));
+}
+
+/* (B, 2026-11-07) display off: DECON's trigger masked, so no frame goes out at 60/120 Hz into a dark panel (it kept
+ * 12 frames per 100 ms going at 120 Hz with the display off, and ACPM then refused the screen-off memory clock) */
+void
+IOMobileFramebuffer::offFrames(bool off)
+{
+	if (fDecon == NULL || !gOffMask || off == fFramesMasked) {
+		return;
+	}
+	uint32_t trig = dpuRead(fDecon, DECON_TRIG_CONTROL);
+
+	dpuWrite(fDecon, DECON_TRIG_CONTROL, off ? (trig | DECON_TRIG_MASK) : (trig & ~DECON_TRIG_MASK));
+	fFramesMasked = off;
+}
+
+void
+IOMobileFramebuffer::alphaRestore(void)
+{
+	if (!fAlphaOn || fDecon == NULL) {
+		return;
+	}
+	dpuWrite(fDecon, 0x1004 + 0x30 * (uint32_t) fWin, fWinCtl1Saved);
+	dpuWrite(fDecon, 0x1000 + 0x30 * (uint32_t) fWin, fWinCtl0Saved);
+	dpuWrite(fDecon, DECON_SHADOW_UPDATE, dpuRead(fDecon, DECON_SHADOW_UPDATE) | (1u << fWin));
+	fAlphaOn = false;
+}
+
+/* one step of the picture's fade a frame: linear in the encoded value (about even to the eye), then held at 0 */
+void
+IOMobileFramebuffer::alphaWork(thread_call_param_t self, thread_call_param_t unused __unused)
+{
+	IOMobileFramebuffer * fb = (IOMobileFramebuffer *) self;
+	uint64_t now = mach_absolute_time(), start = fb->fAlphaStart, len = fb->fAlphaLen, done;
+	uint32_t alpha;
+
+	if (len == 0) {
+		return;                                 /* (restored meanwhile: a wake, a brightness) */
+	}
+	done = now - start;
+	alpha = done >= len ? 0 : (uint32_t) (255 - 255 * done / len);
+	IOLockLock(fb->fDsimLock);
+	if (fb->fAlphaLen != 0) {
+		fb->alphaSet(alpha);
+	}
+	IOLockUnlock(fb->fDsimLock);
+	if (alpha != 0) {
+		uint64_t next;
+
+		clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
+		thread_call_enter_delayed(fb->fAlphaCall, next);
+	}
 }
 
 /* A helper of the scaling (fb_threads): waits for rows to do, does them, says so. */
@@ -4603,4 +4732,25 @@ dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16));
 	IOLockUnlock(fb->fDsimLock);
 	if (n && fb->fBLCall != NULL) thread_call_enter(fb->fBLCall);
+}
+
+extern "C" void
+dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap)
+{
+	if (n > 0) {
+		gFadeDD = v[0] != 0;
+	}
+	if (n > 1) {
+		gOffFadeMs = v[1] > 2000 ? 2000 : (uint32_t) v[1];
+	}
+	if (n > 2) {
+		gOffAlpha = v[2] != 0;
+	}
+	snprintf(out, cap, "fb.fade: panel dimming during fades %s, power-off fade %s, on the %s\n", gFadeDD ? "on" : "off",
+	    gOffFadeMs ? "stretched" : "as iOS asks (185 ms)", gOffAlpha ? "picture (window alpha)" : "backlight");
+	if (gOffFadeMs) {
+		size_t at = strlen(out);
+
+		snprintf(out + at, cap - at, "  (at least %u ms)\n", gOffFadeMs);
+	}
 }
