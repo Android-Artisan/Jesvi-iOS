@@ -210,7 +210,8 @@ static const struct { uint32_t reg; uint8_t shift, size; } otp_map[99] = {
  * iOS whose peak stays under snd_gate (of 32767; 64 = -54 dBFS) is played as silence and counts as quiet (the
  * amplifiers go off). snd_gate=N at boot, `snd.gate N` live.
  */
-static uint32_t snd_gate = 64;
+static uint32_t snd_gate = 128;         /* -48 dBFS */
+static uint32_t gate_peak_max, gate_blocks, gate_closed;       /* since the last snd.gate: the loudest block, blocks, gated */
 #define QUIET_OFF_US            3000000ull
 
 static volatile uint8_t *pmu, *cmu, *mmu, *abox;
@@ -1132,8 +1133,11 @@ fill(uint64_t at, uint32_t n)
 
 			peak = v > peak ? v : peak;
 		}
+		gate_peak_max = (uint32_t)peak > gate_peak_max ? (uint32_t)peak : gate_peak_max;
+		gate_blocks++;
 		if (peak < (int32_t)snd_gate) {
 			bzero(chunk, take * 4);         /* under the gate: silence */
+			gate_closed++;
 		}
 	}
 	fed_frames += i;
@@ -2076,7 +2080,10 @@ dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (n >= 1) {
 		snd_gate = (uint32_t)(v[0] > 32767 ? 32767 : v[0]);
 	}
-	snprintf(out, cap, "gate %u of 32767 (a block from iOS peaking under it is silence)\n", snd_gate);
+	snprintf(out, cap, "gate %u of 32767 (a block from iOS peaking under it is silence); since the last look: %u blocks, "
+	    "%u gated, the loudest peaked at %u; amps %s\n", snd_gate, gate_blocks, gate_closed, gate_peak_max,
+	    amps_on ? "on" : "off");
+	gate_peak_max = gate_blocks = gate_closed = 0;
 }
 
 static void
