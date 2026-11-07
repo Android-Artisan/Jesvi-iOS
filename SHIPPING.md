@@ -11,6 +11,18 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - The thermal fix below was confirmed on one cold start after the flash (peak 83 C, no restart); watch the
   `reset: last run ended by ...` line at the top of each boot log.
 
+## 2026-11-07 (evening)
+
+### Display: FHD+/HD+ modes up to 120 Hz, factory brightness, smooth power-off — `469ca87`..`b37e85a`
+- Resolution switch fixed (DECON refused every frame: the window's source still delivered 1440x3200): live dev
+  command `fb.mode N 1` (1 = 1080x2400/120, 2 = 1080x2400/60, 3 = 720x1600/120, 4 = 720x1600/60); boot `fb_mode=`.
+  iOS reports 120 (UIScreen.maximumFramesPerSecond) after the timing metadata refresh. Apps' actual fps varies.
+- Factory brightness: the panel's own gamma/AOR tables from its SPI flash (60 and 120 Hz), checksum-verified,
+  on by default (`fb_cal=1`). User: range, direction and colours correct.
+- Power-off: the picture fades (DECON window alpha) instead of the backlight; then display off; frames stopped
+  while dark (trigger masked) so the screen-off profile (memory 421 MHz) engages. User: "much much better".
+- Dev knobs: `fb.fade [dd [offms [alpha]]]`, `fb.factory 0|1`, `fb.mode`.
+
 ## 2026-11-07
 
 ### Sleep: screen timeout, screen-off power profile, Low Power Mode
