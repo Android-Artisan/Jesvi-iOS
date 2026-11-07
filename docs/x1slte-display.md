@@ -12,8 +12,8 @@ and DSC calculations/tests in `proposals/dsc/`.
 | 1440×3200 (WQHD+) | 60 Hz | Native boot, user reports correct blur |
 | 1080×2400 (FHD+) | 60 Hz | User confirmed normal/sharp; measured 6 DECON frames/100 ms |
 | 1080×2400 (FHD+) | 120 Hz | User confirmed usable; measured 12 DECON frames/100 ms; purple blur and slightly washed-out appearance reported |
-| 720×1600 (HD+) | 60 Hz | Live switch succeeded; 6 DECON frames/100 ms immediately and after 0.5 s; visual confirmation pending |
-| 720×1600 (HD+) | 120 Hz | Profile added; device validation pending |
+| 720×1600 (HD+) | 60 Hz | Live switch succeeded; 6 DECON frames/100 ms immediately and after 0.5 s; user confirmed normal |
+| 720×1600 (HD+) | 120 Hz | 12 DECON frames/100 ms at both checks; user confirms normal image and correct blur with default CA timer |
 
 The stock device tree exposes 120 Hz only at the two lower resolutions. It also
 lists 48 NS, 60 HS, and 96 HS variants; these have not been implemented/tested here.
@@ -57,8 +57,11 @@ not been established. Panel refresh at 120 is independently measured.
   return PC is `0x1af037458`, in `CBSliderCommitTelemetry`'s
   `fillEntry:withTimestamp:slider:apce:andTrackedState:`. It requests
   `DisplayBrightness` and expects a dictionary containing `NitsPhysical`,
-  `AuroraFactor`, and `EDRHeadroom`; the value returned was a number. Root-cause
-  correction is pending; do not call this a fixed calibration issue.
+  `AuroraFactor`, and `EDRHeadroom`; the value returned was a number. The injected library now checks the metadata on the telemetry logging queue
+  before recording a commit; non-dictionary records are skipped. Three live
+  zero→40% cycles preserved backboardd PID 303; the rebuilt image also passed
+  zero→40% while scanning at 720×1600/120. This is a telemetry crash guard,
+  not a repair of the incomplete brightness metadata/calibration pipeline.
 * Brightness range: current nits/DBV model and interpolated AOR are not a measured
   calibration. Minimum does not appear fully black; min/max range needs work.
 * At 120 Hz, user reports purple in blurred Reachability and power-off backgrounds,
@@ -68,7 +71,10 @@ not been established. Panel refresh at 120 is independently measured.
 * Returning to HackiOS after changing resolution leaves menu scaling wrong:
   loader GOP geometry remains native while the display is in the lower mode.
   Existing `loaderQuiesce()` restores the firmware channel but does not restore
-  panel/DSIM/DSC/window geometry. Cold reboot restores native firmware setup.
+  panel/DSIM/DSC/window geometry. The return protocol now has version marker `XNULIVE3` and active output
+  dimensions. The loader projects its native menu coordinates into the cropped
+  firmware channel, preserving the native backing-store stride. Runtime return
+  validation is pending. Cold reboot restores native firmware setup.
 * Saved Log Access output also contains `Console I/O from interrupt-disabled
   context @serial_console.c:168` on return. This is separate from the slider
   exception. No claim that either is fixed.

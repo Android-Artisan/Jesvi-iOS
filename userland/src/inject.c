@@ -774,6 +774,62 @@ brightness_fixes(void)
 	method_setImplementation(method, (IMP)wait_for_als_arrival);
 }
 
+/* Brightness telemetry on 20F66 assumes DisplayBrightness is a dictionary.
+ * Our incomplete brightness pipeline can return NSNumber instead (observed at
+ * slider zero). Skip that optional record rather than crash backboardd. This
+ * does not change requested brightness or fabricate physical nits/calibration.
+ */
+struct brightness_tracked_state { bool dark, landscape, automatic, eco; };
+static void (*original_brightness_commit)(id, SEL, int64_t, float, float, struct brightness_tracked_state);
+static Ivar brightness_display_container, brightness_logging_queue;
+static unsigned brightness_telemetry_skipped;
+
+static void
+brightness_commit_checked(id self, SEL selector, int64_t timestamp, float slider_value, float apce,
+    struct brightness_tracked_state state)
+{
+    dispatch_queue_t queue = (dispatch_queue_t)object_getIvar(self, brightness_logging_queue);
+    ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("retain"));
+    dispatch_async(queue, ^{
+        id container = object_getIvar(self, brightness_display_container);
+        CFTypeRef info = (CFTypeRef)((id (*)(id, SEL, id))objc_msgSend)(container,
+            sel_registerName("copyPropertyForKey:"), (id)CFSTR("DisplayBrightness"));
+        bool valid = info == NULL || CFGetTypeID(info) == CFDictionaryGetTypeID();
+
+        if (info != NULL) CFRelease(info);
+        if (valid) {
+            original_brightness_commit(self, selector, timestamp, slider_value, apce, state);
+        } else if (++brightness_telemetry_skipped <= 8) {
+            say("redwood: brightness: skipped commit telemetry with non-dictionary DisplayBrightness (slider %.3f)\n", slider_value);
+        }
+        ((void (*)(id, SEL))objc_msgSend)(self, sel_registerName("release"));
+    });
+}
+
+static void
+brightness_telemetry_fixes(void)
+{
+    Class cls = objc_getClass("CBSliderCommitTelemetry");
+    SEL selector = sel_registerName("logAfterUserBrightnessCommitWithTimestamp:slider:apce:andTrackedState:");
+    Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
+    IMP original = method ? method_getImplementation(method) : NULL;
+    Ivar container = cls ? class_getInstanceVariable(cls, "_displayContainer") : NULL;
+    Ivar queue = cls ? class_getInstanceVariable(cls, "_loggingQueue") : NULL;
+    const char *encoding = method ? method_getTypeEncoding(method) : NULL;
+
+    if ((uintptr_t)original != 0x1af037b64UL + slide || container == NULL ||
+        ivar_getOffset(container) != 32 || queue == NULL || ivar_getOffset(queue) != 48 || encoding == NULL ||
+        strcmp(encoding, "v36@0:8q16f24f28{TrackedState=BBBB}32") != 0) {
+        say("redwood: brightness telemetry: unexpected implementation or ABI; left alone\n");
+        return;
+    }
+    brightness_display_container = container;
+    brightness_logging_queue = queue;
+    original_brightness_commit = (void *)original;
+    method_setImplementation(method, (IMP)brightness_commit_checked);
+    say("redwood: brightness telemetry: checking metadata type before commit record\n");
+}
+
 /* ---- backboardd: the touch screen and the buttons ---------------------------------------------- */
 
 /* IOKit's HID event system, the part that has no public header on iOS (prototypes checked against 20F66) */
@@ -1462,6 +1518,7 @@ redwood_init(void)
 				say("redwood: caenv: %s=%s for the window server\n", setting, equals + 1);
 			}
 		}
+		brightness_telemetry_fixes();
 		opengl_es();
 		window_server_fixes();
 		attention_fixes(arguments);
