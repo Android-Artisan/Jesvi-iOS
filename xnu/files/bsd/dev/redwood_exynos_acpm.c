@@ -447,6 +447,7 @@ int redwood_gov_wake;                   /* the event a touch or a slow GPU job w
  * dvfs_sleep=0 turns the screen-off profile off; dvfs_lpm=0 ignores Low Power Mode.
  */
 static volatile int redwood_screen_on = 1;
+volatile int redwood_display_is_on = 1;      /* the same, for other drivers (redwood_ssp.c: its polling) */
 int redwood_lowpower;                   /* kern.redwood.lowpower (redwood_battery.c's node) */
 static uint32_t prof_sleep = 1, prof_lpm = 1;
 enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
@@ -456,6 +457,7 @@ void
 redwood_dvfs_display(int on)
 {
 	redwood_screen_on = on != 0;
+	redwood_display_is_on = on != 0;
 	thread_wakeup((event_t)&redwood_gov_wake);
 }
 

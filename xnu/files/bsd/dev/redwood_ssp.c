@@ -532,6 +532,7 @@ exchange(const uint8_t *p, size_t n)
  * firmware loads and answers are awaited; 4 ms once the sensors run, where samples come every 20 ms or slower)
  */
 static uint32_t idle_us = 500;
+extern volatile int redwood_display_is_on;     /* (redwood_exynos_acpm.c) */
 
 static void
 pump(uint32_t ms, bool (*done)(void))
@@ -544,6 +545,10 @@ pump(uint32_t ms, bool (*done)(void))
 		}
 		if (host_req()) {
 			(void)exchange(NULL, 0);
+		} else if (idle_us >= 1000 && !redwood_display_is_on) {
+			/* (B, 2026-11-07) display off: 100 ms between looks, not 4 (250 wakeups a second kept the big cores up;
+			 * the samples wait in the hub). An interrupt on HOST_REQ (gpa1-7 EINT) is the real fix. */
+			delay_for_interval(100000, NSEC_PER_USEC);
 		} else if (idle_us >= 1000) {
 			delay_for_interval(idle_us, NSEC_PER_USEC);
 		} else {
