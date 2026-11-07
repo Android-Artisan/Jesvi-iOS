@@ -601,6 +601,12 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
 fi
+# the VTS (voice block) firmware, the phone's /vendor/firmware/vts.bin, into ../fw-sound (Samsung's: never committed):
+# the S20's microphones go through VTS, and its Cortex-M core runs during capture (bsd/dev/redwood_exynos_sound.c mic.vts)
+if [ -f ../fw-sound/vts.bin ]; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-sound/vts.bin root/fw/
+fi
 # ... or the S20+'s Broadcom BCM4375 (bsd/dev/redwood_bcm4375.c, wifi_pcie=4), from the phone's /vendor/firmware
 # into ../fw-wifi under these names: bcmdhd_sta.bin_b1, bcmdhd_clm.blob and the B1 NVRAMs (SEMCO's is this
 # phone's, "Y2"; Murata's for wifi_nvram=1). 1.3 MB, the vendor's and not in the repository.

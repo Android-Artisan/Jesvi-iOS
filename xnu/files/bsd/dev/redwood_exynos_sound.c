@@ -63,6 +63,7 @@ extern void loader_log_line(const char *line);
 extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size);
 extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
 extern int redwood_pmic_read(uint8_t type, uint8_t reg, uint8_t *value);
+extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 extern int redwood_pmic_write(uint8_t type, uint8_t reg, uint8_t value);    /* (redwood_acpm_pmic.c: the sub-PMIC) */
 extern int redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value);
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);   /* (redwood_image.c) */
@@ -2563,6 +2564,73 @@ dbg_pmic_w(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    v[1], v[2], v[3], r, c, r2);
 }
 
+
+/*
+ * mic.vts [0]: VTS's Cortex-M core booted as Samsung's vts_start_runtime_resume does on the Exynos 990 before any capture
+ * (the stock kernel's log, phone-mic-v6.txt): vts.bin (root image fw/, from the phone's /vendor/firmware) copied into
+ * VTS's SRAM (0x15600000), CM4 GPR dump on (gpr +0 = 1), the core powered (PMU VTS_CPU_CONFIGURATION 0x3080 bit 0).
+ * Samsung then waits for "VTS boot completed" and sets mode 0 (off): the core idles during capture. mic.vts 0: powered off.
+ */
+#define VTS_SRAM_PHYS           0x15600000U
+#define VTS_SRAM_SIZE           0x101400U
+#define VTS_GPR_PHYS            0x155f0000U
+#define PMU_VTS_CPU_CONF        0x3080U
+#define PMU_VTS_CPU_STATUS      0x3084U
+#define PMU_VTS_CPU_IN          0x30a4U
+
+static void
+dbg_mic_vts(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	static volatile uint8_t *sram, *gpr;
+	const uint8_t *fw;
+	uint64_t size = 0;
+	uint32_t st0, st1;
+
+	if (!mic_pd_open || mic_pmu == NULL) {
+		snprintf(out, cap, "mic: mic.bus, mic.pd first\n");
+		return;
+	}
+	if (n >= 1 && v[0] == 0) {
+		wr(mic_pmu, PMU_VTS_CPU_CONF, rd(mic_pmu, PMU_VTS_CPU_CONF) & ~1U);
+		snprintf(out, cap, "mic: VTS core off (CONF %08x STATUS %08x)\n", rd(mic_pmu, PMU_VTS_CPU_CONF),
+		    rd(mic_pmu, PMU_VTS_CPU_STATUS));
+		return;
+	}
+	fw = redwood_image_file("fw", "vts.bin", &size, NULL);
+	if (fw == NULL || size == 0 || size > VTS_SRAM_SIZE) {
+		snprintf(out, cap, "mic: no fw/vts.bin in the root image (userland/build.sh, ../fw-sound/vts.bin)\n");
+		return;
+	}
+	if (sram == NULL) {
+		sram = (volatile uint8_t *)ml_io_map(VTS_SRAM_PHYS, VTS_SRAM_SIZE);
+		gpr = (volatile uint8_t *)ml_io_map(VTS_GPR_PHYS, 0x1000);
+	}
+	wr(mic_pmu, PMU_VTS_CPU_CONF, rd(mic_pmu, PMU_VTS_CPU_CONF) & ~1U);     /* (off while its program is replaced) */
+	IOSleep(2);
+	for (uint64_t i = 0; i + 4 <= size; i += 4) {
+		uint32_t w;
+
+		memcpy(&w, fw + i, 4);
+		*(volatile uint32_t *)(sram + i) = w;
+	}
+	if (size & 3) {
+		uint32_t w = 0;
+
+		memcpy(&w, fw + (size & ~3ULL), size & 3);
+		*(volatile uint32_t *)(sram + (size & ~3ULL)) = w;
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(gpr, 0, 1);                                  /* CM4 GPR dump on */
+	st0 = rd(mic_pmu, PMU_VTS_CPU_STATUS);
+	wr(mic_pmu, PMU_VTS_CPU_CONF, rd(mic_pmu, PMU_VTS_CPU_CONF) | 1U);
+	IOSleep(50);
+	st1 = rd(mic_pmu, PMU_VTS_CPU_STATUS);
+	snprintf(out, cap, "mic: vts.bin (%llu bytes) in VTS SRAM (first words %08x %08x, read back %08x %08x); core CONF %08x STATUS "
+	    "%08x -> %08x IN %08x; gpr %08x %08x %08x %08x\n", size, ((const uint32_t *)fw)[0], ((const uint32_t *)fw)[1],
+	    *(volatile uint32_t *)sram, *(volatile uint32_t *)(sram + 4), rd(mic_pmu, PMU_VTS_CPU_CONF), st0, st1,
+	    rd(mic_pmu, PMU_VTS_CPU_IN), rd(gpr, 0), rd(gpr, 4), rd(gpr, 8), rd(gpr, 0xc));
+}
+
 static void
 dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -2974,6 +3042,7 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("wdt.off", ": WDT_CLUSTER0 off (its gate opened first)", dbg_wdt_off);
 	redwood_dbgport_add("pmic.r", "SUB TYPE REG: a PMIC register (SUB 0 main S2MPS19, 1 sub S2MPS22; TYPE 1 the PMIC block)", dbg_pmic_r);
 	redwood_dbgport_add("pmic.w", "SUB TYPE REG VAL: a PMIC register written, read back", dbg_pmic_w);
+	redwood_dbgport_add("mic.vts", "[0]: VTS's Cortex-M core booted with fw/vts.bin as Samsung does before capture (0: off)", dbg_mic_vts);
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
