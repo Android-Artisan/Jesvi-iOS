@@ -626,6 +626,30 @@ bt_disconnect(__unused kern_ctl_ref ref, u_int32_t unit, __unused void *unitinfo
 static errno_t
 bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *unitinfo, mbuf_t m, __unused int flags)
 {
+	/*
+	 * bluetoothd's vendor commands (OGF 0x3f) to the log (B, 2026-11-07: the chip fell silent when audio was routed
+	 * to headphones); its UART speed change (0xfc18) kept at our speed, since the UART's speed is ours (bt_setopt)
+	 */
+	if (mbuf_len(m) >= 4 && ((uint8_t *)mbuf_data(m))[0] == 0x01) {
+		uint8_t *h = (uint8_t *)mbuf_data(m);
+		uint16_t op = (uint16_t)(h[1] | (h[2] << 8));
+
+		if ((op >> 10) == 0x3f) {
+			uint32_t plen = h[3], have = (uint32_t)mbuf_len(m) - 4;
+
+			if (op == 0xfc18 && plen >= 6 && have >= 6) {
+				uint32_t want = (uint32_t)h[6] | ((uint32_t)h[7] << 8) | ((uint32_t)h[8] << 16) | ((uint32_t)h[9] << 24);
+
+				h[6] = (uint8_t)bt_speed; h[7] = (uint8_t)(bt_speed >> 8);
+				h[8] = (uint8_t)(bt_speed >> 16); h[9] = (uint8_t)(bt_speed >> 24);
+				bt_log("bt: bluetoothd asks for UART speed %u: kept at %u\n", want, bt_speed);
+			} else {
+				bt_log("bt: bluetoothd sends vendor command %#06x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+				    op, plen, have > 0 ? h[4] : 0, have > 1 ? h[5] : 0, have > 2 ? h[6] : 0, have > 3 ? h[7] : 0,
+				    have > 4 ? h[8] : 0, have > 5 ? h[9] : 0, have > 6 ? h[10] : 0, have > 7 ? h[11] : 0);
+			}
+		}
+	}
 	for (mbuf_t n = m; n != NULL; n = mbuf_next(n)) {
 		if (mbuf_len(n) > 0) {
 			uart_write((const uint8_t *)mbuf_data(n), (uint32_t)mbuf_len(n));
