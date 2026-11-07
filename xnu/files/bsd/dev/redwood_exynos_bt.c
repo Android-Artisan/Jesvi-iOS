@@ -43,6 +43,7 @@
 #include <sys/kern_control.h>
 #include <sys/kpi_mbuf.h>
 #include <sys/redwood_bbi2c.h>
+#include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 
@@ -89,7 +90,13 @@ extern void RedwoodBluetoothStart(const uint8_t *address, uint32_t speed);      
 #define FIFO                    256
 
 #define BT_SLOW         115200
-#define BT_FAST         3000000
+/*
+ * The working speed (boot-arg bt_baud): 1 Mbaud (B, 2026-11-07; was 3 Mbaud, whose 256-byte FIFO fills in 0.85 ms --
+ * the interrupt was late now and then and overran it, and bluetoothd quit on the broken packet as audio started).
+ * Headphones' audio needs some 40 KB/s of the 100 KB/s; the FIFO now lasts 2.6 ms.
+ */
+static uint32_t bt_fast = 1000000;
+#define BT_FAST         bt_fast
 #define CTL_NAME        "com.apple.uart.bluetooth"
 #define RING            (64u << 10)
 
@@ -97,7 +104,7 @@ static volatile uint8_t *uart, *sw_conf, *cmu;
 static volatile uint8_t *bank_q0, *bank_m16, *bank_g1;
 static uint32_t uart_clock_hz;
 static uint32_t bt_speed;
-static bool bt_ready;
+static bool bt_ready, bt_had_client;
 static uint8_t bt_address[6] = { 0x02, 0x52, 0x44, 0x57, 0x00, 0x02 };
 
 /* what came in, for the client (and for the bring-up's own reads) */
@@ -599,6 +606,17 @@ bt_bringup(void)
 #define TIOCSETAW_64    0x80487415u
 #define TIOCSETAF_64    0x80487416u
 
+/* bt.state, bt.baud [N] (used at the next bring-up: when bluetoothd starts again -- `killall bluetoothd`) */
+static void
+dbg_bt_baud(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1 && v[0] >= 115200 && v[0] <= 4000000) {
+		bt_fast = (uint32_t)v[0];
+	}
+	snprintf(out, cap, "bt: UART at %u baud now, %u at the next bring-up; %llu bytes in, %llu out, %llu overruns, "
+	    "%llu dropped, %llu irqs\n", bt_speed, bt_fast, rx_bytes, tx_bytes, rx_overruns, rx_dropped, irqs);
+}
+
 static errno_t
 bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 {
@@ -607,6 +625,20 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 	}
 	*unitinfo = NULL;
 	ring_tail = ring_head;                  /* nothing old for a new client */
+	/*
+	 * A client after the first: bluetoothd started again, and the chip may be wedged by what the last one left (it
+	 * fell silent when audio started): powered off and brought up again, patchram and all (B, 2026-11-07)
+	 */
+	if (bt_had_client) {
+		bool ok;
+
+		bt_ready = false;
+		ok = bt_bringup();
+		bt_ready = true;
+		ring_tail = ring_head;
+		bt_log("bt: brought up again for the new client: %s\n", ok ? "ok" : "FAILED");
+	}
+	bt_had_client = true;
 	bt_unit = sac->sc_unit;
 	bt_log("bt: %s: a client connected (unit %u)\n", CTL_NAME, sac->sc_unit);
 	return 0;
@@ -741,6 +773,8 @@ redwood_exynos_bt_init(void)
 	uint32_t on = 0;
 	thread_t thread;
 
+	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
+	redwood_dbgport_add("bt.baud", "[N]: the BT UART's speed now and at the next bring-up (killall bluetoothd), counters", dbg_bt_baud);
 	if (!PE_parse_boot_argn("bt", &on, sizeof(on)) || on == 0) {
 		return;
 	}
