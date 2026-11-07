@@ -1237,7 +1237,7 @@ static void *
 idle_thread(__unused void *argument)
 {
 	int lock_token = 0, lock_s = 10, auto_s = 60;
-	bool was_on = false;
+	bool was_on = false, booted = false;
 	char arguments[1024] = "";
 	size_t size = sizeof(arguments) - 1;
 
@@ -1256,11 +1256,13 @@ idle_thread(__unused void *argument)
 	say("redwood: idle timer: %d s on the lock screen, Auto-Lock's time when unlocked\n", lock_s);
 	for (;;) {
 		uint64_t now = mach_absolute_time(), idle_ns, locked = 0;
-		bool on = (touch_mode & 0xff) == 1;
+		/* touch detection mode: 0xfe/0xff the display off; 0x1/0x101 the lock screen (pocket touches); 0 unlocked */
+		bool on = (touch_mode & 0xff) != TOUCH_MODE_WAKE && (touch_mode & 0xff) != TOUCH_MODE_OFF && booted;
 		int limit, quiet = -1;
 		size_t len = sizeof(quiet);
 
 		sleep(1);
+		booted |= touch_mode != 0;      /* (0 before the window server has said anything) */
 		if (!on) {
 			was_on = false;
 			continue;

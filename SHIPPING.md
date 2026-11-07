@@ -17,7 +17,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
   untagged lost-attention event here ("attention client lost event tag is not a number") and it never dims. Our own
   idle timer in backboardd (`userland/src/inject.c`) presses the lock button after **10 s** untouched on the lock screen
   (`idle_lock_s=`) or the **Auto-Lock** time when unlocked (Settings value; Never = off), not while sound played in the
-  last 5 s (`kern.redwood.snd_quiet_ms`). `idle_lock=0` turns it off. Known gap: a silent video unlocked still locks.
+  last 5 s (`kern.redwood.snd_quiet_ms`). `idle_lock=0` turns it off. Tested by the user: lock screen 10 s, home screen 60 s. Known gap: a silent video unlocked still locks.
 - **Screen-off profile** (automatic, no switch): memory 421 MHz (was 2730 always; 2.7 vs 15.7 GB/s measured), every
   CPU cluster at its low step, GPU lowest (`bsd/dev/redwood_exynos_acpm.c`, `dvfs_sleep=0` off). Full clocks again
   the moment the display comes on (before the first frame).
