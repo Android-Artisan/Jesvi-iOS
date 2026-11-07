@@ -223,6 +223,7 @@ static uint64_t buf_phys;
 static int16_t *buf;
 static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
+static volatile uint32_t amp_recovery_requested;
 static uint32_t snd_below = 84, snd_gain = 6 * 8, snd_tone;     /* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
 
@@ -694,6 +695,11 @@ amps_bring_up(void)
 	char report[200];
 	bool any = false;
 
+	/* A reset invalidates cached volume and previous presence results. */
+	amps_volume_reg = L41_VOL_MUTE;
+	for (unsigned i = 0; i < 2; i++) {
+		amps[i].present = false;
+	}
 	amps_supply(report, sizeof(report));
 	snd_log("snd: %s\n", report);
 
@@ -2675,10 +2681,10 @@ dbg_snd_supply(const uint64_t *v, unsigned n, char *out, size_t cap)
 static void
 dbg_snd_prep(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	bool ok = amps_bring_up();
-
-	snprintf(out, cap, "amplifiers %s: left %s, right %s (details in the log)\n", ok ? "prepared" : "NOT prepared",
-	    amps[0].present ? "ok" : "missing", amps[1].present ? "ok" : "missing");
+	/* The playback worker owns reset, I2C and the failure latch. */
+	(void)OSCompareAndSwap(0, 1, &amp_recovery_requested);
+	thread_wakeup((event_t)&ring_head);
+	snprintf(out, cap, "amplifier recovery queued on the audio thread (result in the log)\n");
 }
 
 /*
@@ -2815,6 +2821,25 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 		uint64_t now = now_us(), by_time = (now - t0) * REDWOOD_AUDIO_RATE / 1000000;
 		uint32_t pos = dma_position(NULL), delta = (pos + BUF_FRAMES - last_pos) % BUF_FRAMES;
 
+		if (OSCompareAndSwap(1, 0, &amp_recovery_requested)) {
+			uint32_t status = 0;
+			bool healthy;
+
+			redwood_guard_attenuation(REDWOOD_GUARD_SILENT);
+			amps_down();
+			amps_on = false;
+			amps_ok = amps_bring_up();
+			healthy = amps_ok && amps[0].present && amps[1].present;
+			for (unsigned i = 0; i < 2; i++) {
+				if (!amp_read(&amps[i], L41_IRQ1_STATUS1, &status) || (status & L41_FAULTS)) {
+					healthy = false;
+				}
+			}
+			faulted = !healthy;
+			quiet_since = 0;
+			snd_log("snd: amplifier recovery %s; left %s, right %s\n", healthy ? "ready" : "FAILED (muted)",
+			    amps[0].present ? "ok" : "missing", amps[1].present ? "ok" : "missing");
+		}
 		last_pos = pos;
 		status_consumed += delta;
 		if (cal_dram != NULL) {
@@ -2927,10 +2952,10 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			__asm__ volatile ("dsb sy" ::: "memory");
 			snd_quiet = true;
 			quiet_spells++;
-			while (last_sound_us == heard && now_us() - began < 60000000) {
+			while (amp_recovery_requested == 0 && last_sound_us == heard && now_us() - began < 60000000) {
 				ring_tail = ring_head;
 				assert_wait_timeout((event_t)&ring_head, THREAD_UNINT, 1000, NSEC_PER_MSEC);
-				if (last_sound_us != heard) {
+				if (amp_recovery_requested != 0 || last_sound_us != heard) {
 					clear_wait(current_thread(), THREAD_AWAKENED);
 					break;
 				}
