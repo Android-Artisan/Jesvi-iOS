@@ -2322,6 +2322,104 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	    rd(mic_slif, 0x154));
 }
 
+
+/*
+ * mic.cap [ms]: ABOX's capture side as Samsung's run had it during capture (logs/runs/resume-20261107/phone-mic-v5-abox.txt),
+ * driven by the AP like the speakers' RDMA3 (Calliope not involved): UAIF6 slave, DSP_A, 8 x 24 bits (CTRL0 0x01880012,
+ * CTRL1 0x175d75d7); NSRC4 from UAIF6 (ROUTE_CTRL1 [24:20] = 14); SPUM CTRL1/CTRL4, its banks and the capture ASRC
+ * block as read; WDMA4 (0x3400) into our own 64 KB under the speakers' ring. Then each of the 8 channels' peak.
+ */
+static const struct { uint32_t off, val; } samsung_abox_cap[] = {
+	{ 0x0304, 0x00000948 }, { 0x0310, 0x00032170 },
+	{ 0x0328, 0x02000000 }, { 0x032c, 0x02000200 }, { 0x0330, 0x02000400 }, { 0x0334, 0x02000600 },
+	{ 0x0338, 0x00800800 }, { 0x034c, 0x02c00a00 }, { 0x0350, 0x01a00cc0 }, { 0x0354, 0x01a00e60 },
+	{ 0x0358, 0x01901000 },
+	{ 0x4000, 0x9bb000bc }, { 0x4010, 0x00010000 }, { 0x4014, 0x00000ccc }, { 0x4018, 0x00010000 },
+	{ 0x401c, 0x00000ccc },
+};
+#define ABOX_ROUTE_CTRL1        0x0044U
+#define MIC_UAIF6_CTRL0         0x0560U
+#define MIC_UAIF6_CTRL1         0x0564U
+#define MIC_WDMA4               0x3400U
+#define MIC_BUF_BYTES           0x10000U
+
+static volatile uint8_t *mic_abox;
+static volatile uint32_t *mic_buf;
+static uint64_t mic_buf_phys;
+
+static void
+dbg_mic_cap(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint32_t ms = n >= 1 && v[0] > 0 && v[0] <= 5000 ? (uint32_t)v[0] : 300, st0, st1, peak[8] = { 0 };
+	size_t at;
+
+	if (mic_slif == NULL || buf_phys == 0 || cmu == NULL) {
+		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu, mic.clk, mic.slif first (and the speakers' driver up)\n");
+		return;
+	}
+	if (mic_abox == NULL) {
+		mic_abox = (volatile uint8_t *)ml_io_map(ABOX_PHYS, 0x10000);
+		mic_buf_phys = buf_phys - MIC_BUF_BYTES;        /* under the speakers' 64 KB, in the same loader pool */
+		mic_buf = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)mic_buf_phys, MIC_BUF_BYTES, VM_WIMG_WCOMB);
+	}
+	/* UAIF6's clocks: CMU_AUD's BCLK_UAIF6 gate and Q-channel, ABOX's own Q-channel for it */
+	mic_open_reg(cmu, 0x2038);
+	mic_open_reg(cmu, 0x3038);
+	wr(mic_abox, ABOX_QCHANNEL_DISABLE, rd(mic_abox, ABOX_QCHANNEL_DISABLE) | (1U << QCH_ABOX_BCLK_UAIF(6)));
+	/* stopped while set up */
+	wr(mic_abox, MIC_WDMA4, rd(mic_abox, MIC_WDMA4) & ~1U);
+	wr(mic_abox, MIC_UAIF6_CTRL0, rd(mic_abox, MIC_UAIF6_CTRL0) & ~2U);
+	for (unsigned i = 0; i < sizeof(samsung_abox_cap) / sizeof(samsung_abox_cap[0]); i++) {
+		wr(mic_abox, samsung_abox_cap[i].off, samsung_abox_cap[i].val);
+	}
+	wr(mic_abox, ABOX_ROUTE_CTRL1, (rd(mic_abox, ABOX_ROUTE_CTRL1) & ~(0x1fU << 20)) | (14U << 20));
+	wr(mic_abox, MIC_UAIF6_CTRL1, 0x175d75d7U);
+	bzero((void *)(uintptr_t)mic_buf, MIC_BUF_BYTES);
+	__asm__ volatile ("dsb sy" ::: "memory");
+	wr(mic_abox, MIC_WDMA4 + 0x08, (uint32_t)mic_buf_phys);                         /* BUF_STR */
+	wr(mic_abox, MIC_WDMA4 + 0x0c, (uint32_t)(mic_buf_phys + MIC_BUF_BYTES));       /* BUF_END */
+	wr(mic_abox, MIC_WDMA4 + 0x10, MIC_BUF_BYTES / 2);                              /* BUF_OFFSET */
+	wr(mic_abox, MIC_WDMA4 + 0x14, (uint32_t)mic_buf_phys);                         /* STR_POINT */
+	wr(mic_abox, MIC_WDMA4 + 0x18, 0x00800000);                                     /* VOL_FACTOR */
+	wr(mic_abox, MIC_WDMA4 + 0x1c, 0x00010000);                                     /* VOL_CHANGE */
+	wr(mic_abox, MIC_WDMA4 + 0x24, 0x00000002);                                     /* BIT_CTRL0 (Samsung's) */
+	wr(mic_abox, MIC_WDMA4, 0x00200000);
+	/* go: UAIF6's receiver, then the DMA */
+	wr(mic_abox, MIC_UAIF6_CTRL0, 0x01880012U);
+	wr(mic_abox, MIC_WDMA4, 0x00200001);
+	st0 = rd(mic_abox, MIC_WDMA4 + 0x30);
+	IOSleep(ms);
+	st1 = rd(mic_abox, MIC_WDMA4 + 0x30);
+	for (uint32_t i = 0; i < MIC_BUF_BYTES / 4; i++) {
+		int32_t s24 = ((int32_t)mic_buf[i]) >> 8;      /* (24 bits in the top of 32, or in the bottom: both shown below) */
+		uint32_t a = (uint32_t)(s24 < 0 ? -s24 : s24);
+
+		peak[i % 8] = a > peak[i % 8] ? a : peak[i % 8];
+	}
+	at = (size_t)snprintf(out, cap, "mic: WDMA4 CTRL %08x STATUS %08x -> %08x in %u ms; UAIF6 %08x %08x STATUS %08x; ROUTE1 %08x; "
+	    "S_LIF DBG %08x\nmic: peak per channel (of 2^23):", rd(mic_abox, MIC_WDMA4), st0, st1, ms, rd(mic_abox, MIC_UAIF6_CTRL0),
+	    rd(mic_abox, MIC_UAIF6_CTRL1), rd(mic_abox, 0x056c), rd(mic_abox, ABOX_ROUTE_CTRL1), rd(mic_slif, 0x150));
+	for (unsigned c = 0; c < 8 && at < cap; c++) {
+		at += (size_t)snprintf(out + at, cap - at, " %u", peak[c]);
+	}
+	if (at < cap) {
+		at += (size_t)snprintf(out + at, cap - at, "\nmic: first words: %08x %08x %08x %08x %08x %08x %08x %08x | %08x %08x %08x %08x\n",
+		    mic_buf[0], mic_buf[1], mic_buf[2], mic_buf[3], mic_buf[4], mic_buf[5], mic_buf[6], mic_buf[7],
+		    mic_buf[256], mic_buf[257], mic_buf[258], mic_buf[259]);
+	}
+}
+
+/* mic.stop: WDMA4 and UAIF6's receiver off */
+static void
+dbg_mic_stop(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (mic_abox != NULL) {
+		wr(mic_abox, MIC_WDMA4, rd(mic_abox, MIC_WDMA4) & ~1U);
+		wr(mic_abox, MIC_UAIF6_CTRL0, rd(mic_abox, MIC_UAIF6_CTRL0) & ~2U);
+	}
+	snprintf(out, cap, "mic: capture stopped\n");
+}
+
 static void
 dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -2717,6 +2815,8 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.pd", ": the VTS power domain on, then EL3's DTZPC restore (after mic.bus)", dbg_mic_pd);
 	redwood_dbgport_add("mic.clk", ": the microphone clocks for 48 kHz / 24 bits (after mic.cmu)", dbg_mic_clk);
 	redwood_dbgport_add("mic.slif", ": the DMIC pins, DMIC_AUD0 and the serial LIF as Samsung sets them (after mic.clk)", dbg_mic_slif);
+	redwood_dbgport_add("mic.cap", "[ms]: ABOX's capture side (UAIF6 -> NSRC4 -> WDMA4) on, then each channel's peak (after mic.slif)", dbg_mic_cap);
+	redwood_dbgport_add("mic.stop", ": capture off", dbg_mic_stop);
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
