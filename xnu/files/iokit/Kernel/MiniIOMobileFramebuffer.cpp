@@ -4538,6 +4538,11 @@ IOMobileFramebuffer::modeLive(int mode)
 			strlcat(fModeReport, "resolution already switched; cold restart required for another mode\n", sizeof(fModeReport));
 			return;
 		}
+		if (fDisplayOff || fOffPending || fFramesMasked) {
+			/* (B, 2026-11-07: a switch while the display was off left the panel black after the wake) */
+			strlcat(fModeReport, "the display is off: switch with the screen on\n", sizeof(fModeReport));
+			return;
+		}
 		fModeAsk = (uint32_t) mode;
 		IOLockLock(fDsimLock);
 		ok = modeSetFhd120();
