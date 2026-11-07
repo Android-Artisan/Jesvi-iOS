@@ -373,7 +373,9 @@ pending_answered(uint16_t op, uint8_t status, const char *how)
  * most N (HCI's own continuation, PB 01); each takes a buffer; the chip's completions are given back to bluetoothd per
  * its own packets (the fragments of each remembered here).
  */
-static uint32_t bt_frag = 339;   /* (2-DH3 payload; 0: whole packets) */
+/* The UART FIFO snapshot fix makes whole HCI packets reliable. Splitting
+ * consumes extra controller credits and can stall the first audio burst. */
+static uint32_t bt_frag;         /* 0: whole packets; bt.frag N for diagnostics */
 #define FRAGQ 64
 static uint8_t fragq[FRAGQ];
 static volatile uint32_t fragq_head, fragq_tail, frag_done;
@@ -626,11 +628,11 @@ uart_write(const uint8_t *p, uint32_t n)
 {
 	lck_mtx_lock(&bt_tx_lock);
 	while (n > 0) {
-		uint32_t room = FIFO - UFSTAT_TXCOUNT(rd(UFSTAT));
-
-		if (rd(UFSTAT) & UFSTAT_TXFULL) {
-			room = 0;
-		}
+		/* A full FIFO's count wraps to zero. Use the same snapshot for
+		 * count and full: if it drains between separate reads, a full
+		 * FIFO can otherwise appear to have all 256 slots free. */
+		uint32_t status = rd(UFSTAT);
+		uint32_t room = (status & UFSTAT_TXFULL) ? 0 : FIFO - UFSTAT_TXCOUNT(status);
 		if (room == 0) {
 			delay(20);
 			continue;
