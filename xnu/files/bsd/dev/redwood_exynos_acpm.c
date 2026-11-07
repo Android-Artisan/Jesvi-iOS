@@ -100,13 +100,13 @@ static const struct {
 	/*
 	 * (B, 2026-11-07: 86/96 read once a second let the big cluster reach 108-111 C during boot and the SoC's thermal
 	 * trip reset the phone through the PMIC -- RST_STAT PINRESET, PWRONSRC WTSR -- 2-3 times after a cold start. Now
-	 * 80/90 read every 250 ms and let go 10 degrees below the mark.)
+	 * 85/95 read every 250 ms and let go 10 degrees below the mark; 80/90 throttled plain UI use, 18:50.)
 	 */
-	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 80, 90 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 80, 90 },
-	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 80, 90 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 92 },
-	{ D_MIF, "mif",       "dvfs_mif", 2730000, 0,       0,       -1, 0, 0 },  /* LPDDR5 top (Samsung mode_1); dvfs_mif=0 leaves it */
+	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 85, 95 },
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 85, 95 },
+	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 85, 95 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 87, 97 },
+	{ D_MIF, "mif",       "dvfs_mif", 2028000, 0,       0,       -1, 0, 0 },  /* (2730 = LPDDR5 top: heat for no UI gain, 18:50); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
 };
@@ -531,7 +531,12 @@ static uint32_t gov_frame = 1;                  /* dvfs_frame= (on by default; 0
 /* M5 at 2208, not its 2730 top: held at the top through the tour it reached 89 C and was throttled to 1794 (step 1) */
 /* A55 at its 2002 top too: the lock screen's wallpaper (PosterBoard's extensions, lower priority) is drawn on the little
  * cores while SpringBoard and backboardd hold the big ones -- its screen-off frames came 33-50 ms apart at 1456 */
-static const uint32_t gov_frame_khz[] = { 2002000, 2504000, 2208000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
+/*
+ * (B, 2026-11-07 18:50: the floors were 2002/2504/2208 -- near the tops -- for every frame, even a clock tick: the SoC sat
+ * at 80-88 C in plain UI use and the thermal steps throttled scrolling. Efficient points now; the governor still raises
+ * on load and on touch. dvfs_ffl_cl0/cl1/cl2/g3d= override.)
+ */
+static uint32_t gov_frame_khz[] = { 1456000, 2106000, 1898000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
 static uint32_t gov_frame_ticks;                /* ticks with the frame floor on (for the 10 s line) */
 
 /* the lowest rung the touch booster holds cluster `g` at now (0: no boost) */
@@ -630,6 +635,10 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("fb_hot", &fb_hot, sizeof(fb_hot));
 	PE_parse_boot_argn("dvfs_gov_gpu", &govern_gpu, sizeof(govern_gpu));
 	PE_parse_boot_argn("dvfs_frame", &gov_frame, sizeof(gov_frame));
+	PE_parse_boot_argn("dvfs_ffl_cl0", &gov_frame_khz[0], sizeof(gov_frame_khz[0]));
+	PE_parse_boot_argn("dvfs_ffl_cl1", &gov_frame_khz[1], sizeof(gov_frame_khz[1]));
+	PE_parse_boot_argn("dvfs_ffl_cl2", &gov_frame_khz[2], sizeof(gov_frame_khz[2]));
+	PE_parse_boot_argn("dvfs_ffl_g3d", &gov_frame_khz[3], sizeof(gov_frame_khz[3]));
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
 	PE_parse_boot_argn("dvfs_lpm", &prof_lpm, sizeof(prof_lpm));
 	for (unsigned g = 0; g < NGOV; g++) {
