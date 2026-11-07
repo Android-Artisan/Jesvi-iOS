@@ -5185,6 +5185,11 @@ y2s_menu_loop(void)
 			choice = MENU_BOOT;
 		}
 		if (choice == MENU_BOOT) {
+			/* The firmware must restore native DSIM/DSC geometry before another kernel. */
+			if (menu_output_width != 0) {
+				ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
+				continue;
+			}
 			menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
 			menu_text_center((int)SCREEN.height / 2 - 40, "Starting iOS", 5, 0xffffff);
 			menu_flush();

@@ -36,12 +36,21 @@
 
 extern "C" {
 #include <console/video_console.h>
+/* Shared pinctrl/SPI interfaces live outside the exported IOKit headers. */
+#include "../../bsd/sys/redwood_exynos_spi.h"
+int redwood_dsay(const char *, ...);
+volatile uint8_t *redwood_gpio_bank(uint32_t block_phys, uint32_t bank_offset);
+void redwood_gpio_func(volatile uint8_t *bank, uint32_t pin, uint32_t func);
+uint32_t redwood_gpio_get(volatile uint8_t *bank, uint32_t pin);
+void redwood_gpio_set(volatile uint8_t *bank, uint32_t pin, uint32_t value);
 extern struct vc_info vinfo;            /* the boot framebuffer, as the text console knows it */
 }
 extern "C" {
 typedef void (*redwood_dbgport_fn)(const uint64_t *v, unsigned n, char *out, size_t cap);  /* (bsd/sys/redwood_dbgport.h) */
 int redwood_dbgport_add(const char *name, const char *help, redwood_dbgport_fn fn);
 void dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap);
+void dbg_fb_cal(const uint64_t * v, unsigned n, char * out, size_t cap);
+void dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap);
 }
 class IOMobileFramebuffer;
 static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.mode */
@@ -296,6 +305,14 @@ static const uint16_t gPanelDBV[] = {
 	0x739, 0x75C, 0x783, 0x7AB, 0x7D7, 0x7FF,
 };
 static_assert(sizeof(gPanelNits) / sizeof(gPanelNits[0]) == sizeof(gPanelDBV) / sizeof(gPanelDBV[0]), "one DBV per step");
+
+#include "MiniIOMobileFramebufferCalibration.h"
+static TUNABLE(uint32_t, gFactoryAuto, "fb_cal", 0);
+static uint8_t gFactoryData[2][7392], gFactorySavedGamma[34];
+static bool gFactoryReady, gFactoryEnabled, gFactoryRestore;
+static uint16_t gFactoryChecksums[2];
+static bool factoryLoad(IOMobileFramebuffer *fb); /* caller holds fDsimLock */
+static void factoryParameters(uint32_t level, uint32_t *aor, uint8_t *gamma);
 
 /* A line for the loader's log (IOLog's buffer reaches it only when the kernel returns in order) and for IOLog. */
 static void fbSay(const char * format, ...) __printflike(1, 2);
@@ -674,7 +691,7 @@ public:
 	thread_call_t   fBLCall;
 	uint32_t        fBLTarget;              /* nits in 16.16, as CoreBrightness gives it */
 	uint32_t        fBLSent;                /* AOR of the last successful write */
-	uint32_t        fBLDBVSent, fBLFailStreak;
+	uint32_t        fBLDBVSent, fBLFailStreak, fBLFactoryLevel;
 	bool            fBLValid;              /* both DBV and AOR known to have been sent */
 	uint32_t        fBLCurrent;             /* nits in 16.16 last sent (where a fade starts from) */
 	uint32_t        fFadeFrom;              /* the fade: from, when it began, how long (absolute time; 0: none) */
@@ -736,7 +753,7 @@ public:
 	void modeCounters(const char * when, char * out, size_t cap);
 	int dsimRead(uint8_t command, uint8_t * out, uint32_t max);
 	void panelReport(const char * when);
-	bool blSend(uint32_t dbv, uint32_t aor);
+	bool blSend(uint32_t dbv, uint32_t aor, const uint8_t *gamma = NULL, bool smooth = true);
 	uint32_t aorRead(void);
 	uint32_t        fAor0;                  /* the AOR (B1) the panel was found with: its full brightness */
 	bool            fPacketGo;              /* DSIM writes with PKT_GO, as Samsung's dsim_write_data() does */
@@ -936,6 +953,8 @@ IOMobileFramebuffer::start(IOService * provider)
 	gFbLive = this;
 	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
+	redwood_dbgport_add("fb.cal", "[address length]: read panel calibration SPI flash (JEDEC ID if no args; factory range 0xf0000..0xf8fff, max 128 bytes)", dbg_fb_cal);
+	redwood_dbgport_add("fb.factory", "[0|1]: factory gamma/AOR status, disable/restore, or load/enable verified normal and 120 Hz calibration", dbg_fb_factory);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
 	setProperty("RedwoodWaitsForGPU", kOSBooleanTrue);
@@ -2003,6 +2022,7 @@ IOMobileFramebuffer::blSetup(void)
 		IOLockLock(fDsimLock);
 		panelReport("as found");
 		fAor0 = PANEL_AOR_BRIGHTEST;
+		if (gFactoryAuto && factoryLoad(this)) gFactoryEnabled = true;
 		IOLockUnlock(fDsimLock);
 		fbSay("fb: bl: brightness by AOR from %#x (full) to %#x (darkest)\n", fAor0, PANEL_AOR_DARKEST);
 	}
@@ -2171,15 +2191,20 @@ IOMobileFramebuffer::dsimWrite(const uint8_t * bytes, uint32_t length)
 }
 
 bool
-IOMobileFramebuffer::blSend(uint32_t dbv, uint32_t aor)
+IOMobileFramebuffer::blSend(uint32_t dbv, uint32_t aor, const uint8_t *gamma, bool smooth)
 {
 	static const uint8_t keyOn[] = { 0xF0, 0x5A, 0x5A }, keyOff[] = { 0xF0, 0xA5, 0xA5 }, update[] = { 0xF7, 0x0F };
-	const uint8_t hbmOff[] = { 0x53, (uint8_t) (gDim ? 0x08 : 0x00) };     /* HBM off; DD (smooth dimming) with fb_dim */
+	const uint8_t hbmOff[] = { 0x53, (uint8_t) (gDim && smooth ? 0x08 : 0x00) };     /* HBM off; DD (smooth dimming) with fb_dim */
 	const uint8_t level[] = { 0x6A, (uint8_t) (dbv >> 8 & 0x07), (uint8_t) (dbv & 0xff), 0x01 };
 	const uint8_t offRatio[] = { 0xB1, (uint8_t) (aor >> 8), (uint8_t) aor };
 	bool ok;
 
 	ok = dsimWrite(keyOn, sizeof(keyOn));
+	if (gamma != NULL) {
+		uint8_t command[35] = { 0xCA };
+		memcpy(command + 1, gamma, 34);
+		ok = ok && dsimWrite(command, sizeof(command));
+	}
 	ok = ok && dsimWrite(offRatio, sizeof(offRatio));
 	ok = ok && dsimWrite(level, sizeof(level));
 	ok = ok && dsimWrite(hbmOff, sizeof(hbmOff));
@@ -2187,73 +2212,75 @@ IOMobileFramebuffer::blSend(uint32_t dbv, uint32_t aor)
 	return dsimWrite(keyOff, sizeof(keyOff)) && ok;
 }
 
-/* the held display off (fb_dim): sent once the panel has dimmed, unless woken meanwhile */
+/* Software fades complete before DCS 28; wake cancels pending off under the same lock. */
 void
 IOMobileFramebuffer::offWork(thread_call_param_t self, thread_call_param_t unused __unused)
 {
-	IOMobileFramebuffer * fb = (IOMobileFramebuffer *) self;
+	IOMobileFramebuffer *fb = (IOMobileFramebuffer *)self;
 	const uint8_t command[] = { 0x28 };
-	bool ok;
-
-	if (!fb->fOffPending) {
+	IOLockLock(fb->fDsimLock);
+	if (!fb->fOffPending) { IOLockUnlock(fb->fDsimLock); return; }
+	IOLockLock(fb->fBLLock);
+	uint64_t end = fb->fFadeStart + fb->fFadeLen, grace;
+	bool unfinished = fb->fFadeLen && fb->fBLTarget == 0 && fb->fBLCurrent != 0;
+	IOLockUnlock(fb->fBLLock);
+	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &grace);
+	if (unfinished && mach_absolute_time() < end + grace) {
+		uint64_t next;
+		clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
+		IOLockUnlock(fb->fDsimLock);
+		thread_call_enter_delayed(fb->fOffCall, next);
 		return;
 	}
 	fb->fOffPending = false;
-	IOLockLock(fb->fDsimLock);
-	ok = fb->dsimWrite(command, sizeof(command));
-	fb->fDisplayOff = true;
-	redwood_dvfs_display(0);
+	bool ok = fb->dsimWrite(command, sizeof(command));
+	if (ok) { fb->fDisplayOff = true; redwood_dvfs_display(0); }
 	IOLockUnlock(fb->fDsimLock);
-	fbSay("fb: bl: display off (DCS 28, held for the panel's dimming) %s\n", ok ? "sent" : "NOT SENT");
+	fbSay("fb: bl: display off after fade (DCS 28) %s\n", ok ? "sent" : "NOT SENT");
 }
 
-/* The framebuffer's power (IOMobileFramebuffer selector 12: 0 off, 1 on): the panel's display off / on (DCS 28 / 29). */
 void
 IOMobileFramebuffer::displayPower(bool on)
 {
-	const uint8_t command[] = { (uint8_t) (on ? 0x29 : 0x28) };
-	bool ok;
-
-	if (on && fOffPending) {
-		/* woken again before the held display off went out: it never goes */
-		fOffPending = false;
-		if (fOffCall != NULL) {
-			thread_call_cancel(fOffCall);
-		}
-		redwood_gov_boost(1000);
-		fbSay("fb: bl: display off cancelled (woken before it went out)\n");
-		return;
-	}
-	if (fDsim == NULL || !gBL || fDisplayOff == !on) {
-		return;
-	}
-	if (on) {
-		redwood_dvfs_display(1);                /* out of the screen-off profile before anything is drawn */
-		redwood_gov_boost(1000);                /* the wake animation at full clocks from its first frame */
-	}
-	if (!on && gDim && gOffHold && !fOffPending) {
-		/*
-		 * The panel blends brightness over its own frames (fb_dim): DCS 28 right at the end of the fade cut the last
-		 * of it off. Held until 300 ms after the last brightness write (the fade itself is ~185 ms).
-		 */
-		uint64_t settle, at;
-
-		if (fOffCall == NULL) {
-			fOffCall = thread_call_allocate_with_options(&IOMobileFramebuffer::offWork, this, THREAD_CALL_PRIORITY_KERNEL,
-			    THREAD_CALL_OPTIONS_ONCE);
-		}
-		nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &settle);
-		at = fBLSentAt + settle;
-		if (fOffCall != NULL && at > mach_absolute_time()) {
-			fOffPending = true;
-			thread_call_enter_delayed(fOffCall, at);
-			return;
-		}
-	}
+	const uint8_t command[] = { (uint8_t)(on ? 0x29 : 0x28) };
+	if (fDsim == NULL || !gBL) return;
 	IOLockLock(fDsimLock);
-	ok = dsimWrite(command, sizeof(command));
-	fDisplayOff = !on;
-	redwood_dvfs_display(on);
+	if (on && fOffPending) {
+		fOffPending = false;
+		if (fOffCall != NULL) thread_call_cancel(fOffCall);
+		redwood_gov_boost(1000);
+		IOLockUnlock(fDsimLock);
+		fbSay("fb: bl: display off cancelled by wake\n");
+		return;
+	}
+	if (fDisplayOff == !on || (!on && fOffPending)) { IOLockUnlock(fDsimLock); return; }
+	if (on) { redwood_dvfs_display(1); redwood_gov_boost(1000); }
+	if (!on) {
+		uint64_t at = 0, settle;
+		IOLockLock(fBLLock);
+		bool software = gFade && fFadeLen != 0 && fBLTarget == 0;
+		if (software) at = fFadeStart + fFadeLen;
+		IOLockUnlock(fBLLock);
+		if (software) {
+			nanoseconds_to_absolutetime(NSEC_PER_SEC / refreshHz(), &settle);
+			at += settle; /* one frame for the final zero write */
+		} else if (gDim && gOffHold) {
+			nanoseconds_to_absolutetime(300 * NSEC_PER_MSEC, &settle);
+			at = fBLSentAt + settle;
+		}
+		if (at > mach_absolute_time()) {
+			if (fOffCall == NULL) fOffCall = thread_call_allocate_with_options(&IOMobileFramebuffer::offWork,
+			    this, THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
+			if (fOffCall != NULL) {
+				fOffPending = true;
+				thread_call_enter_delayed(fOffCall, at);
+				IOLockUnlock(fDsimLock);
+				return;
+			}
+		}
+	}
+	bool ok = dsimWrite(command, sizeof(command));
+	if (ok) { fDisplayOff = !on; redwood_dvfs_display(on); }
 	IOLockUnlock(fDsimLock);
 	fbSay("fb: bl: display %s (DCS %02x) %s\n", on ? "on" : "off", command[0], ok ? "sent" : "NOT SENT");
 }
@@ -2306,6 +2333,8 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 
 	for (;;) {
 		uint32_t target, dbv, aor, back;
+		uint8_t gamma[34];
+		const uint8_t *gammaToSend = NULL;
 		uint64_t began, nits;
 		bool ok;
 
@@ -2335,27 +2364,37 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		if (gBLThermalCap != 0 && target > gBLThermalCap) {
 			target = gBLThermalCap;
 		}
+		IOLockLock(fb->fDsimLock);
 		dbv = nitsToDBV(target);
 		nits = (uint64_t) target < ((uint64_t) kPanelMaxNits << 16) ? target : (uint64_t) kPanelMaxNits << 16;
 		aor = fb->fAor0 < PANEL_AOR_DARKEST ?
 		    PANEL_AOR_DARKEST - (uint32_t) ((uint64_t) (PANEL_AOR_DARKEST - fb->fAor0) * nits / ((uint64_t) kPanelMaxNits << 16)) :
 		    fb->fAor0;
-		if (fb->fBLValid && aor == fb->fBLSent && dbv == fb->fBLDBVSent) {
+		if (gFactoryEnabled) {
+			factoryParameters(target, &aor, gamma);
+			gammaToSend = gamma;
+		} else if (gFactoryRestore) {
+			gammaToSend = gFactorySavedGamma;
+		}
+		if (fb->fBLValid && aor == fb->fBLSent && dbv == fb->fBLDBVSent &&
+		    (!gFactoryEnabled || fb->fBLFactoryLevel == target)) {
+			IOLockUnlock(fb->fDsimLock);
 			if (more) {
 				uint64_t next;
 
-				clock_interval_to_deadline(16, kMillisecondScale, &next);
+				clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
 				thread_call_enter_delayed(fb->fBLCall, next);
 			}
 			return;
 		}
 		began = mach_absolute_time();
-		IOLockLock(fb->fDsimLock);
-		ok = fb->blSend(dbv, aor);
+		ok = fb->blSend(dbv, aor, gammaToSend, flen == 0);
 		fb->fBLValid = ok;
 		if (ok) {
 			fb->fBLSent = aor;
 			fb->fBLDBVSent = dbv;
+			fb->fBLFactoryLevel = target;
+			gFactoryRestore = false;
 			IOLockLock(fb->fBLLock);
 			fb->fBLCurrent = target;
 			IOLockUnlock(fb->fBLLock);
@@ -2383,7 +2422,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 			/* A fade advances on a frame; failed packets get at most three delayed retries. */
 			uint64_t next;
 
-			clock_interval_to_deadline(ok ? 16 : 50, kMillisecondScale, &next);
+			clock_interval_to_deadline(ok ? 1000000u / refreshHz() : 50000u, kMicrosecondScale, &next);
 			thread_call_enter_delayed(fb->fBLCall, next);
 			return;
 		}
@@ -4319,6 +4358,10 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	fPanelWidth = width;
 	fPanelHeight = height;
 	gModeHz = (fModeAsk == 1 || fModeAsk == 3) ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
+	if (gFactoryEnabled && fBLCall != NULL) {
+		fBLValid = false;
+		thread_call_enter(fBLCall); /* reapply the gamma table for the new refresh mode */
+	}
 	/* Clients may cache timing properties from boot; publish the new scanout rate too. */
 	publishModes();
 	messageClients(kIOMessageServicePropertyChange);
@@ -4404,3 +4447,160 @@ dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap)
 	snprintf(out, cap, "%s", fb->fModeDone ? fb->fModeReport : "fb.mode: the presenter did not answer in 5 s\n");
 }
 
+/* Samsung hubble1 POC flash: DT spi_20, gpm4 clock, gpm5 MISO,
+ * gpm6 MOSI, gpm7 chip select. Hardware SPI handles the signal ordering.
+ * Only JEDEC-ID and READ opcodes are implemented. All pins are restored.
+ */
+static struct redwood_exynos_spi calBus = {
+	.name = "panel-cal-spi", .regs_pa = 0x15d20000, .usi_mode_pa = 0x15c22010,
+	.cmu_pa = 0x15c00000, .cmu_size = 0x4000,
+	.gates = { 0x2064, 0x2084, 0x2088 }, .ngates = 3,
+	.qch = 0x3044, .div = 0x1820, .mux = 0x1020,
+	.div_ratio = 15, .fifo_bytes = 64, .mode = 0,
+};
+
+/* One bounded, read-only flash transaction, with the DSIM lock held by caller. */
+static uint32_t
+calRead(bool id, uint32_t address, uint8_t *data, uint32_t length)
+{
+	volatile uint8_t *pins[4];
+	uint32_t con[4], dat[4], savedClock[5], savedUsi, status;
+	uint8_t tx[132] = { 0 }, rx[132] = { 0 };
+	if (length == 0 || length > 128) return 1;
+	for (unsigned i = 0; i < 4; i++) {
+		pins[i] = redwood_gpio_bank(0x15c30000, 0x80 + 0x20 * i);
+		if (pins[i] == NULL) return 2;
+		con[i] = dpuRead(pins[i], 0);
+		dat[i] = redwood_gpio_get(pins[i], 0);
+	}
+	if ((!calBus.regs || !calBus.usi || !calBus.cmu) && !redwood_exynos_spi_map(&calBus, redwood_dsay)) return 3;
+	for (unsigned i = 0; i < 3; i++) savedClock[i] = dpuRead((volatile uint8_t *)calBus.cmu, calBus.gates[i]);
+	savedClock[3] = dpuRead((volatile uint8_t *)calBus.cmu, calBus.div);
+	savedClock[4] = dpuRead((volatile uint8_t *)calBus.cmu, calBus.qch);
+	savedUsi = *(volatile uint32_t *)calBus.usi;
+	redwood_exynos_spi_power(&calBus);
+	redwood_exynos_spi_reset(&calBus);
+	for (unsigned i = 0; i < 4; i++) redwood_gpio_func(pins[i], 0, 2);
+	unsigned header = id ? 1 : 4;
+	tx[0] = id ? 0x9f : 0x03;
+	if (!id) { tx[1] = (uint8_t)(address >> 16); tx[2] = (uint8_t)(address >> 8); tx[3] = (uint8_t)address; }
+	redwood_exynos_spi_select(&calBus, true);
+	status = redwood_exynos_spi_transfer(&calBus, tx, rx, header + length);
+	redwood_exynos_spi_select(&calBus, false);
+	memcpy(data, rx + header, length);
+	for (unsigned i = 0; i < 4; i++) {
+		if ((con[i] & 15) == 1) redwood_gpio_set(pins[i], 0, dat[i]);
+		redwood_gpio_func(pins[i], 0, con[i] & 15);
+	}
+	*(volatile uint32_t *)calBus.usi = savedUsi;
+	dpuWrite((volatile uint8_t *)calBus.cmu, calBus.div, savedClock[3]);
+	for (unsigned wait = 0; wait < 1000 && (dpuRead((volatile uint8_t *)calBus.cmu, calBus.div) & (1u << 16)); wait++) delay(1);
+	dpuWrite((volatile uint8_t *)calBus.cmu, calBus.qch, savedClock[4]);
+	for (unsigned i = 0; i < 3; i++) dpuWrite((volatile uint8_t *)calBus.cmu, calBus.gates[i], savedClock[i]);
+	return status;
+}
+
+extern "C" void
+dbg_fb_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+	uint8_t data[128];
+	uint32_t address = n ? (uint32_t)v[0] : 0, length = n > 1 ? (uint32_t)v[1] : 3;
+	if (fb == NULL || !fb->fDsimLock || (n && (n != 2 || !length || length > 128 ||
+	    v[0] != address || v[1] != length || address < 0xf0000 || address >= 0xf9000 || length > 0xf9000 - address))) {
+		snprintf(out, cap, "fb.cal: ID, or factory address 0xf0000..0xf8fff and 1..128 bytes\n");
+		return;
+	}
+	IOLockLock(fb->fDsimLock);
+	uint32_t status = calRead(n == 0, address, data, length);
+	IOLockUnlock(fb->fDsimLock);
+	if (status) { snprintf(out, cap, "fb.cal: transfer failed %#x\n", status); return; }
+	size_t at = (size_t)snprintf(out, cap, "%s %#x %u:", n ? "flash" : "jedec", address, length);
+	for (unsigned i = 0; i < length && at < cap; i++) at += (size_t)snprintf(out + at, cap - at, " %02x", data[i]);
+	if (at < cap) snprintf(out + at, cap - at, "\n");
+}
+
+static bool
+factoryLoad(IOMobileFramebuffer *fb)
+{
+	if (gFactoryReady) return true;
+	uint8_t id[3], check[3], gamma[34];
+	static const uint8_t keyOn[] = { 0xF0, 0x5A, 0x5A }, keyOff[] = { 0xF0, 0xA5, 0xA5 };
+	if (calRead(true, 0, id, 3) || id[0] != 0xc2 || id[1] != 0x28 || id[2] != 0x14) {
+		fbSay("fb: factory: unsupported or missing SPI flash; approximate curve retained\n");
+		return false;
+	}
+	for (unsigned part = 0; part < 2; part++) {
+		uint32_t base = part ? 0xf3000 : 0xf0000, sum = 0;
+		for (unsigned off = 0; off < 7392; off += 128) {
+			unsigned bytes = 7392 - off < 128 ? 7392 - off : 128;
+			if (calRead(false, base + off, gFactoryData[part] + off, bytes)) return false;
+		}
+		if (calRead(false, base + 0x26b4, check, 3)) return false;
+		for (unsigned i = 0; i < 7392; i++) sum += gFactoryData[part][i];
+		uint16_t expected = (uint16_t)((check[0] << 8) | check[1]);
+		if ((sum & 0xffff) != expected || check[2] != 1) {
+			fbSay("fb: factory: %s checksum %#x != %#x or magic %u; approximate curve retained\n",
+			    part ? "120 HS" : "60 NS", sum & 0xffff, expected, check[2]);
+			return false;
+		}
+		for (unsigned i = 0; i < 90; i++) {
+			uint32_t aor = (gFactoryData[part][2550 + 2 * i] << 8) | gFactoryData[part][2551 + 2 * i];
+			if (!aor || aor >= 0xc80) return false;
+		}
+		gFactoryChecksums[part] = expected;
+	}
+	(void)fb->dsimWrite(keyOn, sizeof(keyOn));
+	int got = fb->dsimRead(0xCA, gamma, 34);
+	(void)fb->dsimWrite(keyOff, sizeof(keyOff));
+	if (got != 34) {
+		fbSay("fb: factory: cannot save original gamma (%d/34); approximate curve retained\n", got);
+		return false;
+	}
+	memcpy(gFactorySavedGamma, gamma, 34);
+	gFactoryReady = true;
+	fbSay("fb: factory: normal checksum %#x, 120 HS %#x verified; original gamma saved\n",
+	    gFactoryChecksums[0], gFactoryChecksums[1]);
+	return true;
+}
+
+static void
+factoryParameters(uint32_t level, uint32_t *aor, uint8_t *gamma)
+{
+	const uint8_t *data = gFactoryData[refreshHz() == 120 ? 1 : 0];
+	unsigned lo = 0, hi = 0;
+	uint32_t weight = 0;
+	if (level >= ((uint32_t)gPanelNits[73] << 16)) lo = hi = 73;
+	else if (level > ((uint32_t)gPanelNits[0] << 16)) {
+		for (hi = 1; hi < 74 && level > ((uint32_t)gPanelNits[hi] << 16); hi++) {}
+		lo = hi - 1;
+		weight = (uint32_t)(((uint64_t)(level - ((uint32_t)gPanelNits[lo] << 16)) << 16) /
+		    ((uint32_t)(gPanelNits[hi] - gPanelNits[lo]) << 16));
+	}
+	/* Gamma has 74 reversed rows; AOR has 90 (including 16 HBM rows). */
+	fbCalGamma(data + 34 + fbCalRow(74, lo) * 34, data + 34 + fbCalRow(74, hi) * 34, weight, gamma);
+	uint32_t a = (data[2550 + fbCalRow(90, lo) * 2] << 8) | data[2551 + fbCalRow(90, lo) * 2];
+	uint32_t b = (data[2550 + fbCalRow(90, hi) * 2] << 8) | data[2551 + fbCalRow(90, hi) * 2];
+	*aor = fbCalLerp(a, b, weight);
+}
+
+extern "C" void
+dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+	if (fb == NULL || fb->fDsimLock == NULL || n > 1 || (n && v[0] > 1)) {
+		snprintf(out, cap, "fb.factory [0|1]: status, disable/restore, load/enable\n");
+		return;
+	}
+	IOLockLock(fb->fDsimLock);
+	if (n) {
+		if (v[0] && factoryLoad(fb)) { gFactoryEnabled = true; gFactoryRestore = false; }
+		else if (v[0] == 0 && gFactoryEnabled) { gFactoryEnabled = false; gFactoryRestore = true; }
+		fb->fBLValid = false;
+	}
+	snprintf(out, cap, "factory %s; loaded %u; checksums normal %#x / 120 HS %#x; target %u.%03u nominal nits\n",
+	    gFactoryEnabled ? "enabled" : "disabled", gFactoryReady, gFactoryChecksums[0], gFactoryChecksums[1],
+	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16));
+	IOLockUnlock(fb->fDsimLock);
+	if (n && fb->fBLCall != NULL) thread_call_enter(fb->fBLCall);
+}

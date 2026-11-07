@@ -109,7 +109,17 @@ a successful transfer, invalidates the cache on failure, and schedules at most
 three 50 ms retries instead of spinning. On-device test passed: 0 → 0.0064 → 0 model nits emitted DBV 0 → 0x0a → 0
 at unchanged AOR 0xc27. All writes succeeded; backboardd stayed at PID 16.
 
-Factory calibration extraction is not complete. A first GPIO SPI attempt returned
-JEDEC ID 00 00 00 and all-zero data; these values are rejected as invalid.
-Normal/120 Hz factory tables must be obtained and checked before replacing the
-current approximate brightness curve.
+Factory data extraction succeeded through hardware SPI20: JEDEC `c2 28 14`,
+normal checksum `411d`, 120 HS `d472`, both marker 1. The initial GPIO SPI
+attempt returned all zeros and was rejected. The hardware reader uses USI mode
+`0x15c22010`, CMU_CMGP gates `0x2064/0x2084/0x2088`, divider `0x1820`, and
+Q-channel `0x3044`, from Samsung cmucal-sfr.c. Pin functions, USI mode and clocks
+are restored after each read. Only JEDEC/READ commands are implemented.
+
+The factory gamma/AOR path interpolates the 74 normal-range points (2..420
+nominal nits), selecting separate normal/120 HS data. It decodes packed 10-bit
+gamma values before interpolation. `fb.factory 1` loads, validates, saves the
+original gamma, and enables the path; `fb.factory 0` restores the prior gamma
+and approximate AOR. `fb_cal=1` opts in at boot. Visual validation is pending.
+VINT/ELVSS/IRC and HBM are outside this first gamma/AOR implementation. See
+`proposals/panel-calibration/README.md` for extraction, hashes and host tests.

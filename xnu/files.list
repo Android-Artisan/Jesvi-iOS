@@ -240,6 +240,7 @@ iokit/Kernel/hakios.wlan.cpp
 iokit/Kernel/MiniAppleKeyStore.cpp
 iokit/Kernel/MiniDrivers.h
 iokit/Kernel/MiniIOMobileFramebuffer.cpp
+iokit/Kernel/MiniIOMobileFramebufferCalibration.h
 iokit/Kernel/MiniIOMobileFramebufferMode.h
 iokit/Kernel/MiniIONetworkStack.cpp
 iokit/Kernel/MiniIOSurface.cpp
