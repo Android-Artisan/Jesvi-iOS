@@ -723,7 +723,7 @@ public:
 	bool panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_t offset);
 	bool modeSetFhd120(void);
 	/* live display mode (B, 2026-11-07): fb.mode N, run on the presenter thread between two frames */
-	uint32_t        fModeAsk;               /* the mode modeSetFhd120 sets: 1 FHD+ 120, 2 FHD+ 60 (boot: fb_mode) */
+	uint32_t        fModeAsk;               /* 1:1080/120, 2:1080/60, 3:720/120, 4:720/60 (native at boot) */
 	volatile int    fModeWant;              /* -1: nothing asked */
 	bool            fModeLpRef;             /* fb.mode N 1: as fb_mode_lpref=1 */
 	uint32_t        fModeLpVal;             /* fb.mode N 1 L: the underrun reference: 0 Samsung's, 1 as found, else L */
@@ -4116,12 +4116,14 @@ IOMobileFramebuffer::panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_
 bool
 IOMobileFramebuffer::modeSetFhd120(void)
 {
-	static const struct { uint32_t off, native, fhd, mask; } dsim[] = {
-		{ DSIM_THRESHOLD_R,       480,                 360,                 0xffffffffu },
-		{ DSIM_RESOL_R,           (3200u << 16) | 480, (2400u << 16) | 360, (0x1fffu << 16) | 0x1fffu },
-		{ DSIM_NUM_OF_TRANSFER_R, 3200,                2400,                0xffffffffu },
-		{ DSIM_SLICE01_R,         (720u << 16) | 720,  (540u << 16) | 540,  0xffffffffu },
-		{ DSIM_UNDERRUN_CTRL_R,   0x1e6e,              0x284d,              0xffffu },
+	const bool hd = fModeAsk == 3 || fModeAsk == 4;
+	const uint32_t width = hd ? 720 : 1080, height = hd ? 1600 : 2400;
+	const struct { uint32_t off, native, fhd, mask; } dsim[] = {
+		{ DSIM_THRESHOLD_R,       480,                 width / 3,                 0xffffffffu },
+		{ DSIM_RESOL_R,           (3200u << 16) | 480, (height << 16) | (width / 3), (0x1fffu << 16) | 0x1fffu },
+		{ DSIM_NUM_OF_TRANSFER_R, 3200,                height,                0xffffffffu },
+		{ DSIM_SLICE01_R,         (720u << 16) | 720,  ((width / 2) << 16) | (width / 2),  0xffffffffu },
+		{ DSIM_UNDERRUN_CTRL_R,   0x1e6e,              hd ? 0x2c8cU : 0x284dU,              0xffffu },
 	};
 	unsigned ndecon = 0;                    /* the entries with a mask: an all-zero one only holds the place */
 
@@ -4192,8 +4194,8 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		(void) dsimWrite(keyOff, sizeof(keyOff));
 	}
 	osc96 = (id[2] & 0x40) == 0;
-	fbSay("fb_mode: panel ID %02x %02x %02x (%s): to 1080x2400 at 120 Hz\n", id[0], id[1], id[2],
-	    osc96 ? "OSC 96.5 MHz" : "OSC 86.4 MHz");
+	fbSay("fb_mode: panel ID %02x %02x %02x (%s): to %ux%u at %u Hz\n", id[0], id[1], id[2],
+	    osc96 ? "OSC 96.5 MHz" : "OSC 86.4 MHz", width, height, (fModeAsk == 1 || fModeAsk == 3) ? 120 : 60);
 
 	/* the trigger masked, DECON idle: no frame goes out while the two ends change */
 	nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &limit);
@@ -4219,8 +4221,9 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		static const uint8_t key2Off[] = { 0xF0, 0xA5, 0xA5 }, key1Off[] = { 0x9F, 0x5A, 0x5A };
 		static const uint8_t aidHs[] = { 0xB1, 0x40 };                   /* AID 2 cycles in HS (offset 0x06) */
 		static const uint8_t dsc[] = { 0x01 };
-		static const uint8_t caset[] = { 0x2A, 0x00, 0x00, 0x04, 0x37 }, paset[] = { 0x2B, 0x00, 0x00, 0x09, 0x5F };
-		static const uint8_t scaler[] = { 0xBA, 0x02, 0x26, 0x08, 0x08, 0xF3 };
+		const uint8_t caset[] = { 0x2A, 0, 0, (uint8_t)((width - 1) >> 8), (uint8_t)(width - 1) };
+		const uint8_t paset[] = { 0x2B, 0, 0, (uint8_t)((height - 1) >> 8), (uint8_t)(height - 1) };
+		const uint8_t scaler[] = { 0xBA, (uint8_t)(hd ? 0 : 2), 0x26, 0x08, 0x08, 0xF3 };
 		static const uint8_t osc[] = { 0xF2, 0xC0 }, vfpNm[] = { 0xF2, 0x00, 0x10 }, vfpHs[] = { 0xF2, 0x00, 0x10 };
 		static const uint8_t pwrGen[] = { 0xF3, 0x00 }, srcAmp[] = { 0xF6, 0x01 }, ltps0[] = { 0xCB, 0x85 };
 		static const uint8_t fps[] = { 0x60, 0x20 }, gammaUpdate[] = { 0xF7, 0x0F };
@@ -4233,12 +4236,12 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		 * (no AID/OSC/VFP/LTPS/FPS: those are the 120 HS half). Every 1080x2400 mode of the dtbo has the same DSIM and
 		 * DECON values (cmd_lp_ref 0x284d), so this tells which half garbled the first fb_mode=1 picture.
 		 */
-		bool hs = fModeAsk == 1;
+		bool hs = fModeAsk == 1 || fModeAsk == 3;
 
 		ok = panelWriteAt(key1On, sizeof(key1On), 0) && panelWriteAt(key2On, sizeof(key2On), 0) &&
 		    (!hs || panelWriteAt(aidHs, sizeof(aidHs), 0x06));
 		IOSleep(17);                                                    /* Samsung: wait 1 vsync */
-		ok = ok && dsimPacket(DSI_DSC_PRA, dsc, 1) && dsimPacket(DSI_DSC_PPS, kPpsFhd, sizeof(kPpsFhd)) &&
+		ok = ok && dsimPacket(DSI_DSC_PRA, dsc, 1) && dsimPacket(DSI_DSC_PPS, hd ? kPpsHd : kPpsFhd, sizeof(kPpsFhd)) &&
 		    panelWriteAt(caset, sizeof(caset), 0) && panelWriteAt(paset, sizeof(paset), 0) &&
 		    panelWriteAt(scaler, sizeof(scaler), 0) && (!hs || (
 		    panelWriteAt(osc, sizeof(osc), 0) && panelWriteAt(vfpNm, sizeof(vfpNm), 0x0B) &&
@@ -4268,9 +4271,9 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	}
 	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]) && deconModeRegs[i].mask; i++) {
 		dpuWrite(fDecon, deconModeRegs[i].off,
-		    (dpuRead(fDecon, deconModeRegs[i].off) & ~deconModeRegs[i].mask) | (deconModeRegs[i].fhd & deconModeRegs[i].mask));
+		    (dpuRead(fDecon, deconModeRegs[i].off) & ~deconModeRegs[i].mask) | ((hd ? deconHdValues[i] : deconModeRegs[i].fhd) & deconModeRegs[i].mask));
 	}
-	dpuWrite(fDecon, 0x100C + 0x30 * (uint32_t) fWin, (2399u << 16) | 1079u);       /* WIN_END_POSITION */
+	dpuWrite(fDecon, 0x100C + 0x30 * (uint32_t) fWin, ((height - 1) << 16) | (width - 1));       /* WIN_END_POSITION */
 	/*
 	 * (B, 2026-11-07) What feeds the window must fit 1080x2400 from the very first frame: before, the window was cut to
 	 * 1080x2400 while its channel still delivered 1440x3200 (S-Boot's channel at boot; the scaler's channel 5, scaled to
@@ -4281,25 +4284,25 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		volatile uint8_t * dppS = (volatile uint8_t *) ml_io_map((vm_offset_t) (DPU_DPP_PHYS + 0x1000ULL * (fScanCh + 1)), 0x1000);
 
 		if (fDma != NULL) {
-			dpuWrite(fDma, IDMA_IMG_SIZE_REG, (2400u << 16) | 1080u);
+			dpuWrite(fDma, IDMA_IMG_SIZE_REG, (height << 16) | width);
 		}
 		if (dppS != NULL) {
-			dpuWrite(dppS, DPP_IMG_SIZE_REG, (2400u << 16) | 1080u);
-			dpuWrite(dppS, DPP_SCALED_IMG_SIZE_REG, (2400u << 16) | 1080u);
+			dpuWrite(dppS, DPP_IMG_SIZE_REG, (height << 16) | width);
+			dpuWrite(dppS, DPP_SCALED_IMG_SIZE_REG, (height << 16) | width);
 		}
 		if (fScalerReady && fDpp5 != NULL) {
-			dpuWrite(fDpp5, DPP_SCALED_IMG_SIZE_REG, (2400u << 16) | 1080u);
-			dpuWrite(fDpp5, DPP_MAIN_H_RATIO_REG, (uint32_t) (((uint64_t) fWidth << 20) / 1080u));
-			dpuWrite(fDpp5, DPP_MAIN_V_RATIO_REG, (uint32_t) (((uint64_t) fHeight << 20) / 2400u));
+			dpuWrite(fDpp5, DPP_SCALED_IMG_SIZE_REG, (height << 16) | width);
+			dpuWrite(fDpp5, DPP_MAIN_H_RATIO_REG, (uint32_t) (((uint64_t) fWidth << 20) / width));
+			dpuWrite(fDpp5, DPP_MAIN_V_RATIO_REG, (uint32_t) (((uint64_t) fHeight << 20) / height));
 		}
 	}
 	dpuWrite(fDecon, DECON_SHADOW_UPDATE, DECON_SHADOW_GLOBAL | (1u << fWin));
 	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
-	fPanelWidth = 1080;
-	fPanelHeight = 2400;
-	gModeHz = fModeAsk == 1 ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
-	fbSay("fb_mode: 1080x2400 at %u Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
-	    gModeHz, ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
+	fPanelWidth = width;
+	fPanelHeight = height;
+	gModeHz = (fModeAsk == 1 || fModeAsk == 3) ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
+	fbSay("fb_mode: %ux%u at %u Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
+	    width, height, gModeHz, ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
 	    dpuRead(fDsim, DSIM_SLICE01_R), ndecon);
 	return ok;
 }
@@ -4335,15 +4338,17 @@ IOMobileFramebuffer::modeLive(int mode)
 {
 	fModeReport[0] = 0;
 	modeCounters("before", fModeReport, sizeof(fModeReport));
-	if (mode == 1 || mode == 2) {
+	if (mode >= 1 && mode <= 4) {
 		bool ok;
 
-		if (fPanelWidth == 1080) {
-			strlcat(fModeReport, "already 1080x2400 (going back to 1440x3200 live is not written yet)\n", sizeof(fModeReport));
+		if (fPanelWidth != 1440) {
+			strlcat(fModeReport, "resolution already switched; cold restart required for another mode\n", sizeof(fModeReport));
 			return;
 		}
 		fModeAsk = (uint32_t) mode;
+		IOLockLock(fDsimLock);
 		ok = modeSetFhd120();
+		IOLockUnlock(fDsimLock);
 		strlcat(fModeReport, ok ? "switched (see the fb_mode lines in the log)\n" : "NOT switched (see the fb_mode lines)\n",
 		    sizeof(fModeReport));
 		modeCounters("after", fModeReport, sizeof(fModeReport));
