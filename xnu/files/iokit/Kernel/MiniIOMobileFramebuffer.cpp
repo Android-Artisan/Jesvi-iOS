@@ -15,6 +15,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOKitKeys.h>
+#include <IOKit/IOMessage.h>
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IODeviceTreeSupport.h>
@@ -672,7 +673,9 @@ public:
 	IOLock *        fBLLock;
 	thread_call_t   fBLCall;
 	uint32_t        fBLTarget;              /* nits in 16.16, as CoreBrightness gives it */
-	uint32_t        fBLSent;                /* DBV last sent, 0: none */
+	uint32_t        fBLSent;                /* AOR of the last successful write */
+	uint32_t        fBLDBVSent, fBLFailStreak;
+	bool            fBLValid;              /* both DBV and AOR known to have been sent */
 	uint32_t        fBLCurrent;             /* nits in 16.16 last sent (where a fade starts from) */
 	uint32_t        fFadeFrom;              /* the fade: from, when it began, how long (absolute time; 0: none) */
 	uint64_t        fFadeStart, fFadeLen;
@@ -931,7 +934,7 @@ IOMobileFramebuffer::start(IOService * provider)
 
 	fModeWant = -1;
 	gFbLive = this;
-	redwood_dbgport_add("fb.mode", "[1|2 [lpref]]: the display mode (1 FHD+ 120 Hz, 2 FHD+ 60 Hz) set live between two frames, "
+	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
@@ -1273,7 +1276,7 @@ IOMobileFramebuffer::dpuProbe(void)
 	}
 	if (gScaler && !gFlip) {
 		fScanCh = ch;
-		if (gFbMode == 1 || gFbMode == 2) {
+		if (gFbMode >= 1 && gFbMode <= 4) {
 			fModeAsk = gFbMode;
 			(void) modeSetFhd120();         /* the scaler's target follows it (fPanelWidth/Height) */
 		}
@@ -2337,7 +2340,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		aor = fb->fAor0 < PANEL_AOR_DARKEST ?
 		    PANEL_AOR_DARKEST - (uint32_t) ((uint64_t) (PANEL_AOR_DARKEST - fb->fAor0) * nits / ((uint64_t) kPanelMaxNits << 16)) :
 		    fb->fAor0;
-		if (aor == fb->fBLSent && fb->fBLWrites != 0) {
+		if (fb->fBLValid && aor == fb->fBLSent && dbv == fb->fBLDBVSent) {
 			if (more) {
 				uint64_t next;
 
@@ -2349,9 +2352,18 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		began = mach_absolute_time();
 		IOLockLock(fb->fDsimLock);
 		ok = fb->blSend(dbv, aor);
-		fb->fBLSent = aor;
-		fb->fBLCurrent = target;
-		fb->fBLSentAt = mach_absolute_time();
+		fb->fBLValid = ok;
+		if (ok) {
+			fb->fBLSent = aor;
+			fb->fBLDBVSent = dbv;
+			IOLockLock(fb->fBLLock);
+			fb->fBLCurrent = target;
+			IOLockUnlock(fb->fBLLock);
+			fb->fBLSentAt = mach_absolute_time();
+			fb->fBLFailStreak = 0;
+		} else {
+			fb->fBLFailStreak++;
+		}
 		fb->fBLWrites++;
 		fb->fBLFailures += !ok;
 		if (fb->fBLWrites <= 2) {
@@ -2367,13 +2379,16 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 			    (uint32_t) (((uint64_t) (target & 0xffff) * 1000) >> 16), aor, back, fb->fPacketGo ? ", PKT_GO" : "", dbv,
 			    ok ? "sent" : "NOT SENT", micros(mach_absolute_time() - began), fb->fBLWrites, fb->fBLFailures);
 		}
-		if (more) {
-			/* the next step a frame from now */
+		if ((ok && more) || (!ok && fb->fBLFailStreak <= 3)) {
+			/* A fade advances on a frame; failed packets get at most three delayed retries. */
 			uint64_t next;
 
-			clock_interval_to_deadline(16, kMillisecondScale, &next);
+			clock_interval_to_deadline(ok ? 16 : 50, kMillisecondScale, &next);
 			thread_call_enter_delayed(fb->fBLCall, next);
 			return;
+		}
+		if (!ok) {
+			return; /* next explicit request may retry; do not spin on a broken link */
 		}
 	}
 }
@@ -3935,9 +3950,12 @@ publishAccelerator(IOService * provider)
  * window back on S-Boot's channel, so the loader's menu -- drawn into the firmware's framebuffer -- is what
  * shows, not CoreAnimation's last frame on the scaler's channel. Registers only: no lock, no sleep.
  */
+extern "C" void loader_set_display_size(uint32_t width, uint32_t height);
+
 void
 IOMobileFramebuffer::loaderQuiesce(void)
 {
+	loader_set_display_size(fPanelWidth, fPanelHeight);
 	if (!fScalerOn || fDecon == NULL || fWin < 0) {
 		return;
 	}
@@ -4301,6 +4319,9 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	fPanelWidth = width;
 	fPanelHeight = height;
 	gModeHz = (fModeAsk == 1 || fModeAsk == 3) ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
+	/* Clients may cache timing properties from boot; publish the new scanout rate too. */
+	publishModes();
+	messageClients(kIOMessageServicePropertyChange);
 	fbSay("fb_mode: %ux%u at %u Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
 	    width, height, gModeHz, ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
 	    dpuRead(fDsim, DSIM_SLICE01_R), ndecon);
@@ -4382,3 +4403,4 @@ dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap)
 	IOLockUnlock(fb->fSwapLock);
 	snprintf(out, cap, "%s", fb->fModeDone ? fb->fModeReport : "fb.mode: the presenter did not answer in 5 s\n");
 }
+

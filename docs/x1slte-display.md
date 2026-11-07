@@ -11,7 +11,7 @@ and DSC calculations/tests in `proposals/dsc/`.
 | --- | --- | --- |
 | 1440×3200 (WQHD+) | 60 Hz | Native boot, user reports correct blur |
 | 1080×2400 (FHD+) | 60 Hz | User confirmed normal/sharp; measured 6 DECON frames/100 ms |
-| 1080×2400 (FHD+) | 120 Hz | User confirmed usable; measured 12 DECON frames/100 ms; purple blur and slightly washed-out appearance reported |
+| 1080×2400 (FHD+) | 120 Hz | User confirmed usable; measured 12 DECON frames/100 ms; initial purple/washed-out appearance; updated driver retest: user confirms correct blur/colors |
 | 720×1600 (HD+) | 60 Hz | Live switch succeeded; 6 DECON frames/100 ms immediately and after 0.5 s; user confirmed normal |
 | 720×1600 (HD+) | 120 Hz | 12 DECON frames/100 ms at both checks; user confirms normal image and correct blur with default CA timer |
 
@@ -65,7 +65,9 @@ not been established. Panel refresh at 120 is independently measured.
 * Brightness range: current nits/DBV model and interpolated AOR are not a measured
   calibration. Minimum does not appear fully black; min/max range needs work.
 * At 120 Hz, user reports purple in blurred Reachability and power-off backgrounds,
-  plus a mild washed-out appearance. Native mode looks correct. A rendering,
+  plus a mild washed-out appearance in the original FHD+ run. Native mode looks correct.
+  Retesting both 720/120 and 1080/120 with serialized DSIM commands gave correct
+  colors/blur. 720/120 also looked correct with CA_HEARTBEAT_RATE=120. A rendering,
   color-management, or panel-mode issue remains to be isolated; Metal is a
   hypothesis, not a confirmed cause.
 * Returning to HackiOS after changing resolution leaves menu scaling wrong:
@@ -73,8 +75,8 @@ not been established. Panel refresh at 120 is independently measured.
   Existing `loaderQuiesce()` restores the firmware channel but does not restore
   panel/DSIM/DSC/window geometry. The return protocol now has version marker `XNULIVE3` and active output
   dimensions. The loader projects its native menu coordinates into the cropped
-  firmware channel, preserving the native backing-store stride. Runtime return
-  validation is pending. Cold reboot restores native firmware setup.
+  firmware channel, preserving the native backing-store stride. A staged firmware-framebuffer capture after returning from 720×1600/120
+  confirms that Log Access fits the 720×1600 output, including its bottom hint. Cold reboot restores native firmware setup.
 * Saved Log Access output also contains `Console I/O from interrupt-disabled
   context @serial_console.c:168` on return. This is separate from the slider
   exception. No claim that either is fixed.
@@ -86,3 +88,28 @@ proposals/dsc/test.c proposals/dsc/redwood_dsc.c && /tmp/dsc-test`: PASS,
 including byte-for-byte Samsung PPS checks at all three resolutions.
 Kernel with HD profiles builds successfully; flash readback passes. Record live
 counter results and visual confirmation below as each mode is tested.
+
+## iOS refresh reporting
+
+Live switching originally left `TimingElements` at the boot-time 60 Hz. The
+driver now republishes timings and notifies clients after a mode change. A
+backboardd restart is still needed to rebuild its cached display description.
+Measured at FHD+/120 after the restart: `UIScreen.maximumFramesPerSecond=120`,
+`CADisplay.refreshRate=0.008333333333333333` seconds, registry SyncRate=7864320
+(120 in 16.16). Before restarting, UIKit still reported 60 despite registry
+metadata having changed. `CA_HEARTBEAT_RATE=120` was enabled for the retest.
+User reports Safari/UFO measurements are unreliable; sustained 120 fps in Safari
+is not established; hardware scanout, advertised maximum,
+and actually delivered application frames are distinct measurements.
+
+## Brightness register cache and factory data
+
+The worker now compares both DBV and AOR before skipping a write. It only caches
+a successful transfer, invalidates the cache on failure, and schedules at most
+three 50 ms retries instead of spinning. On-device test passed: 0 → 0.0064 → 0 model nits emitted DBV 0 → 0x0a → 0
+at unchanged AOR 0xc27. All writes succeeded; backboardd stayed at PID 16.
+
+Factory calibration extraction is not complete. A first GPIO SPI attempt returned
+JEDEC ID 00 00 00 and all-zero data; these values are rejected as invalid.
+Normal/120 Hz factory tables must be obtained and checked before replacing the
+current approximate brightness curve.

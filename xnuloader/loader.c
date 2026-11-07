@@ -1094,6 +1094,7 @@ struct kernel_live {
 	uint64_t stop;                  /* ours to write: the host wants the run to end ("oem stop") */
 	uint64_t magic2;                /* "XNULIVE2": the kernel is new enough to have what follows */
 	uint64_t sound;                 /* (a virtual address too) the same for a recording of the sound */
+	uint64_t magic3, menu_width, menu_height; /* XNULIVE3: cropped firmware channel on return */
 };
 
 /*
@@ -1175,6 +1176,7 @@ static int wdt_armed;
  * While a kernel runs on another core and this one watches it: where it shows its signs of life,
  * for the commands that the host sends meanwhile (usb_poll_command).
  */
+static uint32_t menu_output_width, menu_output_height;
 static const struct kernel_live *running_live;
 static uint64_t running_slide;
 static void usb_poll_command(void);
@@ -3922,6 +3924,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			print("the kernel left a sound recording: %d bytes at %x\n", sound_len, sound[0]);
 		}
 	}
+    if (kernel_live != NULL && kernel_live->magic3 == 0x334556494c554e58ULL &&
+        SCREEN.width == 1440 && SCREEN.height == 3200 &&
+        ((kernel_live->menu_width == 1080 && kernel_live->menu_height == 2400) ||
+         (kernel_live->menu_width == 720 && kernel_live->menu_height == 1600))) {
+        menu_output_width = (uint32_t)kernel_live->menu_width;
+        menu_output_height = (uint32_t)kernel_live->menu_height;
+    } else {
+        menu_output_width = menu_output_height = 0;
+    }
 	const char *klog = (const char *)loader_ctx[CTX_LOG_PA];
 	uint64_t klog_len = loader_ctx[CTX_LOG_LEN];
 	uint64_t reason = loader_ctx[CTX_REASON];
@@ -4501,7 +4512,7 @@ menu_fill(int x, int y, int w, int h, uint32_t rgb, int radius)
 		if (py < 0 || py >= (int)SCREEN.height) {
 			continue;
 		}
-		uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)py * SCREEN.stride);
+		uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ? (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
 		int inset = 0;
 
 		if (radius > 0 && (j < radius || j >= h - radius)) {
@@ -4517,7 +4528,7 @@ menu_fill(int x, int y, int w, int h, uint32_t rgb, int radius)
 			int px = x + i;
 
 			if (px >= 0 && px < (int)SCREEN.width) {
-				row[px] = c;
+				row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] = c;
 			}
 		}
 	}
@@ -4548,13 +4559,13 @@ menu_text(int x, int y, const char *s, int scale, uint32_t rgb)
 					if (py < 0 || py >= (int)SCREEN.height) {
 						continue;
 					}
-					uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)py * SCREEN.stride);
+					uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ? (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
 
 					for (int sx = 0; sx < scale; sx++) {
 						int px = x + gx * scale + sx;
 
 						if (px >= 0 && px < (int)SCREEN.width) {
-							row[px] = c;
+							row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] = c;
 						}
 					}
 				}

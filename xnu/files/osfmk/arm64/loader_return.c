@@ -274,6 +274,8 @@ struct loader_live {
 	volatile uint64_t stop;         /* the loader's to write: the host has asked for the run to end */
 	uint64_t magic2;                /* "XNULIVE2": what follows is there (a loader may meet an older kernel) */
 	const uint64_t *sound;          /* loader_sound: the same for a recording of the sound */
+	uint64_t magic3;                /* XNULIVE3: geometry of the firmware channel on return */
+	uint64_t menu_width, menu_height;
 };
 
 /*
@@ -289,7 +291,17 @@ struct loader_live loader_live = {
 	.log_wrapped = &loader_log_wrapped, .log_head = LOADER_LOG_HEAD, .log_ring = LOADER_LOG_RING,
 	.recording = loader_recording,
 	.magic2 = 0x324556494c554e58ULL, .sound = loader_sound,
+	.magic3 = 0x334556494c554e58ULL,
 };
+
+/* Called by framebuffer quiesce with interrupts off; memory only. */
+void loader_set_display_size(uint32_t width, uint32_t height);
+void
+loader_set_display_size(uint32_t width, uint32_t height)
+{
+    loader_live.menu_width = width;
+    loader_live.menu_height = height;
+}
 
 /* Valid from the first instruction of C code: does not depend on gVirtBase/gPhysBase being set up. */
 static inline uint64_t
