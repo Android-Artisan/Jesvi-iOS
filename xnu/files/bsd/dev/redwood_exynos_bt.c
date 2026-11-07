@@ -314,12 +314,17 @@ bt_irq(__unused void *context, __unused uint32_t intid)
  */
 #define TRACE 48
 static struct { uint64_t at; uint16_t len; uint8_t dir, b[13]; } trace[TRACE];
-static uint32_t trace_n;
+static uint32_t trace_n, trace_frozen;  /* frozen at the chip's first crash-dump event (vendor event 0x1b) */
 
 static void
 trace_add(uint8_t dir, const uint8_t *p, uint32_t n, uint32_t len)
 {
-	uint32_t i = trace_n++ % TRACE;
+	uint32_t i;
+
+	if (trace_frozen) {
+		return;
+	}
+	i = trace_n++ % TRACE;
 
 	trace[i].at = mach_absolute_time();
 	trace[i].dir = dir;
@@ -387,6 +392,10 @@ rx_parse(uint8_t c)
 
 			if (rxp.got < 16) {
 				vb[rxp.got] = c;
+			}
+			if (rxp.got == 0 && c == 0x1b && !trace_frozen) {
+				trace_frozen = 1;       /* the chip's firmware crashed and dumps its memory: keep what led to it */
+				bt_log("bt: the chip's firmware crashed (memory dump, vendor event 0x1b): bt.trace has the 48 packets before\n");
 			}
 			if (rxp.got + 1 == rxp.len || rxp.got == 15) {
 				if (rxp.got + 1 == rxp.len || rxp.got == 15) {
@@ -783,6 +792,8 @@ dbg_bt_trace(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	}
 	if (at == 0) {
 		snprintf(out, cap, "bt: no packets yet\n");
+	} else if (trace_frozen && at + 40 < cap) {
+		snprintf(out + at, cap - at, "(frozen at the chip's crash)\n");
 	}
 }
 
