@@ -338,9 +338,9 @@ trace_add(uint8_t dir, const uint8_t *p, uint32_t n, uint32_t len)
  * Vendor commands kept from the chip and answered here (Command Complete, success): the chip (Samsung's patchram)
  * fell silent for good right after Apple's 0xfdb9 / 0xfd81 as audio started (B, 2026-11-07). `bt.block OP ...` live.
  */
-static uint16_t blocked[8] = { 0xfdb9, 0xfd81 };
+static uint16_t blocked[8] = { 0xfdb9, 0xfd81, 0xfc57 };   /* 0xfc57: the firmware crashed 0.5 s into A2DP after it */
 static struct { uint16_t op; uint64_t at; } pending[PENDING];
-static uint32_t bt_fake = 1, faked, bt_reup;    /* bt_reup=1: bring-up again per client (it failed: 2026-11-07) */
+static uint32_t bt_fake = 1, faked, bt_reup = 1;    /* bt_reup=1: bring-up again per client (it failed: 2026-11-07) */
 static struct { uint8_t state, type, hdr[4]; uint32_t got, len; } rxp;   /* the H4 stream to the client, parsed */
 
 static void
@@ -680,7 +680,8 @@ bt_bringup(void)
 	bank_g1 = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC1, 0xc0);
 	pin_out(bank_g1, 1, 1);
 	pin_out(bank_m16, 0, 0);
-	IOSleep(20);
+	IOSleep(100);                           /* (20 ms was enough from cold; a crashed chip gets longer) */
+	uart_baud(BT_SLOW);                     /* the chip starts at 115200 (again: a second bring-up came at 3 Mbaud) */
 	pin_out(bank_m16, 0, 1);
 	IOSleep(150);
 	uart_reset_fifos();
@@ -855,6 +856,7 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 		bool ok;
 
 		bt_ready = false;
+		trace_frozen = 0;
 		ok = bt_bringup();
 		bt_ready = true;
 		ring_tail = ring_head;
