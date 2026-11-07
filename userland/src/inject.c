@@ -678,6 +678,64 @@ my_value_for_entitlement(id connection, SEL selector, CFStringRef entitlement)
 	return answer;
 }
 
+/*
+ * Auto-brightness (B, 2026-11-07): with our ambient light service (page 0xFF00 usage 4) CoreBrightness asks a helper
+ * -shouldMitigateHarmony: ("Harmony" = True Tone). Its implementation (cache 0x1af03a028) passes one of its ivars
+ * (offset in 0x1ddda5140) to 0x1af0a2010, which reads +0x1c8 of it: that object is never made here (no colour
+ * sensor), so backboardd died with SIGSEGV at 0x1c8 in a loop. With that ivar NULL the answer is NO (nothing of True
+ * Tone to mitigate); otherwise Apple's own code runs.
+ */
+#define CB_MITIGATE_HARMONY     0x1af03a028UL
+#define CB_HARMONY_IVAR_OFFSET  0x1ddda5140UL
+static BOOL (*orig_mitigate_harmony)(id self, SEL selector, id arg);
+
+static BOOL
+my_mitigate_harmony(id self, SEL selector, id arg)
+{
+	int32_t offset = *(const int32_t *)(CB_HARMONY_IVAR_OFFSET + slide);
+
+	if (self == NULL || *(void * const *)((const char *)self + offset) == NULL) {
+		static int told;
+
+		if (told++ < 3) {
+			say("redwood: brightness: -shouldMitigateHarmony: with no True Tone object: NO\n");
+		}
+		return NO;
+	}
+	return orig_mitigate_harmony(self, selector, arg);
+}
+
+static void
+brightness_harmony_fix(void)
+{
+	SEL sel = sel_registerName("shouldMitigateHarmony:");
+	unsigned count = 0;
+	Class *classes = objc_copyClassList(&count);
+
+	for (unsigned i = 0; classes != NULL && i < count; i++) {
+		Method method = class_getInstanceMethod(classes[i], sel);
+
+		if (method != NULL && (uintptr_t)method_getImplementation(method) == CB_MITIGATE_HARMONY + slide) {
+			orig_mitigate_harmony = (BOOL (*)(id, SEL, id))method_getImplementation(method);
+			method_setImplementation(method, (IMP)my_mitigate_harmony);
+			say("redwood: brightness: -[%s shouldMitigateHarmony:] guarded\n", class_getName(classes[i]));
+			break;
+		}
+	}
+	free(classes);
+	if (orig_mitigate_harmony == NULL) {
+		static int tries;
+
+		if (tries++ < 6) {
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
+				brightness_harmony_fix();
+			});
+		} else {
+			say("redwood: brightness: shouldMitigateHarmony: not found at the expected place\n");
+		}
+	}
+}
+
 static void
 attention_fixes(const char *arguments)
 {
@@ -1522,6 +1580,7 @@ redwood_init(void)
 		opengl_es();
 		window_server_fixes();
 		attention_fixes(arguments);
+		/* brightness_harmony_fix(); -- (off: walking every class at start-up deadlocked backboardd; see TASKS R2) */
 		/*
 		 * brightness_fixes() is not used for now: with it backboardd no longer took our touch
 		 * screen service for its own ("still waiting for a main screen digitizer"), whether the
