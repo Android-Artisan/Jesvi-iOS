@@ -224,6 +224,7 @@ static int16_t *buf;
 static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
 static volatile uint32_t amp_recovery_requested;
+static bool amp_start_retryable;
 static uint32_t snd_below = 84, snd_gain = 6 * 8, snd_tone;     /* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
 
@@ -591,10 +592,13 @@ amps_up(void)
 {
 	bool ok = true;
 
+	amp_start_retryable = true;
+
 	for (unsigned i = 0; i < 2; i++) {
 		struct amp *a = &amps[i];
 		uint32_t status = 0;
 		unsigned t;
+		bool observed = false;
 
 		if (!a->present) {
 			continue;
@@ -606,8 +610,11 @@ amps_up(void)
 		amp_write(a, L41_TEST_KEY_CTL, 0x33);
 		amp_update(a, L41_PWR_CTRL1, 1, 1);
 		for (t = 0; t < 20; t++) {
-			if (amp_read(a, L41_IRQ1_STATUS1, &status) && (status & L41_PUP_DONE)) {
-				break;
+			if (amp_read(a, L41_IRQ1_STATUS1, &status)) {
+				observed = true;
+				if (status & (L41_PUP_DONE | L41_FAULTS)) {
+					break;
+				}
 			}
 			IOSleep(1);
 		}
@@ -616,6 +623,9 @@ amps_up(void)
 			snd_log("snd: amp %s: power-up %s (IRQ1_STATUS1 %#x)\n", a->name,
 			    (status & L41_FAULTS) ? "FAULT" : "not done", status);
 			ok = false;
+			if (!observed || (status & L41_FAULTS)) {
+				amp_start_retryable = false;
+			}
 		}
 	}
 	return ok;
@@ -2368,7 +2378,7 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
  * block as read; WDMA4 (0x3400) into our own 64 KB under the speakers' ring. Then each of the 8 channels' peak.
  */
 static const struct { uint32_t off, val; } samsung_abox_cap[] = {
-	{ 0x0304, 0x00000948 }, { 0x0310, 0x00032170 },
+	{ 0x0304, 0x00000000 }, { 0x0310, 0x00032170 },
 	{ 0x0328, 0x02000000 }, { 0x032c, 0x02000200 }, { 0x0330, 0x02000400 }, { 0x0334, 0x02000600 },
 	{ 0x0338, 0x00800800 }, { 0x034c, 0x02c00a00 }, { 0x0350, 0x01a00cc0 }, { 0x0354, 0x01a00e60 },
 	{ 0x0358, 0x01901000 },
@@ -2386,10 +2396,34 @@ static volatile uint32_t *mic_buf;
 static uint64_t mic_buf_phys;
 
 static void
+mic_capture_report(uint32_t st0, uint32_t st1, uint32_t ms, char *out, size_t cap)
+{
+	uint32_t peak[8] = { 0 };
+	size_t at;
+
+	for (uint32_t i = 0; i < MIC_BUF_BYTES / 4; i++) {
+		int32_t s24 = ((int32_t)mic_buf[i]) >> 8;      /* (24 bits in the top of 32, or in the bottom: both shown below) */
+		uint32_t a = (uint32_t)(s24 < 0 ? -s24 : s24);
+
+		peak[i % 8] = a > peak[i % 8] ? a : peak[i % 8];
+	}
+	at = (size_t)snprintf(out, cap, "mic: WDMA4 CTRL %08x STATUS %08x -> %08x in %u ms; UAIF6 %08x %08x STATUS %08x; ROUTE1 %08x; "
+	    "S_LIF INT_PEND %08x\nmic: peak per channel (of 2^23):", rd(mic_abox, MIC_WDMA4), st0, st1, ms, rd(mic_abox, MIC_UAIF6_CTRL0),
+	    rd(mic_abox, MIC_UAIF6_CTRL1), rd(mic_abox, 0x056c), rd(mic_abox, ABOX_ROUTE_CTRL1), rd(mic_slif, 0x48));
+	for (unsigned c = 0; c < 8 && at < cap; c++) {
+		at += (size_t)snprintf(out + at, cap - at, " %u", peak[c]);
+	}
+	if (at < cap) {
+		at += (size_t)snprintf(out + at, cap - at, "\nmic: first words: %08x %08x %08x %08x %08x %08x %08x %08x | %08x %08x %08x %08x\n",
+		    mic_buf[0], mic_buf[1], mic_buf[2], mic_buf[3], mic_buf[4], mic_buf[5], mic_buf[6], mic_buf[7],
+		    mic_buf[256], mic_buf[257], mic_buf[258], mic_buf[259]);
+	}
+}
+
+static void
 dbg_mic_cap(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
-	uint32_t ms = n >= 1 && v[0] > 0 && v[0] <= 5000 ? (uint32_t)v[0] : 300, st0, st1, peak[8] = { 0 };
-	size_t at;
+	uint32_t ms = n >= 1 && v[0] > 0 && v[0] <= 5000 ? (uint32_t)v[0] : 300, st0, st1;
 
 	if (mic_slif == NULL || buf_phys == 0 || cmu == NULL) {
 		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu, mic.clk, mic.slif first (and the speakers' driver up)\n");
@@ -2421,30 +2455,27 @@ dbg_mic_cap(const uint64_t *v, unsigned n, char *out, size_t cap)
 	wr(mic_abox, MIC_WDMA4 + 0x18, 0x00800000);                                     /* VOL_FACTOR */
 	wr(mic_abox, MIC_WDMA4 + 0x1c, 0x00010000);                                     /* VOL_CHANGE */
 	wr(mic_abox, MIC_WDMA4 + 0x24, 0x00000002);                                     /* BIT_CTRL0 (Samsung's) */
-	wr(mic_abox, MIC_WDMA4, 0x00200000);
+	/* Hardware reference (cache bypass): 24-bit, eight channels, buffer update. */
+	wr(mic_abox, MIC_WDMA4, 0x00201720);
 	/* go: UAIF6's receiver, then the DMA */
 	wr(mic_abox, MIC_UAIF6_CTRL0, 0x01880012U);
-	wr(mic_abox, MIC_WDMA4, 0x00200001);
+	wr(mic_abox, MIC_WDMA4, 0x00201721);
 	st0 = rd(mic_abox, MIC_WDMA4 + 0x30);
 	IOSleep(ms);
 	st1 = rd(mic_abox, MIC_WDMA4 + 0x30);
-	for (uint32_t i = 0; i < MIC_BUF_BYTES / 4; i++) {
-		int32_t s24 = ((int32_t)mic_buf[i]) >> 8;      /* (24 bits in the top of 32, or in the bottom: both shown below) */
-		uint32_t a = (uint32_t)(s24 < 0 ? -s24 : s24);
+	mic_capture_report(st0, st1, ms, out, cap);
+}
 
-		peak[i % 8] = a > peak[i % 8] ? a : peak[i % 8];
+/* Read the running capture without resetting its registers or buffer. */
+static void
+dbg_mic_peek(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (mic_abox == NULL || mic_buf == NULL) {
+		snprintf(out, cap, "mic: no capture buffer yet (mic.cap first)\n");
+		return;
 	}
-	at = (size_t)snprintf(out, cap, "mic: WDMA4 CTRL %08x STATUS %08x -> %08x in %u ms; UAIF6 %08x %08x STATUS %08x; ROUTE1 %08x; "
-	    "S_LIF INT_PEND %08x\nmic: peak per channel (of 2^23):", rd(mic_abox, MIC_WDMA4), st0, st1, ms, rd(mic_abox, MIC_UAIF6_CTRL0),
-	    rd(mic_abox, MIC_UAIF6_CTRL1), rd(mic_abox, 0x056c), rd(mic_abox, ABOX_ROUTE_CTRL1), rd(mic_slif, 0x48));
-	for (unsigned c = 0; c < 8 && at < cap; c++) {
-		at += (size_t)snprintf(out + at, cap - at, " %u", peak[c]);
-	}
-	if (at < cap) {
-		at += (size_t)snprintf(out + at, cap - at, "\nmic: first words: %08x %08x %08x %08x %08x %08x %08x %08x | %08x %08x %08x %08x\n",
-		    mic_buf[0], mic_buf[1], mic_buf[2], mic_buf[3], mic_buf[4], mic_buf[5], mic_buf[6], mic_buf[7],
-		    mic_buf[256], mic_buf[257], mic_buf[258], mic_buf[259]);
-	}
+	uint32_t st = rd(mic_abox, MIC_WDMA4 + 0x30);
+	mic_capture_report(st, st, 0, out, cap);
 }
 
 /* mic.stop: WDMA4 and UAIF6's receiver off */
@@ -2747,6 +2778,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	uint64_t written, consumed, base, t0, last_look = 0, last_vol = 0, checked_at = 0;
 	uint64_t status_consumed = 0, quiet_since = 0;
 	uint32_t last_pos, generation = 0, below = 0;
+	unsigned start_recoveries = 0;
 	bool muted = false, decided = false;
 
 	if (!aud_power_on() || !aud_clocks()) {
@@ -2884,6 +2916,13 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 				if (!amps_on) {
 					faulted = true;
 					amps_down();
+					redwood_guard_attenuation(REDWOOD_GUARD_SILENT);
+					/* Retry only an answered, fault-free PUP timeout, at most twice per boot. */
+					if (amp_start_retryable && start_recoveries < 2) {
+						start_recoveries++;
+						(void)OSCompareAndSwap(0, 1, &amp_recovery_requested);
+						snd_log("snd: amplifier startup recovery %u/2 queued\n", start_recoveries);
+					}
 				}
 				quiet_since = 0;
 				snd_log("snd: amplifiers %s (iOS volume %u/8 dB under)\n", amps_on ? "on" : "FAILED", below);
@@ -3062,6 +3101,7 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.clk", ": the microphone clocks for 48 kHz / 24 bits (after mic.cmu)", dbg_mic_clk);
 	redwood_dbgport_add("mic.slif", ": the DMIC pins, DMIC_AUD0 and the serial LIF as Samsung sets them (after mic.clk)", dbg_mic_slif);
 	redwood_dbgport_add("mic.cap", "[ms]: ABOX's capture side (UAIF6 -> NSRC4 -> WDMA4) on, then each channel's peak (after mic.slif)", dbg_mic_cap);
+	redwood_dbgport_add("mic.peek", ": current capture peaks without reinitializing the path", dbg_mic_peek);
 	redwood_dbgport_add("mic.stop", ": capture off", dbg_mic_stop);
 	redwood_dbgport_add("wdt.look", ": WDT_CLUSTER0's clock gate, and (only with it on) its WTCON/WTDAT/WTCNT", dbg_wdt_look);
 	redwood_dbgport_add("wdt.off", ": WDT_CLUSTER0 off (its gate opened first)", dbg_wdt_off);

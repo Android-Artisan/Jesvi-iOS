@@ -133,6 +133,12 @@ run(const char *line)
 		unsigned cnt = n >= 2 ? (unsigned)v[1] : 1;
 
 		cnt = cnt > 64 ? 64 : cnt == 0 ? 1 : cnt;
+		/* CMU_VTS has reserved holes: a bulk read reached 0x15500608 and aborted. */
+		if (cnt > 1 && v[0] < 0x15504000ULL &&
+		    (v[0] >= 0x15500000ULL || 0x15500000ULL - v[0] < (uint64_t)cnt * 4)) {
+			snprintf(out_buf, cap, "CMU_VTS requires individual documented registers; use mic.cmu after mic.pd\n");
+			return;
+		}
 		for (unsigned i = 0; i < cnt && o < cap; i++) {
 			volatile uint8_t *va = pmap_pa(v[0] + 4 * i);
 
