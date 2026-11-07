@@ -74,6 +74,7 @@
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <machine/machine_routines.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <miscfs/devfs/devfs.h>
@@ -103,7 +104,9 @@ hsay(const char *format, ...)
 	va_start(ap, format);
 	vsnprintf(line, sizeof(line), format, ap);
 	va_end(ap);
-	printf("%s", line);
+	if (ml_get_interrupts_enabled()) {
+		printf("%s", line);     /* (not at the run's end: console I/O with interrupts off panics, B 2026-11-07) */
+	}
 	n = strlen(line);
 	if (n > 0 && line[n - 1] == '\n') {
 		line[n - 1] = 0;
