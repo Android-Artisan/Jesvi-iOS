@@ -2223,6 +2223,105 @@ dbg_mic_cmu(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 	(void)mic_dump(out, cap, 0, mic_cmu_vts, "VTS ", (const void *)mic_vts_regs, sizeof(mic_vts_regs) / sizeof(mic_vts_regs[0]));
 }
 
+
+/*
+ * mic.clk: the microphone's clocks as Samsung's vts_s_lif sets them for 48 kHz / 24 bits (vts_s_lif_clk_table.c):
+ * CMU_AUD's DIV_CLK_AUD_DMIC0 (0x1818) = PLL_AUD0 / 16 = 73.728 MHz, its gate (0x2000) on; CMU_VTS AUD0_USER (0x600 bit 4)
+ * from it; DMIC_AUD mux 1 (AUD0) / 6 = 12.288 MHz, PAD and DIV2 / 4 = 3.072 MHz; SERIAL_LIF mux 1 / 8 = 9.216 MHz.
+ */
+#define VTS_SYS_PHYS            0x15511000U     /* sys_sfr at +0x10: SEL_PAD_AUD, +0x14: SEL_DIV2_CLK */
+#define VTS_DMIC_AUD0_PHYS      0x15350000U
+#define VTS_SLIF_PHYS           0x15340000U
+#define VTS_GPIO_PHYS           0x15580000U     /* gpv0 at +0: 0 the DMIC clock, 3 its data (function 2, pull-down) */
+
+static volatile uint8_t *mic_sys, *mic_dmic, *mic_slif;
+
+static void
+mic_div(volatile uint8_t *base, uint32_t off, uint32_t ratio)
+{
+	wr(base, off, (rd(base, off) & ~0x1ffU) | ratio);
+	for (unsigned t = 0; t < 100 && (rd(base, off) & (1U << 16)); t++) {
+		delay(10);            /* BUSY */
+	}
+}
+
+static void
+dbg_mic_clk(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (!mic_pd_open || mic_cmu_vts == NULL || cmu == NULL) {
+		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu first\n");
+		return;
+	}
+	mic_div(cmu, 0x1818, 15);                               /* DIV_CLK_AUD_DMIC0: PLL_AUD0 / 16 */
+	mic_open_reg(cmu, 0x2000);                              /* CLK_AUD_DMIC0 */
+	wr(mic_cmu_vts, 0x600, rd(mic_cmu_vts, 0x600) | (1U << 4));     /* VTS_AUD0_USER: CLK_AUD_DMIC0 */
+	delay(10);
+	mic_div(mic_cmu_vts, 0x1004, 1);                        /* MUX_DMIC_AUD: AUD0 */
+	mic_div(mic_cmu_vts, 0x1804, 5);                        /* DIV_DMIC_AUD: / 6 */
+	mic_div(mic_cmu_vts, 0x180c, 3);                        /* DIV_DMIC_AUD_PAD: / 4 */
+	mic_div(mic_cmu_vts, 0x1808, 3);                        /* DIV_DMIC_AUD_DIV2: / 4 */
+	mic_div(mic_cmu_vts, 0x100c, 1);                        /* MUX_SERIAL_LIF: AUD0 */
+	mic_div(mic_cmu_vts, 0x181c, 7);                        /* DIV_SERIAL_LIF: / 8 */
+	snprintf(out, cap, "mic: AUD DMIC0 div %08x gate %08x; VTS AUD0_USER %08x MUX_DMIC_AUD %08x DIV %08x PAD %08x DIV2 %08x "
+	    "MUX_SLIF %08x DIV_SLIF %08x\n", rd(cmu, 0x1818), rd(cmu, 0x2000), rd(mic_cmu_vts, 0x600), rd(mic_cmu_vts, 0x1004),
+	    rd(mic_cmu_vts, 0x1804), rd(mic_cmu_vts, 0x180c), rd(mic_cmu_vts, 0x1808), rd(mic_cmu_vts, 0x100c),
+	    rd(mic_cmu_vts, 0x181c));
+}
+
+/*
+ * mic.slif: the pins, DMIC_AUD0 and the serial LIF with the values of Samsung's run (vts_s_lif_soc.c, VTS_S_SOC
+ * 1.1.1: DMIC_AUD control 0xA0030000, CONTROL_DMIC_AUD 0x8C63004C, GAIN_MODE 0x1717, MAX_SCALE_GAIN 0x85; SEL_PAD_AUD 7,
+ * SEL_DIV2_CLK 0x38; the S_LIF registers as read during the stock kernel's capture). Then the sample counter twice.
+ */
+static void
+dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	volatile uint8_t *gpv0;
+	uint32_t c0, c1;
+
+	if (!mic_pd_open || mic_cmu_vts == NULL) {
+		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu, mic.clk first\n");
+		return;
+	}
+	if (mic_sys == NULL) {
+		mic_sys = (volatile uint8_t *)ml_io_map(VTS_SYS_PHYS, 0x1000);
+		mic_dmic = (volatile uint8_t *)ml_io_map(VTS_DMIC_AUD0_PHYS, 0x1000);
+		mic_slif = (volatile uint8_t *)ml_io_map(VTS_SLIF_PHYS, 0x1000);
+	}
+	gpv0 = redwood_gpio_bank(VTS_GPIO_PHYS, 0x000);
+	if (gpv0 != NULL) {
+		redwood_gpio_func(gpv0, 0, 2);
+		redwood_gpio_pull(gpv0, 0, 1);
+		redwood_gpio_func(gpv0, 3, 2);
+		redwood_gpio_pull(gpv0, 3, 1);
+	}
+	wr(mic_sys, 0x10, 7);                   /* SEL_PAD_AUD */
+	wr(mic_sys, 0x14, 0x38);                /* SEL_DIV2_CLK */
+	wr(mic_dmic, 0x04, 0x8C63004CU);        /* CONTROL_DMIC_AUD */
+	wr(mic_dmic, 0x08, 0x1717);             /* GAIN_MODE */
+	wr(mic_dmic, 0x10, 0x85);               /* MAX_SCALE_GAIN */
+	wr(mic_dmic, 0x00, 0xA0030000U);        /* enable */
+	wr(mic_slif, 0x104, 0x2017);            /* CONFIG_MASTER */
+	wr(mic_slif, 0x108, 0x2017);            /* CONFIG_SLAVE */
+	wr(mic_slif, 0x110, 0xffffffffU);       /* SAMPLE_PCNT */
+	wr(mic_slif, 0x114, 7);                 /* INPUT_EN */
+	for (unsigned i = 0; i < 4; i++) {
+		wr(mic_slif, 0x118 + 4 * i, 0x800000);  /* VOL_SET */
+		wr(mic_slif, 0x128 + 4 * i, 1);         /* VOL_CHANGE */
+	}
+	wr(mic_slif, 0x138, 0x76543210U);       /* CHANNEL_MAP */
+	wr(mic_slif, 0x100, 0x101);             /* CTRL: both interfaces */
+	wr(mic_slif, 0x10c, 0x11);              /* CONFIG_DONE */
+	c0 = rd(mic_slif, 0x150);
+	IOSleep(100);
+	c1 = rd(mic_slif, 0x150);
+	snprintf(out, cap, "mic: gpv0 %s; SEL_PAD %08x DIV2 %08x; DMIC_AUD0 %08x %08x %08x %08x; S_LIF CTRL %08x CONFIG %08x/%08x DONE %08x "
+	    "INPUT %08x; DBG_INFO0 %08x -> %08x in 100 ms, DBG_INFO1 %08x\n", gpv0 != NULL ? "set" : "MISSING",
+	    rd(mic_sys, 0x10), rd(mic_sys, 0x14), rd(mic_dmic, 0), rd(mic_dmic, 4), rd(mic_dmic, 8), rd(mic_dmic, 0x10),
+	    rd(mic_slif, 0x100), rd(mic_slif, 0x104), rd(mic_slif, 0x108), rd(mic_slif, 0x10c), rd(mic_slif, 0x114), c0, c1,
+	    rd(mic_slif, 0x154));
+}
+
 static void
 dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -2616,6 +2715,8 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.look", ": the VTS domain and its bridges (always-on blocks only)", dbg_mic_look);
 	redwood_dbgport_add("mic.bus", ": CMU_APM's VTS bus clock and BUS1's VTS bridges on", dbg_mic_bus);
 	redwood_dbgport_add("mic.pd", ": the VTS power domain on, then EL3's DTZPC restore (after mic.bus)", dbg_mic_pd);
+	redwood_dbgport_add("mic.clk", ": the microphone clocks for 48 kHz / 24 bits (after mic.cmu)", dbg_mic_clk);
+	redwood_dbgport_add("mic.slif", ": the DMIC pins, DMIC_AUD0 and the serial LIF as Samsung sets them (after mic.clk)", dbg_mic_slif);
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
