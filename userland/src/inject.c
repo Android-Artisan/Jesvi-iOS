@@ -705,35 +705,35 @@ my_mitigate_harmony(id self, SEL selector, id arg)
 	return orig_mitigate_harmony(self, selector, arg);
 }
 
-static void
-brightness_harmony_fix(void)
+/* Installed from the sensors thread right before the light service is made (not at start-up: walking every class
+ * there hung backboardd); only CoreBrightness's own classes are looked at (objc_copyClassNamesForImage). */
+void redwood_brightness_guard(void);
+void
+redwood_brightness_guard(void)
 {
+	static const char *image = "/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness";
 	SEL sel = sel_registerName("shouldMitigateHarmony:");
 	unsigned count = 0;
-	Class *classes = objc_copyClassList(&count);
+	const char **names;
 
-	for (unsigned i = 0; classes != NULL && i < count; i++) {
-		Method method = class_getInstanceMethod(classes[i], sel);
+	if (orig_mitigate_harmony != NULL) {
+		return;
+	}
+	names = objc_copyClassNamesForImage(image, &count);
+	for (unsigned i = 0; names != NULL && i < count; i++) {
+		Class cls = objc_getClass(names[i]);
+		Method method = cls ? class_getInstanceMethod(cls, sel) : NULL;
 
 		if (method != NULL && (uintptr_t)method_getImplementation(method) == CB_MITIGATE_HARMONY + slide) {
 			orig_mitigate_harmony = (BOOL (*)(id, SEL, id))method_getImplementation(method);
 			method_setImplementation(method, (IMP)my_mitigate_harmony);
-			say("redwood: brightness: -[%s shouldMitigateHarmony:] guarded\n", class_getName(classes[i]));
+			say("redwood: brightness: -[%s shouldMitigateHarmony:] guarded\n", names[i]);
 			break;
 		}
 	}
-	free(classes);
-	if (orig_mitigate_harmony == NULL) {
-		static int tries;
-
-		if (tries++ < 6) {
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(0, 0), ^{
-				brightness_harmony_fix();
-			});
-		} else {
-			say("redwood: brightness: shouldMitigateHarmony: not found at the expected place\n");
-		}
-	}
+	say("redwood: brightness: True Tone guard %s (%u CoreBrightness classes)\n",
+	    orig_mitigate_harmony ? "on" : "NOT FOUND", count);
+	free(names);
 }
 
 static void
@@ -1580,7 +1580,6 @@ redwood_init(void)
 		opengl_es();
 		window_server_fixes();
 		attention_fixes(arguments);
-		/* brightness_harmony_fix(); -- (off: walking every class at start-up deadlocked backboardd; see TASKS R2) */
 		/*
 		 * brightness_fixes() is not used for now: with it backboardd no longer took our touch
 		 * screen service for its own ("still waiting for a main screen digitizer"), whether the

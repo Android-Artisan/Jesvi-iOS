@@ -455,6 +455,11 @@ sensors_thread(void *arg)
 
 	pthread_setname_np("redwood sensors");
 	/* ambient light first, for CoreBrightness's start */
+	if (use_als) {
+		extern void redwood_brightness_guard(void);
+
+		redwood_brightness_guard();     /* (CoreBrightness crashed on True Tone without it: inject.c) */
+	}
 	sensor.light = use_als ? make_sensor(client, "Redwood ambient light sensor", HID_USAGE_AMBIENT_LIGHT, false, &sensor.light_made) :
 	    NULL;                       /* (sens_als=1: see use_als) */
 	sensor.accel = make_sensor(client, "Redwood accelerometer", HID_USAGE_ACCELEROMETER, false, &sensor.accel_made);
@@ -559,7 +564,7 @@ redwood_sensors_early(void)
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
 		gyro_k = boot_arg(arguments, "sens_gyro_k", 61) / 1e6 * M_PI / 180;
 		mag_k = boot_arg(arguments, "sens_mag_k", 15000) / 1e6;
-		use_als = boot_arg(arguments, "sens_als", 0);
+		use_als = boot_arg(arguments, "sens_als", 1);   /* (on: auto-brightness, with the True Tone guard; sens_als=0 off) */
 	}
 	orientation_fixes();
 }
