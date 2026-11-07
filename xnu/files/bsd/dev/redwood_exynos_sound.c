@@ -2352,6 +2352,7 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 
 	volatile uint8_t *gpv0;
 	uint32_t c0, c1;
+	uint32_t settle_ms = current_thread() == mic_worker ? 0 : 100;
 
 	if (!mic_pd_open || mic_cmu_vts == NULL) {
 		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu, mic.clk first\n");
@@ -2417,12 +2418,14 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	wr(mic_slif, 0x100, 0x101);             /* CTRL: both interfaces */
 	wr(mic_slif, 0x10c, 0x11);              /* CONFIG_DONE */
 	c0 = rd(mic_slif, 0x48);         /* (INT_PEND: 0x150/0x154 are not in Samsung's readable list) */
-	IOSleep(100);
+	if (settle_ms != 0) {
+		IOSleep(settle_ms);
+	}
 	c1 = rd(mic_slif, 0x48);
 	snprintf(out, cap, "mic: gpv0 %s; SEL_PAD %08x DIV2 %08x; DMIC_AUD0 %08x %08x %08x %08x; S_LIF CTRL %08x CONFIG %08x/%08x DONE %08x "
-	    "INPUT %08x; DBG_INFO0 %08x -> %08x in 100 ms, DBG_INFO1 %08x\n", gpv0 != NULL ? "set" : "MISSING",
+	    "INPUT %08x; DBG_INFO0 %08x -> %08x in %u ms, DBG_INFO1 %08x\n", gpv0 != NULL ? "set" : "MISSING",
 	    rd(mic_sys, 0x10), rd(mic_sys, 0x14), rd(mic_dmic, 0), rd(mic_dmic, 4), rd(mic_dmic, 8), rd(mic_dmic, 0x10),
-	    rd(mic_slif, 0x100), rd(mic_slif, 0x104), rd(mic_slif, 0x108), rd(mic_slif, 0x10c), rd(mic_slif, 0x114), c0, c1,
+	    rd(mic_slif, 0x100), rd(mic_slif, 0x104), rd(mic_slif, 0x108), rd(mic_slif, 0x10c), rd(mic_slif, 0x114), c0, c1, settle_ms,
 	    rd(mic_slif, 0x40));
 }
 
@@ -2808,6 +2811,7 @@ static int16_t mic_ios_ring[MIC_IOS_RING_FRAMES];
 static uint32_t mic_ios_head, mic_ios_tail;
 static bool mic_ios_primed;
 static uint64_t mic_ios_produced, mic_ios_dropped;
+static uint32_t mic_ios_peak, mic_ios_short_reads;
 static uint32_t mic_saved_cap[sizeof(samsung_abox_cap) / sizeof(samsung_abox_cap[0])];
 static uint32_t mic_saved_route, mic_saved_qch, mic_saved_uaif0, mic_saved_uaif1;
 static uint32_t mic_saved_mux, mic_saved_div;
@@ -2824,10 +2828,14 @@ exynos_mic_open(__unused dev_t dev, __unused int flags, __unused int type, __unu
 	} else {
 		mic_ios_head = mic_ios_tail = 0;
 		mic_ios_produced = mic_ios_dropped = 0;
+		mic_ios_peak = mic_ios_short_reads = 0;
 		mic_ios_primed = false;
 		mic_ios_wants = true;
 	}
 	lck_mtx_unlock(&exynos_mic_lock);
+	if (error == 0) {
+		thread_wakeup((event_t)&mic_ios_wants);
+	}
 	return error;
 }
 
@@ -2837,6 +2845,7 @@ exynos_mic_close(__unused dev_t dev, __unused int flags, __unused int type, __un
 	lck_mtx_lock(&exynos_mic_lock);
 	mic_ios_wants = false;
 	lck_mtx_unlock(&exynos_mic_lock);
+	thread_wakeup((event_t)&mic_ios_wants);
 	return 0;
 }
 
@@ -2865,6 +2874,7 @@ exynos_mic_read(__unused dev_t dev, struct uio *uio, __unused int flags)
 		}
 		mic_ios_tail += take;
 		if (take < want) {
+			mic_ios_short_reads++;
 			mic_ios_primed = false;
 		}
 		lck_mtx_unlock(&exynos_mic_lock);
@@ -2966,6 +2976,7 @@ exynos_mic_start_path(void)
 	}
 	wr(mic_slif, 0x300, 0); /* no diagnostic AHB dump while iOS uses WDMA4 */
 	dbg_mic_cap(&ms, 1, report, sizeof(report));
+	IOSleep(20); /* discard power-up/filter settling before exposing samples */
 	return (rd(mic_abox, MIC_WDMA4 + 0x30) & (1U << 31)) != 0;
 }
 
@@ -2990,10 +3001,16 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 				exynos_mic_stop_path();
 				active = false;
 				mic_hw_busy = false;
-				snd_log("mic: iOS capture stopped (%llu frames, %llu old frames dropped)\n", mic_ios_produced, mic_ios_dropped);
+				snd_log("mic: iOS capture stopped (%llu frames, %llu old frames dropped, peak %u/32768, %u short reads)\n",
+				    mic_ios_produced, mic_ios_dropped, mic_ios_peak, mic_ios_short_reads);
 			}
 			failures = 0;
-			IOSleep(10);
+			assert_wait((event_t)&mic_ios_wants, THREAD_UNINT);
+			if (mic_ios_wants) {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+			} else {
+				thread_block(THREAD_CONTINUE_NULL);
+			}
 			continue;
 		}
 		if (!active) {
@@ -3023,7 +3040,10 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 			uint32_t at = (last + i) % (MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES);
 			int16_t sample = (int16_t)((int32_t)(mic_buf[at * 8] << 8) >> 16);
 
+			uint32_t magnitude = sample < 0 ? (uint32_t)-(int32_t)sample : (uint32_t)sample;
+
 			mic_ios_ring[mic_ios_head++ % MIC_IOS_RING_FRAMES] = sample;
+			mic_ios_peak = magnitude > mic_ios_peak ? magnitude : mic_ios_peak;
 			mic_ios_produced++;
 		}
 		if (mic_ios_head - mic_ios_tail > MIC_IOS_RING_FRAMES) {
@@ -3032,7 +3052,7 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 		}
 		lck_mtx_unlock(&exynos_mic_lock);
 		last = pos;
-		IOSleep(2);
+		IOSleep(4);
 	}
 }
 

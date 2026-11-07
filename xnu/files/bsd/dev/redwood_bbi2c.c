@@ -2,7 +2,7 @@
  * I2C bit-banged on two GPIOs of the Exynos 990, and shared access to its pinctrl banks
  * (bsd/sys/redwood_bbi2c.h).
  *
- * Open-drain: a line is pulled low by making its pin an output (its DAT bit is kept 0) and
+ * Open-drain: a line is pulled low by explicitly setting DAT=0 and selecting output atomically, then
  * let go by making it an input, so the board's pull-up raises it. Nothing is ever driven
  * high, a slave may hold SCL low for as long as it needs (clock stretching), and a slave that
  * holds SDA low is never fought.
@@ -112,8 +112,13 @@ redwood_gpio_get(volatile uint8_t *bank, uint32_t pin)
 void
 redwood_gpio_set(volatile uint8_t *bank, uint32_t pin, uint32_t value)
 {
-	bank_update(bank, REDWOOD_GPIO_DAT, 1u << pin, (value ? 1u : 0u) << pin);
-	redwood_gpio_func(bank, pin, REDWOOD_GPIO_OUTPUT);
+	/* DAT reads the physical level of an input, not its saved output latch. Keep
+	 * setting the latch and selecting output atomic against adjacent GPIO users. */
+	lck_spin_lock(&gpio_lock);
+	bank_wr(bank, REDWOOD_GPIO_DAT, (bank_rd(bank, REDWOOD_GPIO_DAT) & ~(1u << pin)) | (value ? 1u << pin : 0));
+	bank_wr(bank, REDWOOD_GPIO_CON, (bank_rd(bank, REDWOOD_GPIO_CON) & ~(0xfu << (pin * 4))) |
+	    REDWOOD_GPIO_OUTPUT << (pin * 4));
+	lck_spin_unlock(&gpio_lock);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -127,7 +132,9 @@ bb_wait(struct redwood_bbi2c *b)
 static void
 line_low(struct redwood_bbi2c *b, uint32_t pin)
 {
-	redwood_gpio_func(b->bank, pin, REDWOOD_GPIO_OUTPUT);      /* DAT for the pin was preset to 0 */
+	/* A neighbour's DAT read/modify/write can copy this released pin's high
+	 * physical level into its latch. Reassert zero on EVERY low edge. */
+	redwood_gpio_set(b->bank, pin, 0);
 }
 
 static void
