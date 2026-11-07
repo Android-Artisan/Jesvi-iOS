@@ -2420,6 +2420,84 @@ dbg_mic_stop(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	snprintf(out, cap, "mic: capture stopped\n");
 }
 
+
+/*
+ * The watchdog (B, 2026-11-07): after a cold start Samsung's bootloader seems to leave WDT_CLUSTER0 (0x10050000,
+ * timeout-sec 30) running and nothing here feeds it: iOS restarted at the lock screen, once or in a loop. Reading it
+ * with its clock gated froze the phone, so: wdt.look reads CMU_PERIS's gate (0x10020000 +0x2048, Q-channel +0x3030)
+ * and only with that on the watchdog's WTCON/WTDAT/WTCNT; wdt.off opens the gate and clears WTCON (wdt=0 at boot: the
+ * same as the sound driver comes up).
+ */
+#define CMU_PERIS_PHYS          0x10020000U
+#define WDT_CL0_PHYS            0x10050000U
+
+static volatile uint8_t *wdt_peris, *wdt_base;
+
+static bool
+wdt_gate_on(void)
+{
+	uint32_t g, q;
+
+	if (wdt_peris == NULL) {
+		wdt_peris = (volatile uint8_t *)ml_io_map(CMU_PERIS_PHYS, 0x4000);
+	}
+	g = rd(wdt_peris, 0x2048);
+	q = rd(wdt_peris, 0x3030);
+	return (g & GATE_CG_VAL) != 0 && ((q & QCH_ENABLE) == 0 || (q & QCH_CLOCK_REQ) != 0);
+}
+
+static size_t
+wdt_state(char *out, size_t cap)
+{
+	size_t at = (size_t)snprintf(out, cap, "wdt: PERIS gate %08x QCH %08x", rd(wdt_peris, 0x2048), rd(wdt_peris, 0x3030));
+
+	if (wdt_gate_on()) {
+		if (wdt_base == NULL) {
+			wdt_base = (volatile uint8_t *)ml_io_map(WDT_CL0_PHYS, 0x1000);
+		}
+		at += (size_t)snprintf(out + at, cap - at, "; WTCON %08x WTDAT %08x WTCNT %08x\n", rd(wdt_base, 0), rd(wdt_base, 4),
+		    rd(wdt_base, 8));
+	} else {
+		at += (size_t)snprintf(out + at, cap - at, "; its clock is off: not read\n");
+	}
+	return at;
+}
+
+static void
+dbg_wdt_look(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (wdt_peris == NULL) {
+		wdt_peris = (volatile uint8_t *)ml_io_map(CMU_PERIS_PHYS, 0x4000);
+	}
+	(void)wdt_state(out, cap);
+}
+
+static bool
+wdt_disable(void)
+{
+	if (wdt_peris == NULL) {
+		wdt_peris = (volatile uint8_t *)ml_io_map(CMU_PERIS_PHYS, 0x4000);
+	}
+	mic_open_reg(wdt_peris, 0x2048);
+	mic_open_reg(wdt_peris, 0x3030);
+	if (!wdt_gate_on()) {
+		return false;
+	}
+	if (wdt_base == NULL) {
+		wdt_base = (volatile uint8_t *)ml_io_map(WDT_CL0_PHYS, 0x1000);
+	}
+	wr(wdt_base, 0, rd(wdt_base, 0) & ~((1U << 5) | (1U << 0)));   /* WTCON: timer off, reset off */
+	return true;
+}
+
+static void
+dbg_wdt_off(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	size_t at = (size_t)snprintf(out, cap, "wdt: %s\n", wdt_disable() ? "disabled" : "its clock would not come on");
+
+	(void)wdt_state(out + at, cap - at);
+}
+
 static void
 dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -2817,6 +2895,8 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.slif", ": the DMIC pins, DMIC_AUD0 and the serial LIF as Samsung sets them (after mic.clk)", dbg_mic_slif);
 	redwood_dbgport_add("mic.cap", "[ms]: ABOX's capture side (UAIF6 -> NSRC4 -> WDMA4) on, then each channel's peak (after mic.slif)", dbg_mic_cap);
 	redwood_dbgport_add("mic.stop", ": capture off", dbg_mic_stop);
+	redwood_dbgport_add("wdt.look", ": WDT_CLUSTER0's clock gate, and (only with it on) its WTCON/WTDAT/WTCNT", dbg_wdt_look);
+	redwood_dbgport_add("wdt.off", ": WDT_CLUSTER0 off (its gate opened first)", dbg_wdt_off);
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
