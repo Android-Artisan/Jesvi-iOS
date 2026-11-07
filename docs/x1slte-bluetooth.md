@@ -19,7 +19,7 @@ Diagnostic commands through `rwsys kern.redwood.poke`:
 - `bt.frag 0`: whole packets; `bt.frag 339` restores the old diagnostic workaround.
 - `bt.trace`: recent HCI headers.
 
-The FIFO fix was built and flashed with loader read-back verification. The whole-packet default was built successfully and tested through the equivalent live setting; its rebuilt image has not yet been flashed. Until that image is installed, rebooting the test phone restores its previous 339-byte default.
+The FIFO fix was built and flashed with loader read-back verification. The whole-packet default was then tested live and built into the next image. That image was installed during the phone-microphone reference test restore; after reboot, `bt.frag` reports 0 without a live override.
 
 ## Microphone status
 
