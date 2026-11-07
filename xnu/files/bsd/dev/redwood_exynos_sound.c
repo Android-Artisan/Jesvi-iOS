@@ -2280,23 +2280,13 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			snd_log("snd: after %llu us the DMA read %llu frames, the clock says %llu: following %s\n", now - t0,
 			    status_consumed, by_time, use_status ? "the DMA" : "the clock");
 		}
-		consumed = base + (use_status ? status_consumed : by_time);
-		if (written < consumed) {
-			underruns++;
-			written = consumed + 64;
-		}
-		while (written < consumed + LEAD_FRAMES) {
-			uint32_t n = (uint32_t)(consumed + LEAD_FRAMES - written), room = BUF_FRAMES - (uint32_t)(written % BUF_FRAMES);
-
-			n = n < CHUNK ? n : CHUNK;
-			n = n < room ? n : room;
-			fill(written, n);
-			written += n;
-		}
-		__asm__ volatile ("dsb sy" ::: "memory");
-
 		/* the amplifiers: on with sound, off after three quiet seconds; iOS's volume; their faults */
-		if (amps_ok && !faulted && now - last_vol >= 100000) {
+		/*
+		 * (at once, not at the next 100 ms look, when sound comes with the amplifiers off -- and before the samples are
+		 * handed to the DMA: a key click is over in 30 ms; B, 2026-11-07, "single clicks don't play")
+		 */
+		if (amps_ok && !faulted && (now - last_vol >= 100000 ||
+		    (!amps_on && last_sound_us != 0 && now - last_sound_us < QUIET_OFF_US))) {
 			bool sound = last_sound_us != 0 && now - last_sound_us < QUIET_OFF_US;
 			uint32_t b = 0, g = 0;
 			bool m = false;
@@ -2349,6 +2339,22 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 				}
 			}
 		}
+		/* iOS's samples to the DMA (after the amplifiers: see above) */
+		consumed = base + (use_status ? status_consumed : by_time);
+		if (written < consumed) {
+			underruns++;
+			written = consumed + 64;
+		}
+		while (written < consumed + LEAD_FRAMES) {
+			uint32_t n = (uint32_t)(consumed + LEAD_FRAMES - written), room = BUF_FRAMES - (uint32_t)(written % BUF_FRAMES);
+
+			n = n < CHUNK ? n : CHUNK;
+			n = n < room ? n : room;
+			fill(written, n);
+			written += n;
+		}
+		__asm__ volatile ("dsb sy" ::: "memory");
+
 		if (now - last_look >= 60000000) {
 			last_look = now;
 			snd_log("snd: %llu frames from iOS, %llu fed, %llu silent, %u underruns; DMA at %u (%s); quiet %llu times, "

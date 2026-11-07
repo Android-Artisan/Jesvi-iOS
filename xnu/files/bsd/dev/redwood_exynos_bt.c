@@ -35,6 +35,7 @@
 #include <kern/locks.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
+#include <machine/machine_routines.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
@@ -101,8 +102,8 @@ static uint8_t bt_address[6] = { 0x02, 0x52, 0x44, 0x57, 0x00, 0x02 };
 
 /* what came in, for the client (and for the bring-up's own reads) */
 static LCK_GRP_DECLARE(bt_lck_grp, "redwood-bt");
-static LCK_MTX_DECLARE(bt_lock, &bt_lck_grp);
 static LCK_MTX_DECLARE(bt_tx_lock, &bt_lck_grp);
+static LCK_SPIN_DECLARE(bt_rx_spin, &bt_lck_grp);  /* the FIFO's reader: the interrupt, or the reader thread */
 static uint8_t *ring;
 static volatile uint32_t ring_head, ring_tail;  /* head: next byte written by the reader; tail: next one taken */
 static uint64_t rx_bytes, tx_bytes, rx_overruns, rx_dropped, irqs;
@@ -247,12 +248,19 @@ ring_count(void)
 	return ring_head - ring_tail;
 }
 
-/* the FIFO into the ring (the reader thread; never from the interrupt) */
+/*
+ * The FIFO into the ring: from the interrupt itself (B, 2026-11-07: the reader thread alone was late under load --
+ * at 3 Mbaud the 256-byte FIFO fills in 0.85 ms -- 110 overruns once Bluetooth audio streamed, and bluetoothd quit
+ * on the broken packets), and from the reader thread's looks; under bt_rx_spin with interrupts off.
+ */
 static void
 uart_drain(void)
 {
-	uint32_t st, n;
+	uint32_t st, n, head;
+	boolean_t was = ml_set_interrupts_enabled(FALSE);
 
+	lck_spin_lock(&bt_rx_spin);
+	head = ring_head;
 	while ((n = UFSTAT_RXCOUNT(st = rd(UFSTAT))) != 0 || (st & UFSTAT_RXFULL)) {
 		if (n == 0) {
 			n = FIFO;
@@ -260,24 +268,28 @@ uart_drain(void)
 		while (n-- > 0) {
 			uint8_t c = (uint8_t)rd(URXH);
 
-			if (ring_count() < RING) {
-				ring[ring_head % RING] = c;
-				ring_head++;
+			if (head - ring_tail < RING) {
+				ring[head % RING] = c;
+				head++;
 			} else {
 				rx_dropped++;
 			}
 			rx_bytes++;
 		}
 	}
+	__asm__ volatile ("dmb ish" ::: "memory");
+	ring_head = head;                       /* the bytes before the count that says they are there */
 	if (rd(UERSTAT) & 1) {
 		rx_overruns++;
 	}
+	lck_spin_unlock(&bt_rx_spin);
+	ml_set_interrupts_enabled(was);
 }
 
 static void
 bt_irq(__unused void *context, __unused uint32_t intid)
 {
-	wr(UINTM, rd(UINTM) | UINT_RXD | UINT_ERROR);
+	uart_drain();                           /* at once: the thread may be a while */
 	wr(UINTP, UINT_RXD | UINT_ERROR);
 	irqs++;
 	thread_wakeup((event_t)&bt_event);
@@ -292,6 +304,8 @@ bt_deliver(void)
 	while (unit != 0 && ring_count() > 0) {
 		uint32_t at = ring_tail % RING, n = ring_count();
 		errno_t e;
+
+		__asm__ volatile ("dmb ish" ::: "memory");      /* the count before the bytes it counts */
 
 		if (n > RING - at) {
 			n = RING - at;
@@ -329,9 +343,7 @@ bt_reader(__unused void *arg, __unused wait_result_t wr_)
 	for (;;) {
 		uint32_t before = ring_count();
 
-		lck_mtx_lock(&bt_lock);
 		uart_drain();
-		lck_mtx_unlock(&bt_lock);
 		if (why == THREAD_TIMED_OUT) {
 			bt_safety_looks++;
 			if (ring_count() != before) {
@@ -594,9 +606,7 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 		return EBUSY;
 	}
 	*unitinfo = NULL;
-	lck_mtx_lock(&bt_lock);
 	ring_tail = ring_head;                  /* nothing old for a new client */
-	lck_mtx_unlock(&bt_lock);
 	bt_unit = sac->sc_unit;
 	bt_log("bt: %s: a client connected (unit %u)\n", CTL_NAME, sac->sc_unit);
 	return 0;
