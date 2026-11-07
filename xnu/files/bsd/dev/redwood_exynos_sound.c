@@ -230,8 +230,15 @@ static bool started, amps_ok, amps_on, faulted, use_status;
 static volatile bool sound_ready;
 static volatile uint32_t amp_recovery_requested;
 static bool amp_start_retryable;
-static uint32_t snd_below = 84, snd_gain = 6 * 8, snd_tone;     /* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
+static uint32_t snd_below = 109, snd_gain = 6 * 8, snd_tone;     /* (the user, 2026-11-07 17:10: 70 % of the old top = 3.1 dB more: 84 -> 109) */
+/* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
+/* snd_debug=1: routine lines (amps on/off, stats, mic start/stop) and per-sample mic peaks; 0 (default): errors only */
+static uint32_t snd_debug;
+#define snd_dbg(...) do { if (snd_debug) { snd_log(__VA_ARGS__); } } while (0)
+/* self-check (snd.health): repairs done and the last time both amplifiers answered */
+static uint32_t heal_amp_fault, heal_amp_idle, heal_mic_stall, dma_stalls;
+static volatile uint64_t amps_answered_us;
 
 struct amp {
 	const char *name;
@@ -676,6 +683,20 @@ amps_faults(void)
 		}
 	}
 	return faults;
+}
+
+/* both present amplifiers answer on I2C and report no fault (the self-check) */
+static bool
+amps_answer(void)
+{
+	for (unsigned i = 0; i < 2; i++) {
+		uint32_t status = 0;
+
+		if (!amps[i].present || !amp_read(&amps[i], L41_IRQ1_STATUS1, &status) || (status & L41_FAULTS)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -2984,7 +3005,7 @@ static void
 exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 {
 	bool active = false;
-	unsigned failures = 0;
+	unsigned failures = 0, still = 0;
 	uint32_t last = 0;
 	int major;
 
@@ -3001,7 +3022,7 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 				exynos_mic_stop_path();
 				active = false;
 				mic_hw_busy = false;
-				snd_log("mic: iOS capture stopped (%llu frames, %llu old frames dropped, peak %u/32768, %u short reads)\n",
+				snd_dbg("mic: iOS capture stopped (%llu frames, %llu old frames dropped, peak %u/32768, %u short reads)\n",
 				    mic_ios_produced, mic_ios_dropped, mic_ios_peak, mic_ios_short_reads);
 			}
 			failures = 0;
@@ -3029,10 +3050,24 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 			}
 			last = exynos_mic_position();
 			active = true;
-			snd_log("mic: iOS capture running (all three DMIC converters, UAIF6, WDMA4)\n");
+			still = 0;
+			snd_dbg("mic: iOS capture running (all three DMIC converters, UAIF6, WDMA4)\n");
 		}
 		uint32_t pos = exynos_mic_position();
 		uint32_t frames = (pos + MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES - last) % (MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES);
+
+		/* self-check: WDMA4 stuck for 200 ms -> the path down and up again (3 tries until iOS closes the device) */
+		if (frames == 0 && ++still >= 50) {
+			exynos_mic_stop_path();
+			active = false;
+			mic_hw_busy = false;
+			failures++;
+			heal_mic_stall++;
+			snd_log("mic: capture stalled (WDMA4 at %u for 200 ms): restarting the path (%u/3)\n", pos, failures);
+			continue;
+		} else if (frames != 0) {
+			still = 0;
+		}
 
 		__asm__ volatile ("dsb sy" ::: "memory");
 		lck_mtx_lock(&exynos_mic_lock);
@@ -3040,10 +3075,12 @@ exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
 			uint32_t at = (last + i) % (MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES);
 			int16_t sample = (int16_t)((int32_t)(mic_buf[at * 8] << 8) >> 16);
 
-			uint32_t magnitude = sample < 0 ? (uint32_t)-(int32_t)sample : (uint32_t)sample;
-
 			mic_ios_ring[mic_ios_head++ % MIC_IOS_RING_FRAMES] = sample;
-			mic_ios_peak = magnitude > mic_ios_peak ? magnitude : mic_ios_peak;
+			if (snd_debug) {
+				uint32_t magnitude = sample < 0 ? (uint32_t)-(int32_t)sample : (uint32_t)sample;
+
+				mic_ios_peak = magnitude > mic_ios_peak ? magnitude : mic_ios_peak;
+			}
 			mic_ios_produced++;
 		}
 		if (mic_ios_head - mic_ios_tail > MIC_IOS_RING_FRAMES) {
@@ -3117,7 +3154,8 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	uint64_t status_consumed = 0, quiet_since = 0;
 	uint32_t last_pos, generation = 0, below = 0;
 	unsigned start_recoveries = 0;
-	bool muted = false, decided = false;
+	bool muted = false, decided = false, stall_told = false;
+	uint64_t stall_since = 0;
 
 	if (!aud_power_on() || !aud_clocks()) {
 		return;
@@ -3213,6 +3251,18 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 		}
 		last_pos = pos;
 		status_consumed += delta;
+		if (amps_on && use_status && delta == 0) {
+			if (stall_since == 0) {
+				stall_since = now;
+			} else if (now - stall_since >= 200000 && !stall_told) {
+				stall_told = true;
+				dma_stalls++;
+				snd_log("snd: playback DMA stalled at %u for 200 ms\n", pos);
+			}
+		} else {
+			stall_since = 0;
+			stall_told = false;
+		}
 		if (cal_dram != NULL) {
 			static uint64_t cal_log_at;
 
@@ -3264,7 +3314,9 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 					}
 				}
 				quiet_since = 0;
-				snd_log("snd: amplifiers %s (iOS volume %u/8 dB under)\n", amps_on ? "on" : "FAILED", below);
+				if (!amps_on || snd_debug) {
+					snd_log("snd: amplifiers %s (iOS volume %u/8 dB under)\n", amps_on ? "on" : "FAILED", below);
+				}
 			} else if (amps_on && (!sound || muted)) {
 				if (quiet_since == 0) {
 					quiet_since = now;
@@ -3273,7 +3325,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 					amps_down();
 					amps_on = false;
 					redwood_guard_attenuation(REDWOOD_GUARD_SILENT);
-					snd_log("snd: amplifiers off (%llu frames from iOS, %llu fed, %u underruns)\n", ios_frames, fed_frames,
+					snd_dbg("snd: amplifiers off (%llu frames from iOS, %llu fed, %u underruns)\n", ios_frames, fed_frames,
 					    (uint32_t)underruns);
 				}
 			} else if (sound) {
@@ -3290,11 +3342,20 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 
 					checked_at = now;
 					if (f != 0) {
-						snd_log("snd: AMPLIFIER FAULT %#x: both off for the rest of the run\n", f);
 						amps_down();
 						amps_on = false;
 						faulted = true;
 						redwood_guard_attenuation(REDWOOD_GUARD_SILENT);
+						/* self-check: reset and set up again, at most 3 times a boot (a real short stays off) */
+						if (heal_amp_fault < 3) {
+							heal_amp_fault++;
+							(void)OSCompareAndSwap(0, 1, &amp_recovery_requested);
+							snd_log("snd: AMPLIFIER FAULT %#x: recovery %u/3 queued\n", f, heal_amp_fault);
+						} else {
+							snd_log("snd: AMPLIFIER FAULT %#x: both off for the rest of the run\n", f);
+						}
+					} else {
+						amps_answered_us = now;
 					}
 				}
 			}
@@ -3317,7 +3378,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 
 		if (now - last_look >= 60000000) {
 			last_look = now;
-			snd_log("snd: %llu frames from iOS, %llu fed, %llu silent, %u underruns; DMA at %u (%s); quiet %llu times, "
+			snd_dbg("snd: %llu frames from iOS, %llu fed, %llu silent, %u underruns; DMA at %u (%s); quiet %llu times, "
 			    "%llu ms in all\n", ios_frames, fed_frames, silent_frames, (uint32_t)underruns, pos,
 			    use_status ? "followed" : "by the clock", quiet_spells, quiet_us / 1000);
 		}
@@ -3342,6 +3403,15 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			snd_quiet = false;
 			now = now_us();
 			quiet_us += now - began;
+			if (amp_recovery_requested == 0 && last_sound_us == heard && amps_ok && !faulted) {
+				if (amps_answer()) {
+					amps_answered_us = now;
+				} else if (heal_amp_idle < 3) {
+					heal_amp_idle++;
+					(void)OSCompareAndSwap(0, 1, &amp_recovery_requested);
+					snd_log("snd: self-check: an amplifier stopped answering: recovery %u/3 queued\n", heal_amp_idle);
+				}
+			}
 			/* on from where the DMA is now: the count again such that count % BUF_FRAMES is its ring index */
 			pos = dma_position(NULL);
 			base = written + (pos + BUF_FRAMES - (uint32_t)(written % BUF_FRAMES)) % BUF_FRAMES;
@@ -3380,6 +3450,21 @@ calliope_halt(volatile uint8_t *p, volatile uint8_t *m)
 	__asm__ volatile ("dsb sy" ::: "memory");
 }
 
+/* snd.health: what the drivers know, from memory only (no I2C, no registers: safe while playing) */
+static void
+dbg_snd_health(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	uint64_t now = now_us();
+
+	snprintf(out, cap, "snd: %s; amps %s/%s%s%s, %s, last answered %llu s ago; %llu underruns, %u DMA stalls; "
+	    "repairs: %u amp faults, %u amp idle, %u mic stalls; mic %s%s; debug %s\n",
+	    sound_ready ? "running" : "NOT running", amps[0].present ? "L ok" : "L MISSING", amps[1].present ? "R ok" : "R MISSING",
+	    faulted ? ", FAULTED (muted)" : "", amps_ok ? "" : ", bring-up failed", amps_on ? "on" : (snd_quiet ? "asleep" : "off"),
+	    amps_answered_us ? (now - amps_answered_us) / 1000000 : 0, underruns, dma_stalls,
+	    heal_amp_fault, heal_amp_idle, heal_mic_stall, mic_worker != NULL ? "ready" : "NOT ready",
+	    mic_hw_busy ? " (capturing)" : "", snd_debug ? "on" : "off");
+}
+
 /* ---- entry points --------------------------------------------------------------------------------------------- */
 
 void
@@ -3415,6 +3500,7 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
 	PE_parse_boot_argn("snd_samsung", &snd_samsung, sizeof(snd_samsung));
 	PE_parse_boot_argn("snd_gate", &snd_gate, sizeof(snd_gate));
+	PE_parse_boot_argn("snd_debug", &snd_debug, sizeof(snd_debug));
 	{
 		/* the watchdog Samsung's bootloader leaves running after a cold start: off (wdt=0 keeps it; confirmed
 		 * 2026-11-07: WTCON 0x18021 counting from 0x8000, the restarts at the lock screen) */
@@ -3450,6 +3536,7 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
+	redwood_dbgport_add("snd.health", ": the sound and mic drivers' self-check (no hardware access)", dbg_snd_health);
 	if (snd_calliope >= 2) {
 		snd_rdma = 0;
 	}

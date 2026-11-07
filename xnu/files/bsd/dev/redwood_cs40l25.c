@@ -237,7 +237,7 @@ extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint
 
 static struct redwood_bbi2c bus = { .name = "cs40l25 bus gpp1-2/3", .scl = 2, .sda = 3, .half_us = 4 };
 static volatile uint8_t *reset_bank, *alert_bank;
-static uint32_t level, max_ms = 1000, max_pct = 56, tap_index, rom_test, verify;     /* (the user, 2026-11-07: 70 % of the old 80) */
+static uint32_t level, max_ms = 1000, max_pct = 34, tap_index, rom_test, verify;     /* (the user, 2026-11-07: 70 % of the old 80 -> 56; 17:10: 60 % of 56 -> 34) */
 static volatile bool released, broken;
 static bool bus_taken;
 static const char *step = "start";

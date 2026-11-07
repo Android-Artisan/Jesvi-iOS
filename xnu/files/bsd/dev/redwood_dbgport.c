@@ -25,7 +25,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 static char out_buf[8192];
 static struct { uint64_t page; volatile uint8_t *va; } maps[64];
 static unsigned nmaps;
-static struct { char name[24]; const char *help; redwood_dbgport_fn fn; } cmds[32];
+static struct { char name[24]; const char *help; redwood_dbgport_fn fn; } cmds[48];
 static unsigned ncmds;
 static LCK_GRP_DECLARE(dbgport_grp, "redwood_dbgport");
 static LCK_MTX_DECLARE(dbgport_mtx, &dbgport_grp);

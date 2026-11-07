@@ -70,6 +70,7 @@ static redwood_audio_sink_t audio_sink;
 
 static uint8_t *rec_base;
 static bool rec_fed;                    /* boot-arg rec_sound_fed=1: what the guard let through is recorded, not what was written */
+static uint32_t audio_debug;            /* boot-arg snd_debug=1: the peak scan and a report after each stretch of sound */
 static bool rec_mic;                    /* boot-arg rec_sound_mic=1: what the microphone hears (redwood_mic.c) */
 static uint64_t rec_size, rec_used;
 static uint64_t rec_frames, rec_frames_max;
@@ -174,7 +175,8 @@ audio_play(const int16_t *frames, uint32_t count)
 	uint32_t loudest = 0, taken = 0;
 	uint64_t deadline;
 
-	for (uint32_t i = 0; i < count * REDWOOD_AUDIO_CHANNELS; i++) {
+	/* (the peak scan and the per-stretch report only with snd_debug=1: they cost on every write) */
+	for (uint32_t i = 0; audio_debug && i < count * REDWOOD_AUDIO_CHANNELS; i++) {
 		uint32_t level = frames[i] < 0 ? -(int32_t)frames[i] : frames[i];
 
 		if (level > loudest) {
@@ -201,7 +203,7 @@ audio_play(const int16_t *frames, uint32_t count)
 	if (loudest > stretch_peak) {
 		stretch_peak = loudest;
 	}
-	if (!report_armed && report_call != NULL) {
+	if (audio_debug && !report_armed && report_call != NULL) {
 		report_armed = true;
 		clock_interval_to_deadline(2 * QUIET_MS, NSEC_PER_MSEC, &deadline);
 		thread_call_enter_delayed(report_call, deadline);
@@ -338,7 +340,10 @@ audio_recording_init(void)
 void
 redwood_audio_init(void)
 {
-	int major = cdevsw_add(-1, &audio_cdevsw);
+	int major;
+
+	PE_parse_boot_argn("snd_debug", &audio_debug, sizeof(audio_debug));
+	major = cdevsw_add(-1, &audio_cdevsw);
 
 	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-audio") == NULL) {
 		printf("redwood-audio: cannot create the device\n");
