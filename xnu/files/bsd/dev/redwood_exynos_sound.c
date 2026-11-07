@@ -204,6 +204,13 @@ static const struct { uint32_t reg; uint8_t shift, size; } otp_map[99] = {
 #define CHUNK                   1024U           /* the guard's most at once */
 #define RING_FRAMES             16384U          /* iOS's samples waiting: 341 ms; a power of two */
 #define SILENCE                 8
+/*
+ * The gate (B, 2026-11-07: "volume 0 is not fully silent"): iOS keeps our device's volume control at the top and
+ * scales the samples itself, so its lowest step is a faint signal, which the guard's gain then lifts. A block from
+ * iOS whose peak stays under snd_gate (of 32767; 64 = -54 dBFS) is played as silence and counts as quiet (the
+ * amplifiers go off). snd_gate=N at boot, `snd.gate N` live.
+ */
+static uint32_t snd_gate = 64;
 #define QUIET_OFF_US            3000000ull
 
 static volatile uint8_t *pmu, *cmu, *mmu, *abox;
@@ -212,7 +219,7 @@ static uint64_t buf_phys;
 static int16_t *buf;
 static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
-static uint32_t snd_below = 72, snd_gain = 12 * 8, snd_tone;     /* (B, 2026-11-07: 9 dB under full, was 18; the guard stays) */
+static uint32_t snd_below = 84, snd_gain = 6 * 8, snd_tone;     /* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
 
 struct amp {
@@ -1079,7 +1086,7 @@ exynos_sink(const int16_t *frames, uint32_t count)
 
 		ring[2 * ((head + i) % RING_FRAMES)] = l;
 		ring[2 * ((head + i) % RING_FRAMES) + 1] = r;
-		sound |= l > SILENCE || l < -SILENCE || r > SILENCE || r < -SILENCE;
+		sound |= l > (int32_t)snd_gate || l < -(int32_t)snd_gate || r > (int32_t)snd_gate || r < -(int32_t)snd_gate;
 	}
 	OSMemoryBarrier();
 	ring_head = head + taken;
@@ -1116,6 +1123,18 @@ fill(uint64_t at, uint32_t n)
 		}
 		OSMemoryBarrier();
 		ring_tail = tail + take;
+	}
+	if (take != 0 && snd_gate != 0) {
+		int32_t peak = 0;
+
+		for (uint32_t k = 0; k < 2 * take; k++) {
+			int32_t v = chunk[k] < 0 ? -(int32_t)chunk[k] : chunk[k];
+
+			peak = v > peak ? v : peak;
+		}
+		if (peak < (int32_t)snd_gate) {
+			bzero(chunk, take * 4);         /* under the gate: silence */
+		}
 	}
 	fed_frames += i;
 	silent_frames += n - i;
@@ -2052,6 +2071,15 @@ dbg_snd_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
 }
 
 static void
+dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1) {
+		snd_gate = (uint32_t)(v[0] > 32767 ? 32767 : v[0]);
+	}
+	snprintf(out, cap, "gate %u of 32767 (a block from iOS peaking under it is silence)\n", snd_gate);
+}
+
+static void
 dbg_snd_amps(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	if (n >= 1 && v[0] != 0) {
@@ -2413,6 +2441,7 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
 	PE_parse_boot_argn("snd_samsung", &snd_samsung, sizeof(snd_samsung));
+	PE_parse_boot_argn("snd_gate", &snd_gate, sizeof(snd_gate));
 	PE_parse_boot_argn("snd_cal_trig", &snd_cal_trig, sizeof(snd_cal_trig));
 	PE_parse_boot_argn("snd_cal_kick", &snd_cal_kick, sizeof(snd_cal_kick));
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
@@ -2422,6 +2451,7 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("snd.supply", "[1]: the amplifiers' 1.8 V (sub-PMIC LDO4S), read / switched on", dbg_snd_supply);
 	redwood_dbgport_add("snd.prep", ": the amplifiers reset and set up again", dbg_snd_prep);
 	redwood_dbgport_add("snd.cal", "0|1|2|3: Calliope halted / booted now / playback asked / its timers", dbg_snd_cal);
+	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
 	if (snd_calliope >= 2) {
 		snd_rdma = 0;
