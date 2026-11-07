@@ -20,13 +20,19 @@ Validation on 2026-11-07: kernel built and installed; explicit recovery complete
 
 ## Built-in microphone
 
-The Samsung reference kernel has recorded clean voice from the physical mic. Native XNU capture remains experimental: DMIC1 -> VTS serial LIF -> UAIF6 -> NSRC4 -> WDMA4. Earlier capture dumps were regmap cache values, potentially missing configuration written by Samsung's DSP. The bounded reference test enables cache bypass while capture is active to obtain hardware values.
+Native iOS recording now works through `/dev/redwood-mic`: DMIC1 -> VTS serial LIF -> UAIF6 -> NSRC4 -> WDMA4. The shared serial link selects three converter inputs, so **all three DMIC_AUD converters must be initialized and enabled**, even with only the main microphone powered. Enabling only converter 0 produced zeros. This was verified first in VTS's direct AHB capture and then in the normal ABOX DMA ring. Production capture does not need the VTS firmware core.
 
-The live `mic.*` commands are diagnostics, not a completed iOS input driver. WDMA movement with all-zero samples does not count as working capture. Reboot clears the live experiments. Preserve the watchdog disable at boot: it addresses the separate bootloader watchdog restart.
+The device provides nonblocking 48 kHz signed 16-bit mono samples from channel 0 of the hardware's eight-channel, right-aligned signed 24-bit stream. The worker follows ABOX 3.0.1's period-index/byte-count pointer format. It starts hardware on open, buffers samples for the existing Codec input in the audio HAL, and stops capture on close. Capture-register snapshots are restored afterward; the mic-bias GPIO update touches only pin 1, preserving the adjacent amplifier I2C pins. Mutating `mic.*` diagnostics are rejected while iOS owns capture; `mic.peek` remains available.
+
+The node is enabled by default with the Exynos speaker driver; `mic_ios=0` disables it for diagnosis. The existing userland HAL needs no change.
+
+Validation on the cold-booted 14:43 kernel: the existing iOS recorder returned complete 5-second and 6-second mono files with nonzero audio; 6 seconds contained 288000 samples. Both captures completed with zero ring overruns. The user confirmed the built-in mic and Voice Memos work. Initial capture latency was 100–120 ms, including the staged helper's diagnostic delay; power/latency optimization follows this baseline.
+
+Preserve the watchdog disable at boot: it addresses the separate bootloader watchdog restart.
 
 ## Reference findings and diagnostic guard
 
-The v7 reference enabled regmap cache bypass during a successful six-second Samsung capture (48 kHz stereo, peak 4934; 573536 of 576000 samples nonzero). The real WDMA4 CTRL was `00201721`, rather than cached `00200000`; SPUM CTRL1 at `0304` read zero rather than cached `948`. Native `mic.cap` now uses the hardware format (24-bit, eight channels, buffer update); `mic.peek` reports the existing ring without restarting capture. Correcting these values live still left native samples at zero.
+The v7 reference enabled regmap cache bypass during a successful six-second Samsung capture (48 kHz stereo, peak 4934; 573536 of 576000 samples nonzero). The real WDMA4 CTRL was `00201721`, rather than cached `00200000`; SPUM CTRL1 at `0304` read zero rather than cached `948`. Native `mic.cap` uses the hardware format (24-bit, eight channels, buffer update); `mic.peek` reports the existing ring without restarting capture. Those corrections alone left native samples at zero; enabling all three converters subsequently fixed capture.
 
 The v8 reference read forty specific hardware registers with Samsung's existing `exynos-debug-test` SFR command. Its parser requires two trailing spaces after the address to unambiguously select a read. It showed DMIC0's parent divider 3, DMIC_AUD divider 23, SERIAL_LIF divider 31; the earlier native 15/5/7 ratios produce the same final frequencies. Matching the exact ratios live also left samples zero. Microphone clock and data pins both toggle. VTS pad retention already read `860` (released), so its absence from the setup helper did not explain this run's zeros.
 

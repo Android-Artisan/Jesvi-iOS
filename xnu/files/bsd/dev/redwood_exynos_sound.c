@@ -37,6 +37,10 @@
  * self-test without iOS).
  */
 #include <kern/clock.h>
+#include <kern/locks.h>
+#include <miscfs/devfs/devfs.h>
+#include <sys/conf.h>
+#include <sys/uio.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
@@ -223,6 +227,7 @@ static uint64_t buf_phys;
 static int16_t *buf;
 static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
+static volatile bool sound_ready;
 static volatile uint32_t amp_recovery_requested;
 static bool amp_start_retryable;
 static uint32_t snd_below = 84, snd_gain = 6 * 8, snd_tone;     /* (B, 2026-11-07: 10.5 dB under full and a 6 dB lift: at the top the 12 dB lift drove the limiter into distortion) */
@@ -2094,7 +2099,7 @@ dbg_snd_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
 }
 
 
-/* ---- the phone's microphones (B, 2026-11-07): staged and live, nothing at boot ------------------------------------- */
+/* ---- the phone's microphones: diagnostics and iOS input, hardware enabled only while recording ------------------ */
 /*
  * Samsung's path (Android's media-mic; reference run under the stock kernel, logs/runs/resume-20261107): DMIC1 ->
  * VTS's DMIC_AUD0 (0x15350000) -> its serial LIF (0x15340000) -> ABOX UAIF6 -> NSRC4 -> WDMA4. VTS sits in its own
@@ -2113,6 +2118,18 @@ dbg_snd_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
 
 static volatile uint8_t *mic_pmu, *mic_apm, *mic_bus1, *mic_cmu_vts;
 static bool mic_bus_open, mic_pd_open;
+static volatile bool mic_ios_wants, mic_hw_busy;
+static thread_t mic_worker;
+
+static bool
+mic_debug_allowed(char *out, size_t cap)
+{
+	if ((mic_ios_wants || mic_hw_busy) && current_thread() != mic_worker) {
+		snprintf(out, cap, "mic: iOS owns capture; stop recording before changing the path (mic.peek is read-only)\n");
+		return false;
+	}
+	return true;
+}
 
 static const struct { const char *name; uint32_t off; } mic_apm_regs[] = {
 	{ "MUX_CLKCMU_VTS_BUS", 0x1004 }, { "DIV_CLKCMU_VTS_BUS", 0x1804 }, { "GATE_CLKCMU_VTS_BUS", 0x2010 },
@@ -2188,6 +2205,10 @@ mic_open_reg(volatile uint8_t *base, uint32_t off)
 static void
 dbg_mic_bus(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	if (!mic_map()) {
 		snprintf(out, cap, "mic: no mappings\n");
 		return;
@@ -2206,6 +2227,10 @@ dbg_mic_bus(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 static void
 dbg_mic_pd(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	uint32_t st = 0;
 	uint64_t ret = ~0ULL;
 	unsigned t;
@@ -2214,6 +2239,7 @@ dbg_mic_pd(__unused const uint64_t *v, __unused unsigned n, char *out, size_t ca
 		snprintf(out, cap, "mic: mic.bus first\n");
 		return;
 	}
+	mic_pd_open = false;
 	if (!(rd(mic_pmu, PMU_VTS_STATUS) & 1)) {
 		wr(mic_pmu, PMU_VTS_CONF, rd(mic_pmu, PMU_VTS_CONF) | 1);
 	}
@@ -2232,6 +2258,10 @@ dbg_mic_pd(__unused const uint64_t *v, __unused unsigned n, char *out, size_t ca
 static void
 dbg_mic_cmu(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	if (!mic_pd_open) {
 		snprintf(out, cap, "mic: mic.bus and mic.pd first (CMU_VTS hangs the bus otherwise)\n");
 		return;
@@ -2254,6 +2284,8 @@ dbg_mic_cmu(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 #define VTS_GPIO_PHYS           0x15580000U     /* gpv0 at +0: 0 the DMIC clock, 3 its data (function 2, pull-down) */
 
 static volatile uint8_t *mic_sys, *mic_dmic, *mic_slif;
+static volatile uint8_t *mic_dmic_extra[2];
+static bool mic_front_ready;
 
 static void
 mic_div(volatile uint8_t *base, uint32_t off, uint32_t ratio)
@@ -2267,6 +2299,10 @@ mic_div(volatile uint8_t *base, uint32_t off, uint32_t ratio)
 static void
 dbg_mic_clk(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	if (!mic_pd_open || mic_cmu_vts == NULL || cmu == NULL) {
 		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu first\n");
 		return;
@@ -2310,6 +2346,10 @@ dbg_mic_clk(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 static void
 dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	volatile uint8_t *gpv0;
 	uint32_t c0, c1;
 
@@ -2321,6 +2361,16 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 		mic_sys = (volatile uint8_t *)ml_io_map(VTS_SYS_PHYS, 0x1000);
 		mic_dmic = (volatile uint8_t *)ml_io_map(VTS_DMIC_AUD0_PHYS, 0x1000);
 		mic_slif = (volatile uint8_t *)ml_io_map(VTS_SLIF_PHYS, 0x1000);
+	}
+	for (unsigned i = 0; i < 2; i++) {
+		if (mic_dmic_extra[i] == NULL) {
+			mic_dmic_extra[i] = (volatile uint8_t *)ml_io_map(VTS_DMIC_AUD0_PHYS + (i + 1) * 0x10000, 0x1000);
+		}
+	}
+	if (mic_sys == NULL || mic_dmic == NULL || mic_slif == NULL ||
+	    mic_dmic_extra[0] == NULL || mic_dmic_extra[1] == NULL) {
+		snprintf(out, cap, "mic: cannot map all three DMIC converters\n");
+		return;
 	}
 	gpv0 = redwood_gpio_bank(VTS_GPIO_PHYS, 0x000);
 	if (gpv0 != NULL) {
@@ -2345,10 +2395,16 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	wr(cmu, 0x1844, 0);
 	wr(mic_sys, 0x10, 7);                   /* SEL_PAD_AUD */
 	wr(mic_sys, 0x14, 0x38);                /* SEL_DIV2_CLK */
-	wr(mic_dmic, 0x04, 0x8C63004CU);        /* CONTROL_DMIC_AUD */
-	wr(mic_dmic, 0x08, 0x1717);             /* GAIN_MODE */
-	wr(mic_dmic, 0x10, 0x85);               /* MAX_SCALE_GAIN */
-	wr(mic_dmic, 0x00, 0xA0030000U);        /* enable */
+	/* INPUT_EN=7 needs all three converters producing valid frames, even with only mic 1 powered. */
+	for (unsigned i = 0; i < 3; i++) {
+		volatile uint8_t *d = i == 0 ? mic_dmic : mic_dmic_extra[i - 1];
+
+		wr(d, 0x04, 0x8C63004CU);
+		wr(d, 0x08, 0x1717);
+		wr(d, 0x10, 0x85);
+		wr(d, 0x00, 0xA0030000U);
+	}
+	mic_front_ready = true;
 	wr(mic_slif, 0x104, 0x2017);            /* CONFIG_MASTER */
 	wr(mic_slif, 0x108, 0x2017);            /* CONFIG_SLAVE */
 	wr(mic_slif, 0x110, 0xffffffffU);       /* SAMPLE_PCNT */
@@ -2395,6 +2451,19 @@ static volatile uint8_t *mic_abox;
 static volatile uint32_t *mic_buf;
 static uint64_t mic_buf_phys;
 
+static bool
+mic_capture_buffers(void)
+{
+	if (mic_abox == NULL) {
+		mic_abox = (volatile uint8_t *)ml_io_map(ABOX_PHYS, 0x10000);
+	}
+	if (mic_buf == NULL && buf_phys != 0) {
+		mic_buf_phys = buf_phys - MIC_BUF_BYTES;
+		mic_buf = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)mic_buf_phys, MIC_BUF_BYTES, VM_WIMG_WCOMB);
+	}
+	return mic_abox != NULL && mic_buf != NULL;
+}
+
 static void
 mic_capture_report(uint32_t st0, uint32_t st1, uint32_t ms, char *out, size_t cap)
 {
@@ -2402,7 +2471,7 @@ mic_capture_report(uint32_t st0, uint32_t st1, uint32_t ms, char *out, size_t ca
 	size_t at;
 
 	for (uint32_t i = 0; i < MIC_BUF_BYTES / 4; i++) {
-		int32_t s24 = ((int32_t)mic_buf[i]) >> 8;      /* (24 bits in the top of 32, or in the bottom: both shown below) */
+		int32_t s24 = (int32_t)(mic_buf[i] << 8) >> 8; /* signed 24-bit PCM in the low bits */
 		uint32_t a = (uint32_t)(s24 < 0 ? -s24 : s24);
 
 		peak[i % 8] = a > peak[i % 8] ? a : peak[i % 8];
@@ -2423,16 +2492,19 @@ mic_capture_report(uint32_t st0, uint32_t st1, uint32_t ms, char *out, size_t ca
 static void
 dbg_mic_cap(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	uint32_t ms = n >= 1 && v[0] > 0 && v[0] <= 5000 ? (uint32_t)v[0] : 300, st0, st1;
 
 	if (mic_slif == NULL || buf_phys == 0 || cmu == NULL) {
 		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu, mic.clk, mic.slif first (and the speakers' driver up)\n");
 		return;
 	}
-	if (mic_abox == NULL) {
-		mic_abox = (volatile uint8_t *)ml_io_map(ABOX_PHYS, 0x10000);
-		mic_buf_phys = buf_phys - MIC_BUF_BYTES;        /* under the speakers' 64 KB, in the same loader pool */
-		mic_buf = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)mic_buf_phys, MIC_BUF_BYTES, VM_WIMG_WCOMB);
+	if (!mic_capture_buffers()) {
+		snprintf(out, cap, "mic: cannot map the capture buffer\n");
+		return;
 	}
 	/* UAIF6's clocks: CMU_AUD's BCLK_UAIF6 gate and Q-channel, ABOX's own Q-channel for it */
 	mic_open_reg(cmu, 0x2038);
@@ -2482,6 +2554,10 @@ dbg_mic_peek(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 static void
 dbg_mic_stop(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	if (mic_abox != NULL) {
 		wr(mic_abox, MIC_WDMA4, rd(mic_abox, MIC_WDMA4) & ~1U);
 		wr(mic_abox, MIC_UAIF6_CTRL0, rd(mic_abox, MIC_UAIF6_CTRL0) & ~2U);
@@ -2618,6 +2694,10 @@ dbg_pmic_w(const uint64_t *v, unsigned n, char *out, size_t cap)
 static void
 dbg_mic_vts(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
+	if (!mic_debug_allowed(out, cap)) {
+		return;
+	}
+
 	static volatile uint8_t *sram, *gpr;
 	const uint8_t *fw;
 	uint64_t size = 0;
@@ -2716,6 +2796,244 @@ dbg_snd_prep(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	(void)OSCompareAndSwap(0, 1, &amp_recovery_requested);
 	thread_wakeup((event_t)&ring_head);
 	snprintf(out, cap, "amplifier recovery queued on the audio thread (result in the log)\n");
+}
+
+/* iOS input: 48 kHz, signed 16-bit mono; hardware runs only while the device is open. */
+#define MIC_IOS_RING_FRAMES 16384U
+#define MIC_IOS_PRIME_FRAMES 1024U
+#define MIC_DMA_FRAME_BYTES 32U
+static LCK_GRP_DECLARE(exynos_mic_group, "exynos-mic");
+static LCK_MTX_DECLARE(exynos_mic_lock, &exynos_mic_group);
+static int16_t mic_ios_ring[MIC_IOS_RING_FRAMES];
+static uint32_t mic_ios_head, mic_ios_tail;
+static bool mic_ios_primed;
+static uint64_t mic_ios_produced, mic_ios_dropped;
+static uint32_t mic_saved_cap[sizeof(samsung_abox_cap) / sizeof(samsung_abox_cap[0])];
+static uint32_t mic_saved_route, mic_saved_qch, mic_saved_uaif0, mic_saved_uaif1;
+static uint32_t mic_saved_mux, mic_saved_div;
+static bool mic_saved_valid;
+
+static int
+exynos_mic_open(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	int error = 0;
+
+	lck_mtx_lock(&exynos_mic_lock);
+	if (mic_ios_wants) {
+		error = EBUSY;
+	} else {
+		mic_ios_head = mic_ios_tail = 0;
+		mic_ios_produced = mic_ios_dropped = 0;
+		mic_ios_primed = false;
+		mic_ios_wants = true;
+	}
+	lck_mtx_unlock(&exynos_mic_lock);
+	return error;
+}
+
+static int
+exynos_mic_close(__unused dev_t dev, __unused int flags, __unused int type, __unused struct proc *p)
+{
+	lck_mtx_lock(&exynos_mic_lock);
+	mic_ios_wants = false;
+	lck_mtx_unlock(&exynos_mic_lock);
+	return 0;
+}
+
+static int
+exynos_mic_read(__unused dev_t dev, struct uio *uio, __unused int flags)
+{
+	int16_t samples[512];
+	int error = 0;
+
+	while (uio_resid(uio) >= 2 && error == 0) {
+		uint32_t want = (uint32_t)(uio_resid(uio) / 2), have, take;
+
+		want = want > 512 ? 512 : want;
+		lck_mtx_lock(&exynos_mic_lock);
+		have = mic_ios_head - mic_ios_tail;
+		if (!mic_ios_primed && have >= MIC_IOS_PRIME_FRAMES) {
+			mic_ios_primed = true;
+		}
+		if (!mic_ios_primed) {
+			lck_mtx_unlock(&exynos_mic_lock);
+			break;
+		}
+		take = want < have ? want : have;
+		for (uint32_t i = 0; i < take; i++) {
+			samples[i] = mic_ios_ring[(mic_ios_tail + i) % MIC_IOS_RING_FRAMES];
+		}
+		mic_ios_tail += take;
+		if (take < want) {
+			mic_ios_primed = false;
+		}
+		lck_mtx_unlock(&exynos_mic_lock);
+		if (take == 0) {
+			break;
+		}
+		error = uiomove((caddr_t)samples, (int)(take * 2), uio);
+	}
+	return error;
+}
+
+static const struct cdevsw exynos_mic_cdevsw = {
+	.d_open = exynos_mic_open, .d_close = exynos_mic_close, .d_read = exynos_mic_read, .d_write = eno_rdwrt,
+	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
+	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0
+};
+
+/* ABOX 3.0.1: an eight-bit period index and a twenty-bit byte count, not the older sixteen-byte offset. */
+static uint32_t
+exynos_mic_position(void)
+{
+	uint32_t status = rd(mic_abox, MIC_WDMA4 + 0x30);
+	uint32_t bytes = ((status >> 20) & 0xffU) * (MIC_BUF_BYTES / 2) + (status & 0xfffffU);
+
+	return (bytes % MIC_BUF_BYTES) / MIC_DMA_FRAME_BYTES;
+}
+
+static void
+exynos_mic_stop_path(void)
+{
+	char report[80];
+
+	dbg_mic_stop(NULL, 0, report, sizeof(report));
+	if (mic_slif != NULL) {
+		wr(mic_slif, 0x300, 0);
+		wr(mic_slif, 0x100, 0);
+		wr(mic_slif, 0x114, 0);
+	}
+	for (unsigned i = 0; i < 3; i++) {
+		volatile uint8_t *d = i == 0 ? mic_dmic : mic_dmic_extra[i - 1];
+
+		if (d != NULL) {
+			wr(d, 0, rd(d, 0) & ~(1U << 31));
+		}
+	}
+	if (mic_abox != NULL && mic_saved_valid) {
+		for (unsigned i = 0; i < sizeof(mic_saved_cap) / sizeof(mic_saved_cap[0]); i++) {
+			wr(mic_abox, samsung_abox_cap[i].off, mic_saved_cap[i]);
+		}
+		wr(mic_abox, ABOX_ROUTE_CTRL1, mic_saved_route);
+		wr(mic_abox, ABOX_QCHANNEL_DISABLE, mic_saved_qch);
+		wr(mic_abox, MIC_UAIF6_CTRL1, mic_saved_uaif1);
+		wr(mic_abox, MIC_UAIF6_CTRL0, mic_saved_uaif0 & ~2U);
+	}
+	if (mic_saved_valid) {
+		wr(cmu, 0x1024, mic_saved_mux);
+		wr(cmu, 0x1844, mic_saved_div);
+	}
+	mic_saved_valid = false;
+	/* Touch only the mic-bias pin: the adjacent pins are the live amplifier I2C bus. */
+	volatile uint8_t *bias = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC0, PINCTRL_PERIC0_GPP4);
+	if (bias != NULL) {
+		redwood_gpio_set(bias, 1, 0);
+	}
+	mic_front_ready = false;
+}
+
+static bool
+exynos_mic_start_path(void)
+{
+	char report[1024];
+	uint64_t ms = 1;
+
+	mic_saved_valid = false;
+	if (!mic_capture_buffers()) {
+		return false;
+	}
+	for (unsigned i = 0; i < sizeof(mic_saved_cap) / sizeof(mic_saved_cap[0]); i++) {
+		mic_saved_cap[i] = rd(mic_abox, samsung_abox_cap[i].off);
+	}
+	mic_saved_route = rd(mic_abox, ABOX_ROUTE_CTRL1);
+	mic_saved_qch = rd(mic_abox, ABOX_QCHANNEL_DISABLE);
+	mic_saved_uaif0 = rd(mic_abox, MIC_UAIF6_CTRL0);
+	mic_saved_uaif1 = rd(mic_abox, MIC_UAIF6_CTRL1);
+	mic_saved_mux = rd(cmu, 0x1024);
+	mic_saved_div = rd(cmu, 0x1844);
+	mic_saved_valid = true;
+	mic_front_ready = false;
+	dbg_mic_bus(NULL, 0, report, sizeof(report));
+	dbg_mic_pd(NULL, 0, report, sizeof(report));
+	if (!mic_pd_open) {
+		return false;
+	}
+	dbg_mic_cmu(NULL, 0, report, sizeof(report));
+	dbg_mic_clk(NULL, 0, report, sizeof(report));
+	dbg_mic_slif(NULL, 0, report, sizeof(report));
+	if (!mic_front_ready) {
+		return false;
+	}
+	wr(mic_slif, 0x300, 0); /* no diagnostic AHB dump while iOS uses WDMA4 */
+	dbg_mic_cap(&ms, 1, report, sizeof(report));
+	return (rd(mic_abox, MIC_WDMA4 + 0x30) & (1U << 31)) != 0;
+}
+
+static void
+exynos_mic_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	bool active = false;
+	unsigned failures = 0;
+	uint32_t last = 0;
+	int major;
+
+	mic_worker = current_thread();
+	major = cdevsw_add(-1, &exynos_mic_cdevsw);
+	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0666, "redwood-mic") == NULL) {
+		snd_log("mic: cannot create /dev/redwood-mic\n");
+		return;
+	}
+	snd_log("mic: iOS input available (/dev/redwood-mic, 48 kHz signed 16-bit mono)\n");
+	for (;;) {
+		if (!mic_ios_wants) {
+			if (active) {
+				exynos_mic_stop_path();
+				active = false;
+				mic_hw_busy = false;
+				snd_log("mic: iOS capture stopped (%llu frames, %llu old frames dropped)\n", mic_ios_produced, mic_ios_dropped);
+			}
+			failures = 0;
+			IOSleep(10);
+			continue;
+		}
+		if (!active) {
+			if (!sound_ready || failures >= 3) {
+				IOSleep(10);
+				continue;
+			}
+			mic_hw_busy = true;
+			if (!exynos_mic_start_path()) {
+				exynos_mic_stop_path();
+				mic_hw_busy = false;
+				failures++;
+				snd_log("mic: capture start failed (%u/3)\n", failures);
+				IOSleep(100);
+				continue;
+			}
+			last = exynos_mic_position();
+			active = true;
+			snd_log("mic: iOS capture running (all three DMIC converters, UAIF6, WDMA4)\n");
+		}
+		uint32_t pos = exynos_mic_position();
+		uint32_t frames = (pos + MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES - last) % (MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES);
+
+		__asm__ volatile ("dsb sy" ::: "memory");
+		lck_mtx_lock(&exynos_mic_lock);
+		for (uint32_t i = 0; i < frames; i++) {
+			uint32_t at = (last + i) % (MIC_BUF_BYTES / MIC_DMA_FRAME_BYTES);
+			int16_t sample = (int16_t)((int32_t)(mic_buf[at * 8] << 8) >> 16);
+
+			mic_ios_ring[mic_ios_head++ % MIC_IOS_RING_FRAMES] = sample;
+			mic_ios_produced++;
+		}
+		if (mic_ios_head - mic_ios_tail > MIC_IOS_RING_FRAMES) {
+			mic_ios_dropped += mic_ios_head - mic_ios_tail - MIC_IOS_RING_FRAMES;
+			mic_ios_tail = mic_ios_head - MIC_IOS_RING_FRAMES;
+		}
+		lck_mtx_unlock(&exynos_mic_lock);
+		last = pos;
+		IOSleep(2);
+	}
 }
 
 /*
@@ -2842,6 +3160,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	redwood_guard_configure(true, snd_gain);
 	redwood_guard_attenuation(REDWOOD_GUARD_SILENT);
 	redwood_audio_set_sink("the S20+'s speakers (ABOX UAIF2, CS35L41 x2)", exynos_sink);
+	sound_ready = true;
 	if (snd_tone != 0) {
 		tone_left = snd_tone * 48;
 		last_sound_us = now_us();
@@ -3142,6 +3461,12 @@ redwood_exynos_sound_init(void)
 	started = true;
 	if (kernel_thread_start_priority(sound_thread, NULL, 90, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
+		uint32_t mic_enable = 1;
+
+		PE_parse_boot_argn("mic_ios", &mic_enable, sizeof(mic_enable));
+		if (mic_enable != 0 && kernel_thread_start_priority(exynos_mic_thread, NULL, 80, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		}
 	} else {
 		started = false;
 	}
@@ -3153,6 +3478,16 @@ redwood_exynos_sound_quiesce(void)
 {
 	if (!started) {
 		return;
+	}
+	/* Other cores are stopped here; no sleeps, locks or console output. */
+	mic_ios_wants = false;
+	if (mic_abox != NULL) {
+		wr(mic_abox, MIC_WDMA4, rd(mic_abox, MIC_WDMA4) & ~1U);
+		wr(mic_abox, MIC_UAIF6_CTRL0, rd(mic_abox, MIC_UAIF6_CTRL0) & ~2U);
+	}
+	if (mic_slif != NULL && mic_pd_open) {
+		wr(mic_slif, 0x300, 0);
+		wr(mic_slif, 0x100, 0);
 	}
 	if (gpb2 != NULL) {
 		for (unsigned i = 0; i < 2; i++) {
