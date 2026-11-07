@@ -308,6 +308,26 @@ bt_irq(__unused void *context, __unused uint32_t intid)
  * is not 0; one with no answer after 500 ms is answered here (Command Complete, status 0: bt_fake=1, `bt.fake 0|1`)
  * and logged, so that bluetoothd goes on.
  */
+/*
+ * The last HCI packets both ways (B, 2026-11-07: the chip falls silent ~4 s into headphone audio, with no vendor
+ * command near): direction, type, the first 12 bytes, length, time -- `bt.trace` prints them (newest last).
+ */
+#define TRACE 48
+static struct { uint64_t at; uint16_t len; uint8_t dir, b[13]; } trace[TRACE];
+static uint32_t trace_n;
+
+static void
+trace_add(uint8_t dir, const uint8_t *p, uint32_t n, uint32_t len)
+{
+	uint32_t i = trace_n++ % TRACE;
+
+	trace[i].at = mach_absolute_time();
+	trace[i].dir = dir;
+	trace[i].len = (uint16_t)(len > 0xffff ? 0xffff : len);
+	bzero(trace[i].b, sizeof(trace[i].b));
+	memcpy(trace[i].b, p, n < 13 ? n : 13);
+}
+
 #define PENDING 8
 /*
  * Vendor commands kept from the chip and answered here (Command Complete, success): the chip (Samsung's patchram)
@@ -349,6 +369,11 @@ rx_parse(uint8_t c)
 		if (rxp.got == hl) {
 			rxp.len = rxp.type == 0x04 ? rxp.hdr[1] : rxp.type == 0x02 ? (uint32_t)(rxp.hdr[2] | (rxp.hdr[3] << 8)) :
 			    rxp.hdr[2];
+			{
+				uint8_t t[5] = { rxp.type, rxp.hdr[0], rxp.hdr[1], rxp.hdr[2], rxp.hdr[3] };
+
+				trace_add('<', t, 1 + hl, rxp.len);
+			}
 			rxp.got = 0;
 			rxp.state = rxp.len != 0 ? 2 : 0;
 		}
@@ -709,6 +734,32 @@ bt_bringup(void)
 #define TIOCSETAF_64    0x80487416u
 
 static void
+dbg_bt_trace(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	size_t at = 0;
+	uint64_t now = mach_absolute_time();
+	uint32_t first = trace_n > TRACE ? trace_n - TRACE : 0;
+
+	for (uint32_t k = first; k < trace_n && at + 80 < cap; k++) {
+		uint32_t i = k % TRACE;
+		uint64_t ns;
+
+		absolutetime_to_nanoseconds(now - trace[i].at, &ns);
+		at += (size_t)snprintf(out + at, cap - at, "%6llu ms %c %4u:", ns / 1000000, trace[i].dir, trace[i].len);
+		for (unsigned j = 0; j < 13 && at + 4 < cap; j++) {
+			at += (size_t)snprintf(out + at, cap - at, " %02x", trace[i].b[j]);
+		}
+		if (at + 2 < cap) {
+			out[at++] = '\n';
+			out[at] = 0;
+		}
+	}
+	if (at == 0) {
+		snprintf(out, cap, "bt: no packets yet\n");
+	}
+}
+
+static void
 dbg_bt_block(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	size_t at;
@@ -797,6 +848,7 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 	 * bluetoothd's vendor commands (OGF 0x3f) to the log (B, 2026-11-07: the chip fell silent when audio was routed
 	 * to headphones); its UART speed change (0xfc18) kept at our speed, since the UART's speed is ours (bt_setopt)
 	 */
+	trace_add('>', (const uint8_t *)mbuf_data(m), (uint32_t)mbuf_len(m), (uint32_t)mbuf_pkthdr_len(m));
 	if (mbuf_len(m) >= 4 && ((uint8_t *)mbuf_data(m))[0] == 0x01) {
 		uint8_t *h = (uint8_t *)mbuf_data(m);
 		uint16_t op = (uint16_t)(h[1] | (h[2] << 8));
@@ -932,6 +984,7 @@ redwood_exynos_bt_init(void)
 
 	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
 	(void)PE_parse_boot_argn("bt_fake", &bt_fake, sizeof(bt_fake));
+	redwood_dbgport_add("bt.trace", ": the last 48 HCI packets both ways (ms ago, > to the chip, < from it, length, bytes)", dbg_bt_trace);
 	redwood_dbgport_add("bt.block", "[OP ...]: vendor commands kept from the chip and answered here (0: none)", dbg_bt_block);
 	redwood_dbgport_add("bt.fake", "0|1: answer vendor commands the chip leaves unanswered (500 ms)", dbg_bt_fake);
 	redwood_dbgport_add("bt.baud", "[N]: the BT UART's speed now and at the next bring-up (killall bluetoothd), counters", dbg_bt_baud);
