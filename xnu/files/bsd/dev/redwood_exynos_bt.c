@@ -314,7 +314,7 @@ bt_irq(__unused void *context, __unused uint32_t intid)
  */
 #define TRACE 48
 static struct { uint64_t at; uint16_t len; uint8_t dir, b[13]; } trace[TRACE];
-static uint32_t trace_n, trace_frozen;  /* frozen at the chip's first crash-dump event (vendor event 0x1b) */
+static uint32_t trace_n, trace_frozen, parse_pos;  /* frozen at the chip's first crash-dump event (vendor event 0x1b) */
 
 static void
 trace_add(uint8_t dir, const uint8_t *p, uint32_t n, uint32_t len)
@@ -367,9 +367,43 @@ pending_answered(uint16_t op, uint8_t status, const char *how)
 }
 
 /* one byte of what goes to the client: an H4 packet's type, header and body */
-static void
-rx_parse(uint8_t c)
+/*
+ * ACL fragments (B, 2026-11-07: the chip's firmware crashed on bluetoothd's ~630-byte audio packets, never on its
+ * 63-byte ones): with bt_frag=N (`bt.frag N`) an ACL packet of more than N bytes goes to the chip as fragments of at
+ * most N (HCI's own continuation, PB 01); each takes a buffer; the chip's completions are given back to bluetoothd per
+ * its own packets (the fragments of each remembered here).
+ */
+static uint32_t bt_frag = 339;   /* (2-DH3 payload; 0: whole packets) */
+#define FRAGQ 64
+static uint8_t fragq[FRAGQ];
+static volatile uint32_t fragq_head, fragq_tail, frag_done;
+
+/* k fragments completed: how many of bluetoothd's packets that completes */
+static uint32_t
+frags_completed(uint32_t k)
 {
+	uint32_t whole = 0;
+
+	if (fragq_head == fragq_tail) {
+		return k;                       /* nothing remembered: as they are */
+	}
+	frag_done += k;
+	while (fragq_head != fragq_tail && frag_done >= fragq[fragq_tail % FRAGQ]) {
+		frag_done -= fragq[fragq_tail % FRAGQ];
+		fragq_tail++;
+		whole++;
+	}
+	if (fragq_head == fragq_tail) {
+		frag_done = 0;
+	}
+	return whole;
+}
+
+static void
+rx_parse(uint8_t *cp)
+{
+	uint8_t c = *cp;
+
 	switch (rxp.state) {
 	case 0:                                 /* the type */
 		rxp.type = c;
@@ -426,14 +460,16 @@ rx_parse(uint8_t c)
 			}
 		}
 		if (rxp.type == 0x04 && rxp.hdr[0] == 0x13) {          /* Number Of Completed Packets: n, (handle, count)... */
-			static uint8_t lo;
+			static uint8_t *lop;
 
 			if (rxp.got >= 1 && ((rxp.got - 1) % 4) == 2) {
-				lo = c;
-			} else if (rxp.got >= 1 && ((rxp.got - 1) % 4) == 3) {
-				uint32_t done = (uint32_t)(lo | (c << 8));
+				lop = cp;
+			} else if (rxp.got >= 1 && ((rxp.got - 1) % 4) == 3 && lop != NULL) {
+				uint32_t done = (uint32_t)(*lop | (c << 8)), whole = frags_completed(done);
 
 				acl_out = acl_out > done ? acl_out - done : 0;
+				*lop = (uint8_t)whole;  /* (bluetoothd's packets, not the fragments) */
+				*cp = (uint8_t)(whole >> 8);
 				thread_wakeup((event_t)&acl_out);
 			}
 		}
@@ -499,11 +535,18 @@ bt_deliver(void)
 {
 	uint32_t unit = bt_unit;
 
-	while (unit != 0 && ring_count() > 0) {
-		uint32_t at = ring_tail % RING, n = ring_count();
-		errno_t e;
+	if (unit != 0) {
+		uint32_t head = ring_head;
 
-		__asm__ volatile ("dmb ish" ::: "memory");      /* the count before the bytes it counts */
+		__asm__ volatile ("dmb ish" ::: "memory");
+		while (parse_pos != head) {             /* parsed (and completions rewritten) before they go */
+			rx_parse(&ring[parse_pos % RING]);
+			parse_pos++;
+		}
+	}
+	while (unit != 0 && ring_count() > 0 && ring_tail != parse_pos) {
+		uint32_t at = ring_tail % RING, n = parse_pos - ring_tail;
+		errno_t e;
 
 		if (n > RING - at) {
 			n = RING - at;
@@ -514,9 +557,6 @@ bt_deliver(void)
 		e = ctl_enqueuedata(bt_ctl, unit, ring + at, n, 0);
 		if (e != 0) {
 			break;                          /* (full: the rest the next time round) */
-		}
-		for (uint32_t k = 0; k < n; k++) {
-			rx_parse(ring[at + k]);
 		}
 		ring_tail += n;
 	}
@@ -831,6 +871,16 @@ dbg_bt_trace(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 }
 
 static void
+dbg_bt_frag(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1) {
+		bt_frag = (uint32_t)(v[0] > 1021 ? 1021 : v[0]);
+	}
+	snprintf(out, cap, "bt: ACL packets to the chip in fragments of at most %u bytes (0: whole); %u remembered\n",
+	    bt_frag, fragq_head - fragq_tail);
+}
+
+static void
 dbg_bt_acl(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	if (n >= 1) {
@@ -913,6 +963,8 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 	bzero(&rxp, sizeof(rxp));
 	bzero(pending, sizeof(pending));
 	acl_max = acl_out = 0;
+	fragq_head = fragq_tail = frag_done = 0;
+	parse_pos = ring_tail;
 	bt_unit = sac->sc_unit;
 	bt_log("bt: %s: a client connected (unit %u)\n", CTL_NAME, sac->sc_unit);
 	return 0;
@@ -927,6 +979,37 @@ bt_disconnect(__unused kern_ctl_ref ref, u_int32_t unit, __unused void *unitinfo
 	bt_log("bt: %s: the client went (unit %u; %llu bytes in, %llu out, %llu dropped, %llu overruns)\n", CTL_NAME, unit,
 	    rx_bytes, tx_bytes, rx_dropped, rx_overruns);
 	return 0;
+}
+
+/* one of the chip's ACL buffers, waiting for one to be freed (up to 1 s) */
+static void
+acl_take(void)
+{
+	uint64_t deadline, lim;
+
+	if (acl_max == 0) {
+		return;
+	}
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &lim);
+	deadline = mach_absolute_time() + lim;
+	if (acl_out >= acl_max) {
+		acl_waits++;
+	}
+	while (acl_out >= acl_max) {
+		if (mach_absolute_time() > deadline) {
+			acl_forced++;
+			acl_out = 0;            /* (completions lost: start counting again) */
+			bt_log("bt: no ACL buffer freed in 1 s: counting again (%u times)\n", acl_forced);
+			break;
+		}
+		assert_wait_timeout((event_t)&acl_out, THREAD_UNINT, 5, NSEC_PER_MSEC);
+		if (acl_out < acl_max) {
+			clear_wait(current_thread(), THREAD_AWAKENED);
+			break;
+		}
+		thread_block(THREAD_CONTINUE_NULL);
+	}
+	acl_out++;
 }
 
 static errno_t
@@ -979,29 +1062,41 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 			}
 		}
 	}
-	if (mbuf_len(m) >= 1 && ((uint8_t *)mbuf_data(m))[0] == 0x02 && acl_max != 0) {
-		uint64_t deadline, now = mach_absolute_time(), lim;
+	if (mbuf_len(m) >= 5 && ((uint8_t *)mbuf_data(m))[0] == 0x02) {
+		static uint8_t pkt[4 + 1100];
+		uint32_t total = (uint32_t)mbuf_pkthdr_len(m), len, at, nfrag = 0;
+		uint16_t hh;
 
-		nanoseconds_to_absolutetime(NSEC_PER_SEC, &lim);
-		deadline = now + lim;
-		if (acl_out >= acl_max) {
-			acl_waits++;
+		if (total > sizeof(pkt)) {
+			total = sizeof(pkt);
 		}
-		while (acl_out >= acl_max) {
-			if (mach_absolute_time() > deadline) {
-				acl_forced++;
-				acl_out = 0;            /* (completions lost: start counting again) */
-				bt_log("bt: no ACL buffer freed in 1 s: counting again (%u times)\n", acl_forced);
-				break;
-			}
-			assert_wait_timeout((event_t)&acl_out, THREAD_UNINT, 5, NSEC_PER_MSEC);
-			if (acl_out < acl_max) {
-				clear_wait(current_thread(), THREAD_AWAKENED);
-				break;
-			}
-			thread_block(THREAD_CONTINUE_NULL);
+		(void)mbuf_copydata(m, 0, total, pkt);
+		mbuf_freem(m);
+		hh = (uint16_t)(pkt[1] | (pkt[2] << 8));
+		len = (uint32_t)(pkt[3] | (pkt[4] << 8));
+		if (len + 5 > total) {
+			len = total - 5;
 		}
-		acl_out++;
+		/* the fragments: the first keeps its PB flags, the rest are continuations (PB 01) */
+		at = 0;
+		do {
+			uint32_t n = (bt_frag != 0 && len - at > bt_frag) ? bt_frag : len - at;
+			uint16_t h2 = at == 0 ? hh : (uint16_t)((hh & 0xcfff) | 0x1000);
+			uint8_t hdr[5] = { 0x02, (uint8_t)h2, (uint8_t)(h2 >> 8), (uint8_t)n, (uint8_t)(n >> 8) };
+
+			acl_take();
+			uart_write(hdr, 5);
+			uart_write(pkt + 5 + at, n);
+			at += n;
+			nfrag++;
+		} while (at < len);
+		if (bt_frag != 0 || fragq_head != fragq_tail) {
+			if (fragq_head - fragq_tail < FRAGQ) {
+				fragq[fragq_head % FRAGQ] = (uint8_t)nfrag;
+				fragq_head++;
+			}
+		}
+		return 0;
 	}
 	for (mbuf_t n = m; n != NULL; n = mbuf_next(n)) {
 		if (mbuf_len(n) > 0) {
@@ -1097,6 +1192,8 @@ redwood_exynos_bt_init(void)
 	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
 	(void)PE_parse_boot_argn("bt_fake", &bt_fake, sizeof(bt_fake));
 	(void)PE_parse_boot_argn("bt_acl_max", &bt_acl_max, sizeof(bt_acl_max));
+	(void)PE_parse_boot_argn("bt_frag", &bt_frag, sizeof(bt_frag));
+	redwood_dbgport_add("bt.frag", "[N]: ACL packets to the chip in fragments of at most N bytes (0: whole)", dbg_bt_frag);
 	redwood_dbgport_add("bt.acl", "[N]: ACL flow control kept for the chip: its buffers (N overrides; any N unfreezes the trace)", dbg_bt_acl);
 	redwood_dbgport_add("bt.trace", ": the last 48 HCI packets both ways (ms ago, > to the chip, < from it, length, bytes)", dbg_bt_trace);
 	redwood_dbgport_add("bt.block", "[OP ...]: vendor commands kept from the chip and answered here (0: none)", dbg_bt_block);
