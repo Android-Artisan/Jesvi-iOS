@@ -37,6 +37,13 @@ extern "C" {
 #include <console/video_console.h>
 extern struct vc_info vinfo;            /* the boot framebuffer, as the text console knows it */
 }
+extern "C" {
+typedef void (*redwood_dbgport_fn)(const uint64_t *v, unsigned n, char *out, size_t cap);  /* (bsd/sys/redwood_dbgport.h) */
+int redwood_dbgport_add(const char *name, const char *help, redwood_dbgport_fn fn);
+void dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap);
+}
+class IOMobileFramebuffer;
+static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.mode */
 
 #include <IOKit/IOBufferMemoryDescriptor.h>
 
@@ -715,6 +722,15 @@ public:
 	bool dsimPacket(uint8_t type, const uint8_t * bytes, uint32_t length);
 	bool panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_t offset);
 	bool modeSetFhd120(void);
+	/* live display mode (B, 2026-11-07): fb.mode N, run on the presenter thread between two frames */
+	uint32_t        fModeAsk;               /* the mode modeSetFhd120 sets: 1 FHD+ 120, 2 FHD+ 60 (boot: fb_mode) */
+	volatile int    fModeWant;              /* -1: nothing asked */
+	bool            fModeLpRef;             /* fb.mode N 1: as fb_mode_lpref=1 */
+	uint32_t        fModeLpVal;             /* fb.mode N 1 L: the underrun reference: 0 Samsung's, 1 as found, else L */
+	volatile bool   fModeDone;
+	char            fModeReport[1536];
+	void modeLive(int mode);
+	void modeCounters(const char * when, char * out, size_t cap);
 	int dsimRead(uint8_t command, uint8_t * out, uint32_t max);
 	void panelReport(const char * when);
 	bool blSend(uint32_t dbv, uint32_t aor);
@@ -913,6 +929,10 @@ IOMobileFramebuffer::start(IOService * provider)
 		}
 	}
 
+	fModeWant = -1;
+	gFbLive = this;
+	redwood_dbgport_add("fb.mode", "[1|2 [lpref]]: the display mode (1 FHD+ 120 Hz, 2 FHD+ 60 Hz) set live between two frames, "
+	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
 	setProperty("RedwoodWaitsForGPU", kOSBooleanTrue);
@@ -1254,6 +1274,7 @@ IOMobileFramebuffer::dpuProbe(void)
 	if (gScaler && !gFlip) {
 		fScanCh = ch;
 		if (gFbMode == 1 || gFbMode == 2) {
+			fModeAsk = gFbMode;
 			(void) modeSetFhd120();         /* the scaler's target follows it (fPanelWidth/Height) */
 		}
 		scalerSetup();
@@ -2887,8 +2908,20 @@ IOMobileFramebuffer::presenter(void)
 
 	for (;;) {
 		IOLockLock(fSwapLock);
-		while (fSwapsWaiting == 0) {
+		while (fSwapsWaiting == 0 && fModeWant < 0) {
 			IOLockSleep(fSwapLock, fSwap, THREAD_UNINT);
+		}
+		if (fModeWant >= 0) {
+			int mode = fModeWant;
+
+			IOLockUnlock(fSwapLock);
+			modeLive(mode);                 /* (between two frames: nothing of a frame is in flight) */
+			IOLockLock(fSwapLock);
+			fModeWant = -1;
+			fModeDone = true;
+			IOLockWakeup(fSwapLock, (void *) (uintptr_t) &fModeDone, false);
+			IOLockUnlock(fSwapLock);
+			continue;
 		}
 		memcpy(swap, fSwap[fSwapFirst], SWAP_SIZE);
 		memcpy(surfaces, fSwapSurfaces[fSwapFirst], sizeof(surfaces));
@@ -4112,7 +4145,7 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		uint32_t v = dpuRead(fDsim, dsim[i].off) & dsim[i].mask;
 
 		if (v != (dsim[i].native & dsim[i].mask)) {
-			if (gFbModeLpRef && dsim[i].off == DSIM_UNDERRUN_CTRL_R) {
+			if ((gFbModeLpRef || fModeLpRef) && dsim[i].off == DSIM_UNDERRUN_CTRL_R) {
 				fbSay("fb_mode: DSIM %#x (underrun reference) reads %#x, not the dtbo's %#x: let through "
 				    "(fb_mode_lpref=1; Samsung writes it at every mode set), %#x will be written\n", dsim[i].off, v,
 				    dsim[i].native, dsim[i].fhd);
@@ -4200,7 +4233,7 @@ IOMobileFramebuffer::modeSetFhd120(void)
 		 * (no AID/OSC/VFP/LTPS/FPS: those are the 120 HS half). Every 1080x2400 mode of the dtbo has the same DSIM and
 		 * DECON values (cmd_lp_ref 0x284d), so this tells which half garbled the first fb_mode=1 picture.
 		 */
-		bool hs = gFbMode == 1;
+		bool hs = fModeAsk == 1;
 
 		ok = panelWriteAt(key1On, sizeof(key1On), 0) && panelWriteAt(key2On, sizeof(key2On), 0) &&
 		    (!hs || panelWriteAt(aidHs, sizeof(aidHs), 0x06));
@@ -4221,20 +4254,126 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	}
 	/* DSIM, then DECON (dsim_reg_set_mres, decon_reg_set_mres), then one shadow update */
 	for (unsigned i = 0; i < sizeof(dsim) / sizeof(dsim[0]); i++) {
-		dpuWrite(fDsim, dsim[i].off, (dpuRead(fDsim, dsim[i].off) & ~dsim[i].mask) | (dsim[i].fhd & dsim[i].mask));
+		uint32_t fhd = dsim[i].fhd;
+
+		/* fb.mode N 1 L: the underrun reference left as found (L=1) or written as L (Samsung's 0x284d assumes Samsung's
+		 * DSIM clock; S-Boot's 0x138b for the dtbo's 0x1e6e says its clock is ~0.64 of that) */
+		if (dsim[i].off == DSIM_UNDERRUN_CTRL_R && fModeLpVal == 1) {
+			continue;
+		}
+		if (dsim[i].off == DSIM_UNDERRUN_CTRL_R && fModeLpVal > 1) {
+			fhd = (dsim[i].fhd & ~dsim[i].mask) | (fModeLpVal & dsim[i].mask);
+		}
+		dpuWrite(fDsim, dsim[i].off, (dpuRead(fDsim, dsim[i].off) & ~dsim[i].mask) | (fhd & dsim[i].mask));
 	}
 	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]) && deconModeRegs[i].mask; i++) {
 		dpuWrite(fDecon, deconModeRegs[i].off,
 		    (dpuRead(fDecon, deconModeRegs[i].off) & ~deconModeRegs[i].mask) | (deconModeRegs[i].fhd & deconModeRegs[i].mask));
 	}
 	dpuWrite(fDecon, 0x100C + 0x30 * (uint32_t) fWin, (2399u << 16) | 1079u);       /* WIN_END_POSITION */
+	/*
+	 * (B, 2026-11-07) What feeds the window must fit 1080x2400 from the very first frame: before, the window was cut to
+	 * 1080x2400 while its channel still delivered 1440x3200 (S-Boot's channel at boot; the scaler's channel 5, scaled to
+	 * 1440x3200, live), DECON refused to start a frame (TE kept coming, the frame count stopped), and the scaler's
+	 * "from the next frame" never came. Cropped / re-scaled in the same update.
+	 */
+	{
+		volatile uint8_t * dppS = (volatile uint8_t *) ml_io_map((vm_offset_t) (DPU_DPP_PHYS + 0x1000ULL * (fScanCh + 1)), 0x1000);
+
+		if (fDma != NULL) {
+			dpuWrite(fDma, IDMA_IMG_SIZE_REG, (2400u << 16) | 1080u);
+		}
+		if (dppS != NULL) {
+			dpuWrite(dppS, DPP_IMG_SIZE_REG, (2400u << 16) | 1080u);
+			dpuWrite(dppS, DPP_SCALED_IMG_SIZE_REG, (2400u << 16) | 1080u);
+		}
+		if (fScalerReady && fDpp5 != NULL) {
+			dpuWrite(fDpp5, DPP_SCALED_IMG_SIZE_REG, (2400u << 16) | 1080u);
+			dpuWrite(fDpp5, DPP_MAIN_H_RATIO_REG, (uint32_t) (((uint64_t) fWidth << 20) / 1080u));
+			dpuWrite(fDpp5, DPP_MAIN_V_RATIO_REG, (uint32_t) (((uint64_t) fHeight << 20) / 2400u));
+		}
+	}
 	dpuWrite(fDecon, DECON_SHADOW_UPDATE, DECON_SHADOW_GLOBAL | (1u << fWin));
 	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
 	fPanelWidth = 1080;
 	fPanelHeight = 2400;
-	gModeHz = gFbMode == 1 ? 120 : 60;            /* fb_mode=2: the resolution alone, at 60 Hz */
+	gModeHz = fModeAsk == 1 ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
 	fbSay("fb_mode: 1080x2400 at %u Hz set (panel commands %s); DSIM RESOL %#x THRESHOLD %u SLICE01 %#x; %u DECON registers\n",
 	    gModeHz, ok ? "all sent" : "NOT ALL SENT", dpuRead(fDsim, DSIM_RESOL_R), dpuRead(fDsim, DSIM_THRESHOLD_R),
 	    dpuRead(fDsim, DSIM_SLICE01_R), ndecon);
 	return ok;
+}
+
+
+/* ---- live display mode (B, 2026-11-07) ------------------------------------------------------------------------------ */
+
+/* DECON's TE and frame counters over 100 ms, and the registers that say whether a frame can start */
+void
+IOMobileFramebuffer::modeCounters(const char * when, char * out, size_t cap)
+{
+	uint32_t te0, fc0, te1, fc1;
+	size_t at = strlen(out);
+
+	if (fDecon == NULL || fDsim == NULL) {
+		snprintf(out + at, cap - at, "%s: DECON/DSIM not mapped\n", when);
+		return;
+	}
+	te0 = dpuRead(fDecon, DECON_TE_COUNT);
+	fc0 = dpuRead(fDecon, DECON_FRAME_COUNT);
+	IOSleep(100);
+	te1 = dpuRead(fDecon, DECON_TE_COUNT);
+	fc1 = dpuRead(fDecon, DECON_FRAME_COUNT);
+	snprintf(out + at, cap - at, "%s: in 100 ms %u TE pulses, %u frames; DECON global %#x trig %#x shadow %#x int-pending %#x "
+	    "int-enable %#x; DSIM intsrc %#x fifoctrl %#x link1 %#x config %#x; %ux%u\n", when, te1 - te0, fc1 - fc0,
+	    dpuRead(fDecon, DECON_GLOBAL_CONTROL), dpuRead(fDecon, DECON_TRIG_CONTROL), dpuRead(fDecon, DECON_SHADOW_UPDATE),
+	    dpuRead(fDecon, DECON_INT_PENDING), dpuRead(fDecon, DECON_INT_ENABLE), dpuRead(fDsim, DSIM_INTSRC),
+	    dpuRead(fDsim, DSIM_FIFOCTRL), dpuRead(fDsim, DSIM_LINK_STATUS1), dpuRead(fDsim, DSIM_CONFIG), fPanelWidth, fPanelHeight);
+}
+
+void
+IOMobileFramebuffer::modeLive(int mode)
+{
+	fModeReport[0] = 0;
+	modeCounters("before", fModeReport, sizeof(fModeReport));
+	if (mode == 1 || mode == 2) {
+		bool ok;
+
+		if (fPanelWidth == 1080) {
+			strlcat(fModeReport, "already 1080x2400 (going back to 1440x3200 live is not written yet)\n", sizeof(fModeReport));
+			return;
+		}
+		fModeAsk = (uint32_t) mode;
+		ok = modeSetFhd120();
+		strlcat(fModeReport, ok ? "switched (see the fb_mode lines in the log)\n" : "NOT switched (see the fb_mode lines)\n",
+		    sizeof(fModeReport));
+		modeCounters("after", fModeReport, sizeof(fModeReport));
+		IOSleep(400);
+		modeCounters("0.5 s later", fModeReport, sizeof(fModeReport));
+	}
+}
+
+extern "C" void
+dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap)
+{
+	IOMobileFramebuffer * fb = gFbLive;
+	AbsoluteTime deadline;
+
+	if (fb == NULL) {
+		snprintf(out, cap, "fb.mode: no framebuffer\n");
+		return;
+	}
+	IOLockLock(fb->fSwapLock);
+	fb->fModeDone = false;
+	fb->fModeLpRef = n > 1 && v[1] != 0;
+	fb->fModeLpVal = n > 2 ? (uint32_t) v[2] : 0;
+	fb->fModeWant = n > 0 ? (int) v[0] : 0;
+	IOLockWakeup(fb->fSwapLock, fb->fSwap, false);
+	clock_interval_to_deadline(5000, kMillisecondScale, &deadline);
+	while (!fb->fModeDone) {
+		if (IOLockSleepDeadline(fb->fSwapLock, (void *) (uintptr_t) &fb->fModeDone, deadline, THREAD_UNINT) == THREAD_TIMED_OUT) {
+			break;
+		}
+	}
+	IOLockUnlock(fb->fSwapLock);
+	snprintf(out, cap, "%s", fb->fModeDone ? fb->fModeReport : "fb.mode: the presenter did not answer in 5 s\n");
 }
