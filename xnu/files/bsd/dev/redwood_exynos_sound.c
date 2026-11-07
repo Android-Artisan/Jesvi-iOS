@@ -64,6 +64,7 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
     thread_t *new_thread);
 extern void IOSleep(unsigned int milliseconds);
 extern void loader_log_line(const char *line);
+extern boolean_t ml_get_interrupts_enabled(void);
 extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size);
 extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
 extern int redwood_pmic_read(uint8_t type, uint8_t reg, uint8_t *value);
@@ -283,7 +284,9 @@ snd_log(const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(line, sizeof(line), fmt, ap);
 	va_end(ap);
-	printf("%s", line);
+	if (ml_get_interrupts_enabled()) {         /* (not from loader_return()'s quiesce with interrupts off) */
+		printf("%s", line);
+	}
 	loader_log_line(line);
 }
 
@@ -3465,6 +3468,52 @@ dbg_snd_health(__unused const uint64_t *v, __unused unsigned n, char *out, size_
 	    mic_hw_busy ? " (capturing)" : "", snd_debug ? "on" : "off");
 }
 
+/*
+ * Why the last run ended, at every boot (B, 2026-11-07: the lock-screen restarts were the main PMIC's WTSR pulling
+ * the SoC's reset pin -- RST_STAT PINRESET, PWRONSRC WTSR, OFFSRC 0 -- with nothing in the kernel log). Names from
+ * Samsung's sec_debug_reset_reason.c (Exynos 9830 RST_STAT, S2MPS19 PWRONSRC 0x10 / OFFSRC 0x11).
+ */
+static void
+reset_reason_log(void)
+{
+	static const char *const rst[32] = {
+		"CL0_DBGRST0", "CL0_DBGRST1", "CL0_DBGRST2", "CL0_DBGRST3", "CL1_DBGRST0", "CL1_DBGRST1", "CL2_DBGRST0",
+		"CL2_DBGRST1", NULL, NULL, NULL, NULL, NULL, NULL, "CL2_WARMRST0", "CL2_WARMRST1", "PINRESET", NULL, NULL, NULL,
+		"APM_SDTRESET", "APM_SYSRESET", "VTS_WDTRESET", "CL2_WDTRESET", "CL0_WDTRESET", "AUD_WDTRESET", "SSS_WDTRESET",
+		"DBGCORE_WDTRESET", "WRESET", "SWRESET", "PORESET", NULL
+	};
+	static const char *const on[8] = { "PWRON", "JIGONB", "ACOKB", "MRST", "ALARM1", "ALARM2", "SMPL", "WTSR" };
+	static const char *const off[8] = { "SUB_OFF", "TSD", "TIMEOUT", "LDO_SYS_OK", "PWRHOLD", "RSVD5", "RSVD6", "UVLOB" };
+	volatile uint8_t *p = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x1000);
+	uint32_t st = p != NULL ? rd(p, 0x404) : 0;
+	uint8_t onsrc = 0, offsrc = 0;
+	int a = redwood_pmic_read(1, 0x10, &onsrc), b = redwood_pmic_read(1, 0x11, &offsrc);
+	char line[256];
+	size_t at = (size_t)snprintf(line, sizeof(line), "reset: last run ended by RST_STAT %#x (", st);
+
+	for (unsigned i = 0; i < 32 && at < sizeof(line); i++) {
+		if ((st >> i) & 1) {
+			at += (size_t)snprintf(line + at, sizeof(line) - at, " %s", rst[i] ? rst[i] : "?");
+		}
+	}
+	at += (size_t)snprintf(line + at, sizeof(line) - at, " ); PMIC on %#x (", a == 0 ? onsrc : 0xff);
+	for (unsigned i = 0; i < 8 && a == 0 && at < sizeof(line); i++) {
+		if ((onsrc >> i) & 1) {
+			at += (size_t)snprintf(line + at, sizeof(line) - at, " %s", on[i]);
+		}
+	}
+	at += (size_t)snprintf(line + at, sizeof(line) - at, " ) off %#x (", b == 0 ? offsrc : 0xff);
+	for (unsigned i = 0; i < 8 && b == 0 && at < sizeof(line); i++) {
+		if ((offsrc >> i) & 1) {
+			at += (size_t)snprintf(line + at, sizeof(line) - at, " %s", off[i]);
+		}
+	}
+	if (at < sizeof(line)) {
+		snprintf(line + at, sizeof(line) - at, " )\n");
+	}
+	snd_log("%s", line);
+}
+
 /* ---- entry points --------------------------------------------------------------------------------------------- */
 
 void
@@ -3476,6 +3525,7 @@ redwood_exynos_sound_init(void)
 	size_t pool_size;
 	thread_t thread;
 
+	reset_reason_log();
 	{
 		/* whatever the boot-args: a Calliope left running by the last run is stopped first */
 		volatile uint8_t *p = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);

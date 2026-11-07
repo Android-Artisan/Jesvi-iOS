@@ -96,10 +96,15 @@ static const struct {
 } domains[] = {
 	/* x1slte (2026-11-06): the tops are Samsung's (dtb cpufreq domains: A55 2002, A76 2504 as sold, M5 2730; gpu_max_clock
 	 * 800 MHz); the thermal steps below cap them as Samsung's thermal zones do */
-	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 86, 96 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 86, 96 },
-	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 86, 96 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 88, 100 },
+	/*
+	 * (B, 2026-11-07: 86/96 read once a second let the big cluster reach 108-111 C during boot and the SoC's thermal
+	 * trip reset the phone through the PMIC -- RST_STAT PINRESET, PWRONSRC WTSR -- 2-3 times after a cold start. Now
+	 * 80/90 read every 250 ms and let go 10 degrees below the mark.)
+	 */
+	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 80, 90 },
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 80, 90 },
+	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 80, 90 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 92 },
 	{ D_MIF, "mif",       "dvfs_mif", 2730000, 0,       0,       -1, 0, 0 },  /* LPDDR5 top (Samsung mode_1); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
@@ -805,10 +810,10 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				gov_changes++;
 			}
 		}
-		if (tick % (1000 / GOV_TICK_MS) != 0) {
+		if (tick % (250 / GOV_TICK_MS) != 0) {
 			continue;
 		}
-		/* the temperatures and the thermal steps: every second */
+		/* the temperatures and the thermal steps: every 250 ms (once a second was too slow for the M5 cores) */
 		hot = 0;
 		for (unsigned z = 0; z < 4; z++) {
 			temp[z] = ch_tmu.len != 0 ? read_temp(z) : -1;
@@ -854,9 +859,9 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				want = 2;
 			} else if (t >= s1 && want < 1) {
 				want = 1;
-			} else if (want == 2 && t < s2 - 6) {
-				want = t >= s1 ? 1 : 0;
-			} else if (want == 1 && t < s1 - 6) {
+			} else if (want == 2 && t < s2 - 10) {
+				want = t >= s1 - 10 ? 1 : 0;
+			} else if (want == 1 && t < s1 - 10) {
 				want = 0;
 			}
 			if (want != level[i]) {

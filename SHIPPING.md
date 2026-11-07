@@ -5,12 +5,25 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## Open (known issues)
-- **Restarts at the lock screen after a flash / cold start** (2-3 times, then stable). Not the WDT_CLUSTER0 watchdog
-  (off: `wdt.look` WTCON 0x18000). Being captured with `tools/serial-watch.sh` (USB serial log across restarts).
 - Mic: the kernel's diagnostic peak counter reads full scale on every capture although recorded files do not clip (only
-  with `snd_debug=1` now).
+  with `snd_debug=1`).
+- The thermal fix below was confirmed on one cold start after the flash (peak 83 C, no restart); watch the
+  `reset: last run ended by ...` line at the top of each boot log.
 
 ## 2026-11-07
+
+### Fix: restarts at the lock screen after a cold start / flash — thermal throttling
+- Cause (measured): the big M5 cluster reached 108-111 C during boot (all clusters at top clock); the SoC's thermal
+  trip reset the phone through the PMIC (`RST_STAT` PINRESET, S2MPS19 PWRONSRC WTSR, OFFSRC 0), 2-3 times, until a boot
+  started cool enough. The governor read temperatures once a second, throttled at 86/96 C and went back to full clock
+  6 C below the mark.
+- Now: temperatures every 250 ms; CPU steps at 80/90 C, GPU 82/92 C; full clock again only 10 C below the mark
+  (`bsd/dev/redwood_exynos_acpm.c`; `dvfs_hot=` still overrides). Idle is 55-60 C, so normal speed is unchanged.
+- Tested: cold start after flash: peak 83 C, throttled at 80 C, back to 2730 MHz at 69 C, no restart.
+- Every boot now logs why the last run ended, decoded with Samsung's names:
+  `reset: last run ended by RST_STAT ... ; PMIC on ... off ...`.
+- Log access / back-to-menu no longer panics ("Console I/O from interrupt-disabled context"): `redwood_dsay` and
+  `snd_log` skip the console when interrupts are off (the sensor hub's stop message did it).
 
 ### Audio: debug off by default, self-checks, quieter speaker and vibration — `26dfb5b`
 - `snd_debug=` **0**: routine log lines (amps on/off, 60 s stats, mic start/stop), mic per-sample peaks and the

@@ -136,6 +136,8 @@ redwood_sensors_device(void)
  */
 #include <sys/redwood_m2m.h>
 #include <stdarg.h>
+extern boolean_t ml_get_interrupts_enabled(void);
+extern void loader_log_line(const char *line);
 
 int
 redwood_dsay(const char *format, ...)
@@ -147,6 +149,14 @@ redwood_dsay(const char *format, ...)
 	va_start(ap, format);
 	vsnprintf(line, sizeof(line), format, ap);
 	va_end(ap);
+	/*
+	 * With interrupts off (loader_return() from the stop IPI: Log access, the menu, a panic) the console
+	 * panics ("Console I/O from interrupt-disabled context") and m2m may sleep: the loader's log only.
+	 */
+	if (!ml_get_interrupts_enabled()) {
+		loader_log_line(line);
+		return 0;
+	}
 	printf("%s", line);
 	n = strlen(line);
 	if (n > 0 && line[n - 1] == '\n') {
