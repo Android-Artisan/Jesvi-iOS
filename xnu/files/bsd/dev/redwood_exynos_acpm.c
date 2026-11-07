@@ -43,6 +43,7 @@
 #include <pexpert/pexpert.h>
 #include <stdarg.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
 #include <sys/redwood_m2m.h>
 #include <mach/processor_info.h>
 #include <mach/machine.h>
@@ -436,6 +437,40 @@ hottest(void)
  * takes the GPU to its top rung at once; it comes down as from any other jump.
  */
 int redwood_gov_wake;                   /* the event a touch or a slow GPU job wakes the governor with */
+
+/*
+ * Power profiles (B, 2026-11-07): caps on top of the governor and the thermal steps.
+ *   screen off (MiniIOMobileFramebuffer's display off): every cluster at its thermal "safe" clock, the GPU at its
+ *     lowest, memory at 421 MHz (measured live: 2.7 GB/s there vs 15.7 at 2730; ACPM takes every step);
+ *   Low Power Mode (kern.redwood.lowpower=1, from iOS's switch): clusters at their first thermal step, memory 1352 MHz;
+ *   normal: as before (memory 2730 MHz).
+ * dvfs_sleep=0 turns the screen-off profile off; dvfs_lpm=0 ignores Low Power Mode.
+ */
+static volatile int redwood_screen_on = 1;
+int redwood_lowpower;                   /* kern.redwood.lowpower (redwood_battery.c's node) */
+static uint32_t prof_sleep = 1, prof_lpm = 1;
+enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
+
+void redwood_dvfs_display(int on);
+void
+redwood_dvfs_display(int on)
+{
+	redwood_screen_on = on != 0;
+	thread_wakeup((event_t)&redwood_gov_wake);
+}
+
+static int
+power_profile(void)
+{
+	if (!redwood_screen_on && prof_sleep) {
+		return PROF_OFF;
+	}
+	return redwood_lowpower && prof_lpm ? PROF_LPM : PROF_NORMAL;
+}
+
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_INT(_kern_redwood, OID_AUTO, lowpower, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_lowpower, 0,
+    "Low Power Mode: 1 caps the clocks (redwood_exynos_acpm.c)");
 /*
  * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
  * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
@@ -564,6 +599,18 @@ gov_busy(unsigned g)
 	return worst;
 }
 
+/* the profile's cap for domain index d on top of `cap' (0: none) */
+static uint32_t
+profile_cap(unsigned d, uint32_t cap, int prof)
+{
+	uint32_t p = prof == PROF_OFF ? domains[d].safe : prof == PROF_LPM ? domains[d].mid : 0;
+
+	if (p == 0) {
+		return cap;
+	}
+	return cap == 0 || p < cap ? p : cap;
+}
+
 static void
 acpm_thread(void *arg, wait_result_t wr_unused)
 {
@@ -583,6 +630,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("fb_hot", &fb_hot, sizeof(fb_hot));
 	PE_parse_boot_argn("dvfs_gov_gpu", &govern_gpu, sizeof(govern_gpu));
 	PE_parse_boot_argn("dvfs_frame", &gov_frame, sizeof(gov_frame));
+	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
+	PE_parse_boot_argn("dvfs_lpm", &prof_lpm, sizeof(prof_lpm));
 	for (unsigned g = 0; g < NGOV; g++) {
 		gov_rung[g] = GOV_RUNGS - 1;
 		while (gov_rung[g] > 0 && gov[g].rung[gov_rung[g]] == 0) {
@@ -735,6 +784,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				gov_rung[g] = floor;
 				gov_low[g] = 0;
 				cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
+				cap = profile_cap(d, cap, power_profile());
 				khz = gov[g].rung[floor];
 				khz = khz > targets[d] ? targets[d] : khz;
 				khz = cap != 0 && khz > cap ? cap : khz;
@@ -742,6 +792,26 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 					gov_sent[g] = khz;
 					gov_changes++;
 					gov_boosts++;
+				}
+			}
+		}
+		/* memory per power profile (on change only) */
+		if (mode >= 2) {
+			static int mif_prof = -1;
+			int prof = power_profile();
+
+			if (prof != mif_prof) {
+				unsigned m = 0;
+				uint32_t khz;
+
+				while (m < NDOMAINS && domains[m].domain != D_MIF) {
+					m++;
+				}
+				khz = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : (m < NDOMAINS ? targets[m] : 0);
+				if (khz != 0 && set_rate(D_MIF, khz) == 0) {
+					dlog("power: %s: memory %u MHz%s", prof == PROF_OFF ? "screen off" : prof == PROF_LPM ?
+					    "Low Power Mode" : "normal", khz / 1000, prof == PROF_NORMAL ? "" : ", clusters and GPU capped");
+					mif_prof = prof;
 				}
 			}
 		}
@@ -798,6 +868,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			}
 			gov_rung[g] = want;
 			cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
+			cap = profile_cap(d, cap, power_profile());
 			khz = gov[g].rung[want];
 			khz = khz > targets[d] ? targets[d] : khz;
 			khz = cap != 0 && khz > cap ? cap : khz;

@@ -51,6 +51,7 @@
 #include <sys/redwood_audio.h>
 #include <sys/redwood_bbi2c.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
 #include <vm/memory_types.h>
 #include <kern/kalloc.h>
 #include <sys/kauth.h>
@@ -364,6 +365,23 @@ now_us(void)
 	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
 	return ns / 1000;
 }
+
+/*
+ * kern.redwood.snd_quiet_ms: how long the speakers have had nothing to play (ms; -1 never since boot). backboardd's
+ * idle timer (userland inject.c) does not turn the screen off while sound plays (B, 2026-11-07).
+ */
+static int
+sysctl_snd_quiet_ms SYSCTL_HANDLER_ARGS
+{
+#pragma unused(oidp, arg1, arg2)
+	uint64_t heard = last_sound_us;
+	int ms = heard == 0 ? -1 : (int)((now_us() - heard) / 1000 > 0x7fffffff ? 0x7fffffff : (now_us() - heard) / 1000);
+
+	return SYSCTL_OUT(req, &ms, sizeof(ms));
+}
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_PROC(_kern_redwood, OID_AUTO, snd_quiet_ms, CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED, NULL, 0,
+    sysctl_snd_quiet_ms, "I", "ms since the speakers last had sound (-1: never)");
 
 static bool
 wait_bits(volatile uint8_t *base, uint32_t off, uint32_t mask, uint32_t want, uint32_t us)

@@ -12,6 +12,23 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## 2026-11-07
 
+### Sleep: screen timeout, screen-off power profile, Low Power Mode
+- **Screen timeout works** (it never did): SpringBoard's idle timer depends on AttentionAwareness, which hands it an
+  untagged lost-attention event here ("attention client lost event tag is not a number") and it never dims. Our own
+  idle timer in backboardd (`userland/src/inject.c`) presses the lock button after **10 s** untouched on the lock screen
+  (`idle_lock_s=`) or the **Auto-Lock** time when unlocked (Settings value; Never = off), not while sound played in the
+  last 5 s (`kern.redwood.snd_quiet_ms`). `idle_lock=0` turns it off. Known gap: a silent video unlocked still locks.
+- **Screen-off profile** (automatic, no switch): memory 421 MHz (was 2730 always; 2.7 vs 15.7 GB/s measured), every
+  CPU cluster at its low step, GPU lowest (`bsd/dev/redwood_exynos_acpm.c`, `dvfs_sleep=0` off). Full clocks again
+  the moment the display comes on (before the first frame).
+- **Low Power Mode** (Settings switch, also iOS's automatic one): `lpmd` (`userland/src/lpmd.c`, job
+  `com.redwood.lpmd`) passes it to `kern.redwood.lowpower`: memory 1352 MHz, clusters at their first step, GPU 572
+  (`dvfs_lpm=0` ignores it).
+- Tested: lock screen idle -> "idle timer: 10 s ... display off" -> "power: screen off: memory 421 MHz"; Low Power Mode
+  on -> "memory 1352 MHz, clusters and GPU capped".
+- Unused here but kept: backboardd's `com.apple.private.attentionawareness` entitlement lookup answers yes if it
+  comes back empty (`aw_ent=0` off).
+
 ### Fix: restarts at the lock screen after a cold start / flash — thermal throttling
 - Cause (measured): the big M5 cluster reached 108-111 C during boot (all clusters at top clock); the SoC's thermal
   trip reset the phone through the PMIC (`RST_STAT` PINRESET, S2MPS19 PWRONSRC WTSR, OFFSRC 0), 2-3 times, until a boot

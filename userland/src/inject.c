@@ -649,6 +649,52 @@ window_server_keeps_opengl_es(void)
 	method_setImplementation(method, (IMP)my_detect_displays);
 }
 
+/*
+ * The lock screen and Auto-Lock never timed out (B, 2026-11-07). SpringBoard's idle timer is an AttentionAwareness
+ * client; its server runs here in backboardd and lets a connection in only if -[NSXPCConnection
+ * valueForEntitlement:@"com.apple.private.attentionawareness"] answers. Here that lookup failed ("Error getting
+ * value for entitlement ... Code=3 No such process": the audit token it holds no longer matches), the client was
+ * refused, SpringBoard got a lost-attention event with no tag ("attention client lost event tag is not a number")
+ * and never dimmed. When that one lookup comes back empty, the answer is yes (SpringBoard has the entitlement).
+ * Boot-arg aw_ent=0 leaves the lookup alone.
+ */
+static id (*orig_value_for_entitlement)(id connection, SEL selector, CFStringRef entitlement);
+
+static id
+my_value_for_entitlement(id connection, SEL selector, CFStringRef entitlement)
+{
+	id answer = orig_value_for_entitlement(connection, selector, entitlement);
+
+	if (answer == NULL && entitlement != NULL &&
+	    CFEqual(entitlement, CFSTR("com.apple.private.attentionawareness"))) {
+		static int told;
+		int pid = ((int (*)(id, SEL))objc_msgSend)(connection, sel_registerName("processIdentifier"));
+
+		if (told++ < 5) {
+			say("redwood: attention: entitlement lookup for pid %d came back empty: allowed (the idle timer)\n", pid);
+		}
+		return (id)kCFBooleanTrue;
+	}
+	return answer;
+}
+
+static void
+attention_fixes(const char *arguments)
+{
+	Class cls = objc_getClass("NSXPCConnection");
+	Method method = cls ? class_getInstanceMethod(cls, sel_registerName("valueForEntitlement:")) : NULL;
+
+	if (arguments != NULL && strstr(arguments, "aw_ent=0") != NULL) {
+		return;
+	}
+	if (method == NULL) {
+		say("redwood: attention: -[NSXPCConnection valueForEntitlement:] not found; idle timer left as it is\n");
+		return;
+	}
+	orig_value_for_entitlement = (id (*)(id, SEL, CFStringRef))method_getImplementation(method);
+	method_setImplementation(method, (IMP)my_value_for_entitlement);
+}
+
 static void
 window_server_fixes(void)
 {
@@ -841,6 +887,8 @@ service_copy_property(__unused void *target, void *refcon, __unused IOHIDService
 #define TOUCH_MODE_WAKE         0xfe
 #define TOUCH_MODE_OFF          0xff
 static volatile int touch_mode;
+static volatile uint64_t last_input_at;  /* mach time of the last touch or button sample (the idle timer) */
+static IOHIDServiceClientRef volatile idle_buttons;   /* the buttons' service, for the idle timer's lock press */
 
 /* What the event server tells a service of ours: said once per name, to learn what there is. */
 static Boolean
@@ -1089,6 +1137,7 @@ input_thread(__unused void *arg)
 	}
 	if (screen != NULL) {
 		buttons = make_service(client, "Redwood buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false);
+		idle_buttons = buttons;
 	}
 	say("redwood: input: touch screen service %p, buttons %p\n", (void *)screen, (void *)buttons);
 	dispatch_semaphore_signal(input_services_made); /* see wait_for_als_arrival() */
@@ -1101,6 +1150,8 @@ input_thread(__unused void *arg)
 
 	while (read(device, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
 		uint64_t read_at = mach_absolute_time();
+
+		last_input_at = read_at;        /* (the idle timer below) */
 
 		if (count++ < 4) {
 			say("redwood: input: sample type %u finger %u at %u %u\n", t.type, t.finger, t.x, t.y);
@@ -1136,6 +1187,115 @@ input_thread(__unused void *arg)
 	return NULL;
 }
 
+/*
+ * The idle timer (B, 2026-11-07). SpringBoard's own never fires on this phone: it is an AttentionAwareness client and
+ * the attention server hands it a lost-attention event with no tag ("attention client lost event tag is not a
+ * number"), so neither the lock screen nor Auto-Lock ever turned the display off. Here, with the display on and no
+ * touch or button for
+ *   idle_lock_s (default 10) seconds on the lock screen (com.apple.springboard.lockstate), or
+ *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
+ * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
+ * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on. Boot-arg idle_lock=0: off.
+ */
+static int
+auto_lock_seconds(void)
+{
+	static const char *path = "/var/mobile/Library/UserConfigurationProfiles/EffectiveUserSettings.plist";
+	int seconds = 60;
+	CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+	CFReadStreamRef stream = url ? CFReadStreamCreateWithFile(NULL, url) : NULL;
+
+	if (stream != NULL && CFReadStreamOpen(stream)) {
+		CFPropertyListRef plist = CFPropertyListCreateWithStream(NULL, stream, 0, kCFPropertyListImmutable, NULL, NULL);
+
+		if (plist != NULL && CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+			CFDictionaryRef values = CFDictionaryGetValue(plist, CFSTR("restrictedValue"));
+			CFDictionaryRef inactivity = values && CFGetTypeID(values) == CFDictionaryGetTypeID() ?
+			    CFDictionaryGetValue(values, CFSTR("maxInactivity")) : NULL;
+			CFNumberRef value = inactivity && CFGetTypeID(inactivity) == CFDictionaryGetTypeID() ?
+			    CFDictionaryGetValue(inactivity, CFSTR("value")) : NULL;
+
+			if (value != NULL && CFGetTypeID(value) == CFNumberGetTypeID()) {
+				CFNumberGetValue(value, kCFNumberIntType, &seconds);
+			}
+		}
+		if (plist != NULL) {
+			CFRelease(plist);
+		}
+		CFReadStreamClose(stream);
+	}
+	if (stream != NULL) {
+		CFRelease(stream);
+	}
+	if (url != NULL) {
+		CFRelease(url);
+	}
+	return seconds;
+}
+
+static void *
+idle_thread(__unused void *argument)
+{
+	int lock_token = 0, lock_s = 10, auto_s = 60;
+	bool was_on = false;
+	char arguments[1024] = "";
+	size_t size = sizeof(arguments) - 1;
+
+	pthread_setname_np("redwood idle");
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+		const char *at = strstr(arguments, "idle_lock_s=");
+
+		if (strstr(arguments, "idle_lock=0") != NULL) {
+			return NULL;
+		}
+		if (at != NULL && atoi(at + 12) >= 3) {
+			lock_s = atoi(at + 12);
+		}
+	}
+	notify_register_check("com.apple.springboard.lockstate", &lock_token);
+	say("redwood: idle timer: %d s on the lock screen, Auto-Lock's time when unlocked\n", lock_s);
+	for (;;) {
+		uint64_t now = mach_absolute_time(), idle_ns, locked = 0;
+		bool on = (touch_mode & 0xff) == 1;
+		int limit, quiet = -1;
+		size_t len = sizeof(quiet);
+
+		sleep(1);
+		if (!on) {
+			was_on = false;
+			continue;
+		}
+		if (!was_on) {                  /* the display just came on: count from here, Auto-Lock read again */
+			was_on = true;
+			last_input_at = now;
+			auto_s = auto_lock_seconds();
+			continue;
+		}
+		notify_get_state(lock_token, &locked);
+		limit = locked ? lock_s : auto_s;
+		if (!locked && (limit <= 0 || limit > 24 * 3600)) {
+			continue;                       /* Auto-Lock: Never */
+		}
+		if (!locked && sysctlbyname("kern.redwood.snd_quiet_ms", &quiet, &len, NULL, 0) == 0 && quiet >= 0 &&
+		    quiet < 5000) {
+			last_input_at = now;            /* sound playing: as if touched */
+			continue;
+		}
+		idle_ns = (now - last_input_at) * timebase.numer / timebase.denom;
+		if (idle_ns >= (uint64_t)limit * NSEC_PER_SEC && idle_buttons != NULL) {
+			struct redwood_touch press = { .time = now, .type = REDWOOD_BUTTON_DOWN, .finger = REDWOOD_BUTTON_LOCK };
+
+			say("redwood: idle timer: %d s without a touch %s: the display off\n", limit, locked ? "on the lock screen" :
+			    "(Auto-Lock)");
+			send_button(idle_buttons, &press);
+			press.type = REDWOOD_BUTTON_UP;
+			send_button(idle_buttons, &press);
+			last_input_at = now;
+		}
+	}
+	return NULL;
+}
+
 static void
 input_start(void)
 {
@@ -1143,6 +1303,9 @@ input_start(void)
 
 	input_services_made = dispatch_semaphore_create(0);
 	if (pthread_create(&thread, NULL, input_thread, NULL) == 0) {
+		pthread_detach(thread);
+	}
+	if (pthread_create(&thread, NULL, idle_thread, NULL) == 0) {
 		pthread_detach(thread);
 	}
 }
@@ -1282,6 +1445,7 @@ redwood_init(void)
 		}
 		opengl_es();
 		window_server_fixes();
+		attention_fixes(arguments);
 		/*
 		 * brightness_fixes() is not used for now: with it backboardd no longer took our touch
 		 * screen service for its own ("still waiting for a main screen digitizer"), whether the
