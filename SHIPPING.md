@@ -17,7 +17,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - **Screen timeout works** (it never did): SpringBoard's idle timer depends on AttentionAwareness, which hands it an
   untagged lost-attention event here ("attention client lost event tag is not a number") and it never dims. Our own
   idle timer in backboardd (`userland/src/inject.c`) presses the lock button after **10 s** when woken and not touched
-  (`idle_lock_s=`), or the **Auto-Lock** time once touched (SpringBoard's lock state is unreliable here) (Settings value; Never = off), not while sound played in the
+  (`idle_lock_s=`), or the **Auto-Lock** time once touched (SpringBoard's lock state is unreliable here). **Off by default** (user, 18:55): `idle_lock=0` off, `1` only an untouched wake, `2` also Auto-Lock (Settings value; Never = off), not while sound played in the
   last 5 s (`kern.redwood.snd_quiet_ms`). `idle_lock=0` turns it off. Tested by the user: lock screen 10 s, home screen 60 s. Known gap: a silent video unlocked still locks.
 - **Screen-off profile** (automatic, no switch): memory 421 MHz (was 2730 always; 2.7 vs 15.7 GB/s measured), every
   CPU cluster at its low step, GPU lowest (`bsd/dev/redwood_exynos_acpm.c`, `dvfs_sleep=0` off). Full clocks again

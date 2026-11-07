@@ -1195,7 +1195,8 @@ input_thread(__unused void *arg)
  *   idle_lock_s (default 10) seconds on the lock screen (com.apple.springboard.lockstate), or
  *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
  * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
- * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on. Boot-arg idle_lock=0: off.
+ * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
+ * Boot-arg idle_lock=0 off (default), 1 only an untouched wake (lock_s), 2 also Auto-Lock when in use.
  */
 static int
 auto_lock_seconds(void)
@@ -1236,7 +1237,7 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_s = 10, auto_s = 60;
+	int lock_s = 10, auto_s = 60, mode = 0;
 	uint64_t woke_at = 0;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
@@ -1244,16 +1245,20 @@ idle_thread(__unused void *argument)
 
 	pthread_setname_np("redwood idle");
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
-		const char *at = strstr(arguments, "idle_lock_s=");
+		const char *at = strstr(arguments, "idle_lock_s="), *mode_at = strstr(arguments, "idle_lock=");
 
-		if (strstr(arguments, "idle_lock=0") != NULL) {
-			return NULL;
+		if (mode_at != NULL && (mode_at == arguments || mode_at[-1] == ' ')) {
+			mode = atoi(mode_at + 10);
 		}
 		if (at != NULL && atoi(at + 12) >= 3) {
 			lock_s = atoi(at + 12);
 		}
 	}
-	say("redwood: idle timer: %d s after a wake with no touch, Auto-Lock's time once touched\n", lock_s);
+	if (mode == 0) {
+		return NULL;                    /* off (the default, the user's choice 2026-11-07): iOS's own, broken, idle timer */
+	}
+	say("redwood: idle timer (idle_lock=%d): %d s after a wake with no touch%s\n", mode, lock_s,
+	    mode >= 2 ? ", Auto-Lock's time once touched" : "");
 	for (;;) {
 		uint64_t now, idle_ns, locked = 0, input_at;
 		bool on;
@@ -1282,6 +1287,9 @@ idle_thread(__unused void *argument)
 		 * used: woken and not touched since -> lock_s (a glance, a wake in the pocket); touched since -> Auto-Lock.
 		 */
 		locked = last_input_at <= woke_at;
+		if (!locked && mode < 2) {
+			continue;                       /* idle_lock=1: only a wake that nobody touched */
+		}
 		limit = locked ? lock_s : auto_s;
 		if (!locked && (limit <= 0 || limit > 24 * 3600)) {
 			continue;                       /* Auto-Lock: Never */
