@@ -173,6 +173,7 @@ static uint32_t snd_rdma = 3;           /* RDMA3 for the bypass; Calliope's firm
 #define L41_FAULTS              0x800281c0U     /* amp short, temperature, boost short / DCM UVP / OVP */
 #define L41_VOL_MUTE            0x400U
 #define L41_SCLK_3072000        0x21U           /* cs35l41_pll_sysclk */
+#define L41_SCLK_6144000        0x28U           /* (snd_samsung: UAIF2 4 x 32 bit) */
 #define L41_FS_48000            0x03U
 #define L41_BST_IPK_4100MA      (((4100 - 1600) / 50) + 0x10)   /* cirrus,boost-peak-milliamp of the phone's tree */
 
@@ -209,6 +210,7 @@ static volatile uint8_t *pmu, *cmu, *mmu, *abox;
 static volatile uint8_t *gpb1, *gpb2;
 static uint64_t buf_phys;
 static int16_t *buf;
+static uint32_t snd_samsung = 1;            /* (abox_route: Samsung's playback register set; snd_samsung=0 the old one) */
 static bool started, amps_ok, amps_on, faulted, use_status;
 static uint32_t snd_below = 144, snd_gain = 12 * 8, snd_tone;
 static uint32_t snd_calliope;           /* 1: boot Calliope only; 2: and play through it (stage 3) */
@@ -529,9 +531,9 @@ amp_prepare(struct amp *a)
 	amp_update(a, L41_SP_FRAME_RX_SLOT, 0x3f3f, a->slot | (a->slot ^ 1) << 8);
 	amp_update(a, L41_GLOBAL_CLK_CTRL, 0x1f, L41_FS_48000);
 	/* set_sysclk from SCLK at 3.072 MHz */
-	amp_update(a, L41_SP_RATE_CTRL, 0x3f, L41_SCLK_3072000);
+	amp_update(a, L41_SP_RATE_CTRL, 0x3f, snd_samsung ? L41_SCLK_6144000 : L41_SCLK_3072000);
 	amp_update(a, L41_PLL_CLK_CTRL, 0x0800, 0x0800);
-	amp_update(a, L41_PLL_CLK_CTRL, 0x07e0, L41_SCLK_3072000 << 5);
+	amp_update(a, L41_PLL_CLK_CTRL, 0x07e0, (snd_samsung ? L41_SCLK_6144000 : L41_SCLK_3072000) << 5);
 	amp_update(a, L41_PLL_CLK_CTRL, 0x0010, 0);
 	amp_update(a, L41_PLL_CLK_CTRL, 0x0007, 0);
 	amp_update(a, L41_PLL_CLK_CTRL, 0x0800, 0);
@@ -828,6 +830,77 @@ static uint32_t snd_sblimit;            /* snd_sblimit=V: RDMA3 SBANK_LIMIT (+0x
 static uint32_t snd_burst = 4;          /* snd_burst=N: RDMA3 CTRL0 BURST_LEN (22:19); Scion's S9 runs 8 */
 static uint32_t snd_bufupd;             /* snd_bufupd=1: RDMA3 CTRL0 BUF_UPDATE (bit 5), as calliope sets it on the S9 */
 static uint32_t snd_sifs1;              /* snd_sifs1=1: chain 3 out to SIFS1 and UAIF2 from it, not SIFS0 (the mixer) */
+/*
+ * snd_samsung=1 (default; B, 2026-11-07: THE SPEAKER PLAYS): the ABOX's state as Samsung's own kernel left it while it
+ * played on this phone (work/stock-audio-test/ref_abox.txt: the stock ArtisanKRNL booted from BOOT with a test ramdisk,
+ * regmap debugfs read during tinyplay): QCHANNEL_DISABLE, ROUTE_CTRL1, all of SPUS (function chains: RDMA3 -> ASRC ->
+ * SIFS0; SPUS_CTRL4/5 the ASRC ids: chain 3 on ASRC 7; MIXP 32-bit x 4; every sample bank), the SPUM banks, and ASRC 7
+ * as asrc_config(7, 0, 11, 48000 Hz, 11, 48000 Hz, 32 bit) left it. Written with RDMA3 and UAIF2 stopped. With it and
+ * UAIF2 at 4 x 32 bit / 6.144 MHz (and the amplifiers' SCLK to match) RDMA3 streams and the speaker sounds.
+ */
+static const struct { uint16_t off; uint32_t val; } samsung_abox[] = {
+	{ 0x0038, 0x00000010 },
+	{ 0x0044, 0x00000140 },
+	{ 0x0200, 0x03020202 },
+	{ 0x0204, 0x0000001b },
+	{ 0x0208, 0x00000000 },
+	{ 0x020c, 0x00000000 },
+	{ 0x0210, 0x72100000 },
+	{ 0x0214, 0xffff3654 },
+	{ 0x0218, 0x02020202 },
+	{ 0x021c, 0x02000202 },
+	{ 0x0220, 0x02000000 },
+	{ 0x0224, 0x02000200 },
+	{ 0x0228, 0x02000400 },
+	{ 0x022c, 0x00800600 },
+	{ 0x0230, 0x02000800 },
+	{ 0x0234, 0x02000a00 },
+	{ 0x0238, 0x02000c00 },
+	{ 0x023c, 0x02000e00 },
+	{ 0x0240, 0x02001000 },
+	{ 0x0244, 0x02001200 },
+	{ 0x0248, 0x02001400 },
+	{ 0x024c, 0x02001600 },
+	{ 0x0250, 0x02c01800 },
+	{ 0x0254, 0x01a01ac0 },
+	{ 0x0258, 0x01a01c60 },
+	{ 0x025c, 0x01101e00 },
+	{ 0x0260, 0x02c02000 },
+	{ 0x0264, 0x01a022c0 },
+	{ 0x0268, 0x01a02460 },
+	{ 0x026c, 0x01102600 },
+	{ 0x0280, 0x00802800 },
+	{ 0x0284, 0x02002a00 },
+	{ 0x0288, 0x00000000 },
+	{ 0x028c, 0x00000000 },
+	{ 0x0290, 0x00000000 },
+	{ 0x0294, 0x00000000 },
+	{ 0x0298, 0x00000000 },
+	{ 0x029c, 0x00000000 },
+	{ 0x02a0, 0x00010008 },
+	{ 0x02b0, 0x20010101 },
+	{ 0x02b4, 0x01010101 },
+	{ 0x02b8, 0x01010101 },
+	{ 0x0300, 0x00000000 },
+	{ 0x0304, 0x00000948 },
+	{ 0x030c, 0x00000000 },
+	{ 0x0310, 0x00732100 },
+	{ 0x0328, 0x02000000 },
+	{ 0x032c, 0x02000200 },
+	{ 0x0330, 0x02000400 },
+	{ 0x0334, 0x02000600 },
+	{ 0x0338, 0x02000800 },
+	{ 0x034c, 0x02c00a00 },
+	{ 0x0350, 0x01a00cc0 },
+	{ 0x0354, 0x01a00e60 },
+	{ 0x0358, 0x01901000 },
+	{ 0x2710, 0x00010000 },
+	{ 0x2714, 0x00000ccc },
+	{ 0x2718, 0x00010000 },
+	{ 0x271c, 0x00000ccc },
+	{ 0x2700, 0x9bb000fc },
+};
+
 static void
 abox_route(void)
 {
@@ -851,6 +924,26 @@ abox_route(void)
 	wr(abox, ABOX_SYSPOWER_CTRL, 1);        /* abox_request_dram_on */
 	wait_bits(abox, ABOX_SYSPOWER_STATUS, 1, 1, 10000);
 
+	if (snd_samsung != 0 && snd_calliope < 2) {
+		wr(abox, RDMA(RDMA_CTRL0), rd(abox, RDMA(RDMA_CTRL0)) & ~1U);
+		wr(abox, ABOX_UAIF_CTRL0, rd(abox, ABOX_UAIF_CTRL0) & ~1U);
+		for (unsigned i = 0; i < sizeof(samsung_abox) / sizeof(samsung_abox[0]); i++) {
+			wr(abox, samsung_abox[i].off, samsung_abox[i].val);
+		}
+		wr(abox, ABOX_SIFS_CNT0, 0);                    /* UAIF master: Samsung resets it (abox_cmpnt_reset_cnt_val) */
+		upd(abox, ABOX_ROUTE_CTRL0, 0xfU << (4 * UAIF_ID), 1U << (4 * UAIF_ID));
+		set_div(DIV_UAIF2, 0x1ff, 11);                  /* 6.144 MHz: 48 kHz x 4 slots x 32 bits */
+		wr(abox, ABOX_UAIF_CTRL0, (rd(abox, ABOX_UAIF_CTRL0) & ~(1U << 2 | 1U)) | 1U << 2 | 1U);
+		wr(abox, ABOX_UAIF_CTRL1, 0x1bcdf7dfU);         /* Samsung's: DSP_A, 4 slots x 32 bits */
+		gpb1 = redwood_gpio_bank(REDWOOD_PINCTRL_PERIC1, PINCTRL_PERIC1_GPB1);
+		for (uint32_t pin = 0; pin < 4; pin++) {
+			redwood_gpio_pull(gpb1, pin, REDWOOD_GPIO_PULL_NONE);
+			redwood_gpio_func(gpb1, pin, 2);
+		}
+		snd_log("snd: samsung: %u ABOX registers as the stock kernel's playback; UAIF2 4 x 32 bit at 6.144 MHz\n",
+		    (unsigned)(sizeof(samsung_abox) / sizeof(samsung_abox[0])));
+		goto rdma;
+	}
 	/* RDMA3 -> chain 3 -> SIFS0 (the mixer, 32-bit stereo) -> UAIF2 */
 	/* OUT 4:1 is SIFSn + 1: 1 the mixer (SIFS0), 2 SIFS1 */
 	upd(abox, ABOX_SPUS_CTRL_FC0, 0xffU << (8 * RDMA_ID), (snd_sifs1 ? 0x04U : 0x02U) << (8 * RDMA_ID));
@@ -904,7 +997,13 @@ abox_route(void)
 		    rd(abox, ABOX_ROUTE_CTRL0), rd(abox, ABOX_SPUS_CTRL_FC0), rd(abox, ABOX_UAIF_CTRL0), rd(abox, ABOX_UAIF_CTRL1));
 		return;
 	}
+rdma:
 	/* RDMA3: our ring, 16-bit stereo */
+	if (snd_samsung != 0) {
+		wr(abox, RDMA(0x18), 0x800000);                 /* VOL_FACTOR, VOL_CHANGE, BIT_CTRL0 as Samsung's */
+		wr(abox, RDMA(0x1c), 0x10000);
+		wr(abox, RDMA(0x24), 0x3);
+	}
 	wr(abox, RDMA(RDMA_CTRL0), ABOX_FORMAT(16, 2) << 8 | (snd_burst & 0xfU) << 19 | (snd_bufupd ? 1U << 5 : 0));
 	if (snd_sblimit) {
 		wr(abox, RDMA(0x20), snd_sblimit);
@@ -2313,6 +2412,7 @@ redwood_exynos_sound_init(void)
 	PE_parse_boot_argn("snd_gain", &snd_gain, sizeof(snd_gain));
 	PE_parse_boot_argn("snd_tone", &snd_tone, sizeof(snd_tone));
 	PE_parse_boot_argn("snd_calliope", &snd_calliope, sizeof(snd_calliope));
+	PE_parse_boot_argn("snd_samsung", &snd_samsung, sizeof(snd_samsung));
 	PE_parse_boot_argn("snd_cal_trig", &snd_cal_trig, sizeof(snd_cal_trig));
 	PE_parse_boot_argn("snd_cal_kick", &snd_cal_kick, sizeof(snd_cal_kick));
 	redwood_dbgport_add("snd.send", "ID TYPE [a0..a7]: one message to Calliope, 200 ms of its answer into the log", dbg_snd_send);
