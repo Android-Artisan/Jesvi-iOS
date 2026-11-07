@@ -2074,6 +2074,155 @@ dbg_snd_cal(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 }
 
+
+/* ---- the phone's microphones (B, 2026-11-07): staged and live, nothing at boot ------------------------------------- */
+/*
+ * Samsung's path (Android's media-mic; reference run under the stock kernel, logs/runs/resume-20261107): DMIC1 ->
+ * VTS's DMIC_AUD0 (0x15350000) -> its serial LIF (0x15340000) -> ABOX UAIF6 -> NSRC4 -> WDMA4. VTS sits in its own
+ * power domain (PMU 0x15862d00, need_smc 0x15410204), clocked from CMU_APM (CLKCMU_VTS_BUS) and reached through BUS1's
+ * LHS_AXI_P_VTS / BAAW_P_VTS. An access to VTS with any of that off hangs the bus (a read of CMU_VTS froze the phone,
+ * 2026-11-07), so: mic.look reads only always-on blocks; mic.bus opens the bridges; mic.pd powers the domain and asks
+ * EL3 to open it (DTZPC); mic.cmu reads CMU_VTS only after both.
+ */
+#define PMU_PHYS                0x15860000U
+#define PMU_VTS_CONF            0x2d00U
+#define PMU_VTS_STATUS          0x2d04U
+#define VTS_NEED_SMC            0x15410204U
+#define CMU_APM_PHYS            0x15800000U
+#define CMU_BUS1_PHYS           0x1a400000U
+#define CMU_VTS_PHYS            0x15500000U
+
+static volatile uint8_t *mic_pmu, *mic_apm, *mic_bus1, *mic_cmu_vts;
+static bool mic_bus_open, mic_pd_open;
+
+static const struct { const char *name; uint32_t off; } mic_apm_regs[] = {
+	{ "MUX_CLKCMU_VTS_BUS", 0x1004 }, { "DIV_CLKCMU_VTS_BUS", 0x1804 }, { "GATE_CLKCMU_VTS_BUS", 0x2010 },
+	{ "LHM_AXI_C_VTS", 0x2044 }, { "LHS_AXI_LP_VTS", 0x205c }, { "MAILBOX_APM_VTS", 0x2064 },
+	{ "QCH LHM_AXI_C_VTS", 0x3060 }, { "QCH LHS_AXI_LP_VTS", 0x3078 }, { "QCH MAILBOX_APM_VTS", 0x3080 },
+}, mic_bus1_regs[] = {
+	{ "BAAW_P_VTS", 0x2034 }, { "LHM_AXI_D_VTS", 0x2084 }, { "LHS_AXI_P_VTS", 0x20b4 },
+	{ "QCH BAAW_P_VTS", 0x3088 }, { "QCH LHM_AXI_D_VTS", 0x30d8 }, { "QCH LHS_AXI_P_VTS", 0x3108 },
+}, mic_vts_regs[] = {
+	{ "VTS_AUD0_USER", 0x600 }, { "VTS_AUD1_USER", 0x610 }, { "VTS_BUS_USER", 0x620 }, { "VTS_RCO_USER", 0x630 },
+	{ "MUX_VTS_BUS", 0x1000 }, { "MUX_DMIC_AUD", 0x1004 }, { "MUX_DMIC_IF", 0x1008 }, { "MUX_SERIAL_LIF", 0x100c },
+	{ "DIV_VTS_BUS", 0x1800 }, { "DIV_DMIC_AUD", 0x1804 }, { "DIV_DMIC_AUD_DIV2", 0x1808 },
+	{ "DIV_DMIC_AUD_PAD", 0x180c }, { "DIV_SERIAL_LIF", 0x181c },
+	{ "GAT DMIC_AUD0_CLK", 0x2058 }, { "GAT DMIC_AUD0_DIV2", 0x205c }, { "GAT DMIC_AUD0_PCLK", 0x2060 },
+	{ "GAT RST_DMIC_AUD", 0x20fc }, { "GAT RST_SERIAL_LIF", 0x2104 }, { "GAT SLIF_BCLK", 0x2108 },
+	{ "GAT SLIF_CLK", 0x210c }, { "GAT SLIF_HCLK", 0x2110 }, { "GAT SLIF_PCLK", 0x2114 },
+	{ "GAT PAD_CLK0", 0x211c }, { "QCH DMIC_AUD0_PCLK", 0x307c }, { "QCH DMIC_AUD0_DMIC", 0x3000 },
+};
+
+static bool
+mic_map(void)
+{
+	if (mic_pmu == NULL) {
+		mic_pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+		mic_apm = (volatile uint8_t *)ml_io_map(CMU_APM_PHYS, 0x4000);
+		mic_bus1 = (volatile uint8_t *)ml_io_map(CMU_BUS1_PHYS, 0x4000);
+	}
+	return mic_pmu != NULL && mic_apm != NULL && mic_bus1 != NULL;
+}
+
+static size_t
+mic_dump(char *out, size_t cap, size_t at, volatile uint8_t *base, const char *block,
+    const struct { const char *name; uint32_t off; } *r, unsigned n)
+{
+	for (unsigned i = 0; i < n && at < cap; i++) {
+		at += (size_t)snprintf(out + at, cap - at, "%s %-20s +%#06x %08x\n", block, r[i].name, r[i].off,
+		    rd(base, r[i].off));
+	}
+	return at;
+}
+
+/* mic.look: the VTS domain and its bridges, read from always-on blocks only */
+static void
+dbg_mic_look(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	size_t at;
+
+	if (!mic_map()) {
+		snprintf(out, cap, "mic: no mappings\n");
+		return;
+	}
+	at = (size_t)snprintf(out, cap, "PMU VTS_CONFIGURATION %08x STATUS %08x; bus %s, domain %s\n",
+	    rd(mic_pmu, PMU_VTS_CONF), rd(mic_pmu, PMU_VTS_STATUS), mic_bus_open ? "opened" : "as found",
+	    mic_pd_open ? "opened" : "as found");
+	at = mic_dump(out, cap, at, mic_apm, "APM ", (const void *)mic_apm_regs, sizeof(mic_apm_regs) / sizeof(mic_apm_regs[0]));
+	(void)mic_dump(out, cap, at, mic_bus1, "BUS1", (const void *)mic_bus1_regs, sizeof(mic_bus1_regs) / sizeof(mic_bus1_regs[0]));
+}
+
+/* a gate on (manual and on, or no longer automatic), a Q-channel's clock requested */
+static void
+mic_open_reg(volatile uint8_t *base, uint32_t off)
+{
+	uint32_t was = rd(base, off);
+
+	if (off >= 0x3000) {
+		wr(base, off, (was & ~QCH_ENABLE) | QCH_CLOCK_REQ);
+	} else if (off >= 0x2000) {
+		wr(base, off, (was & GATE_MANUAL) ? (was | GATE_CG_VAL) : (was & ~GATE_AUTO));
+	}
+}
+
+/* mic.bus: CMU_APM's VTS bus clock and the bridges on (gates and Q-channels only; muxes and dividers as found) */
+static void
+dbg_mic_bus(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (!mic_map()) {
+		snprintf(out, cap, "mic: no mappings\n");
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(mic_apm_regs) / sizeof(mic_apm_regs[0]); i++) {
+		mic_open_reg(mic_apm, mic_apm_regs[i].off);
+	}
+	for (unsigned i = 0; i < sizeof(mic_bus1_regs) / sizeof(mic_bus1_regs[0]); i++) {
+		mic_open_reg(mic_bus1, mic_bus1_regs[i].off);
+	}
+	mic_bus_open = true;
+	dbg_mic_look(v, 0, out, cap);
+}
+
+/* mic.pd: the VTS power domain on (Samsung's vts_on: CONFIGURATION bit 0, wait STATUS bit 0), then EL3's DTZPC */
+static void
+dbg_mic_pd(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	uint32_t st = 0;
+	uint64_t ret = ~0ULL;
+	unsigned t;
+
+	if (!mic_map() || !mic_bus_open) {
+		snprintf(out, cap, "mic: mic.bus first\n");
+		return;
+	}
+	if (!(rd(mic_pmu, PMU_VTS_STATUS) & 1)) {
+		wr(mic_pmu, PMU_VTS_CONF, rd(mic_pmu, PMU_VTS_CONF) | 1);
+	}
+	for (t = 0; t < 100 && !((st = rd(mic_pmu, PMU_VTS_STATUS)) & 1); t++) {
+		IOSleep(1);
+	}
+	if (st & 1) {
+		ret = smc4(SMC_PREPARE_PD_ONOFF, 1, VTS_NEED_SMC, 2);
+		mic_pd_open = true;
+	}
+	snprintf(out, cap, "mic: VTS domain %s after %u ms (STATUS %08x); DTZPC restore answers %#llx\n",
+	    (st & 1) ? "on" : "NOT on", t, st, ret);
+}
+
+/* mic.cmu: CMU_VTS's clocks for the microphone path, read (only once the domain is on and open) */
+static void
+dbg_mic_cmu(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	if (!mic_pd_open) {
+		snprintf(out, cap, "mic: mic.bus and mic.pd first (CMU_VTS hangs the bus otherwise)\n");
+		return;
+	}
+	if (mic_cmu_vts == NULL) {
+		mic_cmu_vts = (volatile uint8_t *)ml_io_map(CMU_VTS_PHYS, 0x4000);
+	}
+	(void)mic_dump(out, cap, 0, mic_cmu_vts, "VTS ", (const void *)mic_vts_regs, sizeof(mic_vts_regs) / sizeof(mic_vts_regs[0]));
+}
+
 static void
 dbg_snd_gate(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -2464,6 +2613,10 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("snd.supply", "[1]: the amplifiers' 1.8 V (sub-PMIC LDO4S), read / switched on", dbg_snd_supply);
 	redwood_dbgport_add("snd.prep", ": the amplifiers reset and set up again", dbg_snd_prep);
 	redwood_dbgport_add("snd.cal", "0|1|2|3: Calliope halted / booted now / playback asked / its timers", dbg_snd_cal);
+	redwood_dbgport_add("mic.look", ": the VTS domain and its bridges (always-on blocks only)", dbg_mic_look);
+	redwood_dbgport_add("mic.bus", ": CMU_APM's VTS bus clock and BUS1's VTS bridges on", dbg_mic_bus);
+	redwood_dbgport_add("mic.pd", ": the VTS power domain on, then EL3's DTZPC restore (after mic.bus)", dbg_mic_pd);
+	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
 	if (snd_calliope >= 2) {
