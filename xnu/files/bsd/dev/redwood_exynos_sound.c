@@ -61,7 +61,9 @@ extern kern_return_t kernel_thread_start_priority(thread_continue_t continuation
 extern void IOSleep(unsigned int milliseconds);
 extern void loader_log_line(const char *line);
 extern int redwood_wifi_dma_pool(uint64_t *phys, vm_offset_t *virt, size_t *size);
-extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);    /* (redwood_acpm_pmic.c: the sub-PMIC) */
+extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
+extern int redwood_pmic_read(uint8_t type, uint8_t reg, uint8_t *value);
+extern int redwood_pmic_write(uint8_t type, uint8_t reg, uint8_t value);    /* (redwood_acpm_pmic.c: the sub-PMIC) */
 extern int redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value);
 extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);   /* (redwood_image.c) */
 
@@ -2252,6 +2254,21 @@ dbg_mic_clk(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 		snprintf(out, cap, "mic: mic.bus, mic.pd, mic.cmu first\n");
 		return;
 	}
+	/* Samsung's cal_dll_apm_enable (vts_start_runtime_resume): DLL_APM locked, CMU_APM's MUX_DLL_USER and the VTS bus on it */
+	{
+		volatile uint8_t *dll = (volatile uint8_t *)ml_io_map(0x158b0000, 0x1000);
+		volatile uint8_t *sys_apm = (volatile uint8_t *)ml_io_map(0x15820000, 0x1000);
+
+		if (dll != NULL && sys_apm != NULL && mic_apm != NULL) {
+			wr(dll, 0x4, 0x726);
+			wr(sys_apm, 0x440, 0x111);
+			for (unsigned t = 0; t < 1000 && !(rd(sys_apm, 0x444) & 1); t++) {
+				delay(10);
+			}
+			mic_div(mic_apm, 0x640, rd(mic_apm, 0x640) | (1U << 4));
+			mic_div(mic_apm, 0x1004, rd(mic_apm, 0x1004) | 1U);
+		}
+	}
 	mic_div(cmu, 0x1818, 15);                               /* DIV_CLK_AUD_DMIC0: PLL_AUD0 / 16 */
 	mic_open_reg(cmu, 0x2000);                              /* CLK_AUD_DMIC0 */
 	wr(mic_cmu_vts, 0x600, rd(mic_cmu_vts, 0x600) | (1U << 4));     /* VTS_AUD0_USER: CLK_AUD_DMIC0 */
@@ -2326,14 +2343,14 @@ dbg_mic_slif(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 	wr(mic_slif, 0x138, 0x76543210U);       /* CHANNEL_MAP */
 	wr(mic_slif, 0x100, 0x101);             /* CTRL: both interfaces */
 	wr(mic_slif, 0x10c, 0x11);              /* CONFIG_DONE */
-	c0 = rd(mic_slif, 0x150);
+	c0 = rd(mic_slif, 0x48);         /* (INT_PEND: 0x150/0x154 are not in Samsung's readable list) */
 	IOSleep(100);
-	c1 = rd(mic_slif, 0x150);
+	c1 = rd(mic_slif, 0x48);
 	snprintf(out, cap, "mic: gpv0 %s; SEL_PAD %08x DIV2 %08x; DMIC_AUD0 %08x %08x %08x %08x; S_LIF CTRL %08x CONFIG %08x/%08x DONE %08x "
 	    "INPUT %08x; DBG_INFO0 %08x -> %08x in 100 ms, DBG_INFO1 %08x\n", gpv0 != NULL ? "set" : "MISSING",
 	    rd(mic_sys, 0x10), rd(mic_sys, 0x14), rd(mic_dmic, 0), rd(mic_dmic, 4), rd(mic_dmic, 8), rd(mic_dmic, 0x10),
 	    rd(mic_slif, 0x100), rd(mic_slif, 0x104), rd(mic_slif, 0x108), rd(mic_slif, 0x10c), rd(mic_slif, 0x114), c0, c1,
-	    rd(mic_slif, 0x154));
+	    rd(mic_slif, 0x40));
 }
 
 
@@ -2411,8 +2428,8 @@ dbg_mic_cap(const uint64_t *v, unsigned n, char *out, size_t cap)
 		peak[i % 8] = a > peak[i % 8] ? a : peak[i % 8];
 	}
 	at = (size_t)snprintf(out, cap, "mic: WDMA4 CTRL %08x STATUS %08x -> %08x in %u ms; UAIF6 %08x %08x STATUS %08x; ROUTE1 %08x; "
-	    "S_LIF DBG %08x\nmic: peak per channel (of 2^23):", rd(mic_abox, MIC_WDMA4), st0, st1, ms, rd(mic_abox, MIC_UAIF6_CTRL0),
-	    rd(mic_abox, MIC_UAIF6_CTRL1), rd(mic_abox, 0x056c), rd(mic_abox, ABOX_ROUTE_CTRL1), rd(mic_slif, 0x150));
+	    "S_LIF INT_PEND %08x\nmic: peak per channel (of 2^23):", rd(mic_abox, MIC_WDMA4), st0, st1, ms, rd(mic_abox, MIC_UAIF6_CTRL0),
+	    rd(mic_abox, MIC_UAIF6_CTRL1), rd(mic_abox, 0x056c), rd(mic_abox, ABOX_ROUTE_CTRL1), rd(mic_slif, 0x48));
 	for (unsigned c = 0; c < 8 && at < cap; c++) {
 		at += (size_t)snprintf(out + at, cap - at, " %u", peak[c]);
 	}
@@ -2510,6 +2527,40 @@ dbg_wdt_off(__unused const uint64_t *v, __unused unsigned n, char *out, size_t c
 	size_t at = (size_t)snprintf(out, cap, "wdt: %s\n", wdt_disable() ? "disabled" : "its clock would not come on");
 
 	(void)wdt_state(out + at, cap - at);
+}
+
+
+/* pmic.r SUB TYPE REG / pmic.w SUB TYPE REG VAL: the main (SUB 0, S2MPS19) or sub (SUB 1, S2MPS22) PMIC over ACPM */
+static void
+dbg_pmic_r(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	uint8_t c = 0;
+	int r;
+
+	if (n < 3) {
+		snprintf(out, cap, "pmic.r SUB(0 main, 1 sub) TYPE REG\n");
+		return;
+	}
+	r = v[0] ? redwood_spmic_read((uint8_t)v[1], (uint8_t)v[2], &c) : redwood_pmic_read((uint8_t)v[1], (uint8_t)v[2], &c);
+	snprintf(out, cap, "pmic %s type %llu reg %#04llx = %#04x (answer %d)\n", v[0] ? "sub" : "main", v[1], v[2], c, r);
+}
+
+static void
+dbg_pmic_w(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	extern int redwood_spmic_write(uint8_t type, uint8_t reg, uint8_t value);
+	uint8_t c = 0;
+	int r, r2;
+
+	if (n < 4) {
+		snprintf(out, cap, "pmic.w SUB TYPE REG VAL\n");
+		return;
+	}
+	r = v[0] ? redwood_spmic_write((uint8_t)v[1], (uint8_t)v[2], (uint8_t)v[3]) :
+	    redwood_pmic_write((uint8_t)v[1], (uint8_t)v[2], (uint8_t)v[3]);
+	r2 = v[0] ? redwood_spmic_read((uint8_t)v[1], (uint8_t)v[2], &c) : redwood_pmic_read((uint8_t)v[1], (uint8_t)v[2], &c);
+	snprintf(out, cap, "pmic %s type %llu reg %#04llx <- %#04llx (answer %d), reads %#04x (%d)\n", v[0] ? "sub" : "main",
+	    v[1], v[2], v[3], r, c, r2);
 }
 
 static void
@@ -2921,6 +2972,8 @@ redwood_exynos_sound_init(void)
 	redwood_dbgport_add("mic.stop", ": capture off", dbg_mic_stop);
 	redwood_dbgport_add("wdt.look", ": WDT_CLUSTER0's clock gate, and (only with it on) its WTCON/WTDAT/WTCNT", dbg_wdt_look);
 	redwood_dbgport_add("wdt.off", ": WDT_CLUSTER0 off (its gate opened first)", dbg_wdt_off);
+	redwood_dbgport_add("pmic.r", "SUB TYPE REG: a PMIC register (SUB 0 main S2MPS19, 1 sub S2MPS22; TYPE 1 the PMIC block)", dbg_pmic_r);
+	redwood_dbgport_add("pmic.w", "SUB TYPE REG VAL: a PMIC register written, read back", dbg_pmic_w);
 	redwood_dbgport_add("mic.cmu", ": CMU_VTS's microphone clocks, read (after mic.pd)", dbg_mic_cmu);
 	redwood_dbgport_add("snd.gate", "[N]: the silence gate (of 32767), read / set", dbg_snd_gate);
 	redwood_dbgport_add("snd.amps", "0|1: the amplifiers off / powered up now", dbg_snd_amps);
