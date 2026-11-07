@@ -309,6 +309,11 @@ bt_irq(__unused void *context, __unused uint32_t intid)
  * and logged, so that bluetoothd goes on.
  */
 #define PENDING 8
+/*
+ * Vendor commands kept from the chip and answered here (Command Complete, success): the chip (Samsung's patchram)
+ * fell silent for good right after Apple's 0xfdb9 / 0xfd81 as audio started (B, 2026-11-07). `bt.block OP ...` live.
+ */
+static uint16_t blocked[8] = { 0xfdb9, 0xfd81 };
 static struct { uint16_t op; uint64_t at; } pending[PENDING];
 static uint32_t bt_fake = 1, faked, bt_reup;    /* bt_reup=1: bring-up again per client (it failed: 2026-11-07) */
 static struct { uint8_t state, type, hdr[4]; uint32_t got, len; } rxp;   /* the H4 stream to the client, parsed */
@@ -704,6 +709,28 @@ bt_bringup(void)
 #define TIOCSETAF_64    0x80487416u
 
 static void
+dbg_bt_block(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	size_t at;
+
+	if (n >= 1) {
+		bzero(blocked, sizeof(blocked));
+		for (unsigned i = 0; i < n && i < 8; i++) {
+			blocked[i] = (uint16_t)v[i];
+		}
+	}
+	at = (size_t)snprintf(out, cap, "bt: kept from the chip:");
+	for (unsigned i = 0; i < 8 && at < cap; i++) {
+		if (blocked[i] != 0) {
+			at += (size_t)snprintf(out + at, cap - at, " %#06x", blocked[i]);
+		}
+	}
+	if (at < cap) {
+		snprintf(out + at, cap - at, " (bt.block 0 for none)\n");
+	}
+}
+
+static void
 dbg_bt_fake(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	if (n >= 1) {
@@ -776,6 +803,20 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 
 		if ((op >> 10) == 0x3f) {
 			uint32_t plen = h[3], have = (uint32_t)mbuf_len(m) - 4;
+
+			for (unsigned i = 0; i < 8; i++) {
+				if (blocked[i] == op && op != 0 && bt_unit != 0) {
+					uint8_t ev[7] = { 0x04, 0x0e, 0x04, 0x01, (uint8_t)op, (uint8_t)(op >> 8), 0x00 };
+
+					bt_log("bt: vendor command %#06x kept from the chip, answered here\n", op);
+					mbuf_freem(m);
+					while (rxp.state != 0) {
+						IOSleep(1);     /* (between the chip's packets) */
+					}
+					(void)ctl_enqueuedata(bt_ctl, bt_unit, ev, sizeof(ev), 0);
+					return 0;
+				}
+			}
 
 			for (unsigned i = 0; i < PENDING; i++) {
 				if (pending[i].at == 0) {
@@ -891,6 +932,7 @@ redwood_exynos_bt_init(void)
 
 	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
 	(void)PE_parse_boot_argn("bt_fake", &bt_fake, sizeof(bt_fake));
+	redwood_dbgport_add("bt.block", "[OP ...]: vendor commands kept from the chip and answered here (0: none)", dbg_bt_block);
 	redwood_dbgport_add("bt.fake", "0|1: answer vendor commands the chip leaves unanswered (500 ms)", dbg_bt_fake);
 	redwood_dbgport_add("bt.baud", "[N]: the BT UART's speed now and at the next bring-up (killall bluetoothd), counters", dbg_bt_baud);
 	if (!PE_parse_boot_argn("bt", &on, sizeof(on)) || on == 0) {
