@@ -333,6 +333,15 @@ trace_add(uint8_t dir, const uint8_t *p, uint32_t n, uint32_t len)
 	memcpy(trace[i].b, p, n < 13 ? n : 13);
 }
 
+/*
+ * ACL flow control kept here (B, 2026-11-07): the chip's firmware crashed once bluetoothd had 8 headphone-audio
+ * packets of ~670 bytes out with none completed -- more than the chip's buffers. The chip's count comes from its
+ * Read_Buffer_Size answer; each ACL packet to it takes one, each Number Of Completed Packets gives them back; a packet
+ * with none free waits in bt_send (up to 1 s). bt_acl_max=N overrides, `bt.acl` shows.
+ */
+static volatile uint32_t acl_max, acl_out, acl_waits, acl_forced;
+static uint32_t acl_len_max, bt_acl_max;
+
 #define PENDING 8
 /*
  * Vendor commands kept from the chip and answered here (Command Complete, success): the chip (Samsung's patchram)
@@ -414,6 +423,29 @@ rx_parse(uint8_t c)
 						vsec++;
 					}
 				}
+			}
+		}
+		if (rxp.type == 0x04 && rxp.hdr[0] == 0x13) {          /* Number Of Completed Packets: n, (handle, count)... */
+			static uint8_t lo;
+
+			if (rxp.got >= 1 && ((rxp.got - 1) % 4) == 2) {
+				lo = c;
+			} else if (rxp.got >= 1 && ((rxp.got - 1) % 4) == 3) {
+				uint32_t done = (uint32_t)(lo | (c << 8));
+
+				acl_out = acl_out > done ? acl_out - done : 0;
+				thread_wakeup((event_t)&acl_out);
+			}
+		}
+		if (rxp.type == 0x04 && rxp.hdr[0] == 0x0e && rxp.got < 11) {
+			static uint8_t cc[11];
+
+			cc[rxp.got] = c;
+			if (rxp.got == 10 && cc[1] == 0x05 && cc[2] == 0x10 && cc[3] == 0) {     /* Read_Buffer_Size */
+				acl_len_max = (uint32_t)(cc[4] | (cc[5] << 8));
+				acl_max = bt_acl_max != 0 ? bt_acl_max : (uint32_t)(cc[7] | (cc[8] << 8));
+				acl_out = 0;
+				bt_log("bt: the chip's ACL buffers: %u of %u bytes (flow control kept here)\n", acl_max, acl_len_max);
 			}
 		}
 		if (rxp.type == 0x04 && rxp.got < 4) {
@@ -799,6 +831,22 @@ dbg_bt_trace(__unused const uint64_t *v, __unused unsigned n, char *out, size_t 
 }
 
 static void
+dbg_bt_acl(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n >= 1) {
+		bt_acl_max = (uint32_t)v[0];
+		if (bt_acl_max != 0) {
+			acl_max = bt_acl_max;
+		}
+	}
+	snprintf(out, cap, "bt: ACL buffers %u (of %u bytes), %u out now; %u waits, %u recounts; trace %s\n", acl_max,
+	    acl_len_max, acl_out, acl_waits, acl_forced, trace_frozen ? "frozen at a crash (bt.trace; bt.acl unfreezes with any N)" : "live");
+	if (n >= 1) {
+		trace_frozen = 0;
+	}
+}
+
+static void
 dbg_bt_block(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	size_t at;
@@ -856,7 +904,6 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 		bool ok;
 
 		bt_ready = false;
-		trace_frozen = 0;
 		ok = bt_bringup();
 		bt_ready = true;
 		ring_tail = ring_head;
@@ -865,6 +912,7 @@ bt_connect(__unused kern_ctl_ref ref, struct sockaddr_ctl *sac, void **unitinfo)
 	bt_had_client = true;
 	bzero(&rxp, sizeof(rxp));
 	bzero(pending, sizeof(pending));
+	acl_max = acl_out = 0;
 	bt_unit = sac->sc_unit;
 	bt_log("bt: %s: a client connected (unit %u)\n", CTL_NAME, sac->sc_unit);
 	return 0;
@@ -930,6 +978,30 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 				    have > 4 ? h[8] : 0, have > 5 ? h[9] : 0, have > 6 ? h[10] : 0, have > 7 ? h[11] : 0);
 			}
 		}
+	}
+	if (mbuf_len(m) >= 1 && ((uint8_t *)mbuf_data(m))[0] == 0x02 && acl_max != 0) {
+		uint64_t deadline, now = mach_absolute_time(), lim;
+
+		nanoseconds_to_absolutetime(NSEC_PER_SEC, &lim);
+		deadline = now + lim;
+		if (acl_out >= acl_max) {
+			acl_waits++;
+		}
+		while (acl_out >= acl_max) {
+			if (mach_absolute_time() > deadline) {
+				acl_forced++;
+				acl_out = 0;            /* (completions lost: start counting again) */
+				bt_log("bt: no ACL buffer freed in 1 s: counting again (%u times)\n", acl_forced);
+				break;
+			}
+			assert_wait_timeout((event_t)&acl_out, THREAD_UNINT, 5, NSEC_PER_MSEC);
+			if (acl_out < acl_max) {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+				break;
+			}
+			thread_block(THREAD_CONTINUE_NULL);
+		}
+		acl_out++;
 	}
 	for (mbuf_t n = m; n != NULL; n = mbuf_next(n)) {
 		if (mbuf_len(n) > 0) {
@@ -1024,6 +1096,8 @@ redwood_exynos_bt_init(void)
 
 	(void)PE_parse_boot_argn("bt_baud", &bt_fast, sizeof(bt_fast));
 	(void)PE_parse_boot_argn("bt_fake", &bt_fake, sizeof(bt_fake));
+	(void)PE_parse_boot_argn("bt_acl_max", &bt_acl_max, sizeof(bt_acl_max));
+	redwood_dbgport_add("bt.acl", "[N]: ACL flow control kept for the chip: its buffers (N overrides; any N unfreezes the trace)", dbg_bt_acl);
 	redwood_dbgport_add("bt.trace", ": the last 48 HCI packets both ways (ms ago, > to the chip, < from it, length, bytes)", dbg_bt_trace);
 	redwood_dbgport_add("bt.block", "[OP ...]: vendor commands kept from the chip and answered here (0: none)", dbg_bt_block);
 	redwood_dbgport_add("bt.fake", "0|1: answer vendor commands the chip leaves unanswered (500 ms)", dbg_bt_fake);
