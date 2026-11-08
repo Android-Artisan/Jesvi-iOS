@@ -14,10 +14,11 @@
  * (cs_invalid_page), and without it SecTaskLoadEntitlements fails and CloudKit traps the daemon at start.
  *
  * Addresses are those of /usr/libexec/locationd of iOS 16.5 (20F66); each is checked before it is used.
- * Boot-arg loc_swfusion=0 leaves locationd alone.
+ * Boot-arg loc_swfusion=0 leaves locationd alone; loc_gyro_rad=0 keeps the gyro unconverted.
  */
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <stdint.h>
@@ -31,6 +32,11 @@
 #define MOTION_CAPS_WORD        0x101cdf360UL   /* the cached capability word */
 #define GOT_DISPATCH_ONCE       0x101b3f7f0UL   /* __DATA,__got slot the dispatch_once stub loads */
 #define CAPS_SPU_FUSION         0xb8ULL         /* SPU fusion: 3 6-axis, 7 3-axis, 4 9-axis, 5 compass (CLCompass7) */
+
+#define GOT_HID_GET_DOUBLE      0x101b3d1d8UL   /* __got slot of IOHIDEventGetDoubleValue */
+#define GOT_HID_GET_FLOAT       0x101b3d1e0UL   /* __got slot of IOHIDEventGetFloatValue */
+#define HID_FIELD_GYRO_X        (20 << 16)      /* kIOHIDEventTypeGyro, fields X Y Z = 0 1 2 */
+#define DEG_TO_RAD              0.017453292519943295
 
 static void *caps_token;
 static volatile uint64_t *caps_word;
@@ -47,6 +53,58 @@ location_dispatch_once(dispatch_once_t *predicate, dispatch_block_t block)
 		fprintf(stderr, "redwood: locationd: motion caps %#llx -> %#llx: software compass and device motion\n",
 		    old, *caps_word);
 	}
+}
+
+/*
+ * Gyro units. Our HID gyro service reports degrees/s, as Apple's SPU does, and the apps' CoreMotion converts.
+ * locationd's own fusion (CLSensorFusionServiceLegacy/6AxisAP, only used now that the SPU bits are gone) takes
+ * the value as radians/s: resting noise of 0.03 deg/s then turned the heading by about 2 degrees a second, and a
+ * fresh start drifted off north. locationd reads event fields through its GOT; the gyro's X/Y/Z are converted.
+ */
+static double (*real_get_double)(void *, uint32_t);
+static double (*real_get_float)(void *, uint32_t);        /* IOHIDFloat is a double on arm64 */
+
+static bool
+gyro_axis(uint32_t field)
+{
+	return field >= HID_FIELD_GYRO_X && field <= HID_FIELD_GYRO_X + 2;
+}
+
+static double
+location_get_double(void *event, uint32_t field)
+{
+	double value = real_get_double(event, field);
+
+	return gyro_axis(field) ? value * DEG_TO_RAD : value;
+}
+
+static double
+location_get_float(void *event, uint32_t field)
+{
+	double value = real_get_float(event, field);
+
+	return gyro_axis(field) ? value * DEG_TO_RAD : value;
+}
+
+static bool
+replace_got(intptr_t slide, uintptr_t slot, const char *symbol, void *replacement, void **original)
+{
+	void **got = (void **)(slot + slide);
+	void *expected = dlsym(RTLD_DEFAULT, symbol);
+	vm_address_t page = (vm_address_t)got & ~(vm_address_t)(vm_page_size - 1);
+
+	if (expected == NULL || *got != expected) {
+		fprintf(stderr, "redwood: locationd: GOT slot %#lx holds %p, not %s %p; left alone\n", slot, *got, symbol, expected);
+		return false;
+	}
+	if (vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS &&
+	    vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+		fprintf(stderr, "redwood: locationd: GOT not writable\n");
+		return false;
+	}
+	*original = expected;
+	*got = replacement;
+	return true;
 }
 
 void
@@ -80,25 +138,16 @@ redwood_location_fixes(void)
 		fprintf(stderr, "redwood: locationd: not the 20F66 locationd, left alone\n");
 		return;
 	}
-	void **got = (void **)(GOT_DISPATCH_ONCE + slide);
-	void *once = dlsym(RTLD_DEFAULT, "dispatch_once");
-
-	if (once == NULL || *got != once) {
-		fprintf(stderr, "redwood: locationd: GOT slot holds %p, not dispatch_once %p; left alone\n", *got, once);
-		return;
-	}
 	caps_token = (void *)(MOTION_CAPS_TOKEN + slide);
 	caps_word = (volatile uint64_t *)(MOTION_CAPS_WORD + slide);
-	real_dispatch_once = (void (*)(dispatch_once_t *, dispatch_block_t))once;
-
-	vm_address_t page = (vm_address_t)got & ~(vm_address_t)(vm_page_size - 1);
-
-	if (vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE) != KERN_SUCCESS &&
-	    vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
-		fprintf(stderr, "redwood: locationd: GOT not writable\n");
+	if (!replace_got(slide, GOT_DISPATCH_ONCE, "dispatch_once", (void *)location_dispatch_once, (void **)&real_dispatch_once)) {
 		return;
 	}
-	*got = (void *)location_dispatch_once;
+	if (strstr(arguments, "loc_gyro_rad=0") == NULL &&
+	    replace_got(slide, GOT_HID_GET_DOUBLE, "IOHIDEventGetDoubleValue", (void *)location_get_double, (void **)&real_get_double) &&
+	    replace_got(slide, GOT_HID_GET_FLOAT, "IOHIDEventGetFloatValue", (void *)location_get_float, (void **)&real_get_float)) {
+		fprintf(stderr, "redwood: locationd: gyro degrees/s into radians/s for its fusion\n");
+	}
 }
 
 /*

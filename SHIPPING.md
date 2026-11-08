@@ -30,6 +30,14 @@ this file is the changelog; "Open" lists what a release must mention as known is
   cached word (0x1e20a7290, token 0x1e20a7288) without the SPU bits, so CMDeviceMotion comes from locationd.
   User verified: the Compass app dial works. Other apps that want CMDeviceMotion need their process name added
   to the libredwood INJECT group in userland/build.sh.
+- Gyro units for locationd's fusion: it took our degrees/s as radians/s, so resting noise turned the heading by
+  ~2 deg/s and a reopened Compass drifted off. IOHIDEventGetDouble/FloatValue are hooked through locationd's GOT
+  and convert gyro X/Y/Z only (apps' own CoreMotion conversion untouched). Boot-arg loc_gyro_rad=0 disables.
+  Verified: heading steady for 40 s at rest; after a figure-8 calibration the Compass app read 94-99 deg with the
+  phone hand-aligned east (user).
+- Open: magnetometer scale. A figure-8 sphere fit gives Earth's field as ~11.4 "uT" at sens_mag_k=15000 (expected
+  ~41.5 uT here), i.e. ~0.054 uT/count. Try boot-arg sens_mag_k=54000 at the next reboot; it should give the
+  calibrator a field it trusts (better accuracy than +-30 deg).
 
 ### Optional mild True Tone and corrected gyro units
 - True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame
