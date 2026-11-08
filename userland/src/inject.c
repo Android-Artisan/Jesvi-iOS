@@ -678,27 +678,23 @@ my_value_for_entitlement(id connection, SEL selector, CFStringRef entitlement)
 	return answer;
 }
 
-/*
- * Auto-brightness (B, 2026-11-07): with our ambient light service (page 0xFF00 usage 4) CoreBrightness asks a helper
- * -shouldMitigateHarmony: ("Harmony" = True Tone). Its implementation (cache 0x1af03a028) passes one of its ivars
- * (offset in 0x1ddda5140) to 0x1af0a2010, which reads +0x1c8 of it: that object is never made here (no colour
- * sensor), so backboardd died with SIGSEGV at 0x1c8 in a loop. With that ivar NULL the answer is NO (nothing of True
- * Tone to mitigate); otherwise Apple's own code runs.
- */
+/* CBABModuleiOS calls shouldMitigateHarmony: even when its auto-brightness
+ * controller (_AABC) could not be constructed. Guard that null controller;
+ * this is not a True Tone implementation or a missing colour-sensor object. */
 #define CB_MITIGATE_HARMONY     0x1af03a028UL
-#define CB_HARMONY_IVAR_OFFSET  0x1ddda5140UL
+#define CB_AABC_IVAR_OFFSET  0x1ddda5140UL
 static BOOL (*orig_mitigate_harmony)(id self, SEL selector, id arg);
 
 static BOOL
 my_mitigate_harmony(id self, SEL selector, id arg)
 {
-	int32_t offset = *(const int32_t *)(CB_HARMONY_IVAR_OFFSET + slide);
+	int32_t offset = *(const int32_t *)(CB_AABC_IVAR_OFFSET + slide);
 
 	if (self == NULL || *(void * const *)((const char *)self + offset) == NULL) {
 		static int told;
 
 		if (told++ < 3) {
-			say("redwood: brightness: -shouldMitigateHarmony: with no True Tone object: NO\n");
+			say("redwood: brightness: -shouldMitigateHarmony: with no auto-brightness controller: NO\n");
 		}
 		return NO;
 	}
@@ -707,6 +703,88 @@ my_mitigate_harmony(id self, SEL selector, id arg)
 
 /* Installed from the sensors thread right before the light service is made (not at start-up: walking every class
  * there hung backboardd); only CoreBrightness's own classes are looked at (objc_copyClassNamesForImage). */
+/* Optional software-only True Tone approximation. The native toggle controls a
+ * mild fixed warmth, not a claimed color-sensor measurement. DQE applies the
+ * channel gains once; no per-frame rendering or polling of the GPU is needed. */
+static CFTypeRef (*tone_original_copy)(id, SEL, CFStringRef);
+static BOOL (*tone_original_set)(id, SEL, CFTypeRef, CFStringRef);
+static bool tone_enabled;
+
+static CFTypeRef
+tone_copy(id self, SEL selector, CFStringRef key)
+{
+	if (key && (CFEqual(key, CFSTR("ColorAdaptationAvailable")) ||
+	    CFEqual(key, CFSTR("SupportsAmbientColorAdaptation")))) return CFRetain(kCFBooleanTrue);
+	if (key && CFEqual(key, CFSTR("ColorAdaptationEnabled")))
+		return CFRetain(__atomic_load_n(&tone_enabled, __ATOMIC_RELAXED) ? kCFBooleanTrue : kCFBooleanFalse);
+	CFTypeRef original = tone_original_copy(self, selector, key);
+	if (key && CFEqual(key, CFSTR("SupportedColorFX"))) {
+		CFMutableDictionaryRef result = original && CFGetTypeID(original) == CFDictionaryGetTypeID() ?
+		    CFDictionaryCreateMutableCopy(NULL, 0, original) : CFDictionaryCreateMutable(NULL, 0,
+		    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		if (result) CFDictionarySetValue(result, CFSTR("SupportsAmbientColorAdaptation"), kCFBooleanTrue);
+		if (original) CFRelease(original);
+		return result;
+	}
+	return original;
+}
+
+static BOOL
+tone_set(id self, SEL selector, CFTypeRef value, CFStringRef key)
+{
+	if (key && CFEqual(key, CFSTR("ColorAdaptationEnabled")) && value) {
+		bool enabled;
+		if (CFGetTypeID(value) == CFBooleanGetTypeID()) enabled = CFBooleanGetValue(value);
+		else if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+			int n = 0; if (!CFNumberGetValue(value, kCFNumberIntType, &n)) return NO; enabled = n != 0;
+		} else return NO;
+		__atomic_store_n(&tone_enabled, enabled, __ATOMIC_RELAXED);
+		CFPreferencesSetAppValue(CFSTR("SoftwareTrueToneEnabled"), enabled ? kCFBooleanTrue : kCFBooleanFalse,
+		    CFSTR("com.redwood.display"));
+		CFPreferencesAppSynchronize(CFSTR("com.redwood.display"));
+		((void (*)(id, SEL, CFStringRef, CFTypeRef))objc_msgSend)(self,
+		    sel_registerName("sendNotificationForKey:withValue:"), key, enabled ? kCFBooleanTrue : kCFBooleanFalse);
+		say("redwood: software True Tone approximation %s\n", enabled ? "on" : "off");
+		return YES;
+	}
+	return tone_original_set(self, selector, value, key);
+}
+
+static void
+software_tone_fix(void)
+{
+	if (tone_original_copy) return;
+	Class cls = objc_getClass("CBColorModuleiOS");
+	Method copy = cls ? class_getInstanceMethod(cls, sel_registerName("copyPropertyForKey:")) : NULL;
+	Method set = cls ? class_getInstanceMethod(cls, sel_registerName("setProperty:forKey:")) : NULL;
+	if (!copy || !set || (uintptr_t)method_getImplementation(copy) != 0x1aefc12c8UL + slide ||
+	    (uintptr_t)method_getImplementation(set) != 0x1aefa9a34UL + slide) {
+		say("redwood: software True Tone: unexpected CoreBrightness methods; left alone\n"); return;
+	}
+	CFPropertyListRef pref = CFPreferencesCopyAppValue(CFSTR("SoftwareTrueToneEnabled"), CFSTR("com.redwood.display"));
+	tone_enabled = pref && CFGetTypeID(pref) == CFBooleanGetTypeID() && CFBooleanGetValue(pref);
+	if (pref) CFRelease(pref);
+	tone_original_copy = (void *)method_getImplementation(copy);
+	tone_original_set = (void *)method_getImplementation(set);
+	method_setImplementation(copy, (IMP)tone_copy);
+	method_setImplementation(set, (IMP)tone_set);
+	say("redwood: software True Tone: native toggle bridged to optional DQE warmth\n");
+}
+
+void redwood_software_tone_update(bool display_on);
+void
+redwood_software_tone_update(bool display_on)
+{
+	static int applied = -1;
+	int wanted = __atomic_load_n(&tone_enabled, __ATOMIC_RELAXED) ? 1 : 0;
+	if (!tone_original_copy || !display_on || applied == wanted) return;
+	const char *request = wanted ? "fb.warm 1" : "fb.warm 0";
+	char response[256] = {0}; size_t size = sizeof(response);
+	if (sysctlbyname("kern.redwood.poke", response, &size, (void *)request, strlen(request)) == 0 &&
+	    strstr(response, wanted ? "warm on" : "warm off")) applied = wanted;
+}
+
+static void brightness_registry_fix(void);
 void redwood_brightness_guard(void);
 void
 redwood_brightness_guard(void)
@@ -719,6 +797,8 @@ redwood_brightness_guard(void)
 	if (orig_mitigate_harmony != NULL) {
 		return;
 	}
+	brightness_registry_fix();
+	software_tone_fix();
 	names = objc_copyClassNamesForImage(image, &count);
 	for (unsigned i = 0; names != NULL && i < count; i++) {
 		Class cls = objc_getClass(names[i]);
@@ -731,7 +811,7 @@ redwood_brightness_guard(void)
 			break;
 		}
 	}
-	say("redwood: brightness: True Tone guard %s (%u CoreBrightness classes)\n",
+	say("redwood: brightness: controller null guard %s (%u CoreBrightness classes)\n",
 	    orig_mitigate_harmony ? "on" : "NOT FOUND", count);
 	free(names);
 }
@@ -1065,6 +1145,94 @@ static const struct virtual_service_callbacks service_callbacks = {
  * how fast the machine is and on how many processors it has, so no fixed delay avoids it:
  * the service is made again until the server has opened it.
  */
+/* CoreBrightness resolves an ALS HID registry ID to a real IOKit entry before
+ * constructing _AABC. Virtual HID IDs have no such entry. This adapter changes
+ * only CoreBrightness's verified import stub; HID property/event routing keeps
+ * its original virtual ID. The framebuffer is a temporary metadata backing.
+ */
+extern CFNumberRef IOHIDServiceClientGetRegistryID(IOHIDServiceClientRef);
+extern CFTypeRef IOHIDServiceClientCopyProperty(IOHIDServiceClientRef, CFStringRef);
+static CFNumberRef als_backing_registry_id;
+static CFNumberRef
+brightness_als_registry_id(IOHIDServiceClientRef service)
+{
+    CFTypeRef product = IOHIDServiceClientCopyProperty(service, CFSTR("Product"));
+    bool ours = product && CFGetTypeID(product) == CFStringGetTypeID() &&
+        CFEqual(product, CFSTR("Redwood ambient light sensor"));
+    if (product) CFRelease(product);
+    if (ours && als_backing_registry_id) return als_backing_registry_id;
+    return IOHIDServiceClientGetRegistryID(service);
+}
+
+static void
+brightness_registry_fix(void)
+{
+    const uint32_t expected[] = { 0xb0ef5070, 0x912c5210, 0xd61f0200 };
+    uint32_t *stub = (uint32_t *)(0x1afb35b38UL + slide);
+    if (als_backing_registry_id) return;
+    if (memcmp(stub, expected, sizeof(expected))) {
+        say("redwood: ALS registry bridge: unexpected stub %08x %08x %08x\n", stub[0], stub[1], stub[2]); return;
+    }
+    io_service_t backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
+    uint64_t id = 0;
+    if (!backing || IORegistryEntryGetRegistryEntryID(backing, &id) != KERN_SUCCESS) {
+        if (backing) IOObjectRelease(backing);
+        say("redwood: ALS registry bridge: no backing service\n");
+        return;
+    }
+    IOObjectRelease(backing);
+    uintptr_t target = (uintptr_t)brightness_als_registry_id;
+    int64_t pages = ((int64_t)(target & ~(uintptr_t)4095) -
+        (int64_t)((uintptr_t)stub & ~(uintptr_t)4095)) / 4096;
+    vm_address_t island = 0;
+    if (pages < -1048576 || pages >= 1048576) {
+        vm_address_t hint = 0x170000000UL; /* below the reserved shared-cache range */
+        for (unsigned i = 0; i < 64; i++) {
+            island = hint - (vm_address_t)i * 0x1000000;
+            if (vm_allocate(mach_task_self(), &island, vm_page_size, 0 /* fixed, no overwrite */) == KERN_SUCCESS) break;
+            island = 0;
+        }
+        if (!island) { say("redwood: ALS registry bridge: no nearby code island\n"); return; }
+        uint32_t *code = (uint32_t *)island;
+        code[0] = 0x58000050; /* ldr x16, literal at +8 */
+        code[1] = 0xd61f0200;
+        memcpy(code + 2, &target, sizeof(target));
+        if (vm_protect(mach_task_self(), island, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE) != KERN_SUCCESS) {
+            vm_deallocate(mach_task_self(), island, vm_page_size); return;
+        }
+        target = island;
+        pages = ((int64_t)(target & ~(uintptr_t)4095) - (int64_t)((uintptr_t)stub & ~(uintptr_t)4095)) / 4096;
+        if (pages < -1048576 || pages >= 1048576) { vm_deallocate(mach_task_self(), island, vm_page_size); return; }
+    }
+    void (*invalidate)(void *, size_t) = dlsym(RTLD_DEFAULT, "sys_icache_invalidate");
+    if (!invalidate) {
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        say("redwood: ALS registry bridge: cache invalidation unavailable\n"); return;
+    }
+    if (island) invalidate((void *)island, 16);
+    vm_address_t page = (vm_address_t)stub & ~(vm_address_t)(vm_page_size - 1);
+    if (vm_protect(mach_task_self(), page, vm_page_size, FALSE,
+        VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE | VM_PROT_COPY) != KERN_SUCCESS) {
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        say("redwood: ALS registry bridge: code page could not be copied\n");
+        return;
+    }
+    als_backing_registry_id = CFNumberCreate(NULL, kCFNumberSInt64Type, &id);
+    if (!als_backing_registry_id) {
+        vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        if (island) vm_deallocate(mach_task_self(), island, vm_page_size);
+        return;
+    }
+    uint32_t immediate = (uint32_t)pages & 0x1fffff;
+    uint32_t branch[2] = { 0x90000010 | ((immediate & 3) << 29) | ((immediate >> 2) << 5),
+        0x91000210 | ((uint32_t)(target & 4095) << 10) };
+    uint64_t pair; memcpy(&pair, branch, sizeof(pair));
+    __atomic_store_n((uint64_t *)stub, pair, __ATOMIC_SEQ_CST);
+    invalidate(stub, 12);
+    vm_protect(mach_task_self(), page, vm_page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    say("redwood: ALS registry bridge: virtual light maps to IOKit ID %llu\n", id);
+}
+
 static IOHIDServiceClientRef
 make_service(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display)
 {

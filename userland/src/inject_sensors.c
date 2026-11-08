@@ -30,6 +30,7 @@
  */
 #include <Block.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -48,6 +49,7 @@
 #include <unistd.h>
 
 #include "redwood_sensors.h"
+#include "brightness_policy.h"
 
 void redwood_sensors_early(void);
 void redwood_sensors_client(void *client);
@@ -130,12 +132,8 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int device = -1;
 static double gyro_k = 1.0 / 16400 * M_PI / 180;        /* counts to rad/s */
 static double mag_k = 0.015;                            /* counts to uT */
-/*
- * sens_als=1: the ambient light service too. Off by default (B, 2026-11-06): with it, CoreBrightness (in backboardd)
- * set up auto-brightness and read through a NULL object at +0x1c8 (CoreBrightness 0x1af0a2030, called from
- * 0x1af03a05c) -- backboardd crashed every 10 s and the screen stayed at the boot text. What it expects of an ALS
- * (calibration, placement properties) is still to be found; rotation, compass and proximity do not need it.
- */
+/* ALS is on by default. sens_als=0 disables both the service and the automatic
+ * luminance bridge. The controller null guard permits boot without a native ALS controller. */
 static long use_als;
 static mach_timebase_info_data_t timebase;
 
@@ -219,6 +217,15 @@ make_sensor(IOHIDEventSystemClientRef client, const char *product, int usage, bo
 	CFDictionarySetValue(properties, CFSTR("Transport"), CFSTR("SPI"));
 	CFDictionarySetValue(properties, CFSTR("Manufacturer"), CFSTR("redwood"));
 	CFDictionarySetValue(properties, CFSTR("Product"), name);
+	CFDictionarySetValue(properties, CFSTR("VendorID"), zero);
+	if (usage == HID_USAGE_AMBIENT_LIGHT) {
+		/* CoreBrightness takes an ALS service only if it is built in AND its VendorID is Apple's (0x5ac: cache
+		 * 0x1aeff9eb8 "subs w8, w8, #0x5ac"): without it its auto-brightness controller never started */
+		CFNumberRef apple = number(0x5ac);
+
+		CFDictionarySetValue(properties, CFSTR("VendorID"), apple);
+		CFRelease(apple);
+	}
 	if (usage == HID_USAGE_AMBIENT_LIGHT) {
 		/*
 		 * Auto-brightness's lux -> nits curve (B, 2026-11-07): CoreBrightness asks the ALS service for ALSCurveInfo
@@ -252,7 +259,6 @@ make_sensor(IOHIDEventSystemClientRef client, const char *product, int usage, bo
 		CFRelease(prefs);
 		CFRelease(curve);
 	}
-	CFDictionarySetValue(properties, CFSTR("VendorID"), zero);
 	CFDictionarySetValue(properties, CFSTR("ProductID"), zero);
 	if (top) {
 		CFDictionarySetValue(properties, CFSTR("Placement"), one);
@@ -477,6 +483,211 @@ micros(uint64_t absolute)
 	return absolute * timebase.numer / timebase.denom / 1000;
 }
 
+/* Port-side automatic luminance bridge. The stock controller receives TrustedLux
+ * but its automatic ramp does not reach the backlight on this platform. Keep
+ * Apple's setting, display-off state and DisplayNitsKey output API; only the
+ * ambient-to-target policy and smoothing live here. No True Tone spoofing. */
+static double automatic_lux;
+static uint64_t automatic_sample_at;
+
+static CFTypeRef
+automatic_property(id client, CFStringRef key)
+{
+	return ((CFTypeRef (*)(id, SEL, CFStringRef))objc_msgSend)(client,
+	    sel_registerName("copyPropertyForKey:"), key);
+}
+
+static bool
+automatic_boolean(id client, CFStringRef key)
+{
+	CFTypeRef value = automatic_property(client, key);
+	bool result = false;
+	if (value != NULL) {
+		if (CFGetTypeID(value) == CFBooleanGetTypeID()) result = CFBooleanGetValue(value);
+		else if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+			int n = 0;
+			if (CFNumberGetValue(value, kCFNumberIntType, &n)) result = n != 0;
+		}
+		CFRelease(value);
+	}
+	return result;
+}
+
+static double
+automatic_current(id client)
+{
+	CFTypeRef value = automatic_property(client, CFSTR("DisplayBrightness"));
+	double nits = -1;
+	if (value != NULL) {
+		if (CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+			CFTypeRef n = CFDictionaryGetValue(value, CFSTR("Nits"));
+			if (n != NULL && CFGetTypeID(n) == CFNumberGetTypeID())
+				CFNumberGetValue(n, kCFNumberDoubleType, &nits);
+		}
+		CFRelease(value);
+	}
+	return nits;
+}
+
+/* The Control Center slider also writes the legacy backlight interface.
+ * Observe that input separately: DisplayBrightness.Nits need not change when
+ * backboardd sends a legacy slider write. Native nits writes leave this value
+ * unchanged, so this distinguishes a manual gesture from our own output. */
+static double
+automatic_slider(void)
+{
+	static io_service_t backlight;
+	if (backlight == 0) backlight = IOServiceGetMatchingService(0, IOServiceMatching("AppleARMBacklight"));
+	if (backlight == 0) return -1;
+	CFTypeRef value = IORegistryEntryCreateCFProperty(backlight, CFSTR("IODisplayParameters"), NULL, 0);
+	double level = -1, maximum = 0;
+	if (value != NULL && CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+		CFTypeRef brightness = CFDictionaryGetValue(value, CFSTR("brightness"));
+		if (brightness != NULL && CFGetTypeID(brightness) == CFDictionaryGetTypeID()) {
+			CFTypeRef n = CFDictionaryGetValue(brightness, CFSTR("value"));
+			CFTypeRef m = CFDictionaryGetValue(brightness, CFSTR("max"));
+			if (n != NULL && m != NULL && CFGetTypeID(n) == CFNumberGetTypeID() && CFGetTypeID(m) == CFNumberGetTypeID()) {
+				CFNumberGetValue(n, kCFNumberDoubleType, &level);
+				CFNumberGetValue(m, kCFNumberDoubleType, &maximum);
+			}
+		}
+	}
+	if (value != NULL) CFRelease(value);
+	return maximum > 0 && level >= 0 ? level / maximum : -1;
+}
+
+static void *
+automatic_brightness_thread(__unused void *arg)
+{
+	id client = NULL;
+	uint64_t gate_at = 0, step_at = 0, report_at = 0, save_at = 0;
+	useconds_t wait_us = 500000;
+	struct rb_policy policy = {0};
+	bool loaded = false;
+	double current = 3, sent = -1, last_slider = -1;
+	bool active = false, enabled = false;
+	pthread_setname_np("redwood auto brightness");
+	for (;;) {
+		usleep(wait_us);
+		wait_us = 500000;
+		id pool = ((id (*)(id, SEL))objc_msgSend)(
+		    ((id (*)(Class, SEL))objc_msgSend)(objc_getClass("NSAutoreleasePool"), sel_registerName("alloc")),
+		    sel_registerName("init"));
+		if (client == NULL) {
+			Class cls = objc_getClass("BrightnessSystemClient");
+			if (cls != NULL) client = ((id (*)(id, SEL))objc_msgSend)(
+			    ((id (*)(Class, SEL))objc_msgSend)(cls, sel_registerName("alloc")), sel_registerName("init"));
+		}
+		if (!loaded) {
+			CFPropertyListRef saved = CFPreferencesCopyAppValue(CFSTR("BrightnessAnchor"), CFSTR("com.redwood.display"));
+			if (saved != NULL && CFGetTypeID(saved) == CFDictionaryGetTypeID()) {
+				CFTypeRef l = CFDictionaryGetValue(saved, CFSTR("Lux")), n = CFDictionaryGetValue(saved, CFSTR("Nits"));
+				if (l && n && CFGetTypeID(l) == CFNumberGetTypeID() && CFGetTypeID(n) == CFNumberGetTypeID()) {
+					CFNumberGetValue(l, kCFNumberDoubleType, &policy.anchor_lux);
+					CFNumberGetValue(n, kCFNumberDoubleType, &policy.anchor_nits);
+					policy.anchored = isfinite(policy.anchor_lux) && policy.anchor_lux >= 0 &&
+					    isfinite(policy.anchor_nits) && policy.anchor_nits >= 3 && policy.anchor_nits <= 420;
+				}
+			}
+			if (saved) CFRelease(saved);
+			loaded = true;
+		}
+		uint64_t now = micros(mach_absolute_time()), sample_at;
+		double lux;
+		pthread_mutex_lock(&lock);
+		lux = automatic_lux;
+		sample_at = automatic_sample_at;
+		pthread_mutex_unlock(&lock);
+		if (save_at && now >= save_at && policy.anchored) {
+			CFNumberRef l = CFNumberCreate(NULL, kCFNumberDoubleType, &policy.anchor_lux);
+			CFNumberRef n = CFNumberCreate(NULL, kCFNumberDoubleType, &policy.anchor_nits);
+			const void *keys[] = { CFSTR("Lux"), CFSTR("Nits") }, *values[] = { l, n };
+			if (l && n) {
+				CFDictionaryRef saved = CFDictionaryCreate(NULL, keys, values, 2,
+				    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+				CFPreferencesSetAppValue(CFSTR("BrightnessAnchor"), saved, CFSTR("com.redwood.display"));
+				CFPreferencesAppSynchronize(CFSTR("com.redwood.display"));
+				CFRelease(saved);
+			}
+			if (l) CFRelease(l); if (n) CFRelease(n);
+			save_at = 0;
+		}
+		if (client == NULL || sample_at == 0 || now < sample_at || now - sample_at > 3000000) {
+			active = false;
+			wait_us = 1000000;
+			goto next;
+		}
+		if (now - gate_at >= 250000) {
+			gate_at = now;
+			enabled = automatic_boolean(client, CFSTR("DisplayBrightnessAuto"));
+			bool on = automatic_boolean(client, CFSTR("DisplayOn"));
+			extern void redwood_software_tone_update(bool);
+			redwood_software_tone_update(on);
+			if (!enabled || !on) {
+				active = false;
+				sent = -1;
+				wait_us = 1000000;
+				goto next;
+			}
+			double actual = automatic_current(client);
+			double slider = automatic_slider();
+			if (!active) {
+				if (!isfinite(actual) || actual < 2 || actual > 420) goto next;
+				current = actual;
+				sent = -1;
+				step_at = now;
+				active = true;
+				last_slider = slider;
+				rb_wake(&policy, now / 1e6, actual);
+				say("redwood: auto brightness: active at %.2f lux, %.2f nits\n", lux, current);
+			} else if (slider >= 0 && last_slider >= 0 && fabs(slider - last_slider) > .0001) {
+				actual = fmax(3, fmin(420, slider * 420));
+				/* Anchor a manual adjustment to this lighting; the policy holds it
+				 * locally and releases it across a sustained large ambient change. */
+				rb_manual(&policy, now / 1e6, lux, actual);
+				save_at = now + 10000000;
+				current = actual;
+				sent = actual;
+
+			}
+			last_slider = slider;
+		}
+
+		if (!active || !enabled) goto next;
+		{
+			double target = rb_observe(&policy, now / 1e6, lux);
+			double dt = fmin(.5, (now - step_at) / 1e6);
+			step_at = now;
+			double tau = target > current ? .9 : 2.;
+			if (fabs(target - current) > fmax(.2, current * .01)) wait_us = 50000;
+			current = exp(log(current) + (log(target) - log(current)) * (1 - exp(-dt / tau)));
+			if (fabs(current - target) < .15) current = target;
+			if (sent >= 0 && fabs(current - sent) < fmax(.15, sent * .005)) goto next;
+			/* Check display power again immediately before the write. */
+			if (!automatic_boolean(client, CFSTR("DisplayOn"))) { active = false; goto next; }
+			CFNumberRef number = CFNumberCreate(NULL, kCFNumberDoubleType, &current);
+			const void *keys[] = { CFSTR("Brightness"), CFSTR("Commit") };
+			const void *values[] = { number, kCFBooleanFalse };
+			CFDictionaryRef request = number ? CFDictionaryCreate(NULL, keys, values, 2,
+			    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks) : NULL;
+			if (request != NULL) {
+				bool ok = ((bool (*)(id, SEL, CFTypeRef, CFStringRef))objc_msgSend)(client,
+				    sel_registerName("setProperty:forKey:"), request, CFSTR("DisplayNitsKey"));
+				if (ok) sent = current;
+				CFRelease(request);
+			}
+			if (number != NULL) CFRelease(number);
+			if (now - report_at > 5000000) {
+				report_at = now;
+				say("redwood: auto brightness: %.2f lux -> %.2f nits (target %.2f, anchor %s)\n", lux, sent, target, policy.anchored ? "yes" : "no");
+			}
+		}
+next:
+		((void (*)(id, SEL))objc_msgSend)(pool, sel_registerName("drain"));
+	}
+	return NULL;
+}
+
 static void *
 sensors_thread(void *arg)
 {
@@ -491,7 +702,7 @@ sensors_thread(void *arg)
 	if (use_als) {
 		extern void redwood_brightness_guard(void);
 
-		redwood_brightness_guard();     /* (CoreBrightness crashed on True Tone without it: inject.c) */
+		redwood_brightness_guard();     /* guard an absent native auto-brightness controller */
 	}
 	sensor.light = use_als ? make_sensor(client, "Redwood ambient light sensor", HID_USAGE_AMBIENT_LIGHT, false, &sensor.light_made) :
 	    NULL;                       /* (sens_als=1: see use_als) */
@@ -501,6 +712,11 @@ sensors_thread(void *arg)
 	sensor.compass = make_sensor(client, "Redwood magnetometer", HID_USAGE_COMPASS, false, &sensor.compass_made);
 	say("redwood: sensors: services: light %p, accelerometer %p, proximity %p, gyroscope %p, magnetometer %p\n",
 	    (void *)sensor.light, (void *)sensor.accel, (void *)sensor.proximity, (void *)sensor.gyro, (void *)sensor.compass);
+	if (sensor.light != NULL) {
+		pthread_t automatic_thread;
+		if (pthread_create(&automatic_thread, NULL, automatic_brightness_thread, NULL) == 0)
+			pthread_detach(automatic_thread);
+	}
 	while (read(device, &s, sizeof(s)) == (ssize_t)sizeof(s)) {
 		uint64_t now_us = micros(s.time);
 
@@ -541,6 +757,10 @@ sensors_thread(void *arg)
 			} else if (front_at != 0 && now_us - front_at < 5000000) {
 				break;          /* the front sensor speaks: the rear one is not what the screen sees */
 			}
+			pthread_mutex_lock(&lock);
+			automatic_lux = lux;
+			automatic_sample_at = now_us;
+			pthread_mutex_unlock(&lock);
 			diff = lux > lux_sent ? lux - lux_sent : lux_sent - lux;
 			/* on a change of more than 5 % (or 2 lux), and once a second anyway */
 			if (sensor.light != NULL && (lux_sent == UINT32_MAX || diff * 20 > lux_sent || diff > 2 ||

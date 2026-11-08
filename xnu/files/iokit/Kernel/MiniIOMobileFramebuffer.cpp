@@ -52,6 +52,7 @@ void dbg_fb_mode(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_cal(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap);
+void dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap);
 }
 class IOMobileFramebuffer;
 static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.mode */
@@ -325,6 +326,7 @@ static_assert(sizeof(gPanelNits) / sizeof(gPanelNits[0]) == sizeof(gPanelDBV) / 
 #include "MiniIOMobileFramebufferCalibration.h"
 static TUNABLE(uint32_t, gFactoryAuto, "fb_cal", 1);      /* (on by default: user-verified 2026-11-07; checksum-gated) */
 static uint8_t gFactoryData[2][7392], gFactorySavedGamma[34];
+static bool gWarmOn;
 static bool gFactoryReady, gFactoryEnabled, gFactoryRestore;
 static uint16_t gFactoryChecksums[2];
 static bool factoryLoad(IOMobileFramebuffer *fb); /* caller holds fDsimLock */
@@ -984,6 +986,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	redwood_dbgport_add("fb.cal", "[address length]: read panel calibration SPI flash (JEDEC ID if no args; factory range 0xf0000..0xf8fff, max 128 bytes)", dbg_fb_cal);
+	redwood_dbgport_add("fb.warm", "[0|1]: optional mild software True Tone approximation, restore exact prior DQE state on disable", dbg_fb_warm);
 	redwood_dbgport_add("fb.factory", "[0|1]: factory gamma/AOR status, disable/restore, or load/enable verified normal and 120 Hz calibration", dbg_fb_factory);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
 	/* for who draws with the GPU (userland/src/eagl.c): a frame need not be waited for before it is handed over */
@@ -2502,7 +2505,8 @@ IOMobileFramebuffer::setProperties(OSObject * properties)
 	if (level == NULL) {
 		return kIOReturnUnsupported;
 	}
-	brightnessRequest(level->unsigned32BitValue());
+	uint32_t native = level->unsigned32BitValue();
+	brightnessRequest(native);
 	return kIOReturnSuccess;
 }
 
@@ -4034,7 +4038,7 @@ AppleARMBacklight::takeBrightness(OSObject * value, const char * name)
 	fValue = number->unsigned32BitValue() > kBacklightMax ? kBacklightMax : number->unsigned32BitValue();
 	publishParameters();
 	if (fFB != NULL) {
-		fFB->brightnessRequest((uint32_t) ((uint64_t) fValue * kPanelMaxNits), gPendingFade);     /* value / max * 420 nits, in 16.16 */
+		fFB->brightnessRequest((uint32_t) ((uint64_t) fValue * kPanelMaxNits), gPendingFade);
 	}
 	fbSay("fb: bl: backlight %s = %u of %u\n", name, fValue, kBacklightMax);
 	return true;
@@ -4056,6 +4060,24 @@ AppleARMBacklight::setProperties(OSObject * properties)
 		OSNumber * fade = OSDynamicCast(OSNumber, dict->getObject("FadePeriod"));
 
 		gPendingFade = fade != NULL ? fade->unsigned32BitValue() : 0;
+	}
+	/* iOS also writes native 16.16 luminance here. It must succeed and remain
+	 * readable. Legacy brightness writes remain active for Control Center;
+	 * neither interface permanently disables the other. */
+	OSNumber * nits = OSDynamicCast(OSNumber, dict->getObject("brightness-nits"));
+	if (nits != NULL) {
+		uint64_t raw = nits->unsigned64BitValue();
+		uint32_t native = raw > ((uint64_t) kPanelMaxNits << 16) ? kPanelMaxNits << 16 : (uint32_t) raw;
+		setProperty("brightness-nits", native, 32);
+		if (fFB != NULL) {
+			fFB->brightnessRequest(native, gPendingFade);
+		}
+		taken = true;
+	}
+	OSNumber * nitsCap = OSDynamicCast(OSNumber, dict->getObject("brightness-nits-cap"));
+	if (nitsCap != NULL) {
+		setProperty("brightness-nits-cap", nitsCap);
+		taken = true;
 	}
 	keys = OSCollectionIterator::withCollection(dict);
 	while (keys != NULL && (key = OSDynamicCast(OSSymbol, keys->getNextObject())) != NULL) {
@@ -4535,6 +4557,7 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	dpuWrite(fDecon, DECON_TRIG_CONTROL, trig);
 	fPanelWidth = width;
 	fPanelHeight = height;
+	if (gWarmOn) dpuWrite(fDecon, 0x2004, (height << 16) | width);
 	gModeHz = (fModeAsk == 1 || fModeAsk == 3) ? 120 : 60;           /* fb_mode=2: the resolution alone, at 60 Hz */
 	if (gFactoryEnabled && fBLCall != NULL) {
 		fBLValid = false;
@@ -4765,6 +4788,63 @@ factoryParameters(uint32_t level, uint32_t *aor, uint8_t *gamma)
 	uint32_t a = (data[2550 + fbCalRow(90, lo) * 2] << 8) | data[2551 + fbCalRow(90, lo) * 2];
 	uint32_t b = (data[2550 + fbCalRow(90, hi) * 2] << 8) | data[2551 + fbCalRow(90, hi) * 2];
 	*aor = fbCalLerp(a, b, weight);
+}
+
+/* Optional software True Tone approximation: a static per-channel DQE LUT.
+ * Registers/layout: Samsung dpu30/cal_9830/regs-dqe.h and dqe_reg_start().
+ * It runs in the display pipeline, not a CPU/GPU image filter. Save every
+ * touched register; OFF restores the exact baseline. No panel gamma changes. */
+static bool gWarmSaved;
+static uint32_t gWarmControl, gWarmPath, gWarmSize, gWarmWidth, gWarmHeight, gWarmLut[99];
+extern "C" void
+dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+	if (fb == NULL || fb->fDecon == NULL || n > 1 || (n && v[0] > 1)) {
+		snprintf(out, cap, "fb.warm [0|1]\n"); return;
+	}
+	if (n) {
+		IOLockLock(fb->fDsimLock);
+		if (fb->fDisplayOff || fb->fOffPending || fb->fModeWant >= 0) {
+			IOLockUnlock(fb->fDsimLock);
+			snprintf(out, cap, "warm deferred: display off or mode changing\n"); return;
+		}
+		if (v[0] && !gWarmOn) {
+			gWarmControl = dpuRead(fb->fDecon, 0x2000);
+			gWarmSize = dpuRead(fb->fDecon, 0x2004);
+			gWarmPath = dpuRead(fb->fDecon, 0x0230);
+			gWarmWidth = fb->fPanelWidth; gWarmHeight = fb->fPanelHeight;
+			for (unsigned i = 0; i < 99; i++) gWarmLut[i] = dpuRead(fb->fDecon, 0x2134 + 4 * i);
+			gWarmSaved = true;
+			const uint32_t gains[] = { 1000, 980, 940 };
+			for (unsigned c = 0; c < 3; c++) for (unsigned i = 0; i < 33; i++) {
+				uint32_t original = gWarmLut[c * 33 + i];
+				uint32_t a = gWarmControl & 4 ? original & 0x7ff : (2 * i * 1023 + 32) / 64;
+				uint32_t b = gWarmControl & 4 ? (original >> 16) & 0x7ff : ((2 * i + 1) * 1023 + 32) / 64;
+				if (i == 32 && !(gWarmControl & 4)) b = 0;
+				a = a * gains[c] / 1000; b = b * gains[c] / 1000;
+				dpuWrite(fb->fDecon, 0x2134 + 4 * (c * 33 + i),
+				    (original & ~0x07ff07ffu) | a | (b << 16));
+			}
+			dpuWrite(fb->fDecon, 0x2004, (fb->fPanelHeight << 16) | fb->fPanelWidth);
+			dpuWrite(fb->fDecon, 0x2000, gWarmControl | 4);
+			dpuWrite(fb->fDecon, 0x0230, (gWarmPath & ~(7u << 12)) | (2u << 12));
+			gWarmOn = true;
+		} else if (!v[0] && gWarmOn && gWarmSaved) {
+			for (unsigned i = 0; i < 99; i++) dpuWrite(fb->fDecon, 0x2134 + 4 * i, gWarmLut[i]);
+			uint32_t size = gWarmSize;
+			if ((gWarmPath & (7u << 12)) && (gWarmWidth != fb->fPanelWidth || gWarmHeight != fb->fPanelHeight))
+				size = (fb->fPanelHeight << 16) | fb->fPanelWidth;
+			dpuWrite(fb->fDecon, 0x2004, size);
+			dpuWrite(fb->fDecon, 0x2000, gWarmControl);
+			dpuWrite(fb->fDecon, 0x0230, gWarmPath);
+			gWarmOn = false;
+		}
+		dpuWrite(fb->fDecon, DECON_SHADOW_UPDATE,
+		    dpuRead(fb->fDecon, DECON_SHADOW_UPDATE) | (1u << 31) | (1u << 28));
+		IOLockUnlock(fb->fDsimLock);
+	}
+	snprintf(out, cap, "warm %s (software approximation; R 100%% G 98%% B 94%%)\n", gWarmOn ? "on" : "off");
 }
 
 extern "C" void
