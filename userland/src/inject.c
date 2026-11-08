@@ -55,6 +55,9 @@
 void redwood_sensors_early(void);
 void redwood_sensors_client(void *client);
 
+/* locationd: the software compass instead of the motion coprocessor's (src/inject_location.c) */
+void redwood_location_fixes(void);
+
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 
 #define CACHE_BASE 0x180000000UL                /* where the cache was built to be, before the slide */
@@ -1757,5 +1760,7 @@ redwood_init(void)
 		input_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
 		container_manager_fixes();
+	} else if (strcmp(name, "locationd") == 0) {
+		redwood_location_fixes();
 	}
 }

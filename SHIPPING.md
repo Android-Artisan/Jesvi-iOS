@@ -16,6 +16,19 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## 2026-11-08
 
+### Compass heading from the phone's magnetometer (locationd, software fusion)
+- locationd took the iPhone X's capability table at its word and waited for the motion coprocessor's fused
+  streams (HID page 0xFF0C), so heading stayed at north. libredwood now runs inside locationd too
+  (src/inject_location.c) and clears the coprocessor-fusion bits 3/4/5/7 of CLPlatformInfo::motionCaps() right
+  after locationd computes them (dispatch_once GOT hook, data only: patching code drops CS_VALID and CloudKit
+  then kills locationd). locationd now builds its software compass ("Legacy compass") and AP sensor fusion.
+  Boot-arg loc_swfusion=0 turns it off.
+- Phone verified live (runtime kern.exec_inject, no reboot): locationd stable, CLLocationManager heading
+  calibrates (accuracy +-30 deg) and reads 88-89 deg with the phone pointed east (user's reference).
+- NOT yet: Apple's Compass app dial. Apps read device motion in-process through CoreMotion, which uses
+  its own copy of the same capability table, and still wait for 0xFF0C. Next step: the same bit clear inside
+  CoreMotion.framework in app processes, or a 0xFF0C device-motion service fed from locationd's fusion.
+
 ### Optional mild True Tone and corrected gyro units
 - True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame
   CPU/GPU filter, no edits to the panel's factory gamma/AOR tables. Preference persists; initially off.
