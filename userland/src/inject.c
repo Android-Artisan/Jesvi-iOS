@@ -57,6 +57,8 @@ void redwood_sensors_client(void *client);
 
 /* locationd: the software compass instead of the motion coprocessor's (src/inject_location.c) */
 void redwood_location_fixes(void);
+/* apps: CoreMotion asks locationd for device motion instead of the SPU (src/inject_location.c) */
+void redwood_coremotion_fixes(void);
 
 extern const void *_dyld_get_shared_cache_range(size_t *length);
 
@@ -1762,5 +1764,7 @@ redwood_init(void)
 		container_manager_fixes();
 	} else if (strcmp(name, "locationd") == 0) {
 		redwood_location_fixes();
+	} else {
+		redwood_coremotion_fixes();     /* the apps named in INJECT for it (Compass) */
 	}
 }

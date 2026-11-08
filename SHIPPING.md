@@ -25,9 +25,11 @@ this file is the changelog; "Open" lists what a release must mention as known is
   Boot-arg loc_swfusion=0 turns it off.
 - Phone verified live (runtime kern.exec_inject, no reboot): locationd stable, CLLocationManager heading
   calibrates (accuracy +-30 deg) and reads 88-89 deg with the phone pointed east (user's reference).
-- NOT yet: Apple's Compass app dial. Apps read device motion in-process through CoreMotion, which uses
-  its own copy of the same capability table, and still wait for 0xFF0C. Next step: the same bit clear inside
-  CoreMotion.framework in app processes, or a 0xFF0C device-motion service fed from locationd's fusion.
+- Apple's Compass app: apps read device motion in-process through CoreMotion, which has its own copy of the
+  table (motionCaps() at cache 0x1919a4580). libredwood now also loads into Compass and pre-fills CoreMotion's
+  cached word (0x1e20a7290, token 0x1e20a7288) without the SPU bits, so CMDeviceMotion comes from locationd.
+  User verified: the Compass app dial works. Other apps that want CMDeviceMotion need their process name added
+  to the libredwood INJECT group in userland/build.sh.
 
 ### Optional mild True Tone and corrected gyro units
 - True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame

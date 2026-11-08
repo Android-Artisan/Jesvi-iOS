@@ -100,3 +100,51 @@ redwood_location_fixes(void)
 	}
 	*got = (void *)location_dispatch_once;
 }
+
+/*
+ * The same table again, inside apps: CoreMotion.framework (dyld shared cache) carries its own
+ * CLPlatformInfo::motionCaps() (0x1919a4580), and with the SPU bits set an app's CMMotionManager reads fused
+ * device motion straight from the SPU's HID stream in its own process -- the Compass app's dial among them.
+ * Its word (0x1e20a7290) and dispatch_once token (0x1e20a7288) live in the cache's __DATA_DIRTY. Before
+ * CoreMotion computes them, they are filled in: the iPhone X word that locationd computes, without the SPU
+ * fusion bits, and the token marked done. CoreMotion then asks locationd, whose own fusion now runs.
+ */
+#define CM_MOTION_CAPS_FN       0x1919a4580UL
+#define CM_MOTION_CAPS_TOKEN    0x1e20a7288UL
+#define CM_MOTION_CAPS_WORD     0x1e20a7290UL
+#define IPHONE_X_MOTION_CAPS    0x1216014dfa30cfeULL    /* what both copies compute on this system */
+#define DYLD_CACHE_BASE         0x180000000UL
+
+extern const void *_dyld_get_shared_cache_range(size_t *length);
+
+void
+redwood_coremotion_fixes(void)
+{
+	static const uint32_t caps_fn_code[4] = { 0xa9bf7bfd, 0x910003fd, 0xf0283808, 0xf9414508 };
+	char arguments[1024] = "";
+	size_t size = sizeof(arguments) - 1;
+	size_t length = 0;
+	const void *cache = _dyld_get_shared_cache_range(&length);
+
+	if (cache == NULL) {
+		return;
+	}
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && strstr(arguments, "loc_swfusion=0") != NULL) {
+		return;
+	}
+	uintptr_t slide = (uintptr_t)cache - DYLD_CACHE_BASE;
+	volatile intptr_t *token = (volatile intptr_t *)(CM_MOTION_CAPS_TOKEN + slide);
+	volatile uint64_t *word = (volatile uint64_t *)(CM_MOTION_CAPS_WORD + slide);
+
+	if (memcmp((const void *)(CM_MOTION_CAPS_FN + slide), caps_fn_code, sizeof(caps_fn_code)) != 0) {
+		fprintf(stderr, "redwood: CoreMotion: not the 20F66 cache, left alone\n");
+		return;
+	}
+	if (*token != 0) {
+		fprintf(stderr, "redwood: CoreMotion: motion caps already computed (%#llx), left alone\n", *word);
+		return;
+	}
+	*word = IPHONE_X_MOTION_CAPS & ~CAPS_SPU_FUSION;
+	__atomic_store_n(token, ~(intptr_t)0, __ATOMIC_RELEASE);
+	fprintf(stderr, "redwood: CoreMotion (%s): motion caps %#llx, device motion from locationd\n", getprogname(), *word);
+}
