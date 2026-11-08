@@ -21,6 +21,8 @@ int main(void){
  near(rb_observe(&p,59.1,10),90);
  rb_manual(&p,60,10,420);near(rb_target(&p,1500),420);
  rb_manual(&p,70,150,3);near(rb_target(&p,0),3);
+ struct rb_policy wake={0};rb_wake(&wake,0,80);rb_observe(&wake,0,10);near(rb_observe(&wake,5.1,10),30);
+ rb_wake(&wake,10,120);near(rb_observe(&wake,10,10),120);near(rb_observe(&wake,17.9,10),120);near(rb_observe(&wake,18.1,10),30);
  double old=0;for(int i=0;i<=100000;i++){double n=rb_base(i/10.);assert(isfinite(n)&&n>=3&&n<=420&&n>=old);old=n;}
  puts("brightness policy: debounce, spikes, manual anchor, wake and bounds passed");
 }

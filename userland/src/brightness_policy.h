@@ -62,8 +62,8 @@ static double rb_observe(struct rb_policy *p,double now,double lux)
   double threshold=fmax(3,.2*(p->accepted+1));
   if(!p->ready||fabs(p->mean-p->accepted)>threshold) {
    p->accepted=p->mean;p->ready=true;
-   p->target=fmax(3,fmin(420,rb_target(p,p->accepted)));
-  } else if(p->anchored) p->target=rb_target(p,p->accepted);
+  }
+  if(p->ready) p->target=fmax(3,fmin(420,rb_target(p,p->accepted)));
  }
  return p->target;
 }
