@@ -327,6 +327,7 @@ static_assert(sizeof(gPanelNits) / sizeof(gPanelNits[0]) == sizeof(gPanelDBV) / 
 static TUNABLE(uint32_t, gFactoryAuto, "fb_cal", 1);      /* (on by default: user-verified 2026-11-07; checksum-gated) */
 static uint8_t gFactoryData[2][7392], gFactorySavedGamma[34];
 static bool gWarmOn;
+static void warmApply(const uint64_t *v, unsigned n, char *out, size_t cap);
 static bool gFactoryReady, gFactoryEnabled, gFactoryRestore;
 static uint16_t gFactoryChecksums[2];
 static bool factoryLoad(IOMobileFramebuffer *fb); /* caller holds fDsimLock */
@@ -766,6 +767,9 @@ public:
 	bool            fModeLpRef;             /* fb.mode N 1: as fb_mode_lpref=1 */
 	uint32_t        fModeLpVal;             /* fb.mode N 1 L: the underrun reference: 0 Samsung's, 1 as found, else L */
 	volatile bool   fModeDone;
+	int             fWarmWant;
+	bool            fWarmDone;
+	char            fWarmReport[256];
 	char            fModeReport[1536];
 	void modeLive(int mode);
 	/* the power-off fade on the picture (gOffAlpha) */
@@ -980,6 +984,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	}
 
 	fModeWant = -1;
+	fWarmWant = -1;
 	gFbLive = this;
 	redwood_dbgport_add("fb.fade", "[dd [offms [alpha]]]: panel dimming during fades, the power-off fade at least offms (0: iOS's), on the picture (alpha 1) or the backlight (0)",
 	    dbg_fb_fade);
@@ -3144,7 +3149,7 @@ IOMobileFramebuffer::presenter(void)
 
 	for (;;) {
 		IOLockLock(fSwapLock);
-		while (fSwapsWaiting == 0 && fModeWant < 0) {
+		while (fSwapsWaiting == 0 && fModeWant < 0 && fWarmWant < 0) {
 			IOLockSleep(fSwapLock, fSwap, THREAD_UNINT);
 		}
 		if (fModeWant >= 0) {
@@ -3156,6 +3161,17 @@ IOMobileFramebuffer::presenter(void)
 			fModeWant = -1;
 			fModeDone = true;
 			IOLockWakeup(fSwapLock, (void *) (uintptr_t) &fModeDone, false);
+			IOLockUnlock(fSwapLock);
+			continue;
+		}
+		if (fWarmWant >= 0) {
+			uint64_t wanted = (uint64_t)fWarmWant;
+			IOLockUnlock(fSwapLock);
+			warmApply(&wanted, 1, fWarmReport, sizeof(fWarmReport));
+			IOLockLock(fSwapLock);
+			fWarmWant = -1;
+			fWarmDone = true;
+			IOLockWakeup(fSwapLock, &fWarmDone, false);
 			IOLockUnlock(fSwapLock);
 			continue;
 		}
@@ -4796,8 +4812,8 @@ factoryParameters(uint32_t level, uint32_t *aor, uint8_t *gamma)
  * touched register; OFF restores the exact baseline. No panel gamma changes. */
 static bool gWarmSaved;
 static uint32_t gWarmControl, gWarmPath, gWarmSize, gWarmWidth, gWarmHeight, gWarmLut[99];
-extern "C" void
-dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap)
+static void
+warmApply(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	IOMobileFramebuffer *fb = gFramebuffer;
 	if (fb == NULL || fb->fDecon == NULL || n > 1 || (n && v[0] > 1)) {
@@ -4808,6 +4824,20 @@ dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap)
 		if (fb->fDisplayOff || fb->fOffPending || fb->fModeWant >= 0) {
 			IOLockUnlock(fb->fDsimLock);
 			snprintf(out, cap, "warm deferred: display off or mode changing\n"); return;
+		}
+		/* A global update from the presenter can otherwise latch the DQE LUT
+		 * halfway through these 99 writes. Mask TE and finish the current
+		 * scan before touching either the LUT or its routing/control bits. */
+		uint32_t trigger = dpuRead(fb->fDecon, DECON_TRIG_CONTROL);
+		dpuWrite(fb->fDecon, DECON_TRIG_CONTROL, trigger | DECON_TRIG_MASK);
+		uint64_t began = mach_absolute_time(), limit;
+		nanoseconds_to_absolutetime(100 * NSEC_PER_MSEC, &limit);
+		while (!(dpuRead(fb->fDecon, DECON_GLOBAL_CONTROL) & DECON_GLOBAL_IDLE) &&
+		    mach_absolute_time() - began < limit) delay(50);
+		if (!(dpuRead(fb->fDecon, DECON_GLOBAL_CONTROL) & DECON_GLOBAL_IDLE)) {
+			dpuWrite(fb->fDecon, DECON_TRIG_CONTROL, trigger);
+			IOLockUnlock(fb->fDsimLock);
+			snprintf(out, cap, "warm deferred: frame still scanning\n"); return;
 		}
 		if (v[0] && !gWarmOn) {
 			gWarmControl = dpuRead(fb->fDecon, 0x2000);
@@ -4842,9 +4872,30 @@ dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap)
 		}
 		dpuWrite(fb->fDecon, DECON_SHADOW_UPDATE,
 		    dpuRead(fb->fDecon, DECON_SHADOW_UPDATE) | (1u << 31) | (1u << 28));
+		__asm__ volatile ("dsb sy" ::: "memory");
+		dpuWrite(fb->fDecon, DECON_TRIG_CONTROL, trigger);
 		IOLockUnlock(fb->fDsimLock);
 	}
 	snprintf(out, cap, "warm %s (software approximation; R 100%% G 98%% B 94%%)\n", gWarmOn ? "on" : "off");
+}
+
+extern "C" void
+dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+	if (!n || !fb || n > 1 || v[0] > 1) { warmApply(v, n, out, cap); return; }
+	/* Run between presentations: show()/teWait() also manipulates the trigger
+	 * mask, so fDsimLock alone cannot make a DQE update atomic. */
+	IOLockLock(fb->fSwapLock);
+	fb->fWarmWant = (int)v[0]; fb->fWarmDone = false;
+	IOLockWakeup(fb->fSwapLock, fb->fSwap, false);
+	uint64_t deadline;
+	clock_interval_to_deadline(2, NSEC_PER_SEC, &deadline);
+	while (!fb->fWarmDone) {
+		if (IOLockSleepDeadline(fb->fSwapLock, &fb->fWarmDone, deadline, THREAD_UNINT) == THREAD_TIMED_OUT) break;
+	}
+	snprintf(out, cap, "%s", fb->fWarmDone ? fb->fWarmReport : "warm deferred: presenter busy\n");
+	IOLockUnlock(fb->fSwapLock);
 }
 
 extern "C" void

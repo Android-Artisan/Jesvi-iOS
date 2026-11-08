@@ -8,10 +8,10 @@ int main(void){
  near(rb_observe(&p,5.1,10),30);
  /* A short flashlight burst must not alter the accepted target. */
  rb_observe(&p,6,1500);rb_observe(&p,7,10);near(p.target,30);
- rb_observe(&p,8,1500);near(rb_observe(&p,12.9,1500),30);
- near(rb_observe(&p,13.1,1500),420);
- rb_observe(&p,14,0);near(rb_observe(&p,21.9,0),420);
- near(rb_observe(&p,22.1,0),3);
+ rb_observe(&p,8,1500);near(rb_observe(&p,10.9,1500),30);
+ near(rb_observe(&p,11.1,1500),420);
+ rb_observe(&p,14,0);near(rb_observe(&p,18.9,0),420);
+ near(rb_observe(&p,19.1,0),3);
  /* Manual calibration survives small room-light changes, releases across a
   * sustained large transition, and is retained across wake. */
  rb_manual(&p,30,10,90);
@@ -22,7 +22,7 @@ int main(void){
  rb_manual(&p,60,10,420);near(rb_target(&p,1500),420);
  rb_manual(&p,70,150,3);near(rb_target(&p,0),3);
  struct rb_policy wake={0};rb_wake(&wake,0,80);rb_observe(&wake,0,10);near(rb_observe(&wake,5.1,10),30);
- rb_wake(&wake,10,120);near(rb_observe(&wake,10,10),120);near(rb_observe(&wake,17.9,10),120);near(rb_observe(&wake,18.1,10),30);
+ rb_wake(&wake,10,120);near(rb_observe(&wake,10,10),120);near(rb_observe(&wake,14.9,10),120);near(rb_observe(&wake,15.1,10),30);
  double old=0;for(int i=0;i<=100000;i++){double n=rb_base(i/10.);assert(isfinite(n)&&n>=3&&n<=420&&n>=old);old=n;}
  puts("brightness policy: debounce, spikes, manual anchor, wake and bounds passed");
 }

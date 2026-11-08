@@ -6,8 +6,10 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## Open (known issues)
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
-- Software True Tone is a fixed mild warmth approximation, not an ambient colour sensor. Initial toggle testing
-  exposed an unsupported notification selector and a root-only output path; follow-up fixes require phone validation.
+- Software True Tone is a fixed mild warmth approximation, not an ambient colour sensor. The toggle reload crash
+  (unsupported notification selector) and root-only output path are fixed: on/off leaves backboardd alive and
+  updates DQE. User reports corrupted colours when enabled, so it is left OFF; the appearance is not verified.
+  DQE changes now run between presentations with TE masked, preventing partially updated LUTs from scanning.
 - The screen timeout is our stand-in (backboardd), not iOS's own idle timer: native fix is TASKS R1b.
 - Mic: the kernel's diagnostic peak counter reads full scale on every capture although recorded files do not clip (only
   with `snd_debug=1`).
@@ -17,8 +19,8 @@ this file is the changelog; "Open" lists what a release must mention as known is
 ## 2026-11-08
 
 ### Adaptive brightness — `00f5122`, `1f8099b`
-- Native Auto-Brightness setting controls the port-side policy. Stable light is accepted after 5 seconds brighter /
-  8 seconds darker, then ramped smoothly. Manual slider changes anchor the preference at the current lux;
+- Native Auto-Brightness setting controls the port-side policy. Stable light is accepted after 3 seconds brighter /
+  5 seconds darker (user-adjusted from 5/8), then ramped smoothly. Manual slider changes anchor the preference at the current lux;
   substantial ambient changes blend back toward the base curve. Anchors persist after 10 seconds without edits.
 - Wake holds the current level for at least 5 seconds; screen-off and stale-sensor gates stop brightness writes.
   Settled sampling is 2 Hz, inactive 1 Hz, with up to 20 Hz during ramps. No GPU brightness filter.

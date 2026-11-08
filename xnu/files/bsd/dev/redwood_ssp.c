@@ -1179,25 +1179,47 @@ sensor_on(uint8_t id, uint32_t ms)
 	return true;
 }
 
+static uint32_t prox_init = 1;
+static void
+proximity_setup(void)
+{
+	uint8_t b[8] = {0};
+	if (!prox_init || !(ssp.found & (1ull << SSP_PROXIMITY))) return;
+	if (!ssp_cmd(0x47, SSP_AP2HUB_READ, 0, b, sizeof(b))) return;
+	bool empty = true;
+	for (unsigned i = 0; i < sizeof(b); i++) if (b[i]) empty = false;
+	if (!empty) return; /* preserve any calibration already supplied by firmware */
+	/* Samsung ssp.h's AMS autocal defaults and ssp_i2c.c's 8-byte,
+	 * big-endian threshold write. No factory/NVM calibration is overwritten. */
+	const uint16_t thresholds[] = {2400, 1600, 16368, 1000};
+	for (unsigned i = 0; i < 4; i++) { b[2 * i] = thresholds[i] >> 8; b[2 * i + 1] = thresholds[i] & 255; }
+	say("shub: proximity empty thresholds: Samsung defaults %s\n",
+	    ssp_cmd(0xf2, SSP_AP2HUB_WRITE, 0, b, sizeof(b)) ? "sent" : "NOT taken");
+}
+
 /* Queue diagnostic transactions to the SPI owner; never race an SSP command
  * from the sysctl thread. Raw proximity is off unless explicitly requested. */
 static int prox_request = -1;
 static uint16_t prox_thresholds[4];
 static bool prox_thresholds_valid;
+static uint8_t prox_info[18];
+static bool prox_info_valid;
 
 static void
 dbg_shub_prox(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
-	if (n > 1 || (n && v[0] > 1)) {
-		snprintf(out, cap, "shub.prox [0|1]: raw sampling off/on, cached proximity status\n"); return;
+	if (n > 1 || (n && v[0] > 2)) {
+		snprintf(out, cap, "shub.prox [0|1|2]: raw off/on; 2 applies Samsung's missing-calibration fallback\n"); return;
 	}
 	if (n) __atomic_store_n(&prox_request, (int)v[0], __ATOMIC_RELAXED);
 	lck_mtx_lock(&shub_lock);
-	snprintf(out, cap, "proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u%s\n",
+	snprintf(out, cap, "proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u; chip %s %#x drive %#x persist %#x pulse %#x gain %#x time %#x pulse_len %#x offset %02x%02x%s\n",
 	    last[SSP_PROXIMITY].count, last[SSP_PROXIMITY].data[0], shub_le16(last[SSP_PROXIMITY].data + 1),
 	    last[SSP_PROXIMITY_RAW].count, shub_le16(last[SSP_PROXIMITY_RAW].data),
 	    prox_thresholds_valid ? "read" : "unavailable", prox_thresholds[0], prox_thresholds[1],
-	    prox_thresholds[2], prox_thresholds[3], n ? "; request queued" : "");
+	    prox_thresholds[2], prox_thresholds[3], prox_info_valid ? "read" : "unavailable", prox_info[0],
+	    prox_info[9], prox_info[10], prox_info[11], prox_info[12], prox_info[13], prox_info[14],
+	    prox_info[17], prox_info[16], n ? "; request queued" : "");
 	lck_mtx_unlock(&shub_lock);
 }
 
@@ -1208,12 +1230,25 @@ proximity_diagnostic(void)
 	uint8_t b[8] = {0};
 	if (request < 0) return;
 	if (request) {
+		if (request == 2) {
+			/* Samsung set_prox_cal_to_ssp(): two zero s32s when the
+			 * NVM calibration file is absent. Volatile hub state only. */
+			say("shub: proximity missing-calibration fallback %s\n",
+			    ssp_cmd(0xcf, SSP_AP2HUB_WRITE, 0, b, sizeof(b)) ? "sent" : "NOT taken");
+			(void)ssp_cmd(0x58, SSP_AP2HUB_WRITE, 0, b, 4); /* default call_min */
+		}
 		/* Samsung factory/proximity.c get_proximity_all_threshold(): read8,
 		 * little endian. Read calibration, do not replace factory values. */
 		bool ok = ssp_cmd(0x47, SSP_AP2HUB_READ, 0, b, sizeof(b));
 		lck_mtx_lock(&shub_lock);
 		prox_thresholds_valid = ok;
 		if (ok) for (unsigned i = 0; i < 4; i++) prox_thresholds[i] = shub_le16(b + 2 * i);
+		lck_mtx_unlock(&shub_lock);
+		uint8_t info[18] = {0};
+		ok = ssp_cmd(0x4c, SSP_AP2HUB_READ, 0, info, sizeof(info));
+		lck_mtx_lock(&shub_lock);
+		prox_info_valid = ok;
+		if (ok) memcpy(prox_info, info, sizeof(info));
 		lck_mtx_unlock(&shub_lock);
 		if (!(ssp.enabled & (1ull << SSP_PROXIMITY_RAW))) (void)sensor_on(SSP_PROXIMITY_RAW, 200);
 	} else if (ssp.enabled & (1ull << SSP_PROXIMITY_RAW)) {
@@ -1342,6 +1377,7 @@ run(void)
 	uint32_t frames_at_time = 0;
 	uint64_t report_at = now_ns();
 
+	proximity_setup();
 	for (uint8_t id = 0; id < SSP_SENSORS && id < 32; id++) {
 		uint32_t ms = period_ms;
 
@@ -1458,6 +1494,7 @@ redwood_ssp_init(void)
 	PE_parse_boot_argn("shub_div", &div_ratio, sizeof(div_ratio));
 	PE_parse_boot_argn("shub_ap_rev", &ap_rev, sizeof(ap_rev));
 	PE_parse_boot_argn("shub_sensors", &want_sensors, sizeof(want_sensors));
+	PE_parse_boot_argn("shub_prox_init", &prox_init, sizeof(prox_init));
 	PE_parse_boot_argn("shub_ms", &period_ms, sizeof(period_ms));
 	PE_parse_boot_argn("shub_req_rpc", &req_rpc, sizeof(req_rpc));
 	PE_parse_boot_argn("shub_req_len", &req_len, sizeof(req_len));

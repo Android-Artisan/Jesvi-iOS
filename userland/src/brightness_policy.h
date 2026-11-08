@@ -57,7 +57,7 @@ static double rb_observe(struct rb_policy *p,double now,double lux)
   if(p->samples<32)p->samples++;
   p->mean+=(lux-p->mean)/p->samples;
  }
- double delay=!p->ready||p->mean>p->accepted?5:8;
+ double delay=!p->ready||p->mean>p->accepted?3:5;
  if(now>=p->hold_until&&now-p->candidate_at>=delay) {
   double threshold=fmax(3,.2*(p->accepted+1));
   if(!p->ready||fabs(p->mean-p->accepted)>threshold) {
