@@ -60,7 +60,7 @@ ${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
 cp obj/prefset ../prebuilt/userland/prefset
 cp obj/m2m_mark ../prebuilt/userland/m2m_mark
 $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
-	-o obj/libredwood.dylib.new src/inject.c src/inject_sensors.c      # (the S20's sensors: inject.c calls into it)
+	-o obj/libredwood.dylib.new src/inject.c src/inject_sensors.c src/inject_location.c   # (sensors; locationd/CoreMotion compass)
 $DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood-sb.dylib.new src/inject_sb.c
 for lib in libredwood libredwood-sb; do

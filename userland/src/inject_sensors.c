@@ -26,8 +26,9 @@
  *
  * Units still to be checked on the S20 (NOTES.md, test plan): the gyroscope's (1/16.4 thousandths of a degree a second
  * per count, Scion's inference for the S9's LSM6DSL; the S20 has an LSM6DSO behind the same firmware family) and the
- * magnetometer's (0.015 uT a count, Scion's inference). Boot-args sens_gyro_k= and sens_mag_k= (millionths: the
- * defaults are 61 = 1/16400 dps and 15000 = 0.015 uT) override them without a rebuild.
+ * magnetometer's (0.054 uT a count: a figure-8 sphere fit on the S20, 2026-11-08, put Earth's field at 11.4 "uT" with
+ * Scion's 0.015, against ~41.5 uT here). Boot-args sens_gyro_k= and sens_mag_k= (millionths: the defaults are
+ * 61 = 1/16400 dps and 54000 = 0.054 uT) override them without a rebuild.
  */
 #include <Block.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -132,7 +133,7 @@ struct service {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int device = -1;
 static double gyro_k = 1.0 / 16400;                     /* counts to HID degrees/s; CoreMotion converts once */
-static double mag_k = 0.015;                            /* counts to uT */
+static double mag_k = 0.054;                            /* counts to uT */
 /* ALS is on by default. sens_als=0 disables both the service and the automatic
  * luminance bridge. The controller null guard permits boot without a native ALS controller. */
 static long use_als;
@@ -817,7 +818,7 @@ redwood_sensors_early(void)
 	mach_timebase_info(&timebase);
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
 		gyro_k = boot_arg(arguments, "sens_gyro_k", 61) / 1e6;
-		mag_k = boot_arg(arguments, "sens_mag_k", 15000) / 1e6;
+		mag_k = boot_arg(arguments, "sens_mag_k", 54000) / 1e6;
 		use_als = boot_arg(arguments, "sens_als", 1);   /* (on: auto-brightness, with the True Tone guard; sens_als=0 off) */
 	}
 	orientation_fixes();

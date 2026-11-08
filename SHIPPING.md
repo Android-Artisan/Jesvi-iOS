@@ -38,6 +38,13 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Open: magnetometer scale. A figure-8 sphere fit gives Earth's field as ~11.4 "uT" at sens_mag_k=15000 (expected
   ~41.5 uT here), i.e. ~0.054 uT/count. Try boot-arg sens_mag_k=54000 at the next reboot; it should give the
   calibrator a field it trusts (better accuracy than +-30 deg).
+- Flashed (recovery, 2026-11-08 10:02): locationd + Compass hooks permanent; magnetometer default now 0.054 uT/count
+  (sens_mag_k=54000; 15000 restores). The hub sends Samsung's *calibrated* field (accuracy byte), so Apple's
+  calibrator on top learned bogus biases (8 stale rows in consolidated.db CompassCalibration, cleared) and the app
+  read 317 deg pointing north. CompassIgnoreCalibration=1 (mobile's com.apple.locationd via prefset at boot; also
+  set in root's) makes iOS take the field as calibrated: user says Compass works, but turns slower than the phone.
+- Open: dial lags turns -> check gyro scale (sens_gyro_k=61) with a stationary quarter-turn test (tools: b-gyrocmp);
+  native alternative: feed Samsung's uncalibrated stream (GEOMAGNETIC_UNCALIB_SENSOR) to Apple's calibrator.
 
 ### Optional mild True Tone and corrected gyro units
 - True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame
