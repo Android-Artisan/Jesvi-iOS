@@ -5,11 +5,28 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## Open (known issues)
+- Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
+- Software True Tone is a fixed mild warmth approximation, not an ambient colour sensor. Initial toggle testing
+  exposed an unsupported notification selector and a root-only output path; follow-up fixes require phone validation.
 - The screen timeout is our stand-in (backboardd), not iOS's own idle timer: native fix is TASKS R1b.
 - Mic: the kernel's diagnostic peak counter reads full scale on every capture although recorded files do not clip (only
   with `snd_debug=1`).
 - The thermal fix below was confirmed on one cold start after the flash (peak 83 C, no restart); watch the
   `reset: last run ended by ...` line at the top of each boot log.
+
+## 2026-11-08
+
+### Adaptive brightness — `00f5122`, `1f8099b`
+- Native Auto-Brightness setting controls the port-side policy. Stable light is accepted after 5 seconds brighter /
+  8 seconds darker, then ramped smoothly. Manual slider changes anchor the preference at the current lux;
+  substantial ambient changes blend back toward the base curve. Anchors persist after 10 seconds without edits.
+- Wake holds the current level for at least 5 seconds; screen-off and stale-sensor gates stop brightness writes.
+  Settled sampling is 2 Hz, inactive 1 Hz, with up to 20 Hz during ramps. No GPU brightness filter.
+- Phone boot and matching native/panel nits verified. User confirmed brightness responds to cover/light tests and
+  the True Tone option appears. Full manual-anchor, wake and warmth tests remain pending. Host policy tests cover
+  debounce, spikes, manual anchors, wake, monotonicity and bounds.
+- Download Mode recovery: stop `tools/serial-watch.sh` and its `cat /dev/cu.usbmodem...` child before Heimdall;
+  they hold the serial interface. Stock Heimdall then flashes successfully without administrator privileges.
 
 ## 2026-11-07 (evening)
 

@@ -742,8 +742,8 @@ tone_set(id self, SEL selector, CFTypeRef value, CFStringRef key)
 		CFPreferencesSetAppValue(CFSTR("SoftwareTrueToneEnabled"), enabled ? kCFBooleanTrue : kCFBooleanFalse,
 		    CFSTR("com.redwood.display"));
 		CFPreferencesAppSynchronize(CFSTR("com.redwood.display"));
-		((void (*)(id, SEL, CFStringRef, CFTypeRef))objc_msgSend)(self,
-		    sel_registerName("sendNotificationForKey:withValue:"), key, enabled ? kCFBooleanTrue : kCFBooleanFalse);
+		/* This module has no sendNotificationForKey:withValue: method.
+		 * The setter's reply and copyPropertyForKey: report our state. */
 		say("redwood: software True Tone approximation %s\n", enabled ? "on" : "off");
 		return YES;
 	}
@@ -778,10 +778,8 @@ redwood_software_tone_update(bool display_on)
 	static int applied = -1;
 	int wanted = __atomic_load_n(&tone_enabled, __ATOMIC_RELAXED) ? 1 : 0;
 	if (!tone_original_copy || !display_on || applied == wanted) return;
-	const char *request = wanted ? "fb.warm 1" : "fb.warm 0";
-	char response[256] = {0}; size_t size = sizeof(response);
-	if (sysctlbyname("kern.redwood.poke", response, &size, (void *)request, strlen(request)) == 0 &&
-	    strstr(response, wanted ? "warm on" : "warm off")) applied = wanted;
+	if (sysctlbyname("kern.redwood.display_warmth", NULL, NULL, &wanted, sizeof(wanted)) == 0)
+		applied = wanted;
 }
 
 static void brightness_registry_fix(void);

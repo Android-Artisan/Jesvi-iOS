@@ -15,6 +15,7 @@
 #include <mach/mach_types.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/sysctl.h>
+#include <sys/errno.h>
 #include <sys/systm.h>
 #include <kern/locks.h>
 
@@ -209,5 +210,37 @@ poke_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int 
 }
 
 SYSCTL_DECL(_kern_redwood);
+extern void dbg_fb_warm(const uint64_t *, unsigned, char *, size_t);
+
+/* backboardd runs as mobile. Expose only the bounded display preference,
+ * never the root-only register/debug command interface. */
+static int
+warm_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
+{
+	char response[256];
+	int value = 0, error;
+
+	lck_mtx_lock(&dbgport_mtx);
+	dbg_fb_warm(NULL, 0, response, sizeof(response));
+	value = strncmp(response, "warm on", 7) == 0;
+	error = SYSCTL_OUT(req, &value, sizeof(value));
+	if (!error && req->newptr != USER_ADDR_NULL) {
+		if (req->newlen != sizeof(value)) error = EINVAL;
+		else if (!(error = SYSCTL_IN(req, &value, sizeof(value)))) {
+			if (value != 0 && value != 1) error = EINVAL;
+			else {
+				uint64_t wanted = (uint64_t)value;
+				dbg_fb_warm(&wanted, 1, response, sizeof(response));
+				if (strncmp(response, value ? "warm on" : "warm off", value ? 7 : 8) != 0) error = EBUSY;
+			}
+		}
+	}
+	lck_mtx_unlock(&dbgport_mtx);
+	return error;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
+    "optional mild software display warmth (0 or 1)");
+
 SYSCTL_PROC(_kern_redwood, OID_AUTO, poke, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, poke_sysctl, "A",
     "the debug port: r/w/m/sr/sw and the drivers' commands (help)");

@@ -69,6 +69,7 @@
 #include <sys/redwood_bbi2c.h>
 #include <sys/redwood_exynos_spi.h>
 #include <sys/redwood_sensors.h>
+#include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
 #include "redwood_bcm_shub.h"
 
@@ -1178,6 +1179,49 @@ sensor_on(uint8_t id, uint32_t ms)
 	return true;
 }
 
+/* Queue diagnostic transactions to the SPI owner; never race an SSP command
+ * from the sysctl thread. Raw proximity is off unless explicitly requested. */
+static int prox_request = -1;
+static uint16_t prox_thresholds[4];
+static bool prox_thresholds_valid;
+
+static void
+dbg_shub_prox(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n > 1 || (n && v[0] > 1)) {
+		snprintf(out, cap, "shub.prox [0|1]: raw sampling off/on, cached proximity status\n"); return;
+	}
+	if (n) __atomic_store_n(&prox_request, (int)v[0], __ATOMIC_RELAXED);
+	lck_mtx_lock(&shub_lock);
+	snprintf(out, cap, "proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u%s\n",
+	    last[SSP_PROXIMITY].count, last[SSP_PROXIMITY].data[0], shub_le16(last[SSP_PROXIMITY].data + 1),
+	    last[SSP_PROXIMITY_RAW].count, shub_le16(last[SSP_PROXIMITY_RAW].data),
+	    prox_thresholds_valid ? "read" : "unavailable", prox_thresholds[0], prox_thresholds[1],
+	    prox_thresholds[2], prox_thresholds[3], n ? "; request queued" : "");
+	lck_mtx_unlock(&shub_lock);
+}
+
+static void
+proximity_diagnostic(void)
+{
+	int request = __atomic_exchange_n(&prox_request, -1, __ATOMIC_RELAXED);
+	uint8_t b[8] = {0};
+	if (request < 0) return;
+	if (request) {
+		/* Samsung factory/proximity.c get_proximity_all_threshold(): read8,
+		 * little endian. Read calibration, do not replace factory values. */
+		bool ok = ssp_cmd(0x47, SSP_AP2HUB_READ, 0, b, sizeof(b));
+		lck_mtx_lock(&shub_lock);
+		prox_thresholds_valid = ok;
+		if (ok) for (unsigned i = 0; i < 4; i++) prox_thresholds[i] = shub_le16(b + 2 * i);
+		lck_mtx_unlock(&shub_lock);
+		if (!(ssp.enabled & (1ull << SSP_PROXIMITY_RAW))) (void)sensor_on(SSP_PROXIMITY_RAW, 200);
+	} else if (ssp.enabled & (1ull << SSP_PROXIMITY_RAW)) {
+		b[0] = SSP_PROXIMITY_RAW; shub_put32(b + 1, 200);
+		if (ssp_cmd(SSP_SENSOR_REMOVE, SSP_AP2HUB_WRITE, 0, b, 5)) ssp.enabled &= ~(1ull << SSP_PROXIMITY_RAW);
+	}
+}
+
 /* ---- into /dev/redwood-sensors ------------------------------------------------------------------------------ */
 
 /* a sample in sys/redwood_sensors.h's form; false when it is not one user space is given */
@@ -1314,6 +1358,7 @@ run(void)
 	state = "running";
 	idle_us = 4000;
 	while (powered) {
+		proximity_diagnostic();
 		pump(100, NULL);
 		if (ssp.frames - frames_at_time >= 3000) {
 			frames_at_time = ssp.frames;
@@ -1422,6 +1467,7 @@ redwood_ssp_init(void)
 	period_ms = period_ms < 5 ? 5 : period_ms;
 	if (n >= 6) {
 		redwood_sensors_device();       /* now, so that backboardd finds it when it starts */
+		redwood_dbgport_add("shub.prox", "[0|1]: cached proximity readings; optional raw diagnostic sampling", dbg_shub_prox);
 	}
 	if (kernel_thread_start(shub_thread, (void *)(uintptr_t)n, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
