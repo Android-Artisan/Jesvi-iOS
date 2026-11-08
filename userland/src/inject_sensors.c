@@ -18,7 +18,8 @@
  *                  when it reports; the rear TCS3407 (als=3) only while the front one has said nothing
  *   proximity      0xFF00/0x08 with Placement = 1 (backboardd ignores one that is not "top"), type 14, the Receiver bit
  *                  (0x40) while something is near: the screen off in calls
- *   gyroscope      0xFF00/0x09, type 20, rad/s; magnetometer 0xFF00/0x0A, type 21, uT (Compass): CoreMotion
+ *   gyroscope      0xFF00/0x09, type 20, degrees/s (CoreMotion converts to rad/s); magnetometer 0xFF00/0x0A,
+ *                  type 21, uT (Compass): CoreMotion
  * Rotation: backboardd takes the orientation from CMDeviceOrientationManager, which on the iPhone X asks the motion
  * coprocessor; its methods are replaced and the orientation is worked out from the accelerometer (gravity over 0.75 g
  * on one axis, held for 300 ms).
@@ -130,7 +131,7 @@ struct service {
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int device = -1;
-static double gyro_k = 1.0 / 16400 * M_PI / 180;        /* counts to rad/s */
+static double gyro_k = 1.0 / 16400;                     /* counts to HID degrees/s; CoreMotion converts once */
 static double mag_k = 0.015;                            /* counts to uT */
 /* ALS is on by default. sens_als=0 disables both the service and the automatic
  * luminance bridge. The controller null guard permits boot without a native ALS controller. */
@@ -815,7 +816,7 @@ redwood_sensors_early(void)
 	}
 	mach_timebase_info(&timebase);
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
-		gyro_k = boot_arg(arguments, "sens_gyro_k", 61) / 1e6 * M_PI / 180;
+		gyro_k = boot_arg(arguments, "sens_gyro_k", 61) / 1e6;
 		mag_k = boot_arg(arguments, "sens_mag_k", 15000) / 1e6;
 		use_als = boot_arg(arguments, "sens_als", 1);   /* (on: auto-brightness, with the True Tone guard; sens_als=0 off) */
 	}

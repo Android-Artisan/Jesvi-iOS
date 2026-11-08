@@ -6,10 +6,8 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## Open (known issues)
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
-- Software True Tone is a fixed mild warmth approximation, not an ambient colour sensor. The toggle reload crash
-  (unsupported notification selector) and root-only output path are fixed: on/off leaves backboardd alive and
-  updates DQE. User reports corrupted colours when enabled, so it is left OFF; the appearance is not verified.
-  DQE changes now run between presentations with TE masked, preventing partially updated LUTs from scanning.
+- True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
+- CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.
 - The screen timeout is our stand-in (backboardd), not iOS's own idle timer: native fix is TASKS R1b.
 - Mic: the kernel's diagnostic peak counter reads full scale on every capture although recorded files do not clip (only
   with `snd_debug=1`).
@@ -18,6 +16,21 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## 2026-11-08
 
+### Optional mild True Tone and corrected gyro units
+- True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame
+  CPU/GPU filter, no edits to the panel's factory gamma/AOR tables. Preference persists; initially off.
+  The earlier gamma-LUT attempt corrupted colours and was replaced. Generated neutral cube nodes match all81
+  values in Samsung's bypass reference; runtime updates run between presentations with scanout briefly masked.
+- Phone verified: toggle on/off leaves backboardd PID16 unchanged; OFF restores control0x80, path0xb1, size0.
+  User confirmed "Mild warmth, other colours normal" on the colour-cube build. The original unsupported selector
+  crash is fixed; a dedicated bounded display_warmth sysctl lets mobile backboardd apply the preference safely.
+- Gyro bridge sends degrees/s to Apple's HID gyro service. CoreMotion itself converts to rad/s; removing the
+  duplicate conversion fixes app readings that were57.3x too small. sens_gyro_k still specifies millionths of
+  degrees/s per raw count (default61). Existing accelerometer/auto-rotation path is unchanged; user confirms it works.
+- Verified with public CMMotionManager: timestamped live gyro samples, near-zero at rest, substantial response to
+  user rotations (observed peak12.36rad/s). tools/sensors/gyro-probe.m checks samples, rates and fused stream status.
+  Combined attitude/device-motion still provides no samples and is not claimed working.
+
 ### Adaptive brightness — `00f5122`, `1f8099b`
 - Native Auto-Brightness setting controls the port-side policy. Stable light is accepted after 3 seconds brighter /
   5 seconds darker (user-adjusted from 5/8), then ramped smoothly. Manual slider changes anchor the preference at the current lux;
@@ -25,7 +38,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Wake holds the current level for at least 5 seconds; screen-off and stale-sensor gates stop brightness writes.
   Settled sampling is 2 Hz, inactive 1 Hz, with up to 20 Hz during ramps. No GPU brightness filter.
 - Phone boot and matching native/panel nits verified. User confirmed brightness responds to cover/light tests and
-  the True Tone option appears. Full manual-anchor, wake and warmth tests remain pending. Host policy tests cover
+  the True Tone option appears. User subsequently accepted auto-brightness as done. Host policy tests cover
   debounce, spikes, manual anchors, wake, monotonicity and bounds.
 - Download Mode recovery: stop `tools/serial-watch.sh` and its `cat /dev/cu.usbmodem...` child before Heimdall;
   they hold the serial interface. Stock Heimdall then flashes successfully without administrator privileges.

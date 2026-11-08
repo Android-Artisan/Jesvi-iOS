@@ -4806,12 +4806,13 @@ factoryParameters(uint32_t level, uint32_t *aor, uint8_t *gamma)
 	*aor = fbCalLerp(a, b, weight);
 }
 
-/* Optional software True Tone approximation: a static per-channel DQE LUT.
- * Registers/layout: Samsung dpu30/cal_9830/regs-dqe.h and dqe_reg_start().
+/* Optional software True Tone approximation: a static DQE colour cube.
+ * Registers/layout: Samsung dpu30/cal_9830/regs-dqe.h and dqe_drv.c's
+ * bypass_cgc_tune / dqe_cgc_lut_set().
  * It runs in the display pipeline, not a CPU/GPU image filter. Save every
  * touched register; OFF restores the exact baseline. No panel gamma changes. */
 static bool gWarmSaved;
-static uint32_t gWarmControl, gWarmPath, gWarmSize, gWarmWidth, gWarmHeight, gWarmLut[99];
+static uint32_t gWarmControl, gWarmPath, gWarmSize, gWarmWidth, gWarmHeight, gWarmCgc[72];
 static void
 warmApply(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -4826,7 +4827,7 @@ warmApply(const uint64_t *v, unsigned n, char *out, size_t cap)
 			snprintf(out, cap, "warm deferred: display off or mode changing\n"); return;
 		}
 		/* A global update from the presenter can otherwise latch the DQE LUT
-		 * halfway through these 99 writes. Mask TE and finish the current
+		 * halfway through these writes. Mask TE and finish the current
 		 * scan before touching either the LUT or its routing/control bits. */
 		uint32_t trigger = dpuRead(fb->fDecon, DECON_TRIG_CONTROL);
 		dpuWrite(fb->fDecon, DECON_TRIG_CONTROL, trigger | DECON_TRIG_MASK);
@@ -4844,24 +4845,39 @@ warmApply(const uint64_t *v, unsigned n, char *out, size_t cap)
 			gWarmSize = dpuRead(fb->fDecon, 0x2004);
 			gWarmPath = dpuRead(fb->fDecon, 0x0230);
 			gWarmWidth = fb->fPanelWidth; gWarmHeight = fb->fPanelHeight;
-			for (unsigned i = 0; i < 99; i++) gWarmLut[i] = dpuRead(fb->fDecon, 0x2134 + 4 * i);
+			for (unsigned i = 0; i < 72; i++) gWarmCgc[i] = dpuRead(fb->fDecon, 0x2010 + 4 * i);
 			gWarmSaved = true;
 			const uint32_t gains[] = { 1000, 980, 940 };
-			for (unsigned c = 0; c < 3; c++) for (unsigned i = 0; i < 33; i++) {
-				uint32_t original = gWarmLut[c * 33 + i];
-				uint32_t a = gWarmControl & 4 ? original & 0x7ff : (2 * i * 1023 + 32) / 64;
-				uint32_t b = gWarmControl & 4 ? (original >> 16) & 0x7ff : ((2 * i + 1) * 1023 + 32) / 64;
-				if (i == 32 && !(gWarmControl & 4)) b = 0;
-				a = a * gains[c] / 1000; b = b * gains[c] / 1000;
-				dpuWrite(fb->fDecon, 0x2134 + 4 * (c * 33 + i),
-				    (original & ~0x07ff07ffu) | a | (b << 16));
+			bool existing = (gWarmPath & (7u << 12)) && (gWarmControl & 3);
+			if (!existing) {
+				/* Samsung's bypass settings: gamma encode/decode off,
+				 * grey adjustment bypassed, 3x3x3 identity colour cube. */
+				for (unsigned i = 0; i < 30; i++)
+					dpuWrite(fb->fDecon, 0x2010 + 4 * i, i == 0 ? 0x3000 : i == 1 ? 0x10 : 0);
+			}
+			for (unsigned c = 0; c < 3; c++) for (unsigned i = 0; i < 14; i++) {
+				uint32_t original = gWarmCgc[30 + c * 14 + i], packed = 0;
+				for (unsigned half = 0; half < 2; half++) {
+					unsigned node = i * 2 + half;
+					uint32_t value = 0;
+					if (node < 27) {
+						if (existing) value = (original >> (16 * half)) & 0x1fff;
+						else {
+							unsigned coordinate = c == 0 ? node / 9 : c == 1 ? (node / 3) % 3 : node % 3;
+							value = coordinate == 2 ? 1023 : coordinate * 512;
+						}
+						value = value * gains[c] / 1000;
+					}
+					packed |= value << (16 * half);
+				}
+				dpuWrite(fb->fDecon, 0x2088 + c * 0x38 + i * 4, packed);
 			}
 			dpuWrite(fb->fDecon, 0x2004, (fb->fPanelHeight << 16) | fb->fPanelWidth);
-			dpuWrite(fb->fDecon, 0x2000, gWarmControl | 4);
+			dpuWrite(fb->fDecon, 0x2000, existing ? (gWarmControl | 3) : 3);
 			dpuWrite(fb->fDecon, 0x0230, (gWarmPath & ~(7u << 12)) | (2u << 12));
 			gWarmOn = true;
 		} else if (!v[0] && gWarmOn && gWarmSaved) {
-			for (unsigned i = 0; i < 99; i++) dpuWrite(fb->fDecon, 0x2134 + 4 * i, gWarmLut[i]);
+			for (unsigned i = 0; i < 72; i++) dpuWrite(fb->fDecon, 0x2010 + 4 * i, gWarmCgc[i]);
 			uint32_t size = gWarmSize;
 			if ((gWarmPath & (7u << 12)) && (gWarmWidth != fb->fPanelWidth || gWarmHeight != fb->fPanelHeight))
 				size = (fb->fPanelHeight << 16) | fb->fPanelWidth;
