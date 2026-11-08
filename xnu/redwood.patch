@@ -492,7 +492,7 @@ index 95192dd62449..b00da803b5b4 100644
  
  	/*
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 1d71c66629fb..3e1737c21b86 100644
+index 1d71c66629fb..14df0dc1120d 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
 @@ -1157,6 +1157,9 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
@@ -685,13 +685,13 @@ index 1d71c66629fb..3e1737c21b86 100644
  	ret = persona_proc_adopt(p, persona, cred);
  
  	kauth_cred_unref(&cred);
-@@ -5586,10 +5685,75 @@ bad:
+@@ -5586,10 +5685,85 @@ bad:
   * Note:	The argument and environment vectors are user space pointers
   *		to arrays of user space pointers.
   */
 +/*
 + * Bring-up aid: the sysctl kern.exec_inject holds "LIBRARY NAME NAME ..."; every program
-+ * whose file name is one of the NAMEs is started with DYLD_INSERT_LIBRARIES=LIBRARY in its
++ * whose file name is one of the NAMEs (or whose path starts with a NAME that begins with "/") is started with DYLD_INSERT_LIBRARIES=LIBRARY in its
 + * environment, so that dyld loads our library into it. Several such groups may follow each
 + * other, separated by ";". A program named in more than one group gets every one of those
 + * libraries, joined with ":" in the one DYLD_INSERT_LIBRARIES, so SpringBoard can carry both
@@ -715,6 +715,11 @@ index 1d71c66629fb..3e1737c21b86 100644
 +	}
 +	name = imgp->ip_ndp->ni_cnd.cn_nameptr;
 +	namelen = imgp->ip_ndp->ni_cnd.cn_namelen;
++	/* the program's full path, as exec_save_path() put it after "executable_path=" */
++	const char *path = NULL;
++	if (imgp->ip_strings != NULL && strncmp(imgp->ip_strings, EXECUTABLE_KEY, strlen(EXECUTABLE_KEY)) == 0) {
++		path = imgp->ip_strings + strlen(EXECUTABLE_KEY);
++	}
 +	used = strlcpy(env, "DYLD_INSERT_LIBRARIES=", size);
 +	while (*p != 0) {
 +		const char *library;
@@ -739,6 +744,11 @@ index 1d71c66629fb..3e1737c21b86 100644
 +			    strncmp(word, name, namelen) == 0) {
 +				matched = true;         /* this group names this program; its library is added once */
 +			}
++			/* a word starting with "/" is a folder: every program whose path starts with it (all apps) */
++			if (!matched && *word == '/' && path != NULL && liblen != 0 && (size_t)(p - word) > 1 &&
++			    strncmp(path, word, (size_t)(p - word)) == 0) {
++				matched = true;
++			}
 +		}
 +		if (matched && liblen != 0 && used + 1 + liblen < size) {
 +			if (any) {
@@ -761,7 +771,7 @@ index 1d71c66629fb..3e1737c21b86 100644
  	int error = 0;
  	int     ptr_size = (imgp->ip_flags & IMGPF_WAS_64BIT_ADDR) ? 8 : 4;
  	int new_ptr_size = (imgp->ip_flags & IMGPF_IS_64BIT_ADDR) ? 8 : 4;
-@@ -5759,6 +5923,33 @@ exec_extract_strings(struct image_params *imgp)
+@@ -5759,6 +5933,33 @@ exec_extract_strings(struct image_params *imgp)
  		imgp->ip_envc++;
  	}
  
@@ -795,7 +805,7 @@ index 1d71c66629fb..3e1737c21b86 100644
  	/* Save space for envv[] NULL terminator */
  	if (imgp->ip_argspace < new_ptr_size) {
  		error = E2BIG;
-@@ -6636,7 +6827,23 @@ handle_mac_transition:
+@@ -6636,7 +6837,23 @@ handle_mac_transition:
  	}
  
  	/* Update the process' identity version and set the security token */
@@ -820,7 +830,7 @@ index 1d71c66629fb..3e1737c21b86 100644
  	task_set_uniqueid(task);
  	set_security_token_task_internal(p, task);
  
-@@ -7538,6 +7745,11 @@ process_signature(proc_t p, struct image_params *imgp)
+@@ -7538,6 +7755,11 @@ process_signature(proc_t p, struct image_params *imgp)
  	}
  
  done:

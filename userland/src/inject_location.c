@@ -16,6 +16,7 @@
  * Addresses are those of /usr/libexec/locationd of iOS 16.5 (20F66); each is checked before it is used.
  * Boot-arg loc_swfusion=0 leaves locationd alone; loc_gyro_rad=0 keeps the gyro unconverted.
  */
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <stdbool.h>
@@ -107,6 +108,22 @@ replace_got(intptr_t slide, uintptr_t slot, const char *symbol, void *replacemen
 	return true;
 }
 
+/*
+ * The S20's hub sends Samsung's already calibrated magnetic field (an accuracy byte with every sample). Apple's own
+ * calibrator on top of it learned biases of up to 40 uT that sent the needle 45 degrees off. iOS has a switch for
+ * fields that come calibrated, CompassIgnoreCalibration; set in root's and mobile's com.apple.locationd at every start.
+ */
+static void
+ignore_compass_calibration(void)
+{
+	CFStringRef domain = CFSTR("com.apple.locationd"), key = CFSTR("CompassIgnoreCalibration");
+
+	CFPreferencesSetValue(key, kCFBooleanTrue, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	CFPreferencesSynchronize(domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	CFPreferencesSetValue(key, kCFBooleanTrue, domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+	CFPreferencesSynchronize(domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+}
+
 void
 redwood_location_fixes(void)
 {
@@ -147,6 +164,9 @@ redwood_location_fixes(void)
 	    replace_got(slide, GOT_HID_GET_DOUBLE, "IOHIDEventGetDoubleValue", (void *)location_get_double, (void **)&real_get_double) &&
 	    replace_got(slide, GOT_HID_GET_FLOAT, "IOHIDEventGetFloatValue", (void *)location_get_float, (void **)&real_get_float)) {
 		fprintf(stderr, "redwood: locationd: gyro degrees/s into radians/s for its fusion\n");
+	}
+	if (strstr(arguments, "loc_magcal=1") == NULL) {
+		ignore_compass_calibration();   /* boot-arg loc_magcal=1: let Apple's calibrator work on the field */
 	}
 }
 

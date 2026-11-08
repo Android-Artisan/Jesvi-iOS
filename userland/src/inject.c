@@ -1765,6 +1765,6 @@ redwood_init(void)
 	} else if (strcmp(name, "locationd") == 0) {
 		redwood_location_fixes();
 	} else {
-		redwood_coremotion_fixes();     /* the apps named in INJECT for it (Compass) */
+		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
 	}
 }

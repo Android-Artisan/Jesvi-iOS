@@ -45,6 +45,12 @@ this file is the changelog; "Open" lists what a release must mention as known is
   set in root's) makes iOS take the field as calibrated: user says Compass works, but turns slower than the phone.
 - Open: dial lags turns -> check gyro scale (sens_gyro_k=61) with a stationary quarter-turn test (tools: b-gyrocmp);
   native alternative: feed Samsung's uncalibrated stream (GEOMAGNETIC_UNCALIB_SENSOR) to Apple's calibrator.
+- Every app now (kernel): kern.exec_inject words starting with "/" match a path prefix; libredwood goes into
+  /Applications/ and /var/containers/Bundle/Application/ apps, whose CoreMotion then gets device motion from
+  locationd (verified: an unnamed program in the app folder got device motion; one outside got none).
+  locationd's hook sets CompassIgnoreCalibration itself at every start (root's and mobile's prefs; boot-arg
+  loc_magcal=1 lets Apple's calibrator work). Flashed 10:2x; after the reboot the user confirms Compass shows a
+  real heading and moves, nothing set by hand.
 
 ### Optional mild True Tone and corrected gyro units
 - True Tone's Settings toggle controls a Samsung DQE CGC 3x3x3 colour cube, R100% / G98% / B94%. No per-frame
