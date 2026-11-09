@@ -1,0 +1,71 @@
+#!/bin/busybox sh
+# Temporary Samsung kernel reference boot; never let PID 1 exit.
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /sys/kernel/debug /sys/kernel/config /tmp /vendor/firmware
+mount -t debugfs debugfs /sys/kernel/debug
+mount -t configfs configfs /sys/kernel/config
+echo /vendor/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null
+
+T=/tmp/camera-reference.txt
+: > "$T"
+# If an ioctl stalls, still return to Download Mode for the saved BOOT restore.
+( sleep 50; /bin/reboot-download ) &
+say() { echo "$*" >> "$T"; }
+LOGDEV=
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    for block in /sys/class/block/*; do
+        if grep -q '^PARTNAME=super$' "$block/uevent" 2>/dev/null; then
+            sectors=$(cat "$block/size")
+            [ "$sectors" -ge 16062496 ] && LOGDEV=/dev/${block##*/}
+            break
+        fi
+    done
+    [ -n "$LOGDEV" ] && break
+    sleep 1
+done
+flush() {
+    [ -n "$LOGDEV" ] && dd if="$T" of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null && sync
+}
+[ -n "$LOGDEV" ] && dd if=/dev/zero of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null
+say "=== camera reference boot $(cat /proc/version)"
+say "=== log device $LOGDEV"
+say '=== video devices'
+ls -l /dev/video* >> "$T" 2>&1
+say '=== camera registration'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy' | tail -160 >> "$T"
+flush
+
+# Samsung's camera driver registers sensor1 as /dev/video2. The helper selects
+# front position 1, requests 1824x1368 RAW10, then starts the sensor for five seconds.
+timeout -s KILL 15 /bin/camera-ref > /tmp/camera-ref-result.txt 2>&1 &
+TEST_PID=$!
+for attempt in 1 2 3 4 5 6 7 8; do
+    grep -q 'S_CTRL stream started' /tmp/camera-ref-result.txt 2>/dev/null && break
+    kill -0 "$TEST_PID" 2>/dev/null || break
+    sleep 1
+done
+say '=== camera-ref result during run'
+cat /tmp/camera-ref-result.txt >> "$T"
+say '=== active CSIS clocks'
+grep -iE 'csis|cis_clk|pdp' /sys/kernel/debug/clk/clk_summary >> "$T" 2>/dev/null
+say '=== active camera rails'
+grep -iE 'mipi_csi|vdd.*vt|s2mpb02|camera' /sys/kernel/debug/regulator/regulator_summary >> "$T" 2>/dev/null
+say '=== camera interrupts'
+grep -iE 'csis|camera|is_sensor' /proc/interrupts >> "$T" 2>/dev/null
+say '=== sensor and receiver kernel log'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
+flush
+wait "$TEST_PID"
+say "=== camera-ref exit status $?"
+cat /tmp/camera-ref-result.txt >> "$T"
+say '=== final camera kernel log'
+dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
+flush
+say '=== returning to Download Mode'
+flush
+/bin/reboot-download
+while true; do sleep 30; done
