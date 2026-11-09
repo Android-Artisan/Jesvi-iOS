@@ -155,6 +155,17 @@ already available locally at `device/firmware/vendor-firmware/setfile_3j1.bin`
 read at `0x0500` reported zero VC0 frames while the SAK3J1 internal counter
 advanced.
 
+On 2026-11-09, Samsung's `sensor_3j1_cis_set_size()` page-select write
+(`0x6028=0x2000`) was added before the iOS probe's crop writes. Both the
+stock mode-8 PDAF setfile and the non-PDAF variant were retested after a
+verified flash. In each 500 ms probe the sensor's internal frame counter
+advanced about 18 frames, but CSIS1 VC0 remained at zero, no frame interrupt
+arrived, and `PHY_STATUS` stayed `0xf1` in all 500 samples. Thus page selection
+is now correct, but the physical CSI path is still inactive and Camera.app
+still displays synthetic pixels. The Samsung Vision reference did receive
+one VC0+VC1 frame, so the next useful comparison is a register-level trace
+of the sensor and CSI setup in that boot against this bounded iOS probe.
+
 ## Samsung reference comparison, 2026-11-09
 
 The temporary Samsung Vision boot can now power SAK3J1 and start CSIS1 after
