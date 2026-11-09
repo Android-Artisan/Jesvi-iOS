@@ -31,6 +31,20 @@ flush() {
     [ -n "$LOGDEV" ] && dd if="$T" of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null && sync
 }
 [ -n "$LOGDEV" ] && dd if=/dev/zero of="$LOGDEV" bs=4096 seek=2005764 count=256 conv=notrunc 2>/dev/null
+# A separate crash breadcrumb survives if the foreground ioctl stalls before
+# the main script's next flush. Keep it outside both the loader and main log.
+(
+    while true; do
+        {
+            echo '=== live helper output'
+            cat /tmp/camera-ref-result.txt 2>/dev/null
+            echo '=== live kernel tail'
+            dmesg | tail -c 458752
+        } > /tmp/camera-breadcrumb.txt
+        [ -n "$LOGDEV" ] && dd if=/tmp/camera-breadcrumb.txt of="$LOGDEV" bs=4096 seek=2006020 count=128 conv=notrunc 2>/dev/null
+        sleep 1
+    done
+) &
 say "=== camera reference boot $(cat /proc/version)"
 say "=== log device $LOGDEV"
 say '=== video devices'

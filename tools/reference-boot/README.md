@@ -37,7 +37,9 @@ partition. From Download Mode, flash with `heimdall flash --BOOT IMAGE
 (4096-byte block 2005764). Once iOS is back, retrieve it with
 `ssh s20 'dd if=/dev/rufs_super bs=4096 skip=2005764 count=256
 2>/dev/null' > reference-log.raw`. The log is separate from the loader's
-`ulog` window. If the reference kernel stalls or loops at the boot logo,
+`ulog` window. The current init also writes a rolling camera helper and
+kernel breadcrumb at block 2006020 (512 KiB); retrieve it with the same
+command using `skip=2006020 count=128`. If the reference kernel stalls or loops at the boot logo,
 manually enter Download Mode and restore `out/x1slte-boot.img`; do not wait
 for the initramfs watchdog indefinitely.
 
@@ -84,8 +86,11 @@ node's output capabilities. The fourth helper uses that type.
 
 The fourth BOOT flash uploaded successfully, but the phone did not return to
 Download Mode within 95 seconds and then cycled through boot logo and black
-screen. Its log has not yet been retrieved. Restore HackiOS BOOT before any
-further experiment. This run cannot be counted as evidence of a camera frame.
+screen. The user manually entered Download Mode; HackiOS BOOT was restored and
+iOS SSH returned. The protected log has only early camera registration, ending
+at `cis_3j1_probe done`; no helper result or stream result was flushed. This
+run cannot be counted as evidence of a camera frame. A separate rolling
+breadcrumb log was added for the next run to preserve progress across stalls.
 
 ## GPS and cellular adaptation
 
