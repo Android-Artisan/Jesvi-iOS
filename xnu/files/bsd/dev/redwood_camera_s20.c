@@ -1119,6 +1119,9 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    (csi_saved[0] & ~((7U << 13) | (3U << 10) | (3U << 8) | (1U << 21) | 3U)) |
 	    (2U << 13) | (2U << 10) | (3U << 8));
 	cam_s20_wr(csi, 0x0008, csi_saved[1] | (1U << 4)); /* stock CLK_CTRL=0x10 */
+	/* csi_hw_s_lane() enables data lanes before VC setup; csi_hw_enable()
+	 * enables the clock lane only after all VC shadow registers are ready. */
+	cam_s20_wr(csi, 0x0704, (csi_saved[9] & ~0x1fU) | 0x0fU);
 	cam_s20_wr(csi, 0x0040, (0x2bU << 2) | (2U << 12));
 	cam_s20_wr(csi, 0x0044, (1368U << 16) | 1824U);
 	/* x1slte mode 8 sends VC1 RAW10 auxiliary rows, 1824x342. */
@@ -1127,7 +1130,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(csi, 0x0600, csi_saved[7] & ~(1U << 31)); /* LRTE_DISABLE */
 	cam_s20_wr(csi, 0x0690, csi_saved[8] | (1U << 23)); /* CSIS_CTRL_PIXEL_ALIGN_MODE=1 */
 	cam_s20_wr(csi, 0x000c, 0xfU); /* update all VC shadow registers */
-	cam_s20_wr(csi, 0x0704, (csi_saved[9] & ~0x1fU) | 0x1fU);
+	cam_s20_wr(csi, 0x0704, cam_s20_rd(csi, 0x0704) | (1U << 4));
 	/* Samsung request_irq() enables link frame/error sources before CSI_EN. The
 	 * iOS GIC leaves SPI 215 masked; poll the raw source register here. */
 	cam_s20_wr(csi, 0x0010, 0x00fff07fU);

@@ -227,3 +227,13 @@ yet produced a CSIS frame: `PHY_STATUS` remained `0xf1`, packet IRQs and
 VC0 frame count remained zero. The sensor's internal test pattern (`stream 3`)
 also showed no link activity with those fixes, so image-array exposure is
 not the remaining blocker.
+
+Samsung's `csi_hw_s_lane()` enables the data lanes before VC programming and
+`csi_hw_enable()` enables the clock lane after the VC shadow update. The iOS
+probe now follows that write order. Its live `PHY_CMN_CTRL` still reads
+`0x1f` and `PHY_STATUS` stays `0xf1`; this sequencing change did not produce
+the first frame. Avoid treating matching register readbacks as proof that
+the physical MIPI path is live. The next diagnostic should capture the
+Samsung and iOS CSI domain clock request/PHY power transitions during stream
+without touching the known unsafe `SYSREG_CSIS + 0x504` register or blindly
+cycling CSIS QCH gates (an earlier standalone gate probe panicked).
