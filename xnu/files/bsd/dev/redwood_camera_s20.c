@@ -351,11 +351,12 @@ cleanup:
 static void
 cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
+	volatile uint8_t *top = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x3000);
 	volatile uint8_t *csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
 	volatile uint8_t *vc0 = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_VC0_PHYS, 0x100);
 	volatile uint8_t *common = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_COMMON_PHYS, 0x100);
 	if (cap == 0) return;
-	if (csi == NULL || vc0 == NULL || common == NULL) {
+	if (top == NULL || csi == NULL || vc0 == NULL || common == NULL) {
 		(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"csis1-inventory\",\"result\":\"error\",\"phase\":\"map\"}\n");
 		return;
 	}
@@ -363,11 +364,18 @@ cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *ou
 	    "{\"camera\":\"SAK3J1\",\"stage\":\"csis1-inventory\",\"result\":\"ok\",\"write\":false,"
 	    "\"csis1_version\":\"%#x\",\"cmn_ctrl\":\"%#x\",\"clk_ctrl\":\"%#x\",\"phy_status\":\"%#x\","
 	    "\"frame_count_vc0\":\"%#x\",\"frame_count_vc1\":\"%#x\",\"irq_src0\":\"%#x\","
-	    "\"dma_vc0_ctrl\":\"%#x\",\"dma_vc0_resol\":\"%#x\",\"dma_common_ctrl\":\"%#x\","
+	    "\"top_csis_bus_mux\":\"%#x\",\"top_csis_bus_div\":\"%#x\",\"top_csis_bus_gate\":\"%#x\","
+	    "\"dma_vc0_ctrl\":\"%#x\",\"dma_vc0_fmt\":\"%#x\",\"dma_vc0_active\":\"%#x\","
+	    "\"dma_vc0_resol\":\"%#x\",\"dma_vc0_sequence\":\"%#x\",\"dma_common_ctrl\":\"%#x\","
 	    "\"dma_common_irq\":\"%#x\",\"dma_common_err\":\"%#x\"}\n",
 	    cam_s20_rd(csi, 0x0000), cam_s20_rd(csi, 0x0004), cam_s20_rd(csi, 0x0008), cam_s20_rd(csi, 0x0700),
 	    cam_s20_rd(csi, 0x0500), cam_s20_rd(csi, 0x0504), cam_s20_rd(csi, 0x0014),
-	    cam_s20_rd(vc0, 0x0000), cam_s20_rd(vc0, 0x0004), cam_s20_rd(common, 0x0014),
+	    /* Exynos990 cmucal-sfr.c: upstream clock source, divider and gate.
+	     * CSIS v5.3 moved DMA ACT_CTRL/RESOL past its 32 frame pointers;
+	     * v5.1's 0x30/0x40 are frame-address registers on this hardware. */
+	    cam_s20_rd(top, 0x104c), cam_s20_rd(top, 0x1848), cam_s20_rd(top, 0x204c),
+	    cam_s20_rd(vc0, 0x0000), cam_s20_rd(vc0, 0x0004), cam_s20_rd(vc0, 0x0090),
+	    cam_s20_rd(vc0, 0x00a4), cam_s20_rd(vc0, 0x00b4), cam_s20_rd(common, 0x0014),
 	    cam_s20_rd(common, 0x0008), cam_s20_rd(common, 0x0018));
 }
 

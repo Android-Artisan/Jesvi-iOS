@@ -33,7 +33,7 @@ Each camera change should produce a report and pass these gates in order:
    inventory to those blocks only after their mappings and safe read registers
    are independently verified.
 3. **Sensor identification and mode setup:** front `cam.s20.front.id` now reads SAK3J1 ID `0x30a1` / revision `0xa2`; `cam.s20.front.mode` applies the Samsung 1824×1368/30 non-PDAF setfile, verifies registers, and powers down/restores state. Rear `cam.s20.id` still needs an ACK on its documented bus.
-4. **CSI receiver:** `cam.s20.front.stream` runs the physical SAK3J1 in the 1824×1368/30 RAW10 mode for 500 ms and checks the CSIS1 VC0 frame counter. It does not enable DMA; proceed to DMA only after the count increments.
+4. **CSI receiver:** `cam.s20.front.stream` runs the physical SAK3J1 in the 1824×1368/30 RAW10 mode for 500 ms and checks the CSIS1 VC0 frame counter. It does not enable DMA. Optical capture requires that count to advance. A separate receiver-generated pattern test can independently validate DMA before the sensor link works; see [the S9 comparison](s9-comparison.md) for its prerequisites.
 5. **Single frame (`cam_s20=4 sensor=main|front`):** capture one frame, stop,
    and confirm rails, pins and clocks return to the recorded baseline. Decode
    with `tools/camraw.py` only when framing matches its documented format.
