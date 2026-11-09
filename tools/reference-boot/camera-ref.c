@@ -45,6 +45,70 @@ static int sensor_read8(uint16_t reg, uint8_t *value)
     return sensor_fd >= 0 ? ioctl(sensor_fd, I2C_RDWR, &req) : -1;
 }
 
+static int sensor_read16(uint16_t reg, uint16_t *value)
+{
+    uint8_t address[] = {(uint8_t)(reg >> 8), (uint8_t)reg}, data[2];
+    struct i2c_msg msg[] = {
+        {.addr = 0x10, .len = sizeof(address), .buf = address},
+        {.addr = 0x10, .flags = I2C_M_RD, .len = sizeof(data), .buf = data}
+    };
+    struct i2c_rdwr_ioctl_data req = {.msgs = msg, .nmsgs = 2};
+    if (sensor_fd < 0 || ioctl(sensor_fd, I2C_RDWR, &req) < 0) return -1;
+    *value = ((uint16_t)data[0] << 8) | data[1];
+    return 0;
+}
+
+static int sensor_write16(uint16_t reg, uint16_t value)
+{
+    uint8_t data[] = {(uint8_t)(reg >> 8), (uint8_t)reg,
+                      (uint8_t)(value >> 8), (uint8_t)value};
+    struct i2c_msg msg = {.addr = 0x10, .len = sizeof(data), .buf = data};
+    struct i2c_rdwr_ioctl_data req = {.msgs = &msg, .nmsgs = 1};
+    return sensor_fd >= 0 && ioctl(sensor_fd, I2C_RDWR, &req) == 1 ? 0 : -1;
+}
+
+static void dump_sensor_indirect(void)
+{
+    static const uint16_t addresses[] = {0x918c, 0x918e, 0x9190, 0x9192, 0x9256};
+    if (sensor_write16(0x602c, 0x2000) != 0) {
+        printf("SENSOR_CODE page-write failed errno=%d\n", errno);
+        fflush(stdout);
+        return;
+    }
+    for (unsigned i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++) {
+        uint16_t value = 0;
+        if (sensor_write16(0x602e, addresses[i]) == 0 &&
+            sensor_read16(0x6f12, &value) == 0)
+            printf("SENSOR_CODE %04x=%04x\n", addresses[i], value);
+        else
+            printf("SENSOR_CODE %04x=ERR errno=%d\n", addresses[i], errno);
+    }
+    fflush(stdout);
+}
+
+static void dump_sensor_stream_registers(void)
+{
+    static const uint16_t regs[] = {
+        0x0100, 0x0104, 0x0112, 0x0114, 0x0136,
+        0x021e, 0x0300, 0x0304, 0x0306, 0x030c, 0x030e, 0x0310, 0x0312,
+        0x0340, 0x0342, 0x0344, 0x0346, 0x0348, 0x034a, 0x034c, 0x034e,
+        0x0380, 0x0382, 0x0384, 0x0386, 0x0400, 0x0404,
+        0x0900, 0x0901, 0x0a70, 0x0a72,
+        0x0850, 0x0b02, 0x0b04, 0x0b06, 0x0116, 0x0118,
+        0x0812, 0x0814, 0x080e, 0x0810, 0x0816,
+        0x6214, 0x6244, 0x6b5e, 0x6b60, 0x0a7a, 0x0a7c, 0x0a76,
+        0x0202, 0x0204, 0x020e
+    };
+    for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+        uint16_t value = 0;
+        if (sensor_read16(regs[i], &value) == 0)
+            printf("SENSOR_REG %04x=%04x\n", regs[i], value);
+        else
+            printf("SENSOR_REG %04x=ERR\n", regs[i]);
+    }
+    fflush(stdout);
+}
+
 static int pmic_read(uint8_t reg, uint8_t *value)
 {
     struct i2c_msg msg[] = {
@@ -236,6 +300,8 @@ int main(int argc, char **argv)
     }
     checkpoint("STREAM_ON returned");
     puts("S_CTRL stream started"); fflush(stdout);
+    dump_sensor_stream_registers();
+    dump_sensor_indirect();
     print_csi_interrupts(0);
     for (int i = 0; i < 5; i++) {
         uint8_t sensor_count = 0;

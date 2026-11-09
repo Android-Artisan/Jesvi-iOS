@@ -154,6 +154,15 @@ Samsung's kernel. The iOS probe was adjusted to mirror Samsung's skew-delay
 writes to clock and data lanes, but its live CSIS count remained zero. Raw
 evidence is `work/stock-camera-test/reference-vision-phy-main.raw`.
 
+The later reference helper reads extra SAK3J1 output and timing registers
+while streaming. `reference-direct-final-main.raw` under
+`work/stock-camera-test/` records the stock values. The helper's first
+attempt at indirect microcode readback mistakenly used the write-pointer
+registers; use `0x602C/0x602E` for future reads. Its `sensor_write16()`
+returns zero on a successful one-message `I2C_RDWR` transfer. The reference
+helper source now has both corrections. The iOS probe with the corrected
+read pointer matches the five sampled Samsung setA microcode words.
+
 ## GPS and cellular adaptation
 
 The same boot and restore mechanism can capture kernel driver state for GPS

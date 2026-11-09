@@ -834,11 +834,11 @@ cam_3j1_flush_burst(struct redwood_bbi2c *bus, uint8_t *bytes, uint32_t words)
 	return words == 0 || redwood_bbi2c_xfer(bus, 0x10, bytes, 2 + 2 * words, NULL, 0);
 }
 
-/* Execute Samsung's three-word setfile records. Bursts are split at 100 words to bound stack and bus time. */
+/* Execute Samsung's three-word setfile records. Preserve its 200-word global burst. */
 static bool
 cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count)
 {
-	uint8_t burst[202]; /* 16-bit indirect address + at most 100 16-bit words */
+	uint8_t burst[402]; /* Samsung's global microcode is one 200-word I2C transfer. */
 	uint32_t i, nburst = 0;
 	bool in_burst = false;
 	/* Samsung sensor_cis_set_registers() waits 3 ms before every setfile. */
@@ -853,7 +853,7 @@ cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count)
 			nburst = 0;
 			in_burst = true;
 		} else if (reg == CAM_3J1_BURST_DATA && in_burst) {
-			if (nburst == 100) {
+			if (nburst == 200) {
 				if (!cam_3j1_flush_burst(bus, burst, nburst)) return false;
 				nburst = 0;
 			}
@@ -1001,19 +1001,37 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	uint32_t clock[4] = { 0 }, clock_offs[4] = { CMU_CIS_CLK1_MUX, CMU_CIS_CLK1_DIV, CMU_CIS_CLK1_GATE, CMU_CIS_CLK1_QCH };
 	uint32_t rcon, rdat, rpud, mcon, mdat, mpud;
 	uint32_t reset_sys = 0;
+	uint32_t mask0_saved = 0, mask1_saved = 0;
 	uint32_t cmu_qch = 0, csi_qch = 0, dma_qch = 0, top_qch = 0, iso = 0;
 	uint32_t before = 0, after = 0, irq = 0, fs_irq = 0, fe_irq = 0, phy_status = 0;
 	uint32_t phy_status_or = 0, phy_status_and = ~0U, phy_active_samples = 0, irq_seen = 0;
 	uint32_t cmn_live = 0, phy_live = 0, config_live = 0, resol_live = 0, dphy_clk = 0, lane0_live = 0, lane3_live = 0, i, j;
+	uint32_t phy_sc_time1 = 0, phy_sd0_ana6 = 0, phy_sd0_ana7 = 0;
+	uint32_t phy_sc_ana2 = 0, phy_sd0_ana2 = 0, phy_sd3_ana2 = 0;
+	uint32_t phy_sd0_settle = 0, phy_sd0_deskew = 0, phy_bias0 = 0, phy_bias1 = 0, phy_bias2 = 0;
 	uint32_t cmu_qch_live = 0, csi_qch_live = 0, dma_qch_live = 0, top_qch_live = 0;
+	uint32_t mclk_mux_live = 0, mclk_div_live = 0, mclk_gate_live = 0, mclk_qch_live = 0;
+	uint32_t csis_bus_mux_live = 0, pmu_iso_live = 0, phy_reset_live = 0, irq_mask_live = 0;
+	uint8_t rails_live[5] = { 0 }, pattern_live = 0;
 	uint16_t sid = 0, sensor_fmt = 0, sensor_lanes = 0, sensor_mipi_pll = 0;
+	uint16_t sensor_frame_length = 0, sensor_line_length = 0, sensor_crop_x = 0;
+	uint16_t sensor_crop_end_x = 0, sensor_scaler = 0, sensor_binning = 0, sensor_pll2 = 0;
+	uint16_t sensor_code[5] = { 0 };
+	static const uint16_t sensor_code_addrs[5] = { 0x918c, 0x918e, 0x9190, 0x9192, 0x9256 };
+	static const uint16_t diag_regs[] = { 0x0850, 0x0b02, 0x0b04, 0x0b06, 0x0116, 0x0118,
+	    0x0812, 0x0814, 0x080e, 0x0810, 0x0816, 0x6214, 0x6244, 0x6b5e, 0x6b60,
+	    0x0a7a, 0x0a7c, 0x0a76, 0x0202, 0x0204, 0x020e, 0x0104 };
+	uint16_t diag_vals[sizeof(diag_regs) / sizeof(diag_regs[0])] = { 0 };
 	char phase[40] = "map";
 	bool rails_saved = false, pins_saved = false, bus_ready = false, clock_ready = false, sensor_on = false;
-	bool phy_saved = false, csi_saved_ok = false, qch_changed = false, dma_qch_changed = false, top_qch_changed = false;
+	bool phy_saved = false, csi_saved_ok = false, irq_masks_saved = false, qch_changed = false, dma_qch_changed = false, top_qch_changed = false;
 	bool iso_changed = false, result = false;
-	bool pd_mode = n > 0 && v[0] == 1;
+	bool pd_mode = n > 0 && (v[0] == 1 || v[0] == 2 || v[0] == 3 || v[0] == 4);
+	bool stock_gain = n > 0 && (v[0] == 2 || v[0] == 4);
+	bool test_pattern = n > 0 && v[0] == 3;
 	uint64_t smc = 0;
 	if (cap == 0) return;
+	if (n > 0 && v[0] == 4) bus.half_us = 2; /* 250 kHz software I2C, closer to Samsung HSI2C. */
 	if (pmu == NULL || cmu_top == NULL || cmu == NULL || csi == NULL || dphy == NULL || bias == NULL || isppre == NULL) goto done;
 	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { strlcpy(phase, "CSIS domain off", sizeof(phase)); goto done; }
 	smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
@@ -1073,12 +1091,20 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    !cam_3j1_write16(&bus, 0x0384, 1) || !cam_3j1_write16(&bus, 0x0386, 3) ||
 	    !cam_3j1_write8(&bus, 0x0900, 1) || !cam_3j1_write8(&bus, 0x0901, 0x22) ||
 	    !cam_3j1_write16(&bus, 0x0400, 0) || !cam_3j1_write16(&bus, 0x0404, 0x10))) goto cleanup;
+	/* Samsung's mode-change path applies analog/digital gains before stream.
+	 * Option 2 tests those exact clamp values while retaining mode 8. */
+	if (stock_gain && (!cam_3j1_write16(&bus, 0x0204, 0x0200) ||
+	    !cam_3j1_write16(&bus, 0x31e8, 0) ||
+	    !cam_3j1_write16(&bus, 0x020e, 0x1000))) goto cleanup;
+	if (test_pattern && !cam_3j1_write8(&bus, 0x0601, 1)) goto cleanup;
 	for (i = 0; i < 7; i++) phy_sc[i] = cam_s20_rd(dphy, phy_sc_offs[i]);
 	for (i = 0; i < 4; i++) for (j = 0; j < 9; j++) phy_lane[i][j] = cam_s20_rd(dphy, phy_lane_base[i] + phy_lane_offs[j]);
 	for (i = 0; i < 3; i++) phy_bias[i] = cam_s20_rd(bias, phy_bias_offs[i]);
 	phy_saved = true;
 	for (i = 0; i < 10; i++) csi_saved[i] = cam_s20_rd(csi, csi_offs[i]);
 	csi_saved_ok = true; reset_sys = cam_s20_rd(isppre, 0);
+	mask0_saved = cam_s20_rd(csi, 0x0010); mask1_saved = cam_s20_rd(csi, 0x0018);
+	irq_masks_saved = true;
 	strlcpy(phase, "receiver setup", sizeof(phase));
 	cam_s20_wr(isppre, 0, reset_sys & ~(1U << 3)); cam_s20_dphy_3j1_config(dphy, bias); cam_s20_wr(isppre, 0, reset_sys | (1U << 3));
 	/* Follow csi_hw_reset(): SW_RESET is write-one/self-clearing. */
@@ -1101,6 +1127,10 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(csi, 0x0690, csi_saved[8] | (1U << 23)); /* CSIS_CTRL_PIXEL_ALIGN_MODE=1 */
 	cam_s20_wr(csi, 0x000c, 0xfU); /* update all VC shadow registers */
 	cam_s20_wr(csi, 0x0704, (csi_saved[9] & ~0x1fU) | 0x1fU);
+	/* Samsung request_irq() enables link frame/error sources before CSI_EN. The
+	 * iOS GIC leaves SPI 215 masked; poll the raw source register here. */
+	cam_s20_wr(csi, 0x0010, 0x00fff07fU);
+	cam_s20_wr(csi, 0x0018, 0x0000007fU);
 	cam_s20_wr(csi, 0x0004, cam_s20_rd(csi, 0x0004) | 1U); /* CSI_EN; DPHY is already configured */
 	cam_s20_wait_ms(2);
 	strlcpy(phase, "sensor stream", sizeof(phase));
@@ -1134,14 +1164,52 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cmn_live = cam_s20_rd(csi, 0x0004); phy_live = cam_s20_rd(csi, 0x0704); config_live = cam_s20_rd(csi, 0x0040);
 	resol_live = cam_s20_rd(csi, 0x0044); phy_status = cam_s20_rd(csi, 0x0700);
 	dphy_clk = cam_s20_rd(dphy, 0); lane0_live = cam_s20_rd(dphy, 0x100); lane3_live = cam_s20_rd(dphy, 0x400);
+	phy_sc_time1 = cam_s20_rd(dphy, 0x34);
+	phy_sd0_ana6 = cam_s20_rd(dphy, 0x120); phy_sd0_ana7 = cam_s20_rd(dphy, 0x124);
+	phy_sc_ana2 = cam_s20_rd(dphy, 0x10); phy_sd0_ana2 = cam_s20_rd(dphy, 0x110);
+	phy_sd3_ana2 = cam_s20_rd(dphy, 0x410); phy_sd0_settle = cam_s20_rd(dphy, 0x130);
+	phy_sd0_deskew = cam_s20_rd(dphy, 0x140);
+	phy_bias0 = cam_s20_rd(bias, 0); phy_bias1 = cam_s20_rd(bias, 4); phy_bias2 = cam_s20_rd(bias, 8);
 	cmu_qch_live = cam_s20_rd(cmu, 0x3058); csi_qch_live = cam_s20_rd(cmu, 0x3064);
 	dma_qch_live = cam_s20_rd(cmu, 0x3078); top_qch_live = cam_s20_rd(cmu, 0x307c);
 	(void)cam_3j1_read16(&bus, 0x0112, &sensor_fmt); (void)cam_3j1_read16(&bus, 0x0114, &sensor_lanes);
 	(void)cam_3j1_read16(&bus, 0x0306, &sensor_mipi_pll);
+	(void)cam_3j1_read16(&bus, 0x0310, &sensor_pll2);
+	(void)cam_3j1_read16(&bus, 0x0340, &sensor_frame_length);
+	(void)cam_3j1_read16(&bus, 0x0342, &sensor_line_length);
+	(void)cam_3j1_read16(&bus, 0x0344, &sensor_crop_x);
+	(void)cam_3j1_read16(&bus, 0x0348, &sensor_crop_end_x);
+	(void)cam_3j1_read16(&bus, 0x0404, &sensor_scaler);
+	(void)cam_3j1_read16(&bus, 0x0900, &sensor_binning);
+	(void)cam_3j1_read8(&bus, 0x0601, &pattern_live);
+	for (i = 0; i < sizeof(diag_regs) / sizeof(diag_regs[0]); i++)
+		(void)cam_3j1_read16(&bus, diag_regs[i], &diag_vals[i]);
+	/* Samsung sensors use 0x602C/0x602E for indirect reads; 0x6028/0x602A
+	 * select the write address and yielded unrelated alternating values. */
+	if (cam_3j1_write16(&bus, 0x602c, 0x2000)) {
+		for (i = 0; i < 5; i++) {
+			if (cam_3j1_write16(&bus, 0x602e, sensor_code_addrs[i]))
+				(void)cam_3j1_read16(&bus, 0x6f12, &sensor_code[i]);
+		}
+	}
+	(void)redwood_s2mpb02_camera_read(CAM_S2MPB02_BUCK2, &rails_live[0]);
+	(void)redwood_s2mpb02_camera_read(CAM_S2MPB02_LDO16, &rails_live[1]);
+	(void)redwood_s2mpb02_camera_read(CAM_S2MPB02_LDO11, &rails_live[2]);
+	(void)redwood_s2mpb02_camera_read(CAM_S2MPB02_LDO6, &rails_live[3]);
+	(void)redwood_s2mpb02_camera_read(CAM_S2MPB02_LDO5, &rails_live[4]);
+	mclk_mux_live = cam_s20_rd(cmu_top, CMU_CIS_CLK1_MUX);
+	mclk_div_live = cam_s20_rd(cmu_top, CMU_CIS_CLK1_DIV);
+	mclk_gate_live = cam_s20_rd(cmu_top, CMU_CIS_CLK1_GATE);
+	mclk_qch_live = cam_s20_rd(cmu_top, CMU_CIS_CLK1_QCH);
+	csis_bus_mux_live = cam_s20_rd(cmu, 0x0600);
+	pmu_iso_live = cam_s20_rd(pmu, 0x0730);
+	phy_reset_live = cam_s20_rd(isppre, 0);
+	irq_mask_live = cam_s20_rd(csi, 0x0010);
 	result = after != before;
 	strlcpy(phase, result ? "frames observed" : "no CSIS frames", sizeof(phase));
 cleanup:
 	if (sensor_on || stream) (void)cam_3j1_write8(&bus, 0x0100, 0);
+	if (irq_masks_saved) { cam_s20_wr(csi, 0x0010, mask0_saved); cam_s20_wr(csi, 0x0018, mask1_saved); }
 	if (csi_saved_ok) cam_s20_wr(csi, 0x0004, cam_s20_rd(csi, 0x0004) & ~1U);
 	if (csi_saved_ok) for (i = 10; i > 0; i--) cam_s20_wr(csi, csi_offs[i - 1], csi_saved[i - 1]);
 	if (phy_saved) {
@@ -1168,8 +1236,17 @@ cleanup:
 	if (top_qch_changed) cam_s20_update_bits(cmu, 0x307c, 1U, top_qch & 1U);
 	if (dma_qch_changed) cam_s20_update_bits(cmu, 0x3078, 1U, dma_qch & 1U);
 done:
-	(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"bounded-CSIS-stream\",\"result\":\"%s\",\"phase\":\"%s\",\"sensor_stream\":%u,\"sensor_frame_counter_before\":%u,\"sensor_frame_counter_after\":%u,\"sensor_raw_format\":\"%#x\",\"sensor_lane_mode\":\"%#x\",\"sensor_mipi_pll\":\"%#x\",\"frames_before\":%u,\"frames_after\":%u,\"irq_src0\":\"%#x\",\"irq_seen\":\"%#x\",\"frame_start_irq\":\"%#x\",\"frame_end_irq\":\"%#x\",\"csis_cmn\":\"%#x\",\"csis_phy_ctrl\":\"%#x\",\"csis_config\":\"%#x\",\"csis_resolution\":\"%#x\",\"phy_status\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"phy_active_samples\":%u,\"dphy_clock\":\"%#x\",\"dphy_lane0\":\"%#x\",\"dphy_lane3\":\"%#x\",\"qch_csi_bus\":\"%#x\",\"qch_csis1\":\"%#x\",\"qch_wdma\":\"%#x\",\"qch_pdp_top\":\"%#x\",\"state_restored\":true}\n",
-	    result ? "ok" : "error", phase, stream, sensor_fc_before, sensor_fc_after, sensor_fmt, sensor_lanes, sensor_mipi_pll, before, after, irq, irq_seen, fs_irq, fe_irq, cmn_live, phy_live, config_live, resol_live, phy_status, phy_status_or, phy_status_and, phy_active_samples, dphy_clk, lane0_live, lane3_live, cmu_qch_live, csi_qch_live, dma_qch_live, top_qch_live);
+	(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"bounded-CSIS-stream\",\"result\":\"%s\",\"phase\":\"%s\",\"sensor_stream\":%u,\"sensor_frame_counter_before\":%u,\"sensor_frame_counter_after\":%u,\"sensor_raw_format\":\"%#x\",\"sensor_lane_mode\":\"%#x\",\"sensor_mipi_pll\":\"%#x\",\"sensor_pll2\":\"%#x\",\"sensor_frame_length\":\"%#x\",\"sensor_line_length\":\"%#x\",\"sensor_crop_x\":\"%#x\",\"sensor_crop_end_x\":\"%#x\",\"sensor_scaler\":\"%#x\",\"sensor_binning\":\"%#x\",\"sensor_code\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"pattern\":%u,\"rails\":[%u,%u,%u,%u,%u],\"mclk\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"bus_mux\":\"%#x\",\"pmu_iso\":\"%#x\",\"phy_reset\":\"%#x\",\"irq_mask\":\"%#x\",\"frames_before\":%u,\"frames_after\":%u,\"irq_src0\":\"%#x\",\"irq_seen\":\"%#x\",\"frame_start_irq\":\"%#x\",\"frame_end_irq\":\"%#x\",\"csis_cmn\":\"%#x\",\"csis_phy_ctrl\":\"%#x\",\"csis_config\":\"%#x\",\"csis_resolution\":\"%#x\",\"phy_status\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"phy_active_samples\":%u,\"dphy_clock\":\"%#x\",\"dphy_lane0\":\"%#x\",\"dphy_lane3\":\"%#x\",\"phy_sc_time1\":\"%#x\",\"phy_sd0_ana6\":\"%#x\",\"phy_sd0_ana7\":\"%#x\",\"phy_sc_ana2\":\"%#x\",\"phy_sd0_ana2\":\"%#x\",\"phy_sd3_ana2\":\"%#x\",\"phy_sd0_settle\":\"%#x\",\"phy_sd0_deskew\":\"%#x\",\"phy_bias0\":\"%#x\",\"phy_bias1\":\"%#x\",\"phy_bias2\":\"%#x\",\"qch_csi_bus\":\"%#x\",\"qch_csis1\":\"%#x\",\"qch_wdma\":\"%#x\",\"qch_pdp_top\":\"%#x\",\"state_restored\":true}\n",
+	    result ? "ok" : "error", phase, stream, sensor_fc_before, sensor_fc_after, sensor_fmt, sensor_lanes, sensor_mipi_pll, sensor_pll2, sensor_frame_length, sensor_line_length, sensor_crop_x, sensor_crop_end_x, sensor_scaler, sensor_binning, sensor_code[0], sensor_code[1], sensor_code[2], sensor_code[3], sensor_code[4], pattern_live, rails_live[0], rails_live[1], rails_live[2], rails_live[3], rails_live[4], mclk_mux_live, mclk_div_live, mclk_gate_live, mclk_qch_live, csis_bus_mux_live, pmu_iso_live, phy_reset_live, irq_mask_live, before, after, irq, irq_seen, fs_irq, fe_irq, cmn_live, phy_live, config_live, resol_live, phy_status, phy_status_or, phy_status_and, phy_active_samples, dphy_clk, lane0_live, lane3_live, phy_sc_time1, phy_sd0_ana6, phy_sd0_ana7, phy_sc_ana2, phy_sd0_ana2, phy_sd3_ana2, phy_sd0_settle, phy_sd0_deskew, phy_bias0, phy_bias1, phy_bias2, cmu_qch_live, csi_qch_live, dma_qch_live, top_qch_live);
+	if (sensor_on) {
+		size_t used = strlen(out);
+		for (i = 0; i < sizeof(diag_regs) / sizeof(diag_regs[0]) && used < cap; i++) {
+			int written = snprintf(out + used, cap - used, "%04x=%04x%s", diag_regs[i], diag_vals[i],
+			    i + 1 == sizeof(diag_regs) / sizeof(diag_regs[0]) ? "\n" : " ");
+			if (written < 0) break;
+			used += (size_t)written < cap - used ? (size_t)written : cap - used;
+		}
+	}
 }
 
 /* CSIS/DPHY streaming probe removed after 2026-11-08 receiver-path kernel panic. */

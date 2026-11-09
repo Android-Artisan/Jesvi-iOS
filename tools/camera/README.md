@@ -184,3 +184,35 @@ Live tests after each change still showed `FRM_CNT_CH0=0`, no packet IRQ and
 `PHY_STATUS=0xf1` throughout 500 ms, while the sensor's internal counter
 advanced. These changes are diagnostic only. Camera.app still uses its
 synthetic preview; no optical image has yet appeared in iOS.
+
+### Direct sensor and microcode comparison (2026-11-09 evening)
+
+The stock Samsung Vision run and `cam.s20.front.stream 2` now have identical
+readbacks for the sensor's output format (`0x0112=0x0a0a`), four-lane mode
+(`0x0114=0x0301`), MIPI PLL (`0x0306=0x00d9`, `0x0310=0x0116`), crop, binning,
+MIPI timing registers `0x080e..0x0816`, group hold, and stock gain
+(`0x0204=0x0200`, `0x020e=0x1000`). Samsung's Vision exposure manager changes
+frame length to about `0xbf9b`; iOS leaves the 30 fps mode value `0x0597`.
+The full stock direct snapshot is
+`work/stock-camera-test/reference-direct-final-main.raw`.
+
+Indirect memory reads must use `0x602C=0x2000`, `0x602E=address`, then read
+`0x6F12`. The earlier use of `0x6028/0x602A` selected the **write** pointer
+and returned a misleading alternating `0x0220/0x84f8` on both kernels. With
+the read pointer fixed, the iOS global microcode words at addresses
+`0x918c,0x918e,0x9190,0x9192,0x9256` read back as
+`0x0094,0x00f0,0x4ef8,0x0122,0x0026`, exactly the Samsung setA source.
+The global 200-word burst is now sent as one I2C transaction, matching
+Samsung's helper. An optional 250 kHz software-I2C probe (`stream 4`) with
+stock gains produced the same zero CSIS frames as the slower path. This
+rules out the tested I2C timing and setfile differences, but it does not
+validate every word of microcode.
+
+The iOS CSIS1 core (`0x4b01`), interrupt mask (`0x00fff07f`), PHY enable
+(`0x1f`), D-PHY skew/settle values, powered sensor rails, MCLK readback,
+QCH gates and PMU isolation now match the known Samsung setup values.
+Nevertheless `FRM_CNT_CH0=0`, all packet IRQ sources remain zero and
+`PHY_STATUS=0xf1` in 500 one-millisecond samples while the sensor's internal
+counter advances 18 times. The remaining work is to prove why the physical
+MIPI output does not leave stop state under iOS, especially any unobserved
+clock or PHY routing state. Do not wire this probe into Camera.app yet.
