@@ -92,6 +92,14 @@ at `cis_3j1_probe done`; no helper result or stream result was flushed. This
 run cannot be counted as evidence of a camera frame. A separate rolling
 breadcrumb log was added for the next run to preserve progress across stalls.
 
+The fifth run also bootlooped and required manual Download Mode entry;
+HackiOS BOOT was restored and iOS SSH returned. Its main log again ends after
+early `cis_3j1_probe done`, before a helper result. The new breadcrumb was
+written, but its unfiltered dmesg content filled the 512 KiB window before
+the helper started, so it did not identify the failing ioctl. The logger now
+filters for camera, sensor, CSIS and panic messages before writing that
+window. Do not infer that Samsung streamed a frame from these runs.
+
 ## GPS and cellular adaptation
 
 The same boot and restore mechanism can capture kernel driver state for GPS

@@ -39,7 +39,7 @@ flush() {
             echo '=== live helper output'
             cat /tmp/camera-ref-result.txt 2>/dev/null
             echo '=== live kernel tail'
-            dmesg | tail -c 458752
+            dmesg | grep -iE 'camera|3j1|csis|mipi-phy|is_sensor|is_video|ss1|panic|call trace|unable to handle|bug:' | tail -180
         } > /tmp/camera-breadcrumb.txt
         [ -n "$LOGDEV" ] && dd if=/tmp/camera-breadcrumb.txt of="$LOGDEV" bs=4096 seek=2006020 count=128 conv=notrunc 2>/dev/null
         sleep 1
