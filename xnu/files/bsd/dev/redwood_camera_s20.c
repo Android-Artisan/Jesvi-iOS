@@ -1005,7 +1005,8 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	uint32_t cmu_qch = 0, csi_qch = 0, dma_qch = 0, top_qch = 0, iso = 0;
 	uint32_t before = 0, after = 0, irq = 0, fs_irq = 0, fe_irq = 0, phy_status = 0;
 	uint32_t phy_status_or = 0, phy_status_and = ~0U, phy_active_samples = 0, irq_seen = 0;
-	uint32_t cmn_live = 0, phy_live = 0, config_live = 0, resol_live = 0, dphy_clk = 0, lane0_live = 0, lane3_live = 0, i, j;
+	uint32_t cmn_live = 0, phy_live = 0, config_live = 0, config1_live = 0, resol_live = 0;
+	uint32_t shadow1_live = 0, lrte_live = 0, dphy_clk = 0, lane0_live = 0, lane3_live = 0, i, j;
 	uint32_t phy_sc_time1 = 0, phy_sd0_ana6 = 0, phy_sd0_ana7 = 0;
 	uint32_t phy_sc_ana2 = 0, phy_sd0_ana2 = 0, phy_sd3_ana2 = 0;
 	uint32_t phy_sd0_settle = 0, phy_sd0_deskew = 0, phy_bias0 = 0, phy_bias1 = 0, phy_bias2 = 0;
@@ -1106,11 +1107,11 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	mask0_saved = cam_s20_rd(csi, 0x0010); mask1_saved = cam_s20_rd(csi, 0x0018);
 	irq_masks_saved = true;
 	strlcpy(phase, "receiver setup", sizeof(phase));
-	cam_s20_wr(isppre, 0, reset_sys & ~(1U << 3)); cam_s20_dphy_3j1_config(dphy, bias); cam_s20_wr(isppre, 0, reset_sys | (1U << 3));
-	/* Follow csi_hw_reset(): SW_RESET is write-one/self-clearing. */
+	/* Samsung runs csi_hw_reset() during csi_init, before phy_set(). */
 	cam_s20_wr(csi, 0x0004, csi_saved[0] | (1U << 1));
 	for (i = 0; i < 10 && (cam_s20_rd(csi, 0x0004) & (1U << 1)); i++) delay_for_interval(10, NSEC_PER_USEC);
 	if (cam_s20_rd(csi, 0x0004) & (1U << 1)) { strlcpy(phase, "CSIS reset timeout", sizeof(phase)); goto cleanup; }
+	cam_s20_wr(isppre, 0, reset_sys & ~(1U << 3)); cam_s20_dphy_3j1_config(dphy, bias); cam_s20_wr(isppre, 0, reset_sys | (1U << 3));
 	/* Stock CSIS1 debug dump before sensor stream: CMN_CTRL=0x4b01.
 	 * The 1807 Mbps SAK3J1 mode uses deskew level 2 and VC interleave mode 2;
 	 * omitting either leaves the receiver in a different mode from Samsung's. */
@@ -1121,7 +1122,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(csi, 0x0040, (0x2bU << 2) | (2U << 12));
 	cam_s20_wr(csi, 0x0044, (1368U << 16) | 1824U);
 	/* x1slte mode 8 sends VC1 RAW10 auxiliary rows, 1824x342. */
-	cam_s20_wr(csi, 0x0050, 1U | (0x2bU << 2) | (2U << 12));
+	cam_s20_wr(csi, 0x0050, (1U << 16) | (0x2bU << 2) | (2U << 12));
 	cam_s20_wr(csi, 0x0054, (342U << 16) | 1824U);
 	cam_s20_wr(csi, 0x0600, csi_saved[7] & ~(1U << 31)); /* LRTE_DISABLE */
 	cam_s20_wr(csi, 0x0690, csi_saved[8] | (1U << 23)); /* CSIS_CTRL_PIXEL_ALIGN_MODE=1 */
@@ -1161,7 +1162,9 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	after = cam_s20_rd(csi, 0x0500);
 	(void)cam_3j1_read8(&bus, 0x0005, &sensor_fc_after);
 	irq = cam_s20_rd(csi, 0x0014); fs_irq = cam_s20_rd(csi, 0x0024); fe_irq = cam_s20_rd(csi, 0x002c);
-	cmn_live = cam_s20_rd(csi, 0x0004); phy_live = cam_s20_rd(csi, 0x0704); config_live = cam_s20_rd(csi, 0x0040);
+	cmn_live = cam_s20_rd(csi, 0x0004); phy_live = cam_s20_rd(csi, 0x0704);
+	config_live = cam_s20_rd(csi, 0x0040); config1_live = cam_s20_rd(csi, 0x0050);
+	shadow1_live = cam_s20_rd(csi, 0x0250); lrte_live = cam_s20_rd(csi, 0x0600);
 	resol_live = cam_s20_rd(csi, 0x0044); phy_status = cam_s20_rd(csi, 0x0700);
 	dphy_clk = cam_s20_rd(dphy, 0); lane0_live = cam_s20_rd(dphy, 0x100); lane3_live = cam_s20_rd(dphy, 0x400);
 	phy_sc_time1 = cam_s20_rd(dphy, 0x34);
@@ -1236,8 +1239,8 @@ cleanup:
 	if (top_qch_changed) cam_s20_update_bits(cmu, 0x307c, 1U, top_qch & 1U);
 	if (dma_qch_changed) cam_s20_update_bits(cmu, 0x3078, 1U, dma_qch & 1U);
 done:
-	(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"bounded-CSIS-stream\",\"result\":\"%s\",\"phase\":\"%s\",\"sensor_stream\":%u,\"sensor_frame_counter_before\":%u,\"sensor_frame_counter_after\":%u,\"sensor_raw_format\":\"%#x\",\"sensor_lane_mode\":\"%#x\",\"sensor_mipi_pll\":\"%#x\",\"sensor_pll2\":\"%#x\",\"sensor_frame_length\":\"%#x\",\"sensor_line_length\":\"%#x\",\"sensor_crop_x\":\"%#x\",\"sensor_crop_end_x\":\"%#x\",\"sensor_scaler\":\"%#x\",\"sensor_binning\":\"%#x\",\"sensor_code\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"pattern\":%u,\"rails\":[%u,%u,%u,%u,%u],\"mclk\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"bus_mux\":\"%#x\",\"pmu_iso\":\"%#x\",\"phy_reset\":\"%#x\",\"irq_mask\":\"%#x\",\"frames_before\":%u,\"frames_after\":%u,\"irq_src0\":\"%#x\",\"irq_seen\":\"%#x\",\"frame_start_irq\":\"%#x\",\"frame_end_irq\":\"%#x\",\"csis_cmn\":\"%#x\",\"csis_phy_ctrl\":\"%#x\",\"csis_config\":\"%#x\",\"csis_resolution\":\"%#x\",\"phy_status\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"phy_active_samples\":%u,\"dphy_clock\":\"%#x\",\"dphy_lane0\":\"%#x\",\"dphy_lane3\":\"%#x\",\"phy_sc_time1\":\"%#x\",\"phy_sd0_ana6\":\"%#x\",\"phy_sd0_ana7\":\"%#x\",\"phy_sc_ana2\":\"%#x\",\"phy_sd0_ana2\":\"%#x\",\"phy_sd3_ana2\":\"%#x\",\"phy_sd0_settle\":\"%#x\",\"phy_sd0_deskew\":\"%#x\",\"phy_bias0\":\"%#x\",\"phy_bias1\":\"%#x\",\"phy_bias2\":\"%#x\",\"qch_csi_bus\":\"%#x\",\"qch_csis1\":\"%#x\",\"qch_wdma\":\"%#x\",\"qch_pdp_top\":\"%#x\",\"state_restored\":true}\n",
-	    result ? "ok" : "error", phase, stream, sensor_fc_before, sensor_fc_after, sensor_fmt, sensor_lanes, sensor_mipi_pll, sensor_pll2, sensor_frame_length, sensor_line_length, sensor_crop_x, sensor_crop_end_x, sensor_scaler, sensor_binning, sensor_code[0], sensor_code[1], sensor_code[2], sensor_code[3], sensor_code[4], pattern_live, rails_live[0], rails_live[1], rails_live[2], rails_live[3], rails_live[4], mclk_mux_live, mclk_div_live, mclk_gate_live, mclk_qch_live, csis_bus_mux_live, pmu_iso_live, phy_reset_live, irq_mask_live, before, after, irq, irq_seen, fs_irq, fe_irq, cmn_live, phy_live, config_live, resol_live, phy_status, phy_status_or, phy_status_and, phy_active_samples, dphy_clk, lane0_live, lane3_live, phy_sc_time1, phy_sd0_ana6, phy_sd0_ana7, phy_sc_ana2, phy_sd0_ana2, phy_sd3_ana2, phy_sd0_settle, phy_sd0_deskew, phy_bias0, phy_bias1, phy_bias2, cmu_qch_live, csi_qch_live, dma_qch_live, top_qch_live);
+	(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"bounded-CSIS-stream\",\"result\":\"%s\",\"phase\":\"%s\",\"sensor_stream\":%u,\"sensor_frame_counter_before\":%u,\"sensor_frame_counter_after\":%u,\"sensor_raw_format\":\"%#x\",\"sensor_lane_mode\":\"%#x\",\"sensor_mipi_pll\":\"%#x\",\"sensor_pll2\":\"%#x\",\"sensor_frame_length\":\"%#x\",\"sensor_line_length\":\"%#x\",\"sensor_crop_x\":\"%#x\",\"sensor_crop_end_x\":\"%#x\",\"sensor_scaler\":\"%#x\",\"sensor_binning\":\"%#x\",\"sensor_code\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"pattern\":%u,\"rails\":[%u,%u,%u,%u,%u],\"mclk\":[\"%#x\",\"%#x\",\"%#x\",\"%#x\"],\"bus_mux\":\"%#x\",\"pmu_iso\":\"%#x\",\"phy_reset\":\"%#x\",\"irq_mask\":\"%#x\",\"frames_before\":%u,\"frames_after\":%u,\"irq_src0\":\"%#x\",\"irq_seen\":\"%#x\",\"frame_start_irq\":\"%#x\",\"frame_end_irq\":\"%#x\",\"csis_cmn\":\"%#x\",\"csis_phy_ctrl\":\"%#x\",\"csis_config\":\"%#x\",\"csis_config1\":\"%#x\",\"csis_shadow1\":\"%#x\",\"csis_lrte\":\"%#x\",\"csis_resolution\":\"%#x\",\"phy_status\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"phy_active_samples\":%u,\"dphy_clock\":\"%#x\",\"dphy_lane0\":\"%#x\",\"dphy_lane3\":\"%#x\",\"phy_sc_time1\":\"%#x\",\"phy_sd0_ana6\":\"%#x\",\"phy_sd0_ana7\":\"%#x\",\"phy_sc_ana2\":\"%#x\",\"phy_sd0_ana2\":\"%#x\",\"phy_sd3_ana2\":\"%#x\",\"phy_sd0_settle\":\"%#x\",\"phy_sd0_deskew\":\"%#x\",\"phy_bias0\":\"%#x\",\"phy_bias1\":\"%#x\",\"phy_bias2\":\"%#x\",\"qch_csi_bus\":\"%#x\",\"qch_csis1\":\"%#x\",\"qch_wdma\":\"%#x\",\"qch_pdp_top\":\"%#x\",\"state_restored\":true}\n",
+	    result ? "ok" : "error", phase, stream, sensor_fc_before, sensor_fc_after, sensor_fmt, sensor_lanes, sensor_mipi_pll, sensor_pll2, sensor_frame_length, sensor_line_length, sensor_crop_x, sensor_crop_end_x, sensor_scaler, sensor_binning, sensor_code[0], sensor_code[1], sensor_code[2], sensor_code[3], sensor_code[4], pattern_live, rails_live[0], rails_live[1], rails_live[2], rails_live[3], rails_live[4], mclk_mux_live, mclk_div_live, mclk_gate_live, mclk_qch_live, csis_bus_mux_live, pmu_iso_live, phy_reset_live, irq_mask_live, before, after, irq, irq_seen, fs_irq, fe_irq, cmn_live, phy_live, config_live, config1_live, shadow1_live, lrte_live, resol_live, phy_status, phy_status_or, phy_status_and, phy_active_samples, dphy_clk, lane0_live, lane3_live, phy_sc_time1, phy_sd0_ana6, phy_sd0_ana7, phy_sc_ana2, phy_sd0_ana2, phy_sd3_ana2, phy_sd0_settle, phy_sd0_deskew, phy_bias0, phy_bias1, phy_bias2, cmu_qch_live, csi_qch_live, dma_qch_live, top_qch_live);
 	if (sensor_on) {
 		size_t used = strlen(out);
 		for (i = 0; i < sizeof(diag_regs) / sizeof(diag_regs[0]) && used < cap; i++) {

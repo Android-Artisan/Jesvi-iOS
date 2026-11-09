@@ -216,3 +216,14 @@ Nevertheless `FRM_CNT_CH0=0`, all packet IRQ sources remain zero and
 counter advances 18 times. The remaining work is to prove why the physical
 MIPI output does not leave stop state under iOS, especially any unobserved
 clock or PHY routing state. Do not wire this probe into Camera.app yet.
+
+The focused stock CSI core dump in
+`work/stock-camera-test/reference-csis-core-main.raw` exposed a real VC1
+field error: Samsung sets `ISP_CONFIG_CH1=0x000120ac`, with VC1 in bits 16+;
+our probe had put `1` in bit 0. The iOS register and its shadow now both
+read `0x000120ac`. The probe also resets the CSI core before programming the
+D-PHY, matching Samsung's `csi_init()` then `phy_set()` ordering. Neither fix
+yet produced a CSIS frame: `PHY_STATUS` remained `0xf1`, packet IRQs and
+VC0 frame count remained zero. The sensor's internal test pattern (`stream 3`)
+also showed no link activity with those fixes, so image-array exposure is
+not the remaining blocker.

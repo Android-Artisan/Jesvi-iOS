@@ -102,6 +102,8 @@ say '=== sensor and receiver kernel log'
 dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
 say '=== CSI register dump during stream'
 dmesg | grep -iE 'CSIS_CMN|CSIS_PHY|CSIS_CONFIG|FRM_CNT|PHY_STATUS|CSI.*SFR|CSI.*0x0' | tail -180 >> "$T"
+say '=== CSI1 core SFR before sensor stream'
+dmesg | awk '/CSI Core SFR DUMP/{inside=1;next} /CSI PHY SFR DUMP/{if(inside) exit} inside && /\[SFR\]/{print}' | tail -100 >> "$T"
 say '=== CSI1 PHY SFR before sensor stream'
 dmesg | awk '/CSI PHY SFR DUMP/{inside=1;next} /CSI VC\/DMA SFR DUMP/{inside=0} inside && /\[SFR\]/{print}' | tail -120 >> "$T"
 say '=== CSI IRQ source during stream'

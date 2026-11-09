@@ -162,6 +162,9 @@ registers; use `0x602C/0x602E` for future reads. Its `sensor_write16()`
 returns zero on a successful one-message `I2C_RDWR` transfer. The reference
 helper source now has both corrections. The iOS probe with the corrected
 read pointer matches the five sampled Samsung setA microcode words.
+The focused CSI core rows are saved in `reference-csis-core-main.raw`; they
+include VC0/VC1 active and shadow settings, LRTE and PHY enable immediately
+before the reference sensor streams. The VC1 value is `0x000120ac`.
 
 ## GPS and cellular adaptation
 
