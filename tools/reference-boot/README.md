@@ -100,6 +100,60 @@ the helper started, so it did not identify the failing ioctl. The logger now
 filters for camera, sensor, CSIS and panic messages before writing that
 window. Do not infer that Samsung streamed a frame from these runs.
 
+The sixth run added a 4 KiB checkpoint per ioctl at block 2006276. The
+protected pages prove `S_INPUT`, sensor-size, 30 fps and `S_FMT` all returned;
+the last completed checkpoint is **before** `V4L2_CID_IS_S_STREAM`. The
+normal scenario enters Samsung's ISP chain during that control, and a full
+Android camera HAL and ISP userspace are absent from the minimal ramdisk. The
+next probe selects `SENSOR_SCENARIO_VISION` (bit field at 26), whose device
+tree power sequence omits `S2MPB02_BUCK2`, and which Samsung's driver marks as
+stand-alone so `is_sensor_start()` bypasses `is_itf_stream_on(ischain)`.
+This is a diagnostic stream attempt, not an Android Camera.app equivalent.
+
+Further tests on 2026-11-09 narrowed the path:
+
+- Vision `S_INPUT` initially failed with an I2C NACK. Its power sequence omitted
+  `S2MPB02_BUCK2`; the normal scenario enabled that rail.
+- The normal scenario accepted two ION DMA buffers and queued both, but hung
+  at queue `VIDIOC_STREAMON` in this minimal initramfs. The full ISP chain is
+  therefore not a useful sensor-only reference without more Android userspace.
+- Enabling BUCK2 before the Vision test made `S_INPUT`, mode setup and private
+  `V4L2_CID_IS_S_STREAM` return successfully. `G_STREAM` remained 1 for five
+  seconds; the helper stopped the stream and restored BUCK2. Raw evidence is
+  `work/stock-camera-test/reference-vision-buck2-main.raw` and its checkpoints.
+  This proves sensor initialization, not an optical frame.
+- A `debug_csi=1` run captured Samsung's CSIS1 v5.3 register baseline just
+  before sensor stream-on: `CSIS_CMN_CTRL=0x4b01`, `CSIS_CLK_CTRL=0x10`,
+  `CSIS_INT_MSK0=0x00fff07f`, `FRM_CNT_CH0=0`, and `PHY_STATUS=0xf1`.
+  The zero count is expected at that instant. Evidence is
+  `work/stock-camera-test/reference-vision-debug-main.raw`.
+
+In the Vision run without DMA buffers, the named CSI interrupt count rose only
+from 1 to 2 in the first second, then remained at 2 for the next four seconds
+despite `G_STREAM=1`. Queuing two ION buffers in Vision mode also succeeded but
+had the same count. `debug_irq=2` then identified those two interrupts as one
+clean VC0/VC1 frame start and one clean frame end, with zero CSI error bits.
+`V4L2_CID_IS_G_MIPI_ERR` remained 0 for five seconds. Evidence is
+`reference-vision-queued-main.raw` and `reference-vision-irq-detail-main.raw`
+under `work/stock-camera-test/`. The physical link can carry a frame under
+Samsung's kernel, but this minimal Vision setup does not sustain 30 fps.
+
+Samsung's CSIS1 baseline also exposed a concrete iOS setup mismatch:
+`CSIS_CMN_CTRL=0x4b01` includes deskew level 2 (`0x4000`) and VC interleave
+mode 2 (`0x0800`). The iOS bounded probe set four lanes but omitted those two
+fields. It now sets them and `CSIS_CLK_CTRL` bit 4 before starting the sensor.
+The live test still reported zero iOS CSIS frames, so these fields alone are
+insufficient. Camera.app still shows a synthetic preview.
+
+One final reference run read the SAK3J1 frame counter directly via I2C and
+captured the PHY SFR dump. Its counter reached 1 and stayed at 1 for the full
+five seconds, consistent with the single clean CSI frame. The incomplete
+Vision setup therefore also stops the *sensor* after one frame; adding DMA
+buffers did not fix it. The PHY dump confirmed clock and lane registers in
+Samsung's kernel. The iOS probe was adjusted to mirror Samsung's skew-delay
+writes to clock and data lanes, but its live CSIS count remained zero. Raw
+evidence is `work/stock-camera-test/reference-vision-phy-main.raw`.
+
 ## GPS and cellular adaptation
 
 The same boot and restore mechanism can capture kernel driver state for GPS

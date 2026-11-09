@@ -53,9 +53,37 @@ say '=== camera registration'
 dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy' | tail -160 >> "$T"
 flush
 
-# Samsung's camera driver registers sensor1 as /dev/video2. The helper selects
+# Samsung's camera driver registers sensor1 as /dev/video102. The helper selects
 # front position 1, requests 1824x1368 RAW10, then starts the sensor for five seconds.
-timeout -s KILL 15 /bin/camera-ref > /tmp/camera-ref-result.txt 2>&1 &
+PMICDEV=
+for path in /sys/bus/i2c/devices/*-0059; do
+    [ -d "$path" ] || continue
+    bus=${path##*/}; bus=${bus%-0059}
+    [ -c "/dev/i2c-$bus" ] && PMICDEV="/dev/i2c-$bus" && break
+done
+say "=== S2MPB02 bus $PMICDEV"
+SENSORDEV=
+for path in /sys/bus/i2c/devices/*-0010; do
+    [ -d "$path" ] || continue
+    case "$(cat "$path/name" 2>/dev/null) $(readlink "$path/driver" 2>/dev/null)" in
+        *3j1*) bus=${path##*/}; bus=${bus%-0010}; SENSORDEV="/dev/i2c-$bus"; break ;;
+    esac
+done
+say "=== SAK3J1 bus $SENSORDEV"
+for parameter in /sys/module/*/parameters/debug_csi; do
+    [ -f "$parameter" ] || continue
+    echo 1 > "$parameter"
+    say "=== CSI debug enabled at $parameter"
+    break
+done
+for parameter in /sys/module/*/parameters/debug_irq; do
+    [ -f "$parameter" ] || continue
+    echo 2 > "$parameter"
+    say "=== CSI IRQ debug enabled at $parameter"
+    break
+done
+flush
+timeout -s KILL 15 /bin/camera-ref "$LOGDEV" "$PMICDEV" "$SENSORDEV" > /tmp/camera-ref-result.txt 2>&1 &
 TEST_PID=$!
 for attempt in 1 2 3 4 5 6 7 8; do
     grep -q 'S_CTRL stream started' /tmp/camera-ref-result.txt 2>/dev/null && break
@@ -69,9 +97,15 @@ grep -iE 'csis|cis_clk|pdp' /sys/kernel/debug/clk/clk_summary >> "$T" 2>/dev/nul
 say '=== active camera rails'
 grep -iE 'mipi_csi|vdd.*vt|s2mpb02|camera' /sys/kernel/debug/regulator/regulator_summary >> "$T" 2>/dev/null
 say '=== camera interrupts'
-grep -iE 'csis|camera|is_sensor' /proc/interrupts >> "$T" 2>/dev/null
+cat /proc/interrupts >> "$T" 2>/dev/null
 say '=== sensor and receiver kernel log'
 dmesg | grep -iE '3j1|csis|is_sensor1|camera|mipi-phy|is_video|ss1' | tail -300 >> "$T"
+say '=== CSI register dump during stream'
+dmesg | grep -iE 'CSIS_CMN|CSIS_PHY|CSIS_CONFIG|FRM_CNT|PHY_STATUS|CSI.*SFR|CSI.*0x0' | tail -180 >> "$T"
+say '=== CSI1 PHY SFR before sensor stream'
+dmesg | awk '/CSI PHY SFR DUMP/{inside=1;next} /CSI VC\/DMA SFR DUMP/{inside=0} inside && /\[SFR\]/{print}' | tail -120 >> "$T"
+say '=== CSI IRQ source during stream'
+dmesg | grep -iE 'link: ERR|CSIS.*ERR|Lost.*interrupt' | tail -80 >> "$T"
 flush
 wait "$TEST_PID"
 say "=== camera-ref exit status $?"
