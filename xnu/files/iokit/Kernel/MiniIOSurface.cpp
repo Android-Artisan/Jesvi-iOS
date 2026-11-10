@@ -229,6 +229,55 @@ poolGive(int slot)
 	}
 }
 
+/* Bounded camera DMA diagnostics borrow an unused slot through the same
+ * allocator as surfaces. Never guess a free physical address below 4 GB.
+ * The caller must keep this reservation if DMA cannot be proved stopped. */
+static int gCameraPoolSlot = -1;
+static IOMemoryDescriptor *gCameraPoolMemory;
+static IOMemoryMap *gCameraPoolMap;
+
+extern "C" bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
+extern "C" void redwood_camera_dma_put(void);
+
+extern "C" bool
+redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
+{
+	if (!bytes || bytes > POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
+	IOLockLock(gSurfaceLock);
+	if (gCameraPoolSlot >= 0) { IOLockUnlock(gSurfaceLock); return false; }
+	uint64_t address = 0;
+	int slot = poolTake(bytes, &address);
+	IOMemoryDescriptor *md = slot >= 0 && address + bytes <= (1ULL << 32) ?
+	    IOMemoryDescriptor::withPhysicalAddress(address, bytes, kIODirectionInOut) : NULL;
+	IOMemoryMap *map = md ? md->createMappingInTask(kernel_task, 0,
+	    kIOMapAnywhere | kIOMapWriteCombineCache) : NULL;
+	if (!map) {
+		OSSafeReleaseNULL(md);
+		poolGive(slot);
+		IOLockUnlock(gSurfaceLock);
+		return false;
+	}
+	gCameraPoolSlot = slot;
+	gCameraPoolMemory = md;
+	gCameraPoolMap = map;
+	*phys = address;
+	*virt = (void *)map->getVirtualAddress();
+	IOLockUnlock(gSurfaceLock);
+	return true;
+}
+
+extern "C" void
+redwood_camera_dma_put(void)
+{
+	if (!gSurfaceLock) return;
+	IOLockLock(gSurfaceLock);
+	OSSafeReleaseNULL(gCameraPoolMap);
+	OSSafeReleaseNULL(gCameraPoolMemory);
+	poolGive(gCameraPoolSlot);
+	gCameraPoolSlot = -1;
+	IOLockUnlock(gSurfaceLock);
+}
+
 void
 MiniIOSurfaceClearKept(void)
 {

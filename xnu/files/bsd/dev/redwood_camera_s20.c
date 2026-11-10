@@ -347,6 +347,145 @@ cleanup:
 	}
 }
 
+/* CSIS v5.3 DMA-only pattern test. No sensor, CSI link, PHY or clock-rate
+ * writes. Sources: Exynos990 camera DTS and is-hw-csi-v5_3.c/h. All frame
+ * addresses point inside an exclusively borrowed low-memory pool slot. */
+extern bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
+extern void redwood_camera_dma_put(void);
+static bool cam_s20_dma_quarantined;
+
+static void
+cam_s20_dma_pattern(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	const uint32_t width = 320, height = 240, guard = 16384;
+	const uint32_t bytes = width * height * 2, total = 196608;
+	static const uint32_t vc_offs[] = { 0, 4, 8, 12, 0xa4, 0xb0 };
+	static const uint32_t cmn_offs[] = { 0, 4, 0x14, 0x1c };
+	static const uint32_t top_offs[] = { 8, 0x20, 0x24, 0x28 };
+	static const uint32_t gate_offs[] = { 0x20e4, 0x20e8, 0x20ec, 0x20f0 };
+	static volatile uint8_t *pmu, *cmu, *dma, *mmu0, *mmu1;
+	volatile uint8_t *vc, *cmn;
+	uint32_t vc_save[6], cmn_save[4], top_save[4], addr_save[32];
+	uint32_t mmu_ctrl[2] = { 0 }, mmu_ver[2] = { 0 }, active = 0, irq = 0, err = 0;
+	uint32_t changed = 0, guard_bad = 0, lo = 0xffff, hi = 0, i, chan, virtchan;
+	uint64_t phys = 0;
+	void *buffer = NULL;
+	const char *phase = "map";
+	bool saved = false, allocated = false, stopped = true, ended = false;
+	if (!cap) return;
+	if (cam_s20_dma_quarantined) { phase = "previous DMA did not stop; reboot required"; goto report; }
+	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	if (!pmu) goto report;
+	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { phase = "CSIS domain off"; goto report; }
+	if (!cmu) cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+	if (!cmu) goto report;
+	/* Read SysMMU only with all its S1/S2 clock gates observed on. */
+	for (i = 0; i < 4; i++) {
+		if (!(cam_s20_rd(cmu, gate_offs[i]) & (1U << 21))) {
+			phase = "SysMMU clock off"; goto report;
+		}
+	}
+	if (cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2)) {
+		phase = "CSIS secure access"; goto report;
+	}
+	if (!mmu0) mmu0 = (volatile uint8_t *)ml_io_map(0x17110000, 0x100);
+	if (!mmu1) mmu1 = (volatile uint8_t *)ml_io_map(0x17140000, 0x100);
+	if (!dma) dma = (volatile uint8_t *)ml_io_map(0x170c0000, 0x5000);
+	if (!mmu0 || !mmu1 || !dma) goto report;
+	mmu_ver[0] = cam_s20_rd(mmu0, 0x34); mmu_ver[1] = cam_s20_rd(mmu1, 0x34);
+	mmu_ctrl[0] = cam_s20_rd(mmu0, 0); mmu_ctrl[1] = cam_s20_rd(mmu1, 0);
+	/* This path understands v7.x pass-through only. Never replace live tables. */
+	if ((mmu_ver[0] >> 28) != 7 || (mmu_ver[1] >> 28) != 7 ||
+	    (mmu_ctrl[0] & 3U) || (mmu_ctrl[1] & 3U)) {
+		phase = "SysMMU not v7 pass-through"; goto report;
+	}
+	if (cam_s20_rd(dma, 0x20) & (1U << 31)) { phase = "pattern generator busy"; goto report; }
+	/* Pattern generator is shared by four WDMAs: refuse any active owner. */
+	for (chan = 1; chan <= 4; chan++) for (virtchan = 0; virtchan < 4; virtchan++) {
+		uint32_t base = chan * 0x1000 + virtchan * 0x100;
+		if ((cam_s20_rd(dma, base) | cam_s20_rd(dma, base + 0x90)) & 1U) {
+			phase = "DMA already active"; goto report;
+		}
+	}
+	vc = dma + 0x2000; cmn = dma + 0x2400;
+	if (cam_s20_rd(cmn, 8)) { phase = "DMA has pending interrupts"; goto report; }
+	if (!redwood_camera_dma_get(total, &phys, &buffer)) { phase = "no free low-memory slot"; goto report; }
+	allocated = true;
+	if (!phys || phys + total > (1ULL << 32)) { phase = "invalid DMA address"; goto release; }
+	memset(buffer, 0xa5, total);
+	__asm__ volatile("dsb sy" ::: "memory");
+	for (i = 0; i < 6; i++) vc_save[i] = cam_s20_rd(vc, vc_offs[i]);
+	for (i = 0; i < 4; i++) {
+		cmn_save[i] = cam_s20_rd(cmn, cmn_offs[i]);
+		top_save[i] = cam_s20_rd(dma, top_offs[i]);
+	}
+	for (i = 0; i < 32; i++) addr_save[i] = cam_s20_rd(vc, 0x10 + i * 4);
+	saved = true;
+	cam_s20_wr(dma, 8, top_save[0] | 2U); /* IP_PROCESSING */
+	cam_s20_wr(cmn, 0x14, cmn_save[2] & ~1U); /* no stale abort request */
+	cam_s20_wr(cmn, 0, cmn_save[0] & ~1U); /* OTF input */
+	cam_s20_wr(cmn, 0x1c, cmn_save[3] & ~3U); /* RAW10 */
+	cam_s20_wr(cmn, 4, 0x01111110U); /* VC0 frame/error/abort sources; GIC remains masked */
+	cam_s20_wr(vc, 4, (vc_save[1] & ~0x7fU) | 6U); /* 2D unsigned RAW10 in 16 bits */
+	cam_s20_wr(vc, 8, 0); cam_s20_wr(vc, 12, 0);
+	cam_s20_wr(vc, 0xa4, width);
+	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, (uint32_t)(phys + guard));
+	cam_s20_wr(vc, 0xb0, ~0U); /* all 32 frame pointers valid */
+	cam_s20_wr(dma, 0x24, 0x00804640U); /* Samsung's horizontal blanking */
+	cam_s20_wr(dma, 0x28, (height << 16) | width);
+	cam_s20_wr(dma, 0x20, 0x400fffffU); /* dual pixels; generous bounded vblank */
+	stopped = false;
+	cam_s20_wr(vc, 0, 3U); /* output on, update pointer to slot zero */
+	__asm__ volatile("dsb sy" ::: "memory");
+	cam_s20_wr(dma, 0x20, 0xc00fffffU);
+	for (i = 0; i < 500; i++) {
+		irq |= cam_s20_rd(cmn, 8);
+		if (irq & ((1U << 8) | (1U << 12))) break;
+		cam_s20_wait_ms(1);
+	}
+	ended = (irq & (1U << 8)) != 0;
+	err = cam_s20_rd(cmn, 0x18);
+	cam_s20_wr(dma, 0x20, cam_s20_rd(dma, 0x20) & ~(1U << 31));
+	cam_s20_wr(vc, 0, 0);
+	cam_s20_wr(cmn, 0x14, cmn_save[2] | 1U); /* drain any writes before returning memory */
+	for (i = 0; i < 100; i++) {
+		uint32_t status = cam_s20_rd(cmn, 8);
+		active = cam_s20_rd(vc, 0x90);
+		if ((status & (1U << 16)) && !(active & 1U)) { stopped = true; break; }
+		cam_s20_wait_ms(1);
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (!stopped) {
+		cam_s20_dma_quarantined = true;
+		phase = "DMA stop not acknowledged; buffer retained";
+		goto report;
+	}
+	for (i = 0; i < bytes; i++) if (((volatile uint8_t *)buffer)[guard + i] != 0xa5) changed++;
+	for (i = 0; i < total; i++) if ((i < guard || i >= guard + bytes) &&
+	    ((volatile uint8_t *)buffer)[i] != 0xa5) guard_bad++;
+	for (i = 0; i < bytes / 2; i++) {
+		uint16_t pixel = ((volatile uint16_t *)((uint8_t *)buffer + guard))[i];
+		if (pixel < lo) lo = pixel;
+		if (pixel > hi) hi = pixel;
+	}
+	phase = guard_bad ? "DMA guard overwritten" : (ended && changed && !err && !(irq & 0x01101000U) ? "frame captured" : "no clean DMA frame");
+	/* No pending transfer remains, so old addresses and the pool slot are safe to restore. */
+	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, addr_save[i]);
+	for (i = 1; i < 6; i++) cam_s20_wr(vc, vc_offs[i], vc_save[i]);
+	cam_s20_wr(vc, 0, vc_save[0] & ~3U);
+	cam_s20_wr(cmn, 8, cam_s20_rd(cmn, 8)); /* test's W1C sources */
+	for (i = 0; i < 4; i++) cam_s20_wr(cmn, cmn_offs[i], cmn_save[i]);
+	for (i = 1; i < 4; i++) cam_s20_wr(dma, top_offs[i], top_save[i]);
+	cam_s20_wr(dma, 8, top_save[0]);
+release:
+	if (allocated) redwood_camera_dma_put();
+report:
+	(void)snprintf(out, cap, "{\"stage\":\"S20-DMA-pattern\",\"phase\":\"%s\",\"sensor_powered\":false,\"mmu_version\":[\"%#x\",\"%#x\"],\"mmu_ctrl\":[\"%#x\",\"%#x\"],\"buffer_pa\":\"%#llx\",\"width\":%u,\"height\":%u,\"frame_end\":%s,\"irq\":\"%#x\",\"dma_error\":\"%#x\",\"active\":\"%#x\",\"changed_bytes\":%u,\"guard_errors\":%u,\"pixel_min\":%u,\"pixel_max\":%u,\"state_restored\":%s,\"buffer_retained\":%s}\n",
+	    phase, mmu_ver[0], mmu_ver[1], mmu_ctrl[0], mmu_ctrl[1], phys, width, height, ended ? "true" : "false",
+	    irq, err, active, changed, guard_bad, lo, hi, (!saved || stopped) ? "true" : "false",
+	    cam_s20_dma_quarantined ? "true" : "false");
+}
+
 /* Read-only CSIS1/DMA1 baseline: whitelist-only registers from Samsung's v5.3 block map. */
 static void
 cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
@@ -1330,6 +1469,7 @@ redwood_exynos_camera_s20_init(void)
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
 	redwood_dbgport_add("cam.s20.id", ": one-shot rear S5K2LD model/revision read; camera rail enable bits and pins are restored", cam_s20_identify);
 	redwood_dbgport_add("cam.s20.front.id", ": one-shot front SAK3J1 model/revision read; camera rail enable bits and pins are restored", cam_s20_front_identify);
+	redwood_dbgport_add("cam.s20.dma.test", ": bounded receiver DMA pattern, no sensor; refuses active DMA or translated memory", cam_s20_dma_pattern);
 	redwood_dbgport_add("cam.s20.csis1", ": read-only CSIS1 and DMA1 version/status/counter snapshot", cam_s20_csis_inventory);
 	redwood_dbgport_add("cam.s20.csis.power", ": bounded CSIS power-domain and clock inventory; no DPHY or sensor access", cam_s20_csis_power_inventory);
 	redwood_dbgport_add("cam.s20.csis.dphy", ": idle read-only DPHY snapshot after enabling CSIS CMU/CSIS1 QCH; no sensor or DPHY writes", cam_s20_csis_dphy_snapshot);

@@ -237,3 +237,23 @@ the physical MIPI path is live. The next diagnostic should capture the
 Samsung and iOS CSI domain clock request/PHY power transitions during stream
 without touching the known unsafe `SYSREG_CSIS + 0x504` register or blindly
 cycling CSIS QCH gates (an earlier standalone gate probe panicked).
+
+## Receiver DMA pattern verified (2026-11-10)
+
+`tools/poke cam.s20.dma.test` captured a 320x240 RAW10 hardware pattern
+under iOS: frame-end IRQ, all 153600 bytes changed, pixel values 0..1020,
+no DMA errors and no guard corruption. Abort completion was acknowledged;
+registers and the borrowed low-memory pool slot were restored/released.
+This proves the downstream memory path only, not optical camera capture.
+
+The test uses v5.3 WDMA1 at 0x170c2000 and TPG at 0x170c0000, refuses
+active DMA owners or active/unknown SysMMU translation, and obtains its
+32-bit address through MiniIOSurface's existing pool allocator. It never
+guesses free physical RAM. If DMA does not acknowledge stopping, the slot
+is retained and further tests refuse to run until reboot. Sensor rails,
+CSI link, PHY and clock rates are untouched.
+
+The Samsung clock-reference boot returned safely to iOS, but its normal
+clock summary and Samsung CAL debug interface were unavailable. The log is
+`work/stock-camera-test/reference-csis-clocks-main.raw`; do not describe it
+as a successful active-clock comparison.

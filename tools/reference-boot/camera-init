@@ -94,6 +94,18 @@ say '=== camera-ref result during run'
 cat /tmp/camera-ref-result.txt >> "$T"
 say '=== active CSIS clocks'
 grep -iE 'csis|cis_clk|pdp' /sys/kernel/debug/clk/clk_summary >> "$T" 2>/dev/null
+# Exynos990 uses Samsung CAL rather than the common clock framework for these
+# clocks. clk_info writes select a query; they do not set a rate or gate.
+if [ -f /sys/kernel/debug/vclk/clk_info ]; then
+    for clock_name in MUX_CLKCMU_CSIS_BUS CLKCMU_CSIS_BUS GATE_CLKCMU_CSIS_BUS \
+        MUX_CLKCMU_CSIS_BUS_USER DIV_CLK_CSIS_BUS DIV_CLK_CSIS_BUSP \
+        PLL_SHARED0 PLL_SHARED4 MUX_CLKCMU_CIS_CLK1 CLKCMU_CIS_CLK1; do
+        echo "$clock_name" > /sys/kernel/debug/vclk/clk_info
+        cat /sys/kernel/debug/vclk/clk_info >> "$T" 2>&1
+    done
+else
+    say 'Samsung CAL clock debug interface unavailable'
+fi
 say '=== active camera rails'
 grep -iE 'mipi_csi|vdd.*vt|s2mpb02|camera' /sys/kernel/debug/regulator/regulator_summary >> "$T" 2>/dev/null
 say '=== camera interrupts'
