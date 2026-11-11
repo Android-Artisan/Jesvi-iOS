@@ -3,6 +3,19 @@
 The S20 is Exynos 990. Keep its camera diagnostics separate from `cam=` and
 `bsd/dev/redwood_camera.c`, which target the Qualcomm POCO X5 Pro. Bring-up priority is **front SAK3J1 first**, because the rear main S5K2LD currently does not ACK on its documented bus; switch back to rear main after the front CSI path is proven. Secondary rear modules follow.
 
+Start here: [camera port evidence checklist](CHECKLIST.md). It records completed
+checks, failed experiments, limitations, and the ordered remaining milestones.
+Update it after each experiment so future sessions do not repeat unchanged tests.
+Detailed history: [continuation notes](continuation-20261110.md).
+
+As of 2026-11-11, Samsung-hosted sensor, receiver, GPIO-I2C and sensor-power
+replays have received physical CSI frames. XNU optical capture still receives
+zero CSI frames; receiver-generated DMA patterns and the synthetic iOS preview
+work. The nine additional active platform-control readbacks now match Samsung in
+four XNU probe configurations; initialization transitions and unobserved
+platform state remain open.
+The dated sections below preserve historical results, not the latest status.
+
 ## Read-only snapshot
 
 Run from the repository root:

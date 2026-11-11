@@ -4,6 +4,21 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — front camera link works: first real sensor frame under XNU
+- **Root cause of "sensor programs, zero CSI packets":** the camera PMIC (S2MPB02) supplies BUCK1 (1.3 V), buck-boost
+  (3.5 V) and LDO18 (3.3 V) are always-on/boot-on in Samsung's x1slte device tree but off after S-Boot; XNU never
+  enabled them, so the SAK3J1 answered I2C but never started its MIPI link. Now enabled at boot in
+  `redwood_s2mpb02_torch.c` (`cam_pmic_base=` **1**, 0 = leave as the bootloader did). Registers 0x0b/0x0f/0x2f read
+  d8/da/ec = Samsung's.
+- Tested on the phone (kernel built 13:40:44): `cam.s20.front.stream 14 0 4` and `6 0 0` → 17 frames in 500 ms, frame
+  start/end, PHY active; `cam.s20.dma.test 1 14` → 1824x1368 RAW10 frame, DMA clean, guards intact; decoded picture in
+  `logs/camera/pmic-base-boot-20261111/frame-1-0.png` (real scene). Proof on Samsung's kernel:
+  `logs/camera/baseoff-split-20261111/` (same XNU sequence: supplies on 15 frames, off 0).
+- Diagnostics added (opt-in third argument bits of `cam.s20.front.stream`: 4 line probe, 8 273-register dump, 16 match
+  Samsung leftovers, 32 CSIS power-domain cycle — once per boot only, 64 base supplies per run), `cam.pmic 1` full map,
+  shared register list + `tools/camera/compare-regdump.py`, Samsung reference split modes in `tools/reference-boot/`.
+- Not yet: live preview in Camera.app (still the synthetic bridge), rear cameras, exposure/colour tuning.
+
 ## Open (known issues)
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.

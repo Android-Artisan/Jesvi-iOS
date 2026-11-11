@@ -4009,12 +4009,30 @@ camdev_make(void)
 static bool
 ios_select(unsigned index, uint32_t mode_n)
 {
+	static const struct ctab_head fake_head = {
+		.magic = "RWCTAB02",
+		.modes = 1,
+	};
+	static const struct ctab_mode fake_modes[] = {
+		/* Fixed software-camera mode; no sensor table or MMIO is used. */
+		{ 1920, 1080, 0, 0, 4, 0, 9, 148500000, 2200, 1125, 30000, RAW10_DT },
+	};
+	static const uint32_t fake_blocks[] = { 0 };
+
 	select_sensor(index);
 	if (!fake) {
 		find_pins();
 	}
 	if (!ctab_load()) {
-		return false;
+		if (!fake) {
+			return false;
+		}
+		ctab = &fake_head;
+		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
+		ctab_modes = fake_modes;
+		ctab_tables = (const uint8_t *)fake_blocks;
+		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
+		    fake_modes[0].width, fake_modes[0].height);
 	}
 	if (mode_n >= ctab->modes) {
 		uint64_t best = 0;

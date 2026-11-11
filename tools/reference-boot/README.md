@@ -49,7 +49,61 @@ kernel's debugfs regmap may show cached values; use `cache_bypass` when the
 task needs real hardware registers, and limit direct MMIO reads to registers
 verified safe for the active power domain.
 
+## Optional isolation replays
+
+Compile `camera-ref.c` with `CAMERA_XNU_SENSOR_REPLAY` to replay XNU's global,
+PDAF mode, normal timing, gain and stream-on writes over Samsung hardware I2C
+after the original observation window. Samsung retains V4L2 ownership and
+power. The first run in `logs/camera/foundation-audit-20261110/` advanced the
+CSI1 counter from 1 to 16 in the replay window. This tests a warm restart;
+it does not validate XNU's cold power sequence, software I2C or verification reads.
+
+Additionally defining `CAMERA_XNU_RECEIVER_REPLAY` enables a separate,
+write-capable experiment in `camera-receiver-replay.h`. It first requires
+sensor standby and SYSREG reset value 8, then applies the XNU PHY recipe,
+replays the sensor, applies the CSI core plus PHY recipe, and replays again.
+Its fixed write whitelist excludes clock, PMIC and DMA controls and the unsafe
+SYSREG +0x504 address. Reads use fresh `/dev/kmsg` records, and setup errors
+prevent sensor restart. The ordinary SFR dump remains read-only. These tests
+change receiver state while Samsung owns it; V4L2 teardown and the reference
+boot's return to Download Mode follow. Use the saved-BOOT restoration runner.
+
+`CAMERA_XNU_GPIO_REPLAY` additionally requests GPP0-2/3 using Linux GPIO
+line handles with open-drain emulation, checks ID 0x30a1, and routes the sensor
+replay over software I2C. It restores only those two pin mux fields before
+hardware I2C resumes. The successful run in
+`logs/camera/gpio-replay-wait-20261110/` completed 376 transfers with no NACK or
+I/O error and advanced CSI1 from 15 to 30. The first attempt in
+`gpio-replay-20261110/` did not run because it checked standby too early.
+The helper now waits up to 100 ms for sensor standby before taking the pins.
+
+`CAMERA_XNU_POWER_REPLAY` requires the known front-camera PMIC values and pin
+muxes, then tests reset/clock restart and a separate dedicated sensor-rail
+cycle. It holds reset and MCLK low before disabling supplies and restores
+saved values on every exit. Per-register PMIC results distinguish a failed
+setup from a valid reception test. The 50-second boot watchdog remains; the
+helper timeout is 25 seconds to accommodate the optional stages.
+
 ## Camera adaptation
+
+The saved Artisan reference kernel disables KPROBES, FUNCTION_TRACER,
+CMUCAL_DEBUG and DEVMEM (see `work/stock-audio-test/kernel-reference.config`).
+The 2026-11-10 clock-trace attempt therefore captured no dynamic probes.
+The supported alternative is Samsung's
+`/sys/module/sec_debug/parameters/force_error` **`SFR ADDRESS`** command.
+Its `sec_debug_test.c::simulate_SFR` reads one register with one argument;
+an additional argument would write and must never be supplied by this helper.
+`camera-ref.c` checks that SFR is supported and reads a fixed whitelist while
+it owns an active camera stream. It excludes `SYSREG_CSIS + 0x504`.
+`camera-init` saves the result lines from dmesg, the complete regulator summary
+and the sub-PMIC's read-only register selector results.
+
+Validated captures are `logs/camera/sfr-reference-20261110/` (30 SFRs) and
+`logs/camera/power-reference-20261110/` (56 SFRs, 21 camera-PMIC controls).
+Both observed clean VC0/VC1 frame start/end and restored iOS automatically.
+The latter also confirms PLL_SHARED4's STABLE bit during the Samsung stream.
+An XNU idle read with STABLE clear is not an active-clock comparison; the next
+XNU build samples it while streaming before making further clock changes.
 
 The earlier reference log confirms Samsung's kernel registered
 `is_sensor1`, front SAK3J1, and CSIS-related devices during early boot.
