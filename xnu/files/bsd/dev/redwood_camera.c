@@ -3257,6 +3257,11 @@ capture_sensor(void)
 #define FRAME_TIMEOUT_MS        1500
 #define EXPOSURE_MARGIN         40
 static bool s20_rotate;         /* (no longer used: frames go out as the sensor sends them; camera_device.c has turned = false) */
+static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode instead of the full 3648x2736 */
+/* kern.redwood.camera_turn: 1 = libredwood-media turns the S20 front camera's pictures half round (read at each stream start;
+ * boot-arg cam_turn), so the orientation can be settled on the phone without a new image */
+extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
+extern void redwood_camera_s20_set_full(bool full);
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
 #define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
@@ -4132,7 +4137,9 @@ ios_select(unsigned index, uint32_t mode_n)
 		{ 1920, 1080, 0, 0, 4, 0, 9, 148500000, 2200, 1125, 30000, RAW10_DT },
 	};
 	static const struct ctab_mode s20_modes[] = {
-		/* SAK3J1 1824x1368 at 30: line length 0x4940, frame length 0x597 (redwood_camera_s20_3j1.h) */
+		/* SAK3J1 full 3648x2736 at 30: line length 0x24a8, frame length 0xb30 (cam_s20_full=1, the default) */
+		{ 3648, 2736, 0, 0, 4, 0, 9, 807720000, 9384, 2864, 30000, RAW10_DT },
+		/* SAK3J1 2x2-binned 1824x1368 at 30: line length 0x4940, frame length 0x597 (cam_s20_full=0) */
 		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
@@ -4147,7 +4154,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		}
 		ctab = &fake_head;
 		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
-		ctab_modes = s20_real ? s20_modes : fake_modes;
+		ctab_modes = s20_real ? s20_modes + (s20_full ? 0 : 1) : fake_modes;
 		ctab_tables = (const uint8_t *)fake_blocks;
 		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
 		    fake_modes[0].width, fake_modes[0].height);
@@ -4371,6 +4378,13 @@ redwood_camera_init(void)
 		fake = true;
 		s20_real = true;
 		s20_rotate = false;
+		fake_n = 0;
+		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
+		redwood_camera_s20_turn = (int)fake_n;
+		fake_n = 1;
+		(void)PE_parse_boot_argn("cam_s20_full", &fake_n, sizeof(fake_n));
+		s20_full = fake_n != 0;
+		redwood_camera_s20_set_full(s20_full);
 	}
 	if (level >= 3) {
 		/*

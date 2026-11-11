@@ -415,6 +415,8 @@ cam_s20_frame_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
 	return error;
 }
 SYSCTL_DECL(_kern_redwood);
+int redwood_camera_s20_turn;    /* kern.redwood.camera_turn: libredwood-media turns the front camera's pictures (bit 0) */
+SYSCTL_INT(_kern_redwood, OID_AUTO, camera_turn, CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, &redwood_camera_s20_turn, 0, "");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_LOCKED,
     NULL, 0, cam_s20_frame_sysctl, "S", "last S20 diagnostic frame, RWCAM001, root only");
 
@@ -432,6 +434,11 @@ static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
 static volatile bool cam_s20_exp_pending;
 static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
 static bool cam_s20_stream_cached;
+/* the stream's sensor mode: full 3648x2736 (Samsung's 3648x2736_30fps, FULL MIPI PLL) or the 2x2-binned 1824x1368 */
+static bool cam_s20_full;
+#define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
+#define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
+void redwood_camera_s20_set_full(bool full) { cam_s20_full = full; }
 
 void
 redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines)
@@ -457,7 +464,8 @@ static void
 cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	const bool optical = n > 0 && v[0] == 1;
-	const uint32_t width = optical ? 1824 : 320, height = optical ? 1368 : 240, guard = 16384;
+	const bool full_frames = optical && cam_s20_stream_fn != NULL && cam_s20_full;
+	const uint32_t width = optical ? (full_frames ? 3648 : 1824) : 320, height = optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
 	const bool stream = optical && cam_s20_stream_fn != NULL;
 	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
 	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
@@ -1716,7 +1724,8 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 			if (!cam_3j1_verify_indirect(&bus, redwood_3j1_global, REDWOOD_3J1_GLOBAL_WORDS, &indirect_check)) goto cleanup;
 			}
 			strlcpy(phase, "sensor mode", sizeof(phase));
-			if (!(pd_mode ? cam_3j1_apply(&bus, redwood_3j1_1824x1368_30fps_pd, REDWOOD_3J1_1824X1368_30FPS_PD_WORDS) :
+			if (!(cam_s20_full && cam_s20_stream_fn ? cam_3j1_apply(&bus, redwood_3j1_3648x2736_30fps_pd, REDWOOD_3J1_3648X2736_30FPS_PD_WORDS) :
+			    pd_mode ? cam_3j1_apply(&bus, redwood_3j1_1824x1368_30fps_pd, REDWOOD_3J1_1824X1368_30FPS_PD_WORDS) :
 			        cam_3j1_apply(&bus, redwood_3j1_1824x1368_30fps, REDWOOD_3J1_1824X1368_30FPS_WORDS))) goto cleanup;
 			if (prestream_verify) {
 			strlcpy(phase, "sensor mode readback", sizeof(phase));
@@ -1784,10 +1793,11 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 			 * enables the clock lane only after all VC shadow registers are ready. */
 			cam_s20_wr(csi, 0x0704, (csi_saved[9] & ~0x1fU) | (0x0fU << 1));
 			cam_s20_wr(csi, 0x0040, (0x2bU << 2) | (2U << 12));
-			cam_s20_wr(csi, 0x0044, (1368U << 16) | 1824U);
+			cam_s20_wr(csi, 0x0044, (cam_s20_stream_fn ? (CAM_S20_H << 16) | CAM_S20_W : (1368U << 16) | 1824U));
 			/* x1slte mode 8 sends VC1 RAW10 auxiliary rows, 1824x342. */
 			cam_s20_wr(csi, 0x0050, (1U << 16) | (0x2bU << 2) | (2U << 12));
-			cam_s20_wr(csi, 0x0054, (342U << 16) | 1824U);
+			/* VC1 PDAF rows: 1824x342 binned, 3648x684 full (x1slte DT mode0/mode8 vc1) */
+			cam_s20_wr(csi, 0x0054, (cam_s20_full && cam_s20_stream_fn) ? ((684U << 16) | 3648U) : ((342U << 16) | 1824U));
 			if (match_rest) { /* Samsung: unused VC2/VC3 = VC n, DT 0, mode 2, resolution 0 */
 				cam_s20_wr(csi, 0x0060, 0x22000); cam_s20_wr(csi, 0x0064, 0);
 				cam_s20_wr(csi, 0x0070, 0x32000); cam_s20_wr(csi, 0x0074, 0);
@@ -1806,9 +1816,12 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 	strlcpy(phase, "sensor stream", sizeof(phase));
 	/* Samsung stream_on(): choose the BINNING default MIPI table before releasing hold, then wait 8 ms. */
-	if (!cam_3j1_write16(&bus, 0x0136, 0x1a00) || !cam_3j1_write16(&bus, 0x0300, 7) ||
-	    !cam_3j1_write16(&bus, 0x0304, 4) || !cam_3j1_write16(&bus, 0x0306, 0xd9) ||
-	    !cam_3j1_write16(&bus, 0x030c, 0) || !cam_3j1_write16(&bus, 0x030e, 4) ||
+	/* Samsung's sensor_3j1_setfile_A_mipi_{FULL,BINNING}_903_mhz: the same 1807 Mbps link, other PLL dividers */
+	if (!cam_3j1_write16(&bus, 0x0136, 0x1a00) ||
+	    !cam_3j1_write16(&bus, 0x0300, (cam_s20_full && cam_s20_stream_fn) ? 5 : 7) ||
+	    !cam_3j1_write16(&bus, 0x0304, (cam_s20_full && cam_s20_stream_fn) ? 3 : 4) ||
+	    !cam_3j1_write16(&bus, 0x0306, (cam_s20_full && cam_s20_stream_fn) ? 0xe9 : 0xd9) ||
+	    !cam_3j1_write16(&bus, 0x030c, (cam_s20_full && cam_s20_stream_fn) ? 1 : 0) || !cam_3j1_write16(&bus, 0x030e, 4) ||
 	    !cam_3j1_write16(&bus, 0x0310, 0x116) || !cam_3j1_write16(&bus, 0x0312, 1)) goto cleanup;
 	/* SAK3J1's Samsung stream-on sequence configures dual-sync before 0x0100. */
 	if (!trace_timing && !cam_3j1_write8(&bus, 0x0104, 0)) goto cleanup;
@@ -1846,10 +1859,21 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 		uint32_t idle = 0;
 		for (;;) {
 			uint32_t st = cam_s20_rd(s_cmn, 8);
+			/* DMA_CMN status (is-hw-csi-v5_3.h): bit 4 VC0 frame start, bit 8 VC0 frame end (write 1 to clear).
+			 * A frame's own start is cleared as soon as it is seen, so a start flagged together with an end is
+			 * the NEXT frame's: then the active slot has moved on and the finished frame is the one before it.
+			 * (Reading the wrong one copied a buffer the DMA was writing: tearing, 2026-11-11.) */
+			if ((st & (1U << 4)) && !(st & (1U << 8))) {
+				cam_s20_wr(s_cmn, 8, 1U << 4);
+				st &= ~(1U << 4);
+			}
 			if (st & (1U << 8)) {
-				uint32_t ptr = (cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU;
+				uint32_t p0 = (cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU, st2 = cam_s20_rd(s_cmn, 8), ptr;
 				bool more;
-				cam_s20_wr(s_cmn, 8, st & 0x01111110U);
+				if (st & (1U << 4)) ptr = (p0 + 31U) & 0x1fU;                   /* next frame began before p0 was read */
+				else if (!(st2 & (1U << 4))) ptr = p0;                           /* still between frames */
+				else ptr = (((cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU) + 31U) & 0x1fU;  /* it began just now */
+				cam_s20_wr(s_cmn, 8, (st | st2) & 0x01111110U);
 				if (st & 0x01101000U) cam_s20_stream_errors++;
 				if (cam_s20_stream_frames < 6)
 					printf("camera: S20 stream frame %u: dma status %#x, active slot %u\n", cam_s20_stream_frames, st, ptr);
@@ -1861,7 +1885,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 					for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
 					__asm__ volatile ("dsb sy" ::: "memory");
 				}
-				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 1824, 1368, ((1824 * 10 / 8) + 15) & ~15U);
+				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], CAM_S20_W, CAM_S20_H, ((CAM_S20_W * 10 / 8) + 15) & ~15U);
 				cam_s20_stream_frames++;
 				idle = 0;
 				if (cam_s20_exp_pending) {

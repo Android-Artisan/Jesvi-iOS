@@ -13,6 +13,7 @@ TABLES = (
     ("sensor_3j1_setfile_A_Global", "redwood_3j1_global"),
     ("sensor_3j1_setfile_A_1824x1368_30fps_nonPD", "redwood_3j1_1824x1368_30fps"),
     ("sensor_3j1_setfile_A_1824x1368_30fps", "redwood_3j1_1824x1368_30fps_pd"),
+    ("sensor_3j1_setfile_A_3648x2736_30fps", "redwood_3j1_3648x2736_30fps_pd"),
 )
 
 

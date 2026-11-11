@@ -233,6 +233,7 @@ poolGive(int slot)
  * allocator as surfaces. Never guess a free physical address below 4 GB.
  * The caller must keep this reservation if DMA cannot be proved stopped. */
 static int gCameraPoolSlot = -1;
+static int gCameraPoolSlot2 = -1;      /* the next slot as well, when the camera asks for more than one slot (adjacent: contiguous) */
 static IOMemoryDescriptor *gCameraPoolMemory;
 static IOMemoryMap *gCameraPoolMap;
 static IOMemoryMap *gCameraPoolCached;  /* a second, cached mapping for reading finished frames fast (B, 2026-11-11) */
@@ -273,11 +274,27 @@ redwood_camera_dma_cached(void)
 extern "C" bool
 redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 {
-	if (!bytes || bytes > POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
+	if (!bytes || bytes > 2ULL * POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
 	IOLockLock(gSurfaceLock);
 	if (gCameraPoolSlot >= 0) { IOLockUnlock(gSurfaceLock); return false; }
 	uint64_t address = 0;
-	int slot = poolTake(bytes, &address);
+	int slot = -1;
+	if (bytes <= POOL_SLOT) {
+		slot = poolTake(bytes, &address);
+	} else {
+		/* two adjacent free slots, taken together (full-resolution camera frames, double-buffered: about 25 MB) */
+		(void)poolTake(1, &address);    /* (looks the pool up once) */
+		poolGive((int)((address - gPoolBase) / POOL_SLOT));
+		for (uint32_t i = 0; gPoolBase && i + 1 < gPoolSlots; i++) {
+			uint32_t used = gPoolUsed, pair = 3u << i;
+			if (!(used & pair) && OSCompareAndSwap(used, used | pair, &gPoolUsed)) {
+				slot = (int)i;
+				gCameraPoolSlot2 = (int)i + 1;
+				address = gPoolBase + (uint64_t)i * POOL_SLOT;
+				break;
+			}
+		}
+	}
 	IOMemoryDescriptor *md = slot >= 0 && address + bytes <= (1ULL << 32) ?
 	    IOMemoryDescriptor::withPhysicalAddress(address, bytes, kIODirectionInOut) : NULL;
 	IOMemoryMap *map = md ? md->createMappingInTask(kernel_task, 0,
@@ -285,6 +302,8 @@ redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 	if (!map) {
 		OSSafeReleaseNULL(md);
 		poolGive(slot);
+		poolGive(gCameraPoolSlot2);
+		gCameraPoolSlot2 = -1;
 		IOLockUnlock(gSurfaceLock);
 		return false;
 	}
@@ -307,6 +326,8 @@ redwood_camera_dma_put(void)
 	OSSafeReleaseNULL(gCameraPoolMemory);
 	poolGive(gCameraPoolSlot);
 	gCameraPoolSlot = -1;
+	poolGive(gCameraPoolSlot2);
+	gCameraPoolSlot2 = -1;
 	IOLockUnlock(gSurfaceLock);
 }
 

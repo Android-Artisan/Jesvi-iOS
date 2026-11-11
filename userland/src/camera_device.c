@@ -36,6 +36,7 @@
 #include <IOSurface/IOSurfaceRef.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <sys/sysctl.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <mach/mach_time.h>
@@ -1384,6 +1385,14 @@ worker(void *context)
 		isp_tune(&isp, lux, cct);
 		isp.zoom = s->zoom;
 		isp.turned = s->camera->turned;
+		{
+			/* the kernel's say (kern.redwood.camera_turn, the S20): bit 0 turns the front camera's pictures half round */
+			int turn = 0;
+			size_t len = sizeof(turn);
+			if (s->camera->sensor == 2 && sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0 && (turn & 1)) {
+				isp.turned = !isp.turned;
+			}
+		}
 		if (isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
 		}

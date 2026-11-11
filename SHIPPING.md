@@ -4,6 +4,16 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — front camera at full 3648x2736, 30 frames/s, no tearing
+- The stream runs Samsung's `3648x2736_30fps` mode with the FULL MIPI PLL (`cam_s20_full=` **1**; 0 = binned 1824x1368).
+  Double-buffered 12.5 MB frames take two adjacent display-pool slots (`MiniIOSurface.cpp`).
+- Tearing fix: the finished buffer is chosen from the DMA frame-start/frame-end status (a frame start flagged together
+  with a frame end is the next frame's), not just the active slot read after the fact.
+- `kern.redwood.camera_turn` (boot-arg `cam_turn`): bit 0 makes libredwood-media turn the front camera's pictures half
+  round, read at each stream start, to settle orientation without a new image.
+- Tested (kernel 21:53:59): `camera_test raw 60`: 3648x2736, stride 4560, 60 of 60 frames ~33 ms apart; kernel frame
+  copy ~1-5 ms.
+
 ## 2026-11-11 — front camera at 30 frames/s
 - WDMA1 writes MIPI RAW10 directly (DMA format 7, lines padded to 16 bytes = the `/dev/redwood-camera` layout), read
   through a cached mapping (on by default, `cam_dma_cached=0` / `cam.s20.cached 0` to disable): one ~1 ms copy per frame
