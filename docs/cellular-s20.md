@@ -1,9 +1,10 @@
 # Galaxy S20 cellular: implementation log and checklist
 
 Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
-contains the upstream comparison, offline firmware/framing tools, and a tested
-memory-conflict audit. It does not enable a modem, publish invented registration
-state, or change the currently running phone.
+contains the upstream comparison, firmware/framing tools, memory audit, compiled
+loader changes, matching UEFI source, and a built Settings UI. It does not enable
+a modem or publish invented registration state. UI deployment status is tracked
+separately in [cellular-ui.md](cellular-ui.md).
 
 ## Isolation and ownership
 
@@ -198,6 +199,11 @@ the first progress message: SLOG ends at `0xf4a00000`; it does not cover MSI at
 - [x] Isolate work from camera/audio sessions on `x1slte-cellular`.
 - [x] Validate RADIO layout and firmware CRCs offline without EFS reads/writes.
 - [x] Add malformed-input tests and detect concrete memory overlaps.
+- [x] Build a native Settings Cellular page and persistent data preference,
+  with explicit unavailable service/call status; see [UI checklist](cellular-ui.md).
+- [x] Implement CP-aware loader allocations and matching UEFI source reservations.
+- [x] Compile the ARM64 UEFI loader; validate 163,840 allocator boundary cases
+  with ASan/UBSan and pass 19 Python format/audit/reservation tests.
 - [ ] M0: relocate loader staging and reserve CP regions in UEFI/pool allocation.
   Verify USB recovery, display, Wi-Fi and sound still work; audit each new boot.
 - [ ] M1: bounded, opt-in read-only GPIO/clock snapshot from actual S20 wiring.
@@ -225,8 +231,9 @@ the first progress message: SLOG ends at `0xf4a00000`; it does not cover MSI at
 - [ ] M11: SMS transport and native Messages integration; no test messages or
   calls sent without a user-provided destination and explicit instruction.
 
-**Next implementation:** M0 in this worktree. Investigate firmware/CPIF boot
-ordering in parallel only as phone-free research. Hardware milestones wait for
+**Next hardware milestone:** build the matching full UEFI image and validate M0;
+the loader/source implementation is prepared below. Investigate firmware/CPIF boot
+ordering only as phone-free research. Hardware milestones wait for
 the existing phone holder to release it; obtaining a lock is not evidence that
 an unvalidated stage is safe. Record commit, kernel/loader identity, exact
 arguments, command, observation, rollback and open issue for each hardware test.
@@ -234,3 +241,53 @@ arguments, command, observation, rollback and open issue for each hardware test.
 Do not mark this branch as shipping LTE/calls until M7/M10 are demonstrated on
 our SM-G980F. No firmware, EFS data, Apple files, phone logs or credentials belong
 in its commits.
+
+## M0 source implementation and UI checkpoint — 2026-11-11
+
+- UI implementation is a separate commit (`d35f0c8`) so it can be installed
+  independently while the modem and memory changes remain untested. It uses
+  only the existing Preferences tweak loader and mobile preferences. No system
+  image/recovery/UEFI flash is needed for the menu.
+- Loader staging no longer dereferences fixed address `0xf0000000`; a 16-MiB
+  buffer is allocated before download or kernel loading, excluding CP regions.
+  If no safe buffer exists, the loader holds with a diagnostic instead of using
+  the CP region as a fallback.
+- `xnuloader/s20_memory.h` selects aligned, exact-size ranges. Display and Wi-Fi
+  pools, USB buffers, large transfer staging and ramfb use the same CP exclusion
+  policy. This avoids the earlier extra 64-KiB alignment reservation; a 192-MiB
+  free span starting at `0xd4000000` can fit a 192-MiB pool exactly.
+- The real firmware memory map is checked for complete `EfiReservedMemoryType`
+  coverage of the three CP regions, with `cellular memory: reserved N/3` logged
+  at each kernel run. A new loader on an old UEFI does not report a fictional
+  reservation. Warm runs repeat allocation evidence after the menu resets logs.
+- Matching x1slte UEFI overlay reserves IPC/MSI/packet memory with ARM
+  `UNCACHED_UNBUFFERED` mappings. The private UEFI repo also has an isolated
+  `x1slte-cellular` worktree at `work/g980f-uefi-cellular`, commit **`6e75773`**;
+  its original `main` worktree was not changed. Nothing pushed/CI-triggered.
+- Memory audit now requires an observed address for dynamically allocated
+  staging and a deployed `reserved 3/3` marker. An old boot log cannot validate
+  new allocations. It isolates the latest boot when logs contain multiple runs.
+- Verification: **19 Python tests pass**, including legacy overlap reproduction,
+  incomplete-boot handling and UEFI descriptor non-overlap. The actual C range
+  selector passes **163,840** comparisons against an independent brute-force
+  oracle under ASan/UBSan, plus high-memory/invalid-input cases.
+- Loader cross-compiles/links successfully to ARM64 PE/COFF with Apple clang and
+  the local `tools/bin/lld-link`. One pre-existing unused `reboot` warning.
+  Build-only dependencies `identity.h` and `menu_font.h` were copied into this
+  isolated worktree from the existing build; they remain ignored and uncommitted.
+- **Not yet:** full Mu-Silicium image build, phone boot, recovery/display/Wi-Fi/
+  audio regression checks, actual `reserved 3/3`, modem GPIO/SPI/link bring-up.
+  M0 remains unchecked until those device checks pass. No loader/UEFI changes
+  from this branch have been installed on the phone.
+
+Reproduce the host checks:
+
+```sh
+bash tools/cellular/check.sh
+CC=/usr/bin/clang LD="$PWD/../../tools/bin/lld-link" bash xnuloader/build.sh
+bash tools/cellular/build-ui.sh
+```
+
+Use the matching full UEFI build plus this branch's loader for future modem
+tests. The standalone compiled loader does not retrofit firmware reservations
+into the currently installed UEFI. Current UI installation is independent.

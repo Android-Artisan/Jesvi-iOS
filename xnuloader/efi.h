@@ -40,7 +40,7 @@ typedef struct efi_text_output {
 	void *mode;
 } efi_text_output;
 
-enum { EfiLoaderData = 2, EfiConventionalMemory = 7 };
+enum { EfiReservedMemoryType = 0, EfiLoaderData = 2, EfiConventionalMemory = 7 };
 enum { AllocateAnyPages = 0, AllocateMaxAddress = 1, AllocateAddress = 2 };
 enum { ByProtocol = 2 };
 

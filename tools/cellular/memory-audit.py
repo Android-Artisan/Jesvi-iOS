@@ -28,16 +28,34 @@ def literal_define(source, name):
 
 
 def audit(root, log_text):
+    # Never combine an earlier boot's pool addresses with a later boot's
+    # reservation marker when the later run is incomplete.
+    markers = list(re.finditer(r'^== XNULOADER (?:run \(menu\)|v3) ==', log_text, re.M))
+    if markers:
+        log_text = log_text[markers[-1].start():]
     loader = (root / 'xnuloader/loader.c').read_text()
     sound = (root / 'xnu/files/bsd/dev/redwood_exynos_sound.c').read_text()
-    allocations = [('loader DOWNLOAD', literal_define(loader, 'DOWNLOAD_BASE'),
-                    literal_define(loader, 'DOWNLOAD_MAX_SIZE'))]
+    allocations = []
+    unknown = []
+    # Old loaders use a literal CP-conflicting address. New loaders allocate
+    # staging; require a saved boot's allocation instead of inferring its base.
+    if re.search(r'^#define\s+DOWNLOAD_BASE\s+', loader, re.M):
+        allocations.append(('loader DOWNLOAD', literal_define(loader, 'DOWNLOAD_BASE'),
+                            literal_define(loader, 'DOWNLOAD_MAX_SIZE')))
+    else:
+        matches = re.findall(r'download buffer:\s*([0-9a-fA-F]+)\s+size\s+([0-9a-fA-F]+)', log_text)
+        if matches:
+            allocations.append(('loader DOWNLOAD', int(matches[-1][0], 16), int(matches[-1][1], 16)))
+        else:
+            unknown.append('loader DOWNLOAD')
     for stem in ('DRAM', 'SLOG', 'DUMP', 'PCI'):
         allocations.append(('Calliope ' + stem, literal_define(sound, 'CAL_' + stem + '_PHYS'),
                             literal_define(sound, 'CAL_' + stem + '_SIZE')))
     allocations.append(('Calliope VSS spare', literal_define(sound, 'CAL_VSS_SPARE_PHYS'), 1 << 20))
-    unknown = []
-    # Most recent occurrence: logs may contain several boots.
+    reserved = re.findall(r'cellular memory: reserved (\d+)/3', log_text)
+    if not reserved or reserved[-1] != '3':
+        unknown.append('deployed UEFI CP reservations')
+    # Most recent occurrence within this boot (for repeated diagnostics).
     for label, pattern in (
         ('display pool', r'display pool:\s*([0-9a-fA-F]+)\s+size\s+([0-9a-fA-F]+)'),
         ('wifi dma', r'wifi dma:\s*([0-9a-fA-F]+)\s+size\s+([0-9a-fA-F]+)'),

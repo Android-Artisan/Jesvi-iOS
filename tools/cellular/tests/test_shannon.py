@@ -1,9 +1,11 @@
 """Synthetic malformed-input tests; no firmware, SIM data or phone needed."""
 import importlib.util
 import io
+import re
 from pathlib import Path
 import struct
 import sys
+import tempfile
 import unittest
 import zlib
 
@@ -129,25 +131,73 @@ class SipcTests(unittest.TestCase):
 
 
 class MemoryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.legacy = Path(self.directory.name)
+        (self.legacy / 'xnuloader').mkdir()
+        (self.legacy / 'xnuloader/loader.c').write_text(
+            '#define DOWNLOAD_BASE 0xF0000000ULL\n#define DOWNLOAD_MAX_SIZE 0x01000000ULL\n')
+        sound_path = Path('xnu/files/bsd/dev/redwood_exynos_sound.c')
+        (self.legacy / sound_path).parent.mkdir(parents=True)
+        (self.legacy / sound_path).write_text((TOOLS.parents[1] / sound_path).read_text())
+
     def test_half_open_ranges(self):
         self.assertFalse(memory.overlaps(('a', 0x1000, 0x1000), ('b', 0x2000, 1)))
         self.assertTrue(memory.overlaps(('a', 0x1000, 0x1001), ('b', 0x2000, 1)))
 
+    def test_uefi_cp_reservations_and_no_dram_overlap(self):
+        source = (TOOLS.parents[1] / 'uefi-y2s/Platforms/Samsung/x1sltePkg/Library/'
+                  'MemoryMapLib/MemoryMapLib.c').read_text()
+        records = re.findall(r'\{"([^"]+)",\s*(0x[0-9A-Fa-f]+),\s*(0x[0-9A-Fa-f]+),([^}]+)\}', source)
+        by_name = {name: (int(base, 16), int(size, 16), attributes)
+                   for name, base, size, attributes in records}
+        for name, expected in zip(('CP IPC', 'CP MSI', 'CP Packet Memory'), memory.CP):
+            base, size, attributes = by_name[name]
+            self.assertEqual((base, size), expected[1:])
+            self.assertIn('Reserv, UNCACHED_UNBUFFERED', attributes)
+        self.assertNotIn('XNU Download', by_name)
+        dram = sorted((base, base + size, name) for name, (base, size, _) in by_name.items()
+                      if base >= 0x80000000)
+        for previous, current in zip(dram, dram[1:]):
+            self.assertLessEqual(previous[1], current[0], (previous[2], current[2]))
+
     def test_actual_source_conflicts_and_missing_evidence(self):
-        report = memory.audit(TOOLS.parents[1], '')
+        report = memory.audit(self.legacy, '')
         self.assertIn(('cp_rmem', 'loader DOWNLOAD'),
                       [(c['cp'], c['owner']) for c in report['conflicts']])
-        self.assertEqual(set(report['unknown']), {'display pool', 'wifi dma', 'XNU window'})
+        self.assertEqual(set(report['unknown']), {'display pool', 'wifi dma', 'XNU window',
+                                                 'deployed UEFI CP reservations'})
         # Avoid a wrong claim that SLOG covers MSI: f2200000 + 2800000 = f4a00000.
         self.assertFalse(any(c['cp'] == 'cp_msi_rmem' for c in report['conflicts']))
 
     def test_saved_log_display_overlap(self):
-        report = memory.audit(TOOLS.parents[1], 'display pool: d3ff0000 size c000000\n'
+        report = memory.audit(self.legacy, 'display pool: d3ff0000 size c000000\n'
                               'wifi dma: e8630000 size 2000000\n'
                               'phys window 880000000 size 17e000000, claim status 0\n')
-        self.assertFalse(report['unknown'])
+        self.assertEqual(report['unknown'], ['deployed UEFI CP reservations'])
         self.assertIn(dict(cp='cp_rmem_2', owner='display pool',
                            overlap_start='0xd3ff0000', overlap_size='0x10000'), report['conflicts'])
+
+    def test_dynamic_staging_requires_its_own_boot_evidence(self):
+        report = memory.audit(TOOLS.parents[1], '')
+        self.assertIn('loader DOWNLOAD', report['unknown'])
+        self.assertFalse(report['conflicts'])
+        log = ('download buffer: e0000000 size 1000000\n'
+               'display pool: d4000000 size c000000\n'
+               'wifi dma: e1000000 size 2000000\n'
+               'phys window 880000000 size 17e000000, claim status 0\n'
+               'cellular memory: reserved 3/3\n')
+        report = memory.audit(TOOLS.parents[1], log)
+        self.assertFalse(report['unknown'])
+        self.assertFalse(report['conflicts'])
+        # A subsequent bad reservation report must win over an earlier good one.
+        report = memory.audit(TOOLS.parents[1], log + 'cellular memory: reserved 2/3\n')
+        self.assertIn('deployed UEFI CP reservations', report['unknown'])
+        report = memory.audit(TOOLS.parents[1], '== XNULOADER run (menu) ==\n' + log +
+                              '== XNULOADER run (menu) ==\ncellular memory: reserved 3/3\n')
+        self.assertIn('loader DOWNLOAD', report['unknown'])
+        self.assertIn('display pool', report['unknown'])
 
 
 if __name__ == '__main__':

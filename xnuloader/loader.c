@@ -10,6 +10,7 @@
  *   - exits boot services, turns the MMU off and jumps to the kernel entry
  */
 #include "efi.h"
+#include "s20_memory.h"
 #include "identity.h"         /* who iOS shall think we are: from the iPhone's own device tree (mkidentity.py) */
 
 /* ------------------------------------------------------------------------ */
@@ -61,9 +62,9 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
 #define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE)
-/* Staging area for images the host sends over USB (kernel, root image). */
-#define DOWNLOAD_BASE       0xF0000000ULL
-#define DOWNLOAD_MAX_SIZE   0x01000000ULL         /* 16 MB: up to the display at 0xF1000000 */
+/* Allocated staging; 0xf0000000 belongs to the S20 modem IPC, not downloads. */
+static uint64_t download_base;
+#define DOWNLOAD_MAX_SIZE   0x01000000ULL
 
 /* ------------------------------------------------------------------------ */
 /* XNU structures (pexpert/pexpert/arm64/boot.h, mach-o/loader.h)           */
@@ -3024,24 +3025,99 @@ print_memory_map(void)
 #define WIFI_DMA_SIZE   (32ULL << 20)
 static uint64_t wifi_dma_base, wifi_dma_size;
 
+/* Allocate exactly the usable span, aligned and excluding the S20 CP map.
+ * Works with old UEFI too, but only a rebuilt UEFI reserves CP memory from ALL
+ * firmware allocations. This alone is not permission to start modem DMA. */
+static int
+allocate_loader_memory(uint64_t size, uint64_t alignment, uint64_t low, uint64_t high, uint64_t *address)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), key, stride, best = 0;
+	uint32_t version;
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) return 0;
+	for (uint64_t off = 0; off + stride <= map_size; off += stride) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+		if (d->type != EfiConventionalMemory || d->pages > (~0ULL - d->phys_start) / 4096) continue;
+		uint64_t lo = d->phys_start > low ? d->phys_start : low;
+		uint64_t hi = d->phys_start + (d->pages << 12);
+		if (hi > high) hi = high;
+		uint64_t at = s20_memory_candidate(lo, hi, size, alignment);
+		if (at > best) best = at;
+	}
+	if (!best || EFI_ERROR(BS->allocate_pages(AllocateAddress, EfiLoaderData, size >> 12, &best))) return 0;
+	*address = best;
+	return 1;
+}
+
+static int
+allocate_low_dma(uint64_t size, uint64_t alignment, uint64_t *address)
+{
+	return allocate_loader_memory(size, alignment, 0x80000000ULL, 0x100000000ULL, address);
+}
+
+static int
+reserve_download_buffer(void)
+{
+	if (download_base) return 1;
+	if (PLAT == &platform_y2s) {
+		if (!allocate_low_dma(DOWNLOAD_MAX_SIZE, 0x10000, &download_base)) return 0;
+	} else if (!allocate_loader_memory(DOWNLOAD_MAX_SIZE, 0x1000, 0x1000, ~0ULL, &download_base)) return 0;
+	print("download buffer: %x size %x\n", download_base, (uint64_t)DOWNLOAD_MAX_SIZE);
+	return 1;
+}
+
+/* Confirm firmware ownership separately from our allocator exclusions. A new
+ * loader on an old UEFI must not claim that the CP is fully reserved. */
+static void
+report_cellular_memory(void)
+{
+	static uint8_t map_buf[65536];
+	uint64_t map_size = sizeof(map_buf), key, stride;
+	uint32_t version, reserved = 0;
+	if (PLAT != &platform_y2s) return;
+	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) {
+		print("cellular memory: reserved 0/3 (memory map unavailable)\n");
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(s20_cp_regions) / sizeof(s20_cp_regions[0]); i++) {
+		uint64_t cursor = s20_cp_regions[i].base, end = cursor + s20_cp_regions[i].size;
+		while (cursor < end) {
+			uint64_t next = cursor;
+			for (uint64_t off = 0; off + stride <= map_size; off += stride) {
+				efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
+				if (d->type != EfiReservedMemoryType || d->pages > (~0ULL - d->phys_start) / 4096) continue;
+				uint64_t hi = d->phys_start + (d->pages << 12);
+				if (d->phys_start <= cursor && hi > cursor) { next = hi < end ? hi : end; break; }
+			}
+			if (next == cursor) break;
+			cursor = next;
+		}
+		reserved += cursor == end;
+	}
+	print("cellular memory: reserved %d/3 (UEFI; no modem start requested)\n", (uint64_t)reserved);
+}
+
 static void
 reserve_wifi_dma(void)
 {
-	uint64_t at = 0xFFFFFFFFULL;
+	uint64_t at;
 
 	if (wifi_dma_size != 0 || PLAT != &platform_y2s) {
+		if (wifi_dma_size) print("wifi dma: %x size %x (reused)\n", wifi_dma_base, wifi_dma_size);
 		return;
 	}
-	if (EFI_ERROR(BS->allocate_pages(AllocateMaxAddress, EfiLoaderData, (WIFI_DMA_SIZE + 0x10000) >> 12, &at))) {
+	if (!allocate_low_dma(WIFI_DMA_SIZE, 0x10000, &at)) {
 		print("wifi dma: no %d MB below 4 GB\n", (uint64_t)(WIFI_DMA_SIZE >> 20));
 		return;
 	}
 	if (at < 0x80000000ULL) {
 		print("wifi dma: %x is not where the PCIe block may be granted: not used\n", at);
-		BS->free_pages(at, (WIFI_DMA_SIZE + 0x10000) >> 12);
+		BS->free_pages(at, WIFI_DMA_SIZE >> 12);
 		return;
 	}
-	wifi_dma_base = (at + 0xFFFF) & ~0xFFFFULL;     /* (granted 64 KB at a time) */
+	wifi_dma_base = at;     /* aligned to the 64-KiB S2MPU grant granule */
 	wifi_dma_size = WIFI_DMA_SIZE;
 	print("wifi dma: %x size %x\n", wifi_dma_base, wifi_dma_size);
 }
@@ -3066,13 +3142,14 @@ reserve_display_pool(void)
 	static const uint64_t sizes[] = { 192ULL << 20, 128ULL << 20, 64ULL << 20 };
 
 	if (display_pool_size != 0 || PLAT != &platform_y2s) {
+		if (display_pool_size) print("display pool: %x size %x (reused)\n", display_pool_base, display_pool_size);
 		return;
 	}
 	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-		uint64_t at = 0xFFFFFFFFULL;
+		uint64_t at;
 
-		if (!EFI_ERROR(BS->allocate_pages(AllocateMaxAddress, EfiLoaderData, (sizes[i] + 0x10000) >> 12, &at))) {
-			display_pool_base = (at + 0xFFFF) & ~0xFFFFULL;
+		if (allocate_low_dma(sizes[i], 0x10000, &at)) {
+			display_pool_base = at;
 			display_pool_size = sizes[i];
 			print("display pool: %x size %x\n", display_pool_base, display_pool_size);
 			return;
@@ -3177,7 +3254,7 @@ read_partition_into(const char *part, uint64_t off, void *dest, uint64_t len)
 static int
 load_kernel_from_partition(const char *part, uint64_t off)
 {
-	uint8_t *dest = (uint8_t *)DOWNLOAD_BASE;
+	uint8_t *dest = (uint8_t *)(uintptr_t)download_base;
 
 	if (!read_partition_into(part, off, dest, DOWNLOAD_MAX_SIZE)) {
 		return 0;
@@ -3209,11 +3286,14 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		print("no payload\n");
 		return 0;
 	}
+	/* The menu clears its log before each run; repeat boot evidence here. */
+	print("download buffer: %x size %x\n", download_base, (uint64_t)DOWNLOAD_MAX_SIZE);
+	report_cellular_memory();
 	if (pi.kernel == NULL && pi.kpart[0] != 0) {
 		if (!load_kernel_from_partition(pi.kpart, pi.koff)) {
 			return 0;
 		}
-		pi.kernel = (const uint8_t *)DOWNLOAD_BASE;
+		pi.kernel = (const uint8_t *)(uintptr_t)download_base;
 	}
 	if (pi.kernel == NULL) {
 		print("no kernel in payload\n");
@@ -4231,7 +4311,7 @@ fb_command(char *cmd)
 		} else if (starts_with(cmd, "download:")) {
 			uint64_t total = parse_number(cmd + 9, 16), got = 0;
 			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
-			uint8_t *dest = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
+			uint8_t *dest = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
 			int to_ramdisk = download_to_ramdisk;
 
 			download_to_ramdisk = 0;
@@ -4341,7 +4421,7 @@ fb_command(char *cmd)
 			char part[40];
 			int n = 0;
 			uint64_t off, len;
-			uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
+			uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
 			uint64_t limit = stage_buf != NULL ? stage_size : DOWNLOAD_MAX_SIZE;
 
 			while (*a == ' ') {
@@ -4951,7 +5031,7 @@ ufn_start(void)
 	if (usb_rx_buf == NULL) {
 		uint64_t at = 0;
 
-		if (EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, (2 * USB_CHUNK) >> 12, &at))) {
+		if (!allocate_loader_memory(2 * USB_CHUNK, 0x1000, 0x1000, ~0ULL, &at)) {
 			return 0;
 		}
 		usb_rx_buf = (uint8_t *)(uintptr_t)at;
@@ -4965,7 +5045,7 @@ ufn_start(void)
 static int
 stage_last_log(void)
 {
-	uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)DOWNLOAD_BASE;
+	uint8_t *buf = stage_buf != NULL ? stage_buf : (uint8_t *)(uintptr_t)download_base;
 
 	if (!read_partition_into(LOG_PARTITION_ASCII, LOG_OFFSET, buf, 8ULL << 20)) {
 		return 0;
@@ -5063,7 +5143,7 @@ log_access(void)
 	if (stage_buf == NULL) {
 		uint64_t at = 0;
 
-		if (!EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, STAGE_SIZE >> 12, &at))) {
+		if (allocate_loader_memory(STAGE_SIZE, 0x1000, 0x1000, ~0ULL, &at)) {
 			stage_buf = (uint8_t *)(uintptr_t)at;
 			stage_size = STAGE_SIZE;
 		}
@@ -5276,7 +5356,7 @@ ramfb_phone_screen(void)
 			select = __builtin_bswap16(file.select);
 		}
 	}
-	if (select == 0 || EFI_ERROR(BS->allocate_pages(AllocateAnyPages, EfiLoaderData, (bytes + 0xFFF) >> 12, &fb))) {
+	if (select == 0 || !allocate_loader_memory((bytes + 0xFFF) & ~0xFFFULL, 0x1000, 0x1000, ~0ULL, &fb)) {
 		return;
 	}
 	memset((void *)(uintptr_t)fb, 0, (size_t)bytes);
@@ -5368,6 +5448,11 @@ efi_main(efi_handle image, efi_system_table *st)
 
 	install_exception_hook();
 	wdt_arm();
+	if (!reserve_download_buffer()) {
+		print("download buffer: no safe staging memory; loader holds without booting\n");
+		for (;;) { BS->stall(1000000); wdt_pet(); }
+	}
+	report_cellular_memory();
 
 	int have_payload = parse_payload(&pi, 0);
 	if (have_payload && pi.usb_mode && usb_start()) {
