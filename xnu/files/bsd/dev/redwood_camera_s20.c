@@ -368,8 +368,8 @@ extern int redwood_camera_s20_turn;
 static void
 cam_s20_turn_cmd(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
-	if (n > 0) redwood_camera_s20_turn = (int)(v[0] & 3);
-	(void)snprintf(out, cap, "cam.turn: %d (bit 0 turn 180, bit 1 mirror); reopen the camera\n", redwood_camera_s20_turn);
+	if (n > 0) redwood_camera_s20_turn = (int)(v[0] & 7);
+	(void)snprintf(out, cap, "cam.turn: %d (bit 2 on, bit 0 turn 180, bit 1 mirror, both cameras); switch or reopen the camera\n", redwood_camera_s20_turn);
 }
 
 static void

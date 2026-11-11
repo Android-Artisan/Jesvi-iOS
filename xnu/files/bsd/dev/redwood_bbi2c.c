@@ -121,6 +121,18 @@ redwood_gpio_set(volatile uint8_t *bank, uint32_t pin, uint32_t value)
 	lck_spin_unlock(&gpio_lock);
 }
 
+/* Restore one pin's exact mux, pull, and output latch without changing its neighbors. */
+void
+redwood_gpio_restore(volatile uint8_t *bank, uint32_t pin, uint32_t con, uint32_t pud, uint32_t dat)
+{
+	uint32_t cmask = 0xfu << (pin * 4), dmask = 1u << pin;
+	lck_spin_lock(&gpio_lock);
+	bank_wr(bank, REDWOOD_GPIO_DAT, (bank_rd(bank, REDWOOD_GPIO_DAT) & ~dmask) | (dat & dmask));
+	bank_wr(bank, REDWOOD_GPIO_PUD, (bank_rd(bank, REDWOOD_GPIO_PUD) & ~cmask) | (pud & cmask));
+	bank_wr(bank, REDWOOD_GPIO_CON, (bank_rd(bank, REDWOOD_GPIO_CON) & ~cmask) | (con & cmask));
+	lck_spin_unlock(&gpio_lock);
+}
+
 /* ------------------------------------------------------------------------ */
 
 static void
@@ -130,17 +142,23 @@ bb_wait(struct redwood_bbi2c *b)
 }
 
 static void
-line_low(struct redwood_bbi2c *b, uint32_t pin)
+line_low(volatile uint8_t *bank, uint32_t pin)
 {
 	/* A neighbour's DAT read/modify/write can copy this released pin's high
 	 * physical level into its latch. Reassert zero on EVERY low edge. */
-	redwood_gpio_set(b->bank, pin, 0);
+	redwood_gpio_set(bank, pin, 0);
 }
 
 static void
-line_release(struct redwood_bbi2c *b, uint32_t pin)
+line_release(volatile uint8_t *bank, uint32_t pin)
 {
-	redwood_gpio_func(b->bank, pin, REDWOOD_GPIO_INPUT);
+	redwood_gpio_func(bank, pin, REDWOOD_GPIO_INPUT);
+}
+
+static inline volatile uint8_t *
+sda_bank(struct redwood_bbi2c *b)
+{
+	return b->sda_bank != NULL ? b->sda_bank : b->bank;
 }
 
 /*
@@ -155,7 +173,7 @@ scl_release(struct redwood_bbi2c *b)
 {
 	uint64_t limit;
 
-	line_release(b, b->scl);
+	line_release(b->bank, b->scl);
 	if (redwood_gpio_get(b->bank, b->scl)) {
 		return;
 	}
@@ -174,24 +192,24 @@ scl_release(struct redwood_bbi2c *b)
 static void
 bb_start(struct redwood_bbi2c *b)
 {
-	line_release(b, b->sda);
+	line_release(sda_bank(b), b->sda);
 	bb_wait(b);
 	scl_release(b);
 	bb_wait(b);
-	line_low(b, b->sda);
+	line_low(sda_bank(b), b->sda);
 	bb_wait(b);
-	line_low(b, b->scl);
+	line_low(b->bank, b->scl);
 	bb_wait(b);
 }
 
 static void
 bb_stop(struct redwood_bbi2c *b)
 {
-	line_low(b, b->sda);
+	line_low(sda_bank(b), b->sda);
 	bb_wait(b);
 	scl_release(b);
 	bb_wait(b);
-	line_release(b, b->sda);
+	line_release(sda_bank(b), b->sda);
 	bb_wait(b);
 }
 
@@ -203,21 +221,21 @@ bb_write_byte(struct redwood_bbi2c *b, uint8_t byte)
 
 	for (i = 7; i >= 0; i--) {
 		if ((byte >> i) & 1) {
-			line_release(b, b->sda);
+			line_release(sda_bank(b), b->sda);
 		} else {
-			line_low(b, b->sda);
+			line_low(sda_bank(b), b->sda);
 		}
 		bb_wait(b);
 		scl_release(b);
 		bb_wait(b);
-		line_low(b, b->scl);
+		line_low(b->bank, b->scl);
 	}
-	line_release(b, b->sda);
+	line_release(sda_bank(b), b->sda);
 	bb_wait(b);
 	scl_release(b);
 	bb_wait(b);
-	ack = redwood_gpio_get(b->bank, b->sda) == 0;
-	line_low(b, b->scl);
+	ack = redwood_gpio_get(sda_bank(b), b->sda) == 0;
+	line_low(b->bank, b->scl);
 	bb_wait(b);
 	return ack;
 }
@@ -228,24 +246,24 @@ bb_read_byte(struct redwood_bbi2c *b, bool ack)
 	uint8_t value = 0;
 	int i;
 
-	line_release(b, b->sda);
+	line_release(sda_bank(b), b->sda);
 	for (i = 0; i < 8; i++) {
 		bb_wait(b);
 		scl_release(b);
 		bb_wait(b);
-		value = (uint8_t)((value << 1) | redwood_gpio_get(b->bank, b->sda));
-		line_low(b, b->scl);
+		value = (uint8_t)((value << 1) | redwood_gpio_get(sda_bank(b), b->sda));
+		line_low(b->bank, b->scl);
 	}
 	if (ack) {
-		line_low(b, b->sda);
+		line_low(sda_bank(b), b->sda);
 	} else {
-		line_release(b, b->sda);
+		line_release(sda_bank(b), b->sda);
 	}
 	bb_wait(b);
 	scl_release(b);
 	bb_wait(b);
-	line_low(b, b->scl);
-	line_release(b, b->sda);
+	line_low(b->bank, b->scl);
+	line_release(sda_bank(b), b->sda);
 	return value;
 }
 
@@ -290,28 +308,36 @@ redwood_bbi2c_setup(struct redwood_bbi2c *b, bool pullup, char *report, size_t r
 {
 	uint32_t i, sda_before;
 	bool ghost;
+	volatile uint8_t *sb = sda_bank(b);
 
 	b->saved_con = bank_rd(b->bank, REDWOOD_GPIO_CON);
 	b->saved_pud = bank_rd(b->bank, REDWOOD_GPIO_PUD);
+	b->saved_dat = bank_rd(b->bank, REDWOOD_GPIO_DAT);
+	if (sb != b->bank) {
+		b->saved_sda_con = bank_rd(sb, REDWOOD_GPIO_CON);
+		b->saved_sda_pud = bank_rd(sb, REDWOOD_GPIO_PUD);
+		b->saved_sda_dat = bank_rd(sb, REDWOOD_GPIO_DAT);
+	}
 
-	line_release(b, b->scl);
-	line_release(b, b->sda);
-	bank_update(b->bank, REDWOOD_GPIO_DAT, (1u << b->scl) | (1u << b->sda), 0);
+	line_release(b->bank, b->scl);
+	line_release(sb, b->sda);
+	redwood_gpio_set(b->bank, b->scl, 0);
+	redwood_gpio_set(sb, b->sda, 0);
 	if (pullup) {
 		redwood_gpio_pull(b->bank, b->scl, REDWOOD_GPIO_PULL_UP);
-		redwood_gpio_pull(b->bank, b->sda, REDWOOD_GPIO_PULL_UP);
+		redwood_gpio_pull(sb, b->sda, REDWOOD_GPIO_PULL_UP);
 	}
 	bb_wait(b);
-	sda_before = redwood_gpio_get(b->bank, b->sda);
+	sda_before = redwood_gpio_get(sb, b->sda);
 
 	/* a slave left in the middle of a byte holds SDA low: clock it out, then stop */
-	for (i = 0; i < 9 && !redwood_gpio_get(b->bank, b->sda); i++) {
-		line_low(b, b->scl);
+	for (i = 0; i < 9 && !redwood_gpio_get(sb, b->sda); i++) {
+		line_low(b->bank, b->scl);
 		bb_wait(b);
 		scl_release(b);
 		bb_wait(b);
 	}
-	line_low(b, b->scl);
+	line_low(b->bank, b->scl);
 	bb_wait(b);
 	bb_stop(b);
 
@@ -319,18 +345,30 @@ redwood_bbi2c_setup(struct redwood_bbi2c *b, bool pullup, char *report, size_t r
 	ghost = redwood_bbi2c_xfer(b, 0x55, NULL, 0, NULL, 0);
 	if (report != NULL) {
 		snprintf(report, report_size, "%s: CON %#x PUD %#x, SCL %u SDA %u (was %u, %u clocks to free), ghost ack %d",
-		    b->name, b->saved_con, b->saved_pud, redwood_gpio_get(b->bank, b->scl), redwood_gpio_get(b->bank, b->sda),
+		    b->name, b->saved_con, b->saved_pud, redwood_gpio_get(b->bank, b->scl), redwood_gpio_get(sb, b->sda),
 		    sda_before, i, ghost);
 	}
-	return !ghost && redwood_gpio_get(b->bank, b->sda) && redwood_gpio_get(b->bank, b->scl);
+	return !ghost && redwood_gpio_get(sb, b->sda) && redwood_gpio_get(b->bank, b->scl);
 }
 
 void
 redwood_bbi2c_restore(struct redwood_bbi2c *b)
 {
 	uint32_t mask = (0xfu << (b->scl * 4)) | (0xfu << (b->sda * 4));
-	uint32_t pmask = (0xfu << (b->scl * 4)) | (0xfu << (b->sda * 4));      /* (4-bit pull fields: see redwood_gpio_pull) */
+	uint32_t sclmask = 0xfu << (b->scl * 4), sdapmask = 0xfu << (b->sda * 4);
+	uint32_t datmask = (1u << b->scl) | (1u << b->sda);
+	volatile uint8_t *sb = sda_bank(b);
 
-	bank_update(b->bank, REDWOOD_GPIO_CON, mask, b->saved_con);
-	bank_update(b->bank, REDWOOD_GPIO_PUD, pmask, b->saved_pud);
+	if (sb == b->bank) {
+		bank_update(b->bank, REDWOOD_GPIO_CON, mask, b->saved_con);
+		bank_update(b->bank, REDWOOD_GPIO_PUD, mask, b->saved_pud);
+		bank_update(b->bank, REDWOOD_GPIO_DAT, datmask, b->saved_dat);
+	} else {
+		bank_update(b->bank, REDWOOD_GPIO_CON, sclmask, b->saved_con);
+		bank_update(b->bank, REDWOOD_GPIO_PUD, sclmask, b->saved_pud);
+		bank_update(b->bank, REDWOOD_GPIO_DAT, 1u << b->scl, b->saved_dat);
+		bank_update(sb, REDWOOD_GPIO_CON, sdapmask, b->saved_sda_con);
+		bank_update(sb, REDWOOD_GPIO_PUD, sdapmask, b->saved_sda_pud);
+		bank_update(sb, REDWOOD_GPIO_DAT, 1u << b->sda, b->saved_sda_dat);
+	}
 }

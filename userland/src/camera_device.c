@@ -35,6 +35,7 @@
 #include <CoreVideo/CoreVideo.h>
 #include <IOSurface/IOSurfaceRef.h>
 #include <dispatch/dispatch.h>
+#include <Block.h>
 #include <dlfcn.h>
 #include <sys/sysctl.h>
 #include <errno.h>
@@ -463,6 +464,7 @@ struct stream {
 	volatile bool   graph_running;  /* the capture graph has started this stream: frames may be given out */
 	bool            worker_started;
 	int             torch;
+	int             last_turn;
 	uint64_t        frames, stills_given;
 };
 
@@ -724,10 +726,12 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 				CFTypeRef h = CFGetTypeID(values[i]) == CFDictionaryGetTypeID() ?
 				    CFDictionaryGetValue(values[i], CFSTR("PixelBufferHandler")) : NULL;
 
+				/* (a block: copied, as a block must be to outlive its caller -- CFRetain kept a stack block's
+				 * address and a later frame called freed memory: SIGBUS in mediaserverd, 2026-11-12) */
 				if (out->handler != NULL) {
-					CFRelease(out->handler);
+					_Block_release(out->handler);
 				}
-				out->handler = h != NULL ? (void *)CFRetain(h) : NULL;
+				out->handler = h != NULL ? (void *)_Block_copy(h) : NULL;
 			}
 		}
 		free(keys);
@@ -1392,10 +1396,16 @@ worker(void *context)
 			int turn = 0;
 			size_t len = sizeof(turn);
 			isp.mirror = false;
-			if (s->camera->sensor == 2 && sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0) {
-				if (turn & 1) isp.turned = !isp.turned;         /* bit 0: half round */
-				if (turn & 2) isp.mirror = true;                 /* bit 1: left to right */
-				say("front camera orientation: turn %d (turned %d, mirrored %d)", turn, isp.turned, isp.mirror);
+			/* bit 2 set: the kernel says, for every camera (the S20's frames all come from one sensor so far):
+			 * bit 0 turn half round, bit 1 mirror. The raw frame (2026-11-12, phone upright) has the scene's top at
+			 * the sensor's right; iOS turns portrait pictures 90 degrees clockwise, so they need the half turn: 5. */
+			if (sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0 && (turn & 4)) {
+				isp.turned = (turn & 1) != 0;
+				isp.mirror = (turn & 2) != 0;
+				if (turn != s->last_turn) {
+					say("orientation: turn %d (turned %d, mirrored %d) for the %s", turn, isp.turned, isp.mirror, s->camera->name);
+					s->last_turn = turn;
+				}
 			}
 		}
 		if (isp_ae(&isp, f, &st, &c)) {
@@ -1521,6 +1531,11 @@ stream_stop(CMBaseObjectRef o)
 
 	say("stream: stop (%llu frames, %llu pictures given)", (unsigned long long)s->frames,
 	    (unsigned long long)s->out[0].delivered);
+	/* The flags first, without the lock: the worker holds it while it gives a frame to the graph, whose handler
+	 * may wait for the graph that is stopping now -- waiting for the lock here was "Timed out waiting for the
+	 * capture graph to stop" and mediaserverd's SIGTRAP (2026-11-12). */
+	s->graph_running = false;
+	s->running = false;
 	pthread_mutex_lock(&s->lock);
 	s->graph_running = false;
 	for (int i = 0; i < OUTPUTS; i++) {
@@ -1610,7 +1625,7 @@ stream_finalize(CMBaseObjectRef o)
 			CFRelease(s->out[i].config);
 		}
 		if (s->out[i].handler) {
-			CFRelease(s->out[i].handler);
+			_Block_release(s->out[i].handler);
 		}
 	}
 	if (s->formats) {
