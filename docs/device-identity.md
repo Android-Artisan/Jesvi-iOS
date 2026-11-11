@@ -45,3 +45,9 @@ reject the unpaired Wi-Fi-style connection. The temporary job was then unloaded.
 No native pairing support or Finder device entry is enabled by default.
 The next transport work is a device-side USB mux/controller bridge; exposing
 TCP alone cannot substitute for the initial USB trust/pairing path.
+
+A follow-up loopback and Unix-socket test also failed. On the Unix socket,
+stock lockdownd explicitly rejected a non-kernel peer. A userspace TCP-to-Unix
+relay therefore does not solve this transport gap. The diagnostic source and
+exact observations are recorded in `tools/usb/README.md`; the temporary launch
+job was unloaded and is not enabled in default builds.
