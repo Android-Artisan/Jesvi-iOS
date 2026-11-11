@@ -604,3 +604,45 @@ Further board facts verified before CP control writes:
 
 User now targets Jio India LTE/VoLTE with a physical SIM inserted. This does not
 mean our backend has read/detected the SIM. See [cellular-jio.md](cellular-jio.md).
+
+### GPIO ownership proven; powered BOOT probe prepared — 2026-11-11
+
+The GPIO-low preflight passed on hardware: all five AP outputs verified LOW,
+then original direction/value fields and neighboring pins verified restored.
+POWER_ON was never raised. `build/cellular-gpio-low.log/.exit` records exit0,
+byte-exact original BOOT restoration and iOS return in74s.
+
+The real BOOT adapter now compiles and the lifecycle/packaging host tests pass.
+It includes a one-attempt latch, CRC validation, existing baseline/PHY guards,
+2-second PIO limit, shutdown readback and a RAM-retaining failure hold. Review
+fixed cleanup treating a failed settling delay as safe; the failure model now
+allows timer failure before any elapsed time. Cleanup-only retry also checks
+the delay and AP status/wake outputs. No actual powered BOOT test yet.
+
+**Deployment baseline changed:** camera/Files/Developer Mode and Finder work
+advanced while cellular was inactive. codex-files currently owns the phone.
+Do not run old m0 deployment/rollback scripts against this newer installation.
+Under the next phone lock, capture fresh BOOT/recovery/kernel baselines, verify
+matching installed payload and original-loader fallback, then build a fresh
+candidate. Preserve the newer kernel/root/arguments. Old backups remain only
+historical recovery evidence, not a current rollback target.
+
+Next acceptance checklist:
+
+- [x] GPIO LOW-only writes, neighbor preservation and restoration on phone.
+- [x] CRC-checked BOOT-only packaging and guarded power lifecycle compiled.
+- [x] Host tests:30 Python,23 memory/cache,163840 allocator comparisons,
+  eight SPI streams/six failures,22 lifecycle callback failures.
+- [ ] Fresh baseline and isolated candidate after current phone holder finishes.
+- [ ] One powered BOOT transfer with bounded shutdown and current BOOT restored.
+- [ ] Prove CP acceptance through PCIe1/firmware handshake; TX alone is insufficient.
+- [ ] MAIN/APM boot, IPC, SIM state, Jio LTE registration/data, then IMS/VoLTE/audio.
+
+Samsung source clarifies the next boundary: `cpif/boot_device_spi.c:33` only
+reports SPI transfer status. `modem_ctrl_s5100.c:649` polls CP2AP_WAKE up to
+200 times with20ms sleeps, then `start_normal_boot` registers PCIe.
+`link_device.c:3120` waits200ms, powers PCIe, requires a discovered modem PCI
+device and initializes MSI. Our CP2AP_WAKE already reads high with a pull-up
+before boot, so copying that GPIO check alone would falsely imply acceptance.
+The first bounded BOOT probe deliberately leaves PCIe isolated and reports
+acceptance unproven; PCIe enumeration is a separate implementation/test stage.

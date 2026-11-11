@@ -1,6 +1,9 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import struct
+import tempfile
+import zlib
 
 spec = importlib.util.spec_from_file_location('prepare_m0', Path(__file__).parents[1] / 'prepare-m0.py')
 prepare = importlib.util.module_from_spec(spec)
@@ -31,6 +34,27 @@ class FallbackTests(unittest.TestCase):
                         self.original + [(b'fallback.efi'.ljust(16, b'\0'), 0, b'old')]):
             with self.subTest(records=records), self.assertRaises(ValueError):
                 prepare.replace_loader(records, b'MZ CELLULAR MEMORY PREFLIGHT', True)
+
+    def test_explicit_boot_extraction_crc_and_metadata(self):
+        boot = b'synthetic boot!!'
+        main = b'synthetic main!!'
+        entry = struct.Struct('<12s5I')
+        table = b''.join(entry.pack(name.ljust(12,b'\0'),start,address,len(data),crc,index)
+                         for name,start,address,data,crc,index in (
+                             (b'TOC',0,0,bytes(512),0,0),
+                             (b'BOOT',512,0x40000000,boot,zlib.crc32(boot),1),
+                             (b'MAIN',528,0x50000000,main,zlib.crc32(main),2),
+                             (b'NV',0,0,bytes(64),0,3)))
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'synthetic-radio.img'
+            path.write_bytes(table.ljust(512,b'\0')+boot+main)
+            data,info,metadata=prepare.cp_boot_payload(path)
+            self.assertEqual(data,boot)
+            self.assertEqual(struct.unpack('<4sIIIII',info),(b'S512',1,len(boot),zlib.crc32(boot),0x40000000,1))
+            self.assertEqual(metadata['size'],16)
+            image=bytearray(path.read_bytes());image[512]^=1;path.write_bytes(image)
+            with self.assertRaises(ValueError):
+                prepare.cp_boot_payload(path)
 
 
 if __name__ == '__main__':

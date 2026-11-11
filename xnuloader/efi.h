@@ -50,7 +50,8 @@ typedef struct {
 
 typedef struct {
 	efi_table_header hdr;
-	void *raise_tpl, *restore_tpl;
+	uint64_t (EFIAPI *raise_tpl)(uint64_t new_tpl);
+	void (EFIAPI *restore_tpl)(uint64_t old_tpl);
 	efi_status (EFIAPI *allocate_pages)(int type, int mem_type, uint64_t pages, uint64_t *addr);
 	efi_status (EFIAPI *free_pages)(uint64_t addr, uint64_t pages);
 	efi_status (EFIAPI *get_memory_map)(uint64_t *size, void *map, uint64_t *key, uint64_t *desc_size, uint32_t *desc_ver);

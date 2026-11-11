@@ -10,11 +10,13 @@ a metadata manifest. Does not contact or write to the phone.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT.parent.parent
@@ -97,6 +99,23 @@ def replace_loader(old_entries, loader, with_fallback=False):
     return replaced
 
 
+def cp_boot_payload(radio):
+    """Explicit BOOT-only extraction; no NV/EFS or MAIN payload reads."""
+    spec = importlib.util.spec_from_file_location('cellular_shannon', Path(__file__).with_name('shannon.py'))
+    shannon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shannon)
+    with radio.open('rb') as stream:
+        records = shannon.read_toc(stream, radio.stat().st_size, False)
+        boot = next(record for record in records if record['name'] == 'BOOT')
+        stream.seek(boot['file_offset'])
+        data = stream.read(boot['size'])
+    require(len(data) == boot['size'] and zlib.crc32(data) == boot['crc32'], 'BOOT CRC/length mismatch')
+    info = struct.pack('<4sIIIII', b'S512', 1, len(data), boot['crc32'], boot['cp_address'], boot['entry_id'])
+    return data, info, dict(size=len(data), crc32=hex(boot['crc32']), sha256=sha(data),
+                            cp_address=hex(boot['cp_address']), entry_id=boot['entry_id'],
+                            scope='BOOT only; no NV/EFS or subscriber data')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backup', type=Path, required=True)
@@ -104,6 +123,8 @@ def main():
     firmware.add_argument('--fd', type=Path)
     firmware.add_argument('--keep-installed-fd', action='store_true')
     parser.add_argument('--with-installed-fallback', action='store_true')
+    parser.add_argument('--cp-boot-radio', type=Path,
+                        help='explicit local BOOT-only extraction for a CP BOOT preflight; never NV')
     parser.add_argument('--loader', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--avbtool', type=Path, default=RESEARCH / 'tools/bin/avbtool.py')
@@ -128,6 +149,17 @@ def main():
             'loader is not ARM64 PE/COFF')
     require(struct.unpack_from('<H', loader, pe + 24 + 68)[0] == 10, 'loader is not an EFI application')
     replaced = replace_loader(old_entries, loader, args.with_installed_fallback)
+    cp_metadata = None
+    cp_probe = b'cellular CP BOOT:' in loader
+    require(cp_probe == bool(args.cp_boot_radio), 'CP BOOT preflight requires exactly one explicit radio source')
+    if args.cp_boot_radio:
+        require(args.keep_installed_fd and args.with_installed_fallback,
+                'CP BOOT probe must preserve original firmware and fallback')
+        require(not any(name.rstrip(b'\0') in (b'cp.boot', b'cp.boot.info') for name, _, _ in old_entries),
+                'backup already contains CP BOOT entries; use the original phone backup')
+        cp_data, cp_info, cp_metadata = cp_boot_payload(args.cp_boot_radio)
+        replaced += [(b'cp.boot'.ljust(16, b'\0'), 0, cp_data),
+                     (b'cp.boot.info'.ljust(16, b'\0'), 0, cp_info)]
     body = b''.join(struct.pack('<16sII', name, len(data), reserved) + data + bytes(-len(data) % 16)
                     for name, reserved, data in replaced) + bytes(24)
     payload = b'XNUP' + struct.pack('<I', len(body)) + body
@@ -183,6 +215,8 @@ def main():
                     payload_arguments_preserved=True, avb_verified=True)
     manifest.update(installed_firmware_preserved=args.keep_installed_fd,
                     installed_loader_fallback=args.with_installed_fallback)
+    if cp_metadata:
+        manifest['cp_boot'] = cp_metadata
     if args.with_installed_fallback:
         cursor = 8
         for name, _, data in replaced:

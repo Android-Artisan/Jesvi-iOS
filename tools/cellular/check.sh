@@ -11,3 +11,6 @@ trap 'rm -rf "$CELLULAR_CHECK_DIR"' EXIT
 "${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
     tools/cellular/tests/spi_pio_test.c -o "$CELLULAR_CHECK_DIR/spi-test"
 "$CELLULAR_CHECK_DIR/spi-test"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/boot_lifecycle_test.c -o "$CELLULAR_CHECK_DIR/boot-test"
+"$CELLULAR_CHECK_DIR/boot-test"
