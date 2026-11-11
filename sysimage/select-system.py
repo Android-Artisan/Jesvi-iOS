@@ -165,7 +165,9 @@ def wanted_file(path, size):
         # AppleCVA (mediaserverd), CoreUI, MediaCoreUI ... (about 64 MB more than the public ones)
         if path.endswith('.metallib'):
             return True
-        if re.search(r'/(XPCServices|Support|Helpers)/', path):
+        if re.search(r'/(XPCServices|Support|Helpers)/', path) or (
+                path == 'System/Library/Frameworks/FileProvider.framework/PlugIns/'
+                        'LocalStorageFileProvider.appex/LocalStorageFileProvider'):
             return size <= 32 << 20 and not path.lower().endswith(('.png', '.car', '.loctable', '.caml'))
         if path.endswith('.car'):
             return size <= MAX_ASSET_CATALOG or path.startswith(BIG_CATALOGS)
