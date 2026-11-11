@@ -4,6 +4,16 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — camera survives a cold start: S2MPB02 buck voltages set at boot
+- After a hard reset (forced power-off) the camera PMIC has BUCK1 at 1.6 V (reg 0x0c = 0xc0) and BUCK2 at 0.8 V
+  (0x0e = 0x40); Samsung's kernel programs both to 1.3 V (0x90) and those values had survived warm restarts since the
+  last Samsung reference boot, which is the only reason the camera worked. `redwood_s2mpb02_torch.c` now writes
+  0x0c/0x0e = 0x90 and 0x10 = 0x48 (buck-boost 3.5 V) before enabling BUCK1, the buck-boost and LDO18 (`cam_pmic_base`).
+- Tested (kernel 18:54:31, first boot after a forced power-off + Download Mode flash): `cam.pmic 1` reads
+  0b=d8 0c=90 0e=90 0f=da 10=48 2f=ec; `camera_test raw 45`: 45 of 45 frames, 33.9 ms apart.
+- Also in this kernel: `cam.s20.cached [0|1]` (debug port, off at every boot) reads stream frames through a cached
+  mapping; the kernel turns frames 180 degrees (`cam_s20_rot=1` default) to undo the old userland's `turned`.
+
 ## 2026-11-11 — live front camera for iOS (`cam=5 cam_s20=1`)
 - `/dev/redwood-camera` now serves the S20's real front SAK3J1 instead of the chart: `redwood_camera_s20.c` keeps the
   proven sequence running (WDMA1 alternates two buffers over its 32 slots), `redwood_camera.c` `s20_session()` packs each

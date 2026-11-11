@@ -256,3 +256,14 @@ userland `userland/src/camera_device.c` (capture device in mediaserverd), `camer
   (base supplies BUCK1/BB/LDO18 stay on from boot by design, as on Samsung).
 - [ ] Thermal behaviour during long preview/recording; suspend/resume.
 - [ ] Remove or gate the diagnostics (`cam.s20.front.stream` bits) once the driver is final; keep `cam_pmic_base`.
+
+### 2026-11-11 evening: second half of the root cause (cold start)
+- [x] S2MPB02 BUCK1/BUCK2 **voltage** registers (0x0c/0x0e) reset to 0xc0/0x40 (1.6 V / 0.8 V) on a hard reset; Samsung
+  sets 0x90 (1.3 V). The afternoon's success rode on Samsung's values surviving warm restarts. Fixed at boot in
+  `redwood_s2mpb02_torch.c`. Verified on the first boot after a forced power-off (kernel 18:54:31).
+- Lesson: after any Samsung reference boot, do a HARD power cycle before trusting an XNU camera result.
+- Rear cameras will need their own LDO voltage codes (Samsung map: LDO1 0x1e=0x24, LDO3 0x20=0x24, LDO13 0x2a=0x58; XNU
+  cold values 0x18/0x20/0x5c) — take them from a Samsung `CAMERA_PMIC_MAP` with each rear sensor open.
+- Boot hang 18:26: a kernel with a read-only cached DMA mapping + `dc ivac`, flashed together with a root.apfs rebuilt by
+  hand (`mkapfs.py ... redwood=root`); cause not separated. Rules: new kernel features that run at camera open stay OFF at
+  boot (mediaserverd opens the camera during startup); never flash a hand-rebuilt root.apfs together with a kernel change.

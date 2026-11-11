@@ -235,9 +235,33 @@ poolGive(int slot)
 static int gCameraPoolSlot = -1;
 static IOMemoryDescriptor *gCameraPoolMemory;
 static IOMemoryMap *gCameraPoolMap;
+static IOMemoryMap *gCameraPoolCached;  /* a second, cached mapping for reading finished frames fast (B, 2026-11-11) */
 
 extern "C" bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
 extern "C" void redwood_camera_dma_put(void);
+extern "C" void *redwood_camera_dma_cached(void);
+extern "C" { int redwood_camera_cached_enable; }
+
+/* The camera's slot once more, through the caches: for reading only, after the reader has had the lines of what it
+ * reads forgotten (dc ivac); the device writes this memory behind the caches' back. NULL if it cannot be had. */
+extern "C" void *
+redwood_camera_dma_cached(void)
+{
+	void *virt = NULL;
+	/* OFF until switched on at run time (debug port: cam.s20.cached 1): the first try (kernel 18:26:35, the
+	 * mapping read-only) hung the boot when mediaserverd opened the camera -- dc ivac wants write permission.
+	 * Never on from the boot line, so a fault here cannot stop the phone from starting. */
+	if (!redwood_camera_cached_enable) return NULL;
+	if (!gSurfaceLock) return NULL;
+	IOLockLock(gSurfaceLock);
+	if (gCameraPoolMemory != NULL && gCameraPoolCached == NULL) {
+		/* (writable though only read: the cache maintenance the reader does, dc ivac, faults on a read-only page) */
+		gCameraPoolCached = gCameraPoolMemory->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapCopybackCache);
+	}
+	if (gCameraPoolCached != NULL) virt = (void *)gCameraPoolCached->getVirtualAddress();
+	IOLockUnlock(gSurfaceLock);
+	return virt;
+}
 
 extern "C" bool
 redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
@@ -271,6 +295,7 @@ redwood_camera_dma_put(void)
 {
 	if (!gSurfaceLock) return;
 	IOLockLock(gSurfaceLock);
+	OSSafeReleaseNULL(gCameraPoolCached);
 	OSSafeReleaseNULL(gCameraPoolMap);
 	OSSafeReleaseNULL(gCameraPoolMemory);
 	poolGive(gCameraPoolSlot);

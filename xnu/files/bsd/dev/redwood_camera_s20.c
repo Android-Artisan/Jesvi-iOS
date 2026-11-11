@@ -362,6 +362,15 @@ cleanup:
  * addresses point inside an exclusively borrowed low-memory pool slot. */
 extern bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
 extern void redwood_camera_dma_put(void);
+extern void *redwood_camera_dma_cached(void);
+extern int redwood_camera_cached_enable;
+static void
+cam_s20_cached_cmd(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	if (n > 0) redwood_camera_cached_enable = v[0] != 0;
+	(void)snprintf(out, cap, "cam.s20.cached: the stream reads frames through the %s mapping (from the next camera open)\n",
+	    redwood_camera_cached_enable ? "cached" : "write-combined");
+}
 static bool cam_s20_dma_quarantined;
 static volatile uint8_t *cam_s20_optical_dma;
 static void cam_s20_front_stream_probe(const uint64_t *, unsigned, char *, size_t);
@@ -420,7 +429,8 @@ static redwood_s20_frame_fn cam_s20_stream_fn;
 static const volatile uint16_t *cam_s20_stream_buf[2];
 static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
 static volatile bool cam_s20_exp_pending;
-static uint32_t cam_s20_stream_frames, cam_s20_stream_errors;
+static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
+static bool cam_s20_stream_cached;
 
 void
 redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines)
@@ -537,8 +547,16 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(vc, 8, 0); cam_s20_wr(vc, 12, 0);
 	cam_s20_wr(vc, 0xa4, width);
 	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, (uint32_t)(phys + guard + ((stream && (i & 1)) ? bytes + guard : 0)));
-	cam_s20_stream_buf[0] = (const volatile uint16_t *)((uint8_t *)buffer + guard);
-	cam_s20_stream_buf[1] = (const volatile uint16_t *)((uint8_t *)buffer + guard + bytes + guard);
+	{
+		/* frames are read through a cached mapping when there is one (several times faster than the
+		 * write-combined one); its lines are forgotten before every frame is read */
+		void *cached = stream ? redwood_camera_dma_cached() : NULL;
+		uint8_t *rd_base = cached ? (uint8_t *)cached : (uint8_t *)buffer;
+		cam_s20_stream_cached = cached != NULL;
+		cam_s20_stream_bytes = bytes;
+		cam_s20_stream_buf[0] = (const volatile uint16_t *)(rd_base + guard);
+		cam_s20_stream_buf[1] = (const volatile uint16_t *)(rd_base + guard + bytes + guard);
+	}
 	cam_s20_wr(vc, 0xb0, ~0U); /* all 32 frame pointers valid */
 	cam_s20_wr(dma, 0x24, 0x00804640U); /* Samsung's horizontal blanking */
 	cam_s20_wr(dma, 0x28, (height << 16) | width);
@@ -1813,6 +1831,12 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 					printf("camera: S20 stream frame %u: dma status %#x, active slot %u\n", cam_s20_stream_frames, st, ptr);
 				/* At frame end the active slot is the one just finished (it advances at the next frame start; a
 				 * skipped frame moves it by two): even slots are buffer 0, odd ones buffer 1. */
+				if (cam_s20_stream_cached) {
+					vm_offset_t line = (vm_offset_t)cam_s20_stream_buf[ptr & 1] & ~(vm_offset_t)63;
+					vm_offset_t end = (vm_offset_t)cam_s20_stream_buf[ptr & 1] + cam_s20_stream_bytes;
+					for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
+					__asm__ volatile ("dsb sy" ::: "memory");
+				}
 				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 1824, 1368);
 				cam_s20_stream_frames++;
 				idle = 0;
@@ -2130,5 +2154,6 @@ redwood_exynos_camera_s20_init(void)
 	redwood_dbgport_add("cam.s20.csis.rails", ": read-only S2MPS22 LDO5S/LDO6S state required by Exynos990 CSIS PHY", cam_s20_csis_rails);
 	redwood_dbgport_add("cam.s20.csis.dphy.config", ": bounded Exynos990 PHY 0x0503.0000 setup/readback/restore after rail check; no sensor streaming", cam_s20_csis_dphy_config_probe);
 	redwood_dbgport_add("cam.s20.front.mode", ": apply Samsung SAK3J1 global and 1824x1368/30 non-PDAF setfiles, verify registers, power down", cam_s20_front_set_mode);
+	redwood_dbgport_add("cam.s20.cached", " [0|1]: read stream frames through a cached mapping (faster); off at every boot", cam_s20_cached_cmd);
 	redwood_dbgport_add("cam.s20.front.stream", ": bounded SAK3J1 to CSIS1 frame-counter test, 500 ms, no DMA; restores sensor/receiver state", cam_s20_front_stream_probe);
 }

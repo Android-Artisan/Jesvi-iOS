@@ -331,6 +331,22 @@ torch_thread(__unused void *parameter, __unused wait_result_t result)
 		uint32_t base = 1;
 		(void)PE_parse_boot_argn("cam_pmic_base", &base, sizeof(base));
 		if (base) {
+			/* The voltages first, as Samsung's regulator init does from its DT (min = max): BUCK1 and BUCK2
+			 * 1.3 V (0x90: 0.4 V + 144 * 6.25 mV), buck-boost 3.5 V (0x48: 2.6 V + 72 * 12.5 mV). After a hard
+			 * reset the chip has BUCK1 at 0xc0 (1.6 V) and BUCK2 at 0x40 (0.8 V): with 0.8 V in, the sensor's
+			 * 1.05 V core LDO cannot regulate -- the camera worked only while Samsung's values survived warm
+			 * restarts (seen 2026-11-11 after a forced power-off). */
+			static const uint8_t volt[3][2] = { { 0x0c, 0x90 }, { 0x0e, 0x90 }, { 0x10, 0x48 } };
+			for (unsigned k = 0; k < 3; k++) {
+				uint8_t was = 0, now = 0;
+				lck_mtx_lock(&s2mpb02_lock);
+				bool rd = get_unlocked(volt[k][0], &was);
+				bool wr = rd && (was == volt[k][1] || redwood_bbi2c_write_reg(&bus, PMIC_ADDR, volt[k][0], volt[k][1]));
+				bool ok2 = wr && get_unlocked(volt[k][0], &now) && now == volt[k][1];
+				lck_mtx_unlock(&s2mpb02_lock);
+				printf("camera: S2MPB02 reg %#x voltage %#x -> %#x %s\n", volt[k][0], was, now, ok2 ? "ok" : "FAILED");
+			}
+			delay_for_interval(2, NSEC_PER_MSEC);
 			bool b1 = redwood_s2mpb02_camera_bits(0x0b, 0xc0, 0xc0);
 			delay_for_interval(2, NSEC_PER_MSEC);
 			bool bb = redwood_s2mpb02_camera_bits(0x0f, 0xc0, 0xc0);

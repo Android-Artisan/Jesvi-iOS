@@ -3256,7 +3256,8 @@ capture_sensor(void)
 #define IDLE_MS                 1000
 #define FRAME_TIMEOUT_MS        1500
 #define EXPOSURE_MARGIN         40
-static bool s20_rotate = true;  /* the S20's front module is mounted turned by 180 degrees (cam_s20_rot=0: as sent) */
+static bool s20_rotate = true;  /* frames turned by 180 degrees here: undoes camera_device.c's `turned' for the front camera in
+                                 * the flashed root image (set it false there and here together; cam_s20_rot=0: as sent) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
 #define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
