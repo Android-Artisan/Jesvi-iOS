@@ -4,6 +4,14 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — front camera at 30 frames/s
+- WDMA1 writes MIPI RAW10 directly (DMA format 7, lines padded to 16 bytes = the `/dev/redwood-camera` layout), read
+  through a cached mapping (on by default, `cam_dma_cached=0` / `cam.s20.cached 0` to disable): one ~1 ms copy per frame
+  instead of packing 2.5 M pixels from write-combined memory. No turning in the kernel any more; `camera_device.c`
+  front camera `turned = false` (the S20's module is the right way up).
+- Tested (kernel 21:47:05, root.apfs with the rebuilt libredwood-media.dylib): `camera_test raw 90`: 90 of 90 frames,
+  33-35 ms apart; kernel log: frame copy 0.36-1.2 ms.
+
 ## 2026-11-11 — camera survives a cold start: S2MPB02 buck voltages set at boot
 - After a hard reset (forced power-off) the camera PMIC has BUCK1 at 1.6 V (reg 0x0c = 0xc0) and BUCK2 at 0.8 V
   (0x0e = 0x40); Samsung's kernel programs both to 1.3 V (0x90) and those values had survived warm restarts since the

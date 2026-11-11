@@ -240,7 +240,9 @@ static IOMemoryMap *gCameraPoolCached;  /* a second, cached mapping for reading 
 extern "C" bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
 extern "C" void redwood_camera_dma_put(void);
 extern "C" void *redwood_camera_dma_cached(void);
-extern "C" { int redwood_camera_cached_enable; }
+/* on by default since kernel 19:xx (the writable cached mapping streamed fine in Camera.app); boot-arg cam_dma_cached=0 or
+ * the debug port's cam.s20.cached 0 turns it off */
+extern "C" { int redwood_camera_cached_enable = 1; }
 
 /* The camera's slot once more, through the caches: for reading only, after the reader has had the lines of what it
  * reads forgotten (dc ivac); the device writes this memory behind the caches' back. NULL if it cannot be had. */
@@ -251,6 +253,11 @@ redwood_camera_dma_cached(void)
 	/* OFF until switched on at run time (debug port: cam.s20.cached 1): the first try (kernel 18:26:35, the
 	 * mapping read-only) hung the boot when mediaserverd opened the camera -- dc ivac wants write permission.
 	 * Never on from the boot line, so a fault here cannot stop the phone from starting. */
+	{
+		static bool argued;
+		uint32_t off = 1;
+		if (!argued) { argued = true; if (PE_parse_boot_argn("cam_dma_cached", &off, sizeof(off)) && off == 0) redwood_camera_cached_enable = 0; }
+	}
 	if (!redwood_camera_cached_enable) return NULL;
 	if (!gSurfaceLock) return NULL;
 	IOLockLock(gSurfaceLock);

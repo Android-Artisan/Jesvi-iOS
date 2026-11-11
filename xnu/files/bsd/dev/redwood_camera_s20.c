@@ -424,9 +424,10 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
  * proven path; with a frame callback set it does not stop at the first frame: WDMA1 alternates between two buffers
  * (its 32 frame-pointer slots, even/odd) and every finished frame is handed to the callback until it returns false.
  */
-typedef bool (*redwood_s20_frame_fn)(const volatile uint16_t *pixels, uint32_t width, uint32_t height);
+/* data: one frame of MIPI RAW10 (four pixels in five bytes), `stride' bytes from one line to the next */
+typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
 static redwood_s20_frame_fn cam_s20_stream_fn;
-static const volatile uint16_t *cam_s20_stream_buf[2];
+static const volatile uint8_t *cam_s20_stream_buf[2];
 static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
 static volatile bool cam_s20_exp_pending;
 static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
@@ -458,7 +459,12 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const bool optical = n > 0 && v[0] == 1;
 	const uint32_t width = optical ? 1824 : 320, height = optical ? 1368 : 240, guard = 16384;
 	const bool stream = optical && cam_s20_stream_fn != NULL;
-	const uint32_t bytes = width * height * 2;
+	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
+	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
+	 * /dev/redwood-camera hands out, so a frame is one copy. The bounded tests keep 16-bit pixels (format 6). */
+	const uint32_t dma_fmt = stream ? 7U : (n > 2 && (v[2] == 4 || v[2] == 7)) ? (uint32_t)v[2] : 6U;
+	const uint32_t raw10_stride = ((width * 10 / 8) + 15) & ~15U;
+	const uint32_t bytes = stream ? raw10_stride * height : width * height * 2;
 	const uint32_t total = ((stream ? 2 * bytes + 3 * guard : bytes + 2 * guard) + guard - 1) & ~(guard - 1);
 	char sensor_report[4096] = "{}";
 	uint64_t sensor_mode = n > 1 ? v[1] : 2;
@@ -543,7 +549,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(cmn, 0, cmn_save[0] & ~1U); /* OTF input */
 	cam_s20_wr(cmn, 0x1c, cmn_save[3] & ~3U); /* RAW10 */
 	cam_s20_wr(cmn, 4, 0x01111110U); /* VC0 frame/error/abort sources; GIC remains masked */
-	cam_s20_wr(vc, 4, (vc_save[1] & ~0x7fU) | 6U); /* 2D unsigned RAW10 in 16 bits */
+	/* DMA data format (is-hw-csi-v5_3.h): 6 = RAW10 in 16 bits (default), 4 = Samsung's 10-bit pack,
+	 * 7 = ANDROID10 (MIPI RAW10 bytes). Third argument of the bounded test picks another for a raw dump. */
+	cam_s20_wr(vc, 4, (vc_save[1] & ~0x7fU) | dma_fmt);
 	cam_s20_wr(vc, 8, 0); cam_s20_wr(vc, 12, 0);
 	cam_s20_wr(vc, 0xa4, width);
 	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, (uint32_t)(phys + guard + ((stream && (i & 1)) ? bytes + guard : 0)));
@@ -554,8 +562,8 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		uint8_t *rd_base = cached ? (uint8_t *)cached : (uint8_t *)buffer;
 		cam_s20_stream_cached = cached != NULL;
 		cam_s20_stream_bytes = bytes;
-		cam_s20_stream_buf[0] = (const volatile uint16_t *)(rd_base + guard);
-		cam_s20_stream_buf[1] = (const volatile uint16_t *)(rd_base + guard + bytes + guard);
+		cam_s20_stream_buf[0] = (const volatile uint8_t *)(rd_base + guard);
+		cam_s20_stream_buf[1] = (const volatile uint8_t *)(rd_base + guard + bytes + guard);
 	}
 	cam_s20_wr(vc, 0xb0, ~0U); /* all 32 frame pointers valid */
 	cam_s20_wr(dma, 0x24, 0x00804640U); /* Samsung's horizontal blanking */
@@ -612,12 +620,28 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	for (i = 0; i < total; i++) if ((i < guard || i >= guard + bytes) &&
 	    ((volatile uint8_t *)buffer)[i] != 0xa5) guard_bad++;
 	}
-	for (i = 0; i < bytes / 2; i++) {
+	for (i = 0; !stream && i < bytes / 2; i++) {
 		uint16_t pixel = ((volatile uint16_t *)((uint8_t *)buffer + guard))[i];
 		if (pixel < lo) lo = pixel;
 		if (pixel > hi) hi = pixel;
 	}
 	phase = guard_bad ? "DMA guard overwritten" : (ended && changed && !err && !(irq & 0x01101000U) ? "frame captured" : "no clean DMA frame");
+	if (!stream && dma_fmt != 6U && ended && changed && !guard_bad) {
+		/* raw dump of the buffer as the DMA wrote it (RWRAWDMP + width, height, format, bytes), for the host */
+		size_t size = 4096 + bytes;
+		uint8_t *copy = kalloc_data(size, Z_WAITOK | Z_ZERO);
+		if (copy) {
+			uint32_t header[] = { width, height, dma_fmt, bytes };
+			memcpy(copy, "RWRAWDMP", 8);
+			memcpy(copy + 8, header, sizeof(header));
+			memcpy(copy + 4096, (uint8_t *)buffer + guard, bytes);
+			lck_mtx_lock(&cam_frame_lock);
+			if (cam_frame_copy) kfree_data(cam_frame_copy, cam_frame_size);
+			cam_frame_copy = copy; cam_frame_size = size;
+			lck_mtx_unlock(&cam_frame_lock);
+			exported = true;
+		}
+	} else
 	if (!stream && ended && changed && !guard_bad && !err && !(irq & 0x01101000U) && hi <= 1023)
 		exported = cam_s20_save_frame((volatile uint16_t *)((uint8_t *)buffer + guard), width, height, optical);
 	/* No pending transfer remains, so old addresses and the pool slot are safe to restore. */
@@ -1837,7 +1861,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 					for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
 					__asm__ volatile ("dsb sy" ::: "memory");
 				}
-				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 1824, 1368);
+				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 1824, 1368, ((1824 * 10 / 8) + 15) & ~15U);
 				cam_s20_stream_frames++;
 				idle = 0;
 				if (cam_s20_exp_pending) {
