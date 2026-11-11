@@ -115,3 +115,14 @@ this repair. TrollStore needed to be closed/reopened once because its running
 UI had cached the missing extension. No picker UI replacement or installer
 binary patch was needed. The earlier copy/move checks tested provider data
 operations; this follow-up covers the separate document-picker executables.
+
+
+## Finder app documents
+
+The host is named **Jesvi Files** and advertises native file sharing and
+in-place document access. Finder's Files tab can expose this app's Documents
+folder through House Arrest; it does not expose the whole filesystem or merge
+Safari Downloads into that folder. Copy files by dragging onto the app row.
+The Sync button is separate. See `tools/usb/README.md` for the unprotected local
+Finder compatibility policy and its pairing requirements. Grey backup/media
+controls and category storage accounting are not resolved by the Files fix.

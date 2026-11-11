@@ -137,7 +137,8 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
 /redwood/lib/libredwood-tweaks.dylib Preferences
-/redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service"}
+/redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
+/redwood/lib/libredwood-finder.dylib lockdownd"}
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
@@ -323,6 +324,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# Files on the HFS+ data volume: target only its daemon and local provider.
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
 			-o obj/libredwood-files.dylib src/inject_files.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-finder.dylib \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
+			-o obj/libredwood-finder.dylib src/inject_finder.c
 		$DYN -o obj/LocalFilesHost src/local_files_host.c
 		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
@@ -490,6 +494,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
 	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
+	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
