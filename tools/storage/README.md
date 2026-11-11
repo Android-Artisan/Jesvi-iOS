@@ -99,3 +99,19 @@ The provider's bundle identifier stays com.apple.FileProvider.LocalStorage.
 Only /private/var is writable data: statfs and Foundation correctly report
 about 108 GiB total and 105 GiB free. The full read-only APFS system image is
 expected to report zero free bytes; it is not the data volume.
+
+## Save/import picker follow-up
+
+The same resource cutoff also omitted the 5.5 MB `SaveToFiles` and
+`com.apple.DocumentManager.Service` executables. Their bundle metadata alone
+was present, producing “app extension could not be found” for Safari saving
+and app import pickers. Both executables are now retained and moved into the
+same hidden host, with their manifest metadata. The compatibility injection
+also names these two executables; the complete default list remains below the
+current kernel's 512-byte configuration limit.
+
+Safari import/export and the TrollStore + picker were user-confirmed after
+this repair. TrollStore needed to be closed/reopened once because its running
+UI had cached the missing extension. No picker UI replacement or installer
+binary patch was needed. The earlier copy/move checks tested provider data
+operations; this follow-up covers the separate document-picker executables.

@@ -168,8 +168,13 @@ def wanted_file(path, size):
         # Files' local provider is a 9 MB executable under PlugIns, outside
         # the helper directories below. The generic 4 MB resource limit drops
         # it while retaining Info.plist, leaving no On My iPhone provider.
-        if path == ('System/Library/Frameworks/FileProvider.framework/PlugIns/'
-                    'LocalStorageFileProvider.appex/LocalStorageFileProvider'):
+        if path in (
+                'System/Library/Frameworks/FileProvider.framework/PlugIns/'
+                'LocalStorageFileProvider.appex/LocalStorageFileProvider',
+                'System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/'
+                'SaveToFiles.appex/SaveToFiles',
+                'System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/'
+                'com.apple.DocumentManager.Service.appex/com.apple.DocumentManager.Service'):
             return size <= 32 << 20
         if re.search(r'/(XPCServices|Support|Helpers)/', path):
             return size <= 32 << 20 and not path.lower().endswith(('.png', '.car', '.loctable', '.caml'))

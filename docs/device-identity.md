@@ -1,0 +1,35 @@
+# Jesvi IOS device identity and development defaults
+
+Fresh builds seed the computer/display name **Jesvi IOS** and the DNS-safe
+local hostname **Jesvi-IOS** in the normal SystemConfiguration preferences.
+The existing init skeleton copies this seed only when the preferences file
+does not exist, preserving later user names and network configuration.
+The USB product string and diagnostic Bonjour service name use Jesvi IOS.
+
+For an existing data volume, run `/redwood/bin/device_name --set-default` as
+root. This calls configd's name APIs, commits and applies the change while
+preserving other network settings. Running without arguments only inspects.
+An entitled MobileGestalt read on the live phone confirmed UserAssignedDeviceName
+as Jesvi IOS. Unentitled apps may still receive “iPhone” under iOS name privacy;
+DeviceName is the model description and is not rewritten.
+
+The AMFI stand-in exposes read-only `security.mac.amfi.developer_mode_status`
+and `security.mac.amfi.developer_mode_resolved` as 1 from boot, reflecting the
+research kernel's existing development-code policy. This avoids asking native
+amfid to arm a hardware-backed mode that this port does not implement.
+A temporary amfid-only test made the native TrollStore status check succeed
+and installed/removed a debugging-entitled test IPA. The permanent kernel
+interface builds; post-reboot verification is tracked in the session notes.
+
+The Finder iPhone-style trust/sidebar/eject feature remains separate work.
+USB presently supplies CDC serial and Ethernet; the stock lockdownd and AFC
+executables are available, but the job recipe excludes lockdown/USB services
+and the kernel has no native device-side USB multiplexing interface. The
+lockdown launch recipe exposes TCP port 62078, which can be tested over the
+existing USB Ethernet link before changing USB descriptors or transport.
+No native Finder support is claimed by these name/development changes.
+
+The intermittent cold Safari error is deferred at the user's request. Normal
+DNS and HTTPS probes succeeded (DNS ~0.03 s; HTTPS ~0.06–0.09 s), which does
+not establish what fails in a cold WebKit process. No speculative Safari or
+network workaround has been applied.
