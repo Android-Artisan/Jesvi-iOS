@@ -1,5 +1,11 @@
 # Galaxy S20 cellular: implementation log and checklist
 
+**Latest hardware status, 2026-11-11 ~10:39:** the native UEFI M0 candidate did
+not return USB/iOS when actually selected through standalone BOOT. **Do not
+deploy this candidate as a working image.** Known-good rollback is prepared;
+the user has been asked for Download Mode. See the critical handoff at
+`sessions/codex-cellular.md` in the research root and the result section below.
+
 Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
 contains the upstream comparison, firmware/framing tools, memory audit, compiled
 loader changes, matching UEFI source, and a built Settings UI. It does not enable
@@ -366,3 +372,30 @@ Candidate/manifest/write segments live under
 `out/cellular/m0-20261111/candidate/`. No bootloader/modem/EFS partition is part
 of this test. Hardware boot/rollback results must be appended before M0 is marked
 complete. Host checks now pass **22 Python tests** plus the allocator oracle.
+
+### M0 hardware result: failed boot, rollback in progress
+
+- First attempt: wrote only the candidate recovery head through existing Log
+  access; device readback succeeded. Cold reboot returned iOS/SSH in 70 seconds,
+  same kernel and arguments. However the display pool was still `0xd3ff0000`;
+  `/log` is kernel-only and contained no new loader reservation marker. The
+  active standalone BOOT copy was still the old one. This was not an M0 pass.
+- Backed up the installed standalone BOOT prefix (2,445,312 bytes); it matched
+  the pre-test recovery prefix exactly. Candidate had the same Samsung DT
+  table and Android boot layout as the usual deployment path.
+- Second attempt: wrote the candidate's matching standalone BOOT prefix;
+  device readback succeeded. Reboot did not return USB/iOS within ~270 seconds.
+  No proof that the new loader ran; the new FD and new loader were changed
+  together, so the failing component is not isolated. No modem was started.
+- Reverting is the immediate next step. Visible Terminal watcher
+  `build/cellular-m0-rollback.py` waits for Download Mode and flashes only the
+  saved original BOOT prefix. Then restore the original recovery head through
+  the known-good loader. Do not continue experimental boots until both copies
+  are restored and iOS/USB have been verified.
+- Backup BOOT prefix: `out/cellular/m0-20261111/rollback-boot-head.bin`, SHA256
+  `5fa3cc24b57946e88a9795fac06f39bd0139ac62cae4f3df32e9520d294a2579`.
+  Original recovery head: `out/cellular/m0-20261111/candidate/rollback-head.bin`.
+  Full recovery backup: `out/cellular/m0-20261111/preinstalled-recovery.img`.
+- All firmware artifacts/logs stay ignored locally. Samsung bootloader,
+  modem/EFS/calibration partitions and iOS kernel/root/data were not modified.
+  M0 remains incomplete despite the successful host builds/tests.
