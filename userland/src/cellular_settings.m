@@ -9,7 +9,9 @@
 #include <mach-o/dyld.h>
 #include <notify.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Small declarations for the runtime API; no extracted Apple headers. */
 @interface PSSpecifier : NSObject
@@ -28,6 +30,12 @@ static NSString *const RWCellularID = @"MOBILE_DATA_SETTINGS_ID";
 static CFStringRef const RWDomain = CFSTR("com.redwood.cellular");
 static CFStringRef const RWDataKey = CFSTR("CellularDataEnabled");
 
+static void diagnostic(const char *event)
+{
+    FILE *file = fopen("/var/mobile/Library/Preferences/com.redwood.cellular-ui.log", "a");
+    if (file) { fprintf(file, "[%d] %s\n", getpid(), event); fclose(file); }
+}
+
 /* PSListController's table helpers consult its backing array as well as the
  * getter. Resolve the ivar by name, never by a private-layout offset. */
 static void store_specifiers(id controller, NSArray *items)
@@ -44,6 +52,8 @@ static void store_specifiers(id controller, NSArray *items)
 @implementation RWCellularSettingsController
 - (NSArray *)specifiers
 {
+    static dispatch_once_t page_once;
+    dispatch_once(&page_once, ^{ diagnostic("cellular-page-opened"); });
     PSSpecifier *group = [PSSpecifier preferenceSpecifierNamed:nil target:nil
         set:NULL get:NULL detail:Nil cell:0 edit:Nil];
     [group setProperty:@"Cellular service is not available yet. This setting will apply when it is ready."
@@ -80,6 +90,7 @@ static void store_specifiers(id controller, NSArray *items)
     /* A future Samsung session service consumes this preference and event.
      * No modem command or route change is implied before that service exists. */
     notify_post("com.redwood.cellular.data-changed");
+    diagnostic(value.boolValue ? "data-preference-on" : "data-preference-off");
 }
 
 - (NSString *)network:(PSSpecifier *)specifier
@@ -96,6 +107,7 @@ static void store_specifiers(id controller, NSArray *items)
 @end
 
 static NSArray *(*root_specifiers)(id, SEL);
+static Class hooked_class;
 static BOOL hooked;
 static atomic_bool install_queued;
 
@@ -134,6 +146,8 @@ static UIImage *cellular_icon(void)
 
 static NSArray *cellular_root_specifiers(id self, SEL command)
 {
+    static dispatch_once_t entered;
+    dispatch_once(&entered, ^{ diagnostic("root-specifiers-entered"); });
     NSArray *original = root_specifiers(self, command);
     if (![original isKindOfClass:NSArray.class]) return original;
     NSMutableArray *items = [original mutableCopy];
@@ -160,13 +174,17 @@ static NSArray *cellular_root_specifiers(id self, SEL command)
     [cell setProperty:cellular_icon() forKey:@"iconImage"];
     [items insertObject:cell atIndex:MIN(insert, items.count)];
     store_specifiers(self, items);
+    static dispatch_once_t row_once;
+    dispatch_once(&row_once, ^{ diagnostic("cellular-row-ready"); });
     return items;
 }
 
 static void install_root_hook(void)
 {
     if (hooked) return;
-    Class cls = objc_getClass("PSUIPrefsRootController");
+    /* iOS 16.5 uses PSUIPrefsListController for the visible iPhone root list.
+     * PSUIPrefsRootController exists too, but isn't the displayed controller. */
+    Class cls = objc_getClass("PSUIPrefsListController");
     SEL selector = @selector(specifiers);
     Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
     if (!method || method_getNumberOfArguments(method) != 2) return;
@@ -181,6 +199,8 @@ static void install_root_hook(void)
         method_setImplementation(class_getInstanceMethod(cls, selector), (IMP)cellular_root_specifiers);
     }
     hooked = YES;
+    hooked_class = cls;
+    diagnostic("menu-hook-installed");
     NSLog(@"RedwoodCellular: Settings Cellular menu installed (radio unavailable)");
     /* The first root list may already exist by the time this main-queue task
      * runs. Refresh only Settings' own root, not every preferences controller. */
@@ -208,4 +228,13 @@ __attribute__((constructor)) static void cellular_settings_init(void)
     if (strcmp(getprogname(), "Preferences")) return;
     /* PreferencesUI may load later. No UIKit/Objective-C work under dyld's lock. */
     _dyld_register_func_for_add_image(image_added);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (!hooked_class) return;
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                refresh_root(window.rootViewController, hooked_class, 0);
+            }
+        }
+    });
 }

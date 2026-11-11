@@ -39,7 +39,8 @@ Validated 2026-11-11:
 - ARM64 UEFI loader cross-compile/link passes; full UEFI image and phone boot
   pending. Matching UEFI branch/worktree: `work/g980f-uefi-cellular`, `6e75773`.
 - Cellular UI compiles with warnings as errors, is ad hoc signed, and passes
-  strict signature verification. Installer currently refuses B's phone lock.
+  strict signature verification. Installed after the normal expired-lock takeover;
+  corrected page is visible and user-confirmed. No image flash or reboot.
 
 No loader/modem runtime changes have been installed. UI deployment is recorded
 in its own checklist. Keep generated JSON/private logs outside the source tree.

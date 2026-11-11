@@ -6,6 +6,10 @@ loader changes, matching UEFI source, and a built Settings UI. It does not enabl
 a modem or publish invented registration state. UI deployment status is tracked
 separately in [cellular-ui.md](cellular-ui.md).
 
+Latest UI checkpoint: corrected `PSUIPrefsListController` hook is installed;
+the user confirmed the Cellular page on the phone. No modem/loader/UEFI runtime
+change was deployed with it.
+
 ## Isolation and ownership
 
 - Branch: `x1slte-cellular`, based on `x1slte` commit

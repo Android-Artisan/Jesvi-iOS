@@ -6,8 +6,9 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## Open (known issues)
 - S20 LTE/calls remain unimplemented. Cellular research is isolated on branch
-  `x1slte-cellular`; see `docs/cellular-s20.md`. Cellular Settings UI is built
-  separately (`docs/cellular-ui.md`). Loader/UEFI source fixes address the
+  `x1slte-cellular`; see `docs/cellular-s20.md`. Cellular Settings UI is installed
+  and user-confirmed (`docs/cellular-ui.md`), with unavailable service/call state.
+  Loader/UEFI source fixes address the
   discovered memory overlaps; 19 Python tests and 163,840 sanitized allocator
   comparisons pass, and the loader compiles. Full UEFI image and phone validation
   remain pending. No modem runtime changes have been installed or phone-tested.

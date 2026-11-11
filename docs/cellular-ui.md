@@ -1,6 +1,6 @@
 # Cellular Settings UI
 
-Status: **built and signed, installation pending the phone lock** (2026-11-11).
+Status: **installed; page visible and user-confirmed** (2026-11-11, ~10:00).
 This can be installed independently of the untested loader/UEFI memory changes.
 
 What it adds to Settings:
@@ -26,9 +26,11 @@ python3 -B tools/cellular/install-ui.py install --session YOUR_SESSION
 
 The installer requires that YOUR_SESSION already owns the research workspace's
 normal phone lock. It refuses a free lock or another session's lock and does
-not acquire, steal or extend one itself. At this checkpoint B owns the phone;
-the attempted install exited 3 before SSH/uploads. Read-only SSH confirmed
-that the tweak directory and Preferences tweak loader exist on the phone.
+not acquire, steal or extend one itself. The first attempt exited 3 while B
+owned the phone, before SSH/uploads. After B's last heartbeat (09:08:09) expired
+under the project's 45-minute rule, the normal lock tool granted codex-cellular
+the phone at 09:53. Only this tweak was installed; no reboot, firmware update,
+modem command or camera change was made.
 
 The current phone holder can install the prepared artifact using their own
 session name without merging branches, rebuilding the system image or rebooting.
@@ -56,11 +58,11 @@ Settings to unload it. The saved data preference can remain for a later install.
 - Source: `userland/src/cellular_settings.m`, an independent Objective-C dylib.
   It uses the port's existing Preferences tweak loader; no edits to the shared
   `libredwood`, Settings executable, MobileGestalt or system image.
-- Root hook: only `PSUIPrefsRootController -specifiers`. An inherited method
+- Root hook: only `PSUIPrefsListController -specifiers`. An inherited method
   receives a subclass override instead of patching `PSListController` globally.
   The hook waits for dyld images, runs on the main queue, and refreshes an
-  already-created root controller. iOS 16.5's local cache confirms these class
-  names and `PSListController`'s `_specifiers` NSArray backing ivar; it is looked
+  already-created root controller. iOS 16.5's local cache confirms
+  `PSListController`'s `_specifiers` NSArray backing ivar; it is looked
   up by name without hardcoded offsets.
 - Preference: mobile user's `com.redwood.cellular`, boolean
   `CellularDataEnabled` (default off). Change notification:
@@ -69,6 +71,23 @@ Settings to unload it. The saved data preference can remain for a later install.
   and publish real registration/call status before these static status values
   can be replaced. A preference notification alone is not a packet transport.
 - Filter restricts loading to executable `Preferences`.
+- Bounded lifecycle diagnostics in the mobile Preferences directory:
+  `com.redwood.cellular-ui.log`. It records process ID and menu/row/page/preference
+  events only; no SIM identifiers, carrier/account names or other user data.
+
+## Runtime correction and evidence
+
+The first installed version hooked `PSUIPrefsRootController`, which exists in
+this iOS build but was not the visible iPhone root. A live controller inspection
+showed `PSSplitViewController -> UINavigationController -> PSUIPrefsListController`.
+The correction hooks the displayed list class. Existing Settings was restarted
+alone, and `uiopen --url prefs:root=MOBILE_DATA_SETTINGS_ID` opened our page.
+
+Final observed process 377 emitted `menu-hook-installed`,
+`root-specifiers-entered`, `cellular-row-ready` and `cellular-page-opened`,
+and stayed running. The user then explicitly confirmed seeing Cellular Data,
+Network — No Service and Calls — Unavailable. Earlier process 313/353 logs are
+failed UI attempts, not proof of a working page. No screenshot was claimed.
 
 ## Validation checklist
 
@@ -77,10 +96,12 @@ Settings to unload it. The saved data preference can remain for a later install.
 - [x] Inspect linked frameworks and parse the executable filter plist.
 - [x] Confirm local iOS 16.5 class/backing-ivar names without committing Apple data.
 - [x] Confirm installer refuses another session's phone lock without device writes.
-- [ ] Install as phone holder; close/reopen Settings; confirm one Cellular row.
-- [ ] Open the page; verify the switch/status/footer, back navigation and no crash.
+- [x] Install as phone holder; reopen Settings; reach the corrected Cellular row.
+- [x] Open the page; process stays running; user confirms switch/status are visible.
+- [ ] Verify back navigation and preference persistence across closing/reopening.
 - [ ] Toggle, close/reopen Settings and verify preference persistence.
 - [ ] Remove/reopen and verify the normal Settings root returns.
-- [ ] Reinstall and leave the visible UI available to the user.
+- [x] Leave the corrected UI installed and visible for the user.
 
-No screenshot or runtime UI success has been claimed yet.
+LTE/calls still require the Samsung modem implementation. The visible page is
+UI progress and a saved preference, not a working cellular connection.
