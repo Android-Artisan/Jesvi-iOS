@@ -1952,7 +1952,7 @@ core_init(void)
 	usbacm_init(&acm);
 	acm.ecm = ecm_on != 0;
 	if (ecm_on) {
-		acm.strings[2] = "iOS on Galaxy S20: kernel log, console and network";
+		acm.strings[2] = "Jesvi IOS";
 	}
 	ep0_setup_start();
 	if (ep0_state != EP0_SETUP) {

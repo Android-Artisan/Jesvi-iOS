@@ -15,7 +15,7 @@
  *                             3 Download Mode (kern.redwood_menu)
  *   GET /               a line saying what this is
  *
- * Port 8080, advertised over Bonjour as "HackiOS" (_http._tcp): `dns-sd -B _http._tcp` finds it, and
+ * Port 8080, advertised over Bonjour as "Jesvi IOS" (_http._tcp): `dns-sd -B _http._tcp` finds it, and
  * ../y2s.sh wlog / wtail use it. One connection at a time; a slow client cannot hold it for long.
  */
 #include <arpa/inet.h>
@@ -324,7 +324,7 @@ main(void)
 		printf("rwlogd: port %d: %s\n", PORT, strerror(errno));
 		return 1;
 	}
-	if (DNSServiceRegister(&bonjour, 0, 0, "HackiOS", "_http._tcp", NULL, NULL, htons(PORT), 0, NULL, NULL, NULL) !=
+	if (DNSServiceRegister(&bonjour, 0, 0, "Jesvi IOS", "_http._tcp", NULL, NULL, htons(PORT), 0, NULL, NULL, NULL) !=
 	    kDNSServiceErr_NoError) {
 		printf("rwlogd: no Bonjour (mDNSResponder not running?): by address only\n");
 	}

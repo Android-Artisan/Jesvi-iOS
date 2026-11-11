@@ -14,6 +14,8 @@ PROVIDER = ('System/Library/Frameworks/FileProvider.framework/PlugIns/'
             'LocalStorageFileProvider.appex')
 HOST = 'Applications/HakiosLocalFiles.app'
 DESTINATION = HOST + '/PlugIns/LocalStorageFileProvider.appex'
+PICKERS = ('SaveToFiles', 'com.apple.DocumentManager.Service')
+PICKER_ROOT = 'System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/'
 
 
 def stage(root, executable, manifest, output):
@@ -25,12 +27,21 @@ def stage(root, executable, manifest, output):
         raise SystemExit('Local Files provider executable missing: rerun system selection/extraction from your IPSW')
     if not executable.is_file():
         raise SystemExit('LocalFilesHost missing: run tools/storage/build.sh and supply its output to prebuilt/userland')
+    for name in PICKERS:
+        if not (root / PICKER_ROOT / (name + '.appex') / name).is_file():
+            raise SystemExit('Document picker executable missing: ' + name + '; refresh the IPSW extraction')
     if destination.exists():
         raise SystemExit(f'Refusing to replace an existing staged provider: {destination}')
     # Move within sysroot, whose hardlinks were made by build.sh. Do not edit
     # Apple's hardlinked files, or the source extraction would change too.
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(destination))
+    relocations = {PROVIDER: DESTINATION}
+    for name in PICKERS:
+        old = PICKER_ROOT + name + '.appex'
+        new = HOST + '/PlugIns/' + name + '.appex'
+        shutil.move(str(root / old), str(root / new))
+        relocations[old] = new
     host = root / HOST
     shutil.copyfile(executable, host / 'LocalFilesHost')
     os.chmod(host / 'LocalFilesHost', 0o755)
@@ -54,8 +65,11 @@ def stage(root, executable, manifest, output):
     with open(manifest) as original, open(output, 'w') as updated:
         for line in original:
             fields = line.rstrip('\n').split('\t')
-            if len(fields) >= 4 and (fields[3] == PROVIDER or fields[3].startswith(PROVIDER + '/')):
-                fields[3] = DESTINATION + fields[3][len(PROVIDER):]
+            if len(fields) >= 4:
+                for old, new in relocations.items():
+                    if fields[3] == old or fields[3].startswith(old + '/'):
+                        fields[3] = new + fields[3][len(old):]
+                        break
             updated.write('\t'.join(fields) + '\n')
     print(f'Local Files: staged provider in {HOST} (one copy)')
 

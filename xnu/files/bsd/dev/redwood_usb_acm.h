@@ -129,7 +129,7 @@ usbacm_init(struct usbacm *s)
 	s->line_coding[2] = 0x01;
 	s->line_coding[6] = 8;
 	s->strings[1] = "HakiOS";
-	s->strings[2] = "HakiOS kernel log and console";
+	s->strings[2] = "Jesvi IOS";
 	s->strings[3] = "0";
 	s->strings[4] = "log";
 	s->strings[5] = "025257000001";     /* the host's end of the network function (locally administered) */
