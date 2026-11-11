@@ -68,8 +68,12 @@ Validation completed:
   growing by 8 KiB.
 
 The latest camera kernel and boot arguments were preserved for the Files
-boot-volume update. Recovery and BOOT writes were read back successfully;
-post-reboot persistence verification is pending the camera task's phone slot.
+boot-volume update. Recovery and BOOT writes were read back successfully.
+A subsequent camera reboot (13:49:46 kernel) logged the library present and
+init configuring its injection automatically; the camera task's next packed
+image also contains the updated boot volume. This confirms boot-time inclusion
+without another image change. UI and native transfer checks above were live
+checks before that reboot.
 
 ## Root causes and source
 
