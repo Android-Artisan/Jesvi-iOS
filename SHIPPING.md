@@ -5,6 +5,10 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## Open (known issues)
+- S20 LTE/calls remain unimplemented. Cellular research is isolated on branch
+  `x1slte-cellular`; see `docs/cellular-s20.md`. Offline firmware/framing checks
+  pass (17 host tests), but the memory audit finds loader/IPC and display/CP
+  overlaps. No modem runtime changes have been installed or phone-tested.
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
 - CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.
