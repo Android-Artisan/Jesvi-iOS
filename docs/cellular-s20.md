@@ -538,3 +538,26 @@ PIO path splits a logical transfer into <=64-byte packets, receives/drains
 ignored RX even for TX-only, resets/flushed FIFOs between packets, and uses no
 DMA. Preserve that wire behavior rather than assuming a continuous manual CS.
 Controller completion alone must not be called CP BOOT acceptance.
+
+
+### SPI PIO transport core (host tested; not connected to hardware)
+
+`tools/cellular/s5123-spi.h` is a freestanding callback-based engine with no
+physical MMIO access of its own. It matches board auto-CS/64-byte packets,
+mode0/8-bit/no DMA, drains RX for TX-only, waits for both packet RX and TX_DONE,
+and stops channels/packet generation/CS on every attempted-transfer exit.
+Input bounds, <=128-KiB image size, <=2.15-MHz SCLK, wire-time budget, global
+deadline, bounded reset waits and a stalled-timer poll cap are enforced. A latch
+prevents another attempt after success or failure in the same caller boot state.
+Readiness is mandatory; no current device path calls the engine.
+
+The sanitizer controller model validates exact byte order/length for 1,63,64,65,
+64496,65536,131072 bytes and timer wrap; all RX is drained and FIFO never exceeds
+64. Six failure cases cover stalled RX, missing TX_DONE, controller error,
+impossible FIFO count, stuck reset and frozen timer. Cleanup and retry refusal
+are checked, as are invalid input/rate/time/readiness paths. These are host
+transport tests, **not** CP execution, real SPI timing or firmware acceptance.
+The firmware BOOT bytes have not been transmitted to the phone.
+
+User-facing flow/comparison and remaining proof:
+[cellular-flow.md](cellular-flow.md).
