@@ -440,6 +440,89 @@ static bool cam_s20_full;
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
 void redwood_camera_s20_set_full(bool full) { cam_s20_full = full; }
 
+/*
+ * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
+ * device tree (fragment@18) puts on gpp8-0 (SCL) and gpp8-1 (SDA); its supply is VDDAF_2.8V_VT (S2MPB02 LDO16), on
+ * with the sensor's. Samsung's is-actuator-ak737x.c: CONT1 (0x02) 0x40 standby, 0x00 active, 0x20 sleep; the
+ * position is 9 bits, 0x00 = bits 8..1 and 0x01 bit 7 = bit 0; first position 250 (vendor_first_pos), 2 ms to
+ * settle; soft landing 100, 30 ms, 0, 30 ms, then sleep. Driven only from the stream thread.
+ */
+static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
+static bool cam_s20_af_ready;
+static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
+static volatile uint32_t cam_s20_af_want;
+static volatile bool cam_s20_af_pending;
+
+static bool
+cam_s20_af_w(uint8_t reg, uint8_t value)
+{
+	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
+}
+
+static bool
+cam_s20_af_set(uint32_t p)
+{
+	p = p > 511 ? 511 : p;
+	return cam_s20_af_w(0x00, (uint8_t)(p >> 1)) && cam_s20_af_w(0x01, (uint8_t)((p & 1U) << 7));
+}
+
+static bool
+cam_s20_af_up(void)
+{
+	char report[160];
+	uint8_t id = 0;
+
+	cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
+	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
+		printf("camera: front focus: its bus cannot be used (%s)\n", report);
+		return false;
+	}
+	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
+	cam_s20_wait_ms(1);
+	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
+	if (!cam_s20_af_set(250)) goto fail;
+	cam_s20_wait_ms(2);
+	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
+	cam_s20_af_ready = true;
+	cam_s20_af_pos = 250;
+	printf("camera: front focus: AK737x (id %#x) up, the lens at 250 of 511\n", id);
+	return true;
+fail:
+	printf("camera: front focus: the AK737x does not answer at 0x0c; no focus in this session\n");
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	return false;
+}
+
+static void
+cam_s20_af_down(void)
+{
+	if (!cam_s20_af_ready) return;
+	(void)cam_s20_af_set(100);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_set(0);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_w(0x02, 0x20);
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	cam_s20_af_ready = false;
+	cam_s20_af_pos = 0xffffffffU;
+}
+
+/* the lens to `position', 0 (the furthest) to 1023 as /dev/redwood-camera has it */
+void
+redwood_camera_s20_focus(uint32_t position)
+{
+	cam_s20_af_want = (position > 1023 ? 1023 : position) >> 1;
+	cam_s20_af_pending = true;
+}
+
+/* where the lens is, 0 to 1023, or 0xffffffff with no motor */
+uint32_t
+redwood_camera_s20_focus_now(void)
+{
+	uint32_t p = cam_s20_af_pos;
+	return p == 0xffffffffU ? p : p << 1;
+}
+
 void
 redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines)
 {
@@ -1857,6 +1940,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (cam_s20_stream_fn && cam_s20_optical_dma) {
 		volatile uint8_t *s_cmn = cam_s20_optical_dma + 0x2400, *s_vc = cam_s20_optical_dma + 0x2000;
 		uint32_t idle = 0;
+		(void)cam_s20_af_up();
 		for (;;) {
 			uint32_t st = cam_s20_rd(s_cmn, 8);
 			/* DMA_CMN status (is-hw-csi-v5_3.h): bit 4 VC0 frame start, bit 8 VC0 frame end (write 1 to clear).
@@ -1898,12 +1982,18 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 					(void)cam_3j1_write16(&bus, 0x0204, (uint16_t)eg);
 					(void)cam_3j1_write8(&bus, 0x0104, 0);
 				}
+				if (cam_s20_af_pending && cam_s20_af_ready) {
+					uint32_t want = cam_s20_af_want;
+					cam_s20_af_pending = false;
+					if (want != cam_s20_af_pos && cam_s20_af_set(want)) cam_s20_af_pos = want;
+				}
 				if (!more) break;
 			} else {
 				if (++idle > 2000) { printf("camera: S20 stream: no frame for 2 s, stopping\n"); break; }
 				cam_s20_wait_ms(1);
 			}
 		}
+		cam_s20_af_down();
 		/* stop memory output before the sensor goes down, as the bounded test does */
 		cam_s20_wr(cam_s20_optical_dma, 0x2000, 0);
 		cam_s20_wr(cam_s20_optical_dma, 0x2414, 1);

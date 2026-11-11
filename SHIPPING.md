@@ -4,6 +4,15 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — front camera autofocus, steadier exposure, anti-flicker, orientation
+- Autofocus: the front lens motor (AK7374, ID 0x0e at 0x0c on HSI2C24, gpp8-0 SCL / gpp8-1 SDA, x1slte DT fragment@18) is
+  driven from `redwood_camera_s20.c` (Samsung's is-actuator-ak737x.c sequence: standby, ID, first position 250, active;
+  soft landing on stop). libredwood-media's contrast AF and tap-to-focus move it through REDWOOD_CAMERA_FOCUS.
+- AE: frames are tagged with the exposure asked two frames earlier (when the sensor applies it), so AE no longer
+  overshoots and swings (seen in photo mode); 50 Hz anti-flicker exposure steps (`camera_isp.c`); front camera turned
+  180 degrees in libredwood-media (user: upside down and mirrored without it).
+- Tested (kernel 22:03:35): kernel log "front focus: AK737x (id 0xe) up"; `camera_test raw 60`: 60 of 60 at 3648x2736.
+
 ## 2026-11-11 — front camera at full 3648x2736, 30 frames/s, no tearing
 - The stream runs Samsung's `3648x2736_30fps` mode with the FULL MIPI PLL (`cam_s20_full=` **1**; 0 = binned 1824x1368).
   Double-buffered 12.5 MB frames take two adjacent display-pool slots (`MiniIOSurface.cpp`).

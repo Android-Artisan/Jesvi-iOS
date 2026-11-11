@@ -3784,6 +3784,11 @@ fake_session(void)
  */
 extern bool redwood_camera_s20_stream(bool (*fn)(const volatile uint8_t *, uint32_t, uint32_t, uint32_t), char *out, size_t cap);
 extern void redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines);
+extern void redwood_camera_s20_focus(uint32_t position);
+extern uint32_t redwood_camera_s20_focus_now(void);
+/* what was asked of the sensor, frame by frame: it takes an exposure at the second frame after (a frame tagged with
+ * the new values at once had AE overshoot and swing, 2026-11-11) */
+static struct { uint32_t lines, gain, frame_lines; } s20_sent[3];
 
 static bool
 s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t in_stride)
@@ -3803,6 +3808,16 @@ s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_
 		ios_now.frame_lines = frame_lines;
 		redwood_camera_s20_exposure(lines, gain, frame_lines);
 	}
+	if (ios_ask.focus_pending) {
+		ios_ask.focus_pending = false;
+		redwood_camera_s20_focus(ios_ask.focus);
+	}
+	/* this frame was taken with what was asked two frames ago */
+	s20_sent[0] = s20_sent[1];
+	s20_sent[1] = s20_sent[2];
+	s20_sent[2].lines = ios_now.lines;
+	s20_sent[2].gain = ios_now.gain;
+	s20_sent[2].frame_lines = ios_now.frame_lines;
 	for (int i = 0; i < RING; i++) {
 		if (place[i].state != PLACE_READING && (p < 0 || place[i].sequence < place[p].sequence)) {
 			p = i;
@@ -3832,9 +3847,10 @@ s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_
 	place[p].state = PLACE_READY;
 	place[p].sequence = ++ios_frames_done;
 	place[p].time = mach_absolute_time();
-	place[p].exposure_lines = ios_now.lines;
-	place[p].gain = ios_now.gain;
-	place[p].frame_lines = ios_now.frame_lines;
+	place[p].exposure_lines = s20_sent[0].lines;
+	place[p].gain = s20_sent[0].gain;
+	place[p].frame_lines = s20_sent[0].frame_lines;
+	af_position = redwood_camera_s20_focus_now();
 	lck_mtx_unlock(&ios_lock);
 	wakeup(&ios_frames_done);
 	return more;
@@ -3868,9 +3884,15 @@ s20_session(void)
 	ios_last_read = ios_ms();
 	lck_mtx_unlock(&ios_lock);
 	redwood_camera_s20_exposure(lines, gain, frame_lines);
+	for (int i = 0; i < 3; i++) {
+		s20_sent[i].lines = lines;
+		s20_sent[i].gain = gain;
+		s20_sent[i].frame_lines = frame_lines;
+	}
 	say("camera: the frames for iOS: the S20's front SAK3J1, %ux%u\n", ios_mode->width, ios_mode->height);
 	report[0] = 0;
 	ok = redwood_camera_s20_stream(s20_frame, report, sizeof(report));
+	af_position = REDWOOD_CAMERA_NO_FOCUS;
 	report[400] = 0;
 	say("camera: S20 stream ended (%s): %s\n", ok ? "frames came" : "NO FRAMES", report);
 	lck_mtx_lock(&ios_lock);
