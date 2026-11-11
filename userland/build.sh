@@ -328,6 +328,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
 			-o obj/libredwood-finder.dylib src/inject_finder.c
 		$DYN -o obj/LocalFilesHost src/local_files_host.c
+		$DYN -fobjc-arc -framework Foundation -o obj/register_finder_host src/register_finder_host.m
+		${LDID:-ldid} -S../tools/storage/register-finder-host.entitlements obj/register_finder_host
 		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
@@ -495,6 +497,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
 	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
 	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
+	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
@@ -593,6 +596,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist root/LaunchDaemons/
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
+	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
 	[ -x ../jb/root/var/jb/usr/sbin/sshd ] && [ -f root/var/root/.ssh/authorized_keys ] && cp com.redwood.sshd.plist root/LaunchDaemons/
 	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
 	VOLUME=""

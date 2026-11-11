@@ -192,3 +192,20 @@ Final Finder UI check remains unresolved. The user corrected an accidental
 confirmation: the device/file visibility was not confirmed after the refresh.
 Native document-transfer tests pass, but this does not establish Finder UI
 visibility. Backup/media controls and storage categories also remain limits.
+
+
+Follow-up UI diagnosis: Finder's sidebar returned after restarting the Mac's
+AMPDeviceDiscoveryAgent and Finder. The Files list still excluded the system
+provider host. Native MCM bundle-container registration reclassified the same
+host as User, preserving its data/plugin containers. The filtered sharing query
+changed from zero apps to one; the user then confirmed the app and Start Here.txt
+appear in Finder. The host remains hidden on the phone's home screen.
+
+Default builds include `register_finder_host` and its launchd job. It copies the
+system host once into a native bundle container and registers it with native
+LaunchServices. Existing app data is never copied or replaced. The helper exits
+after registration; launchd retries failures at a 30-second throttle during
+service startup. Existing copied bundles are retained, not overwritten on image
+updates. The live helper and native registration were tested; the new startup
+job has not yet had a separate reboot test. Grey backup/media and category-bar
+limitations remain unchanged.

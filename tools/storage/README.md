@@ -126,3 +126,11 @@ Safari Downloads into that folder. Copy files by dragging onto the app row.
 The Sync button is separate. See `tools/usb/README.md` for the unprotected local
 Finder compatibility policy and its pairing requirements. Grey backup/media
 controls and category storage accounting are not resolved by the Files fix.
+
+
+Finder filters the sharing list to user apps. `register_finder_host` uses native
+MCM/LaunchServices to register a containerized copy of the hidden provider host
+under its existing identifier, preserving data/plugin containers. The default
+launchd job runs this once per boot and retries startup failures. Both app and
+file visibility were confirmed after this registration. No uicache executable
+or jailbreak bootstrap is required by the helper.
