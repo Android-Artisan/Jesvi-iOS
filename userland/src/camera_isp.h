@@ -73,6 +73,7 @@ struct isp {
 	float           digital;        /* more gain, for what AE cannot reach with the sensor's */
 	float           zoom;           /* the picture is the middle 1/zoom of the sensor each way (1: the whole of it) */
 	bool            turned;         /* the picture turned half round (a sensor mounted the other way up) */
+	bool            mirror;         /* ... and/or mirrored left to right (each line from its end) */
 	float           ccm[3][3];      /* the colour matrix, camera RGB (white balanced) to linear sRGB; rows sum to 1 */
 	struct isp_lsc  lsc;
 	uint8_t         gamma[4096];    /* linear (959 above black is 3836) to 8 bits, sRGB's curve */

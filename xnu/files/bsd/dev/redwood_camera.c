@@ -4400,7 +4400,8 @@ redwood_camera_init(void)
 		fake = true;
 		s20_real = true;
 		s20_rotate = false;
-		fake_n = 0;
+		/* 2 (libredwood-media's turn plus a mirror): what the user confirmed right, preview and photos, 2026-11-12 */
+		fake_n = 2;
 		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
 		redwood_camera_s20_turn = (int)fake_n;
 		fake_n = 1;

@@ -267,3 +267,25 @@ userland `userland/src/camera_device.c` (capture device in mediaserverd), `camer
 - Boot hang 18:26: a kernel with a read-only cached DMA mapping + `dc ivac`, flashed together with a root.apfs rebuilt by
   hand (`mkapfs.py ... redwood=root`); cause not separated. Rules: new kernel features that run at camera open stay OFF at
   boot (mediaserverd opens the camera during startup); never flash a hand-rebuilt root.apfs together with a kernel change.
+
+## Front camera status 2026-11-12 (session B) — what works, what is next
+
+Works (user verified in Camera.app): live preview at 30 fps from the full 3648x2736 sensor mode, photos save, correct
+orientation with `cam_turn=2` (default from kernel 04:36:50 on; live: `tools/poke 'cam.turn 2'`, then switch cameras or
+reopen the app — it is read at stream start), autofocus (AK7374), no banding (50 Hz anti-flicker), stable exposure.
+
+Open, in priority order:
+- [ ] **Video recording = empty file (0x0, 36 bytes).** Cause found: this iOS image has only Apple's HARDWARE encoders
+  (`/System/Library/VideoEncoders/AppleVideoEncoder.bundle`: "Apple H.264 (HW)", "Apple HEVC (HW)") which need the
+  iPhone's AVE chip; the S20 has none. Needs our own VideoToolbox encoder (software H.264, e.g. OpenH264 BSD-licensed,
+  at 1080p30 on the A76/M5 cores; or a Mali GPU encoder later), registered so VTCompressionSession picks it.
+- [ ] **Video/panorama preview slow:** libredwood-media's CPU ISP renders every frame at the video format's size
+  (3840x2160 for the front camera's "Video-30"). Move debayer/colour/scale to the GPU (Metal works: RedwoodMetal) or
+  give the graph smaller buffers; also pick the binned 1824x1368 sensor mode for video.
+- [ ] **Microphone in video** (after the encoder).
+- [ ] **Photo save is slow** (~0.4 s ISP + HEIC encode on CPU): GPU ISP, threads.
+- [ ] **Front camera reports 7 MP** (iPhone X front format 3088x2320 in camera_device.c `cameras[]`); the sensor is 10 MP.
+  Changing the format must still match an entry of CMCapture's D22 AVCaptureSession.plist.
+- [ ] **Flash** for the front camera = iOS screen flash (FlashMode is "set (not used)" in camera_device.c).
+- [ ] Colour matrix / lens shading tuning for SAK3J1 (still none: "no colour tuning for the ov16a1q"), denoise/sharpen.
+- [ ] The "Back Camera" button shows the front sensor until the rear cameras are brought up.

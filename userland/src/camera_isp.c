@@ -525,7 +525,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			if (isp->lsc.on) {
 				lsc_at(isp, cells_w > 1 ? (float)cx0 / (cells_w - 1) : 0, v_at, gains);
 			}
-			pixel(isp, &p, c[0] * gains[0], c[1] * gains[1], c[2] * gains[2], rgb + 3 * (isp->turned ? width - 1 - x : x));
+			pixel(isp, &p, c[0] * gains[0], c[1] * gains[1], c[2] * gains[2], rgb + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x));
 		}
 		return;
 	}
@@ -545,7 +545,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		if (isp->lsc.on) {
 			lsc_at(isp, cells_w > 1 ? (float)cx / (cells_w - 1) : 0, v_pos, gains);
 		}
-		pixel(isp, &p, v[r] * gains[0], g * 0.5f * gains[1], v[b] * gains[2], rgb + 3 * (isp->turned ? width - 1 - x : x));
+		pixel(isp, &p, v[r] * gains[0], g * 0.5f * gains[1], v[b] * gains[2], rgb + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x));
 	}
 }
 
@@ -822,7 +822,7 @@ isp_render_still_nv12(const struct isp *isp, const struct redwood_camera_frame *
 				sx0 = sx0 > fw - 1 ? fw - 1 : sx0;
 				sx1 = sx0 + 1 > fw - 1 ? fw - 1 : sx0 + 1;
 				tx = sx < (float)sx0 ? 0 : sx - sx0;
-				uint8_t *px = o + 3 * (isp->turned ? width - 1 - x : x);
+				uint8_t *px = o + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x);
 
 				for (int c = 0; c < 3; c++) {
 					float top = a[3 * sx0 + c] + tx * (a[3 * sx1 + c] - a[3 * sx0 + c]);

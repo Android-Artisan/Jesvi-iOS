@@ -4,6 +4,11 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — front camera orientation default (`cam_turn=2`)
+- User-confirmed orientation (preview and photos): libredwood-media's turn plus a mirror; default from boot now
+  (`cam_turn=` **2**), live via `tools/poke 'cam.turn N'` (read at stream start). Built (kernel 04:36:50), not flashed yet
+  (phone with codex-cellular).
+
 ## 2026-11-11 — front camera autofocus, steadier exposure, anti-flicker, orientation
 - Autofocus: the front lens motor (AK7374, ID 0x0e at 0x0c on HSI2C24, gpp8-0 SCL / gpp8-1 SDA, x1slte DT fragment@18) is
   driven from `redwood_camera_s20.c` (Samsung's is-actuator-ak737x.c sequence: standby, ID, first position 250, active;

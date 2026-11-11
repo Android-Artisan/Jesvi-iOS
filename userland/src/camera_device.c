@@ -1390,8 +1390,11 @@ worker(void *context)
 			/* the kernel's say (kern.redwood.camera_turn, the S20): bit 0 turns the front camera's pictures half round */
 			int turn = 0;
 			size_t len = sizeof(turn);
-			if (s->camera->sensor == 2 && sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0 && (turn & 1)) {
-				isp.turned = !isp.turned;
+			isp.mirror = false;
+			if (s->camera->sensor == 2 && sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0) {
+				if (turn & 1) isp.turned = !isp.turned;         /* bit 0: half round */
+				if (turn & 2) isp.mirror = true;                 /* bit 1: left to right */
+				say("front camera orientation: turn %d (turned %d, mirrored %d)", turn, isp.turned, isp.mirror);
 			}
 		}
 		if (isp_ae(&isp, f, &st, &c)) {
