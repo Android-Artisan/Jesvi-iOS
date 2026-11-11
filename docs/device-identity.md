@@ -17,9 +17,11 @@ The AMFI stand-in exposes read-only `security.mac.amfi.developer_mode_status`
 and `security.mac.amfi.developer_mode_resolved` as 1 from boot, reflecting the
 research kernel's existing development-code policy. This avoids asking native
 amfid to arm a hardware-backed mode that this port does not implement.
-A temporary amfid-only test made the native TrollStore status check succeed
-and installed/removed a debugging-entitled test IPA. The permanent kernel
-interface builds; post-reboot verification is tracked in the session notes.
+A temporary amfid-only test first verified the cause. The permanent kernel
+then booted with both OIDs equal to 1, no temporary amfid injection, and the
+native TrollStore check returning 0. A debugging-entitled test IPA installed
+with exit 0 after that reboot and was removed. Developer Mode therefore needs
+no per-boot toggle in this port.
 
 The Finder iPhone-style trust/sidebar/eject feature remains separate work.
 USB presently supplies CDC serial and Ethernet; the stock lockdownd and AFC
@@ -33,3 +35,13 @@ The intermittent cold Safari error is deferred at the user's request. Normal
 DNS and HTTPS probes succeeded (DNS ~0.03 s; HTTPS ~0.06–0.09 s), which does
 not establish what fails in a cold WebKit process. No speculative Safari or
 network workaround has been applied.
+
+## Native Finder feasibility probe
+
+The stock lockdownd was temporarily loaded with a USB-address-only listener,
+no keepalive/panic-on-crash policy, and logging. QueryType over TCP 62078 was
+reset. Its own logs identify the missing `IOUSBDeviceController`, and explicitly
+reject the unpaired Wi-Fi-style connection. The temporary job was then unloaded.
+No native pairing support or Finder device entry is enabled by default.
+The next transport work is a device-side USB mux/controller bridge; exposing
+TCP alone cannot substitute for the initial USB trust/pairing path.
