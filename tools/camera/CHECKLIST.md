@@ -289,3 +289,20 @@ Open, in priority order:
 - [ ] **Flash** for the front camera = iOS screen flash (FlashMode is "set (not used)" in camera_device.c).
 - [ ] Colour matrix / lens shading tuning for SAK3J1 (still none: "no colour tuning for the ov16a1q"), denoise/sharpen.
 - [ ] The "Back Camera" button shows the front sensor until the rear cameras are brought up.
+
+### Video encoder plan (2026-11-12, session B) — reverse-engineered VideoToolbox encoder interface
+From `/System/Library/VideoEncoders/AppleVideoEncoder.bundle/AppleVideoEncoder` (each slot logs "ENTER AVE_H264<name>"):
+- Factory: `OSStatus create(FourCharCode codec, CFAllocatorRef, CMBaseObjectRef *out)` → `CMDerivedObjectCreate(alloc,
+  &vtable, VTVideoEncoderGetClassID(), out)`; vtable = { 0, &baseClass, &encoderClass }.
+- Base class (version 1): [1] derived storage size, [3] Invalidate, [4] Finalize, [6] CopyProperty(obj,key,alloc,out),
+  [7] SetProperty(obj,key,value).
+- Encoder class (version 3): [1] StartSession(enc, VTEncoderSessionRef, codecType, CMVideoDimensions packed in x3),
+  [2] EncodeFrame(enc, token, CVPixelBuffer, CMTime *pts, CMTime *dur, CFDictionary frameProps, VTEncodeInfoFlags *),
+  [3] CompleteFrames(enc, CMTime until), [4] CopySupportedPropertyDictionary(enc, CFDictionaryRef *), [5]
+  SetProperties(enc, CFDictionary), [7] PrepareToEncodeFrames(enc), [8] BeginPass, [9] EndPass, [17-20] tiles.
+- Registration: `VTRegisterVideoEncoderWithInfo('avc1', infoDict, factory)` (AVE calls it the same way).
+- Output: `VTEncoderSessionEmitEncodedFrame(session, token, status, infoFlags, CMSampleBuffer)`; input format via
+  `VTEncoderSessionSetPixelBufferAttributes`; format description from SPS/PPS
+  (`CMVideoFormatDescriptionCreateFromH264ParameterSets` or `VTEncoderSessionCreateVideoFormatDescription`).
+- Engine: OpenH264 (BSD) built for iOS arm64, NV12 → I420, Annex-B → AVCC. Registered from libredwood-media in
+  mediaserverd. Camera.app must record H.264 (Settings → Camera → Formats → Most Compatible) until there is an HEVC one.
