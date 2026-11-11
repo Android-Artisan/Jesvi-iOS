@@ -4,6 +4,17 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-11 — live front camera for iOS (`cam=5 cam_s20=1`)
+- `/dev/redwood-camera` now serves the S20's real front SAK3J1 instead of the chart: `redwood_camera_s20.c` keeps the
+  proven sequence running (WDMA1 alternates two buffers over its 32 slots), `redwood_camera.c` `s20_session()` packs each
+  frame (RAW10, turned 180 degrees: the module is mounted upside down; `cam_s20_rot=0` = as sent) into the ring the iOS
+  bridge reads. Exposure/gain/frame length from the userland AE reach the sensor (0x0340/0x0202/0x0204, 0x20 = 1x).
+- `x1slte.cmdline`: `cam_fake=1` replaced by `cam_s20=1` (`cam_fake=1` still gives the chart).
+- Tested (kernel 13:56:21): `camera_test raw 45` on the phone: 45 of 45 frames, AE converges (32 ms, 9x indoors), white
+  balance R 1.27 B 1.84, Bayer GB/RG after the turn; user saw live frames in Camera.app (before the turn: upside down).
+- Open: about 15 frames/s (packing reads the write-combined DMA mapping), no colour matrix/lens shading file for this
+  sensor, photo save and rear cameras not verified yet.
+
 ## 2026-11-11 — front camera link works: first real sensor frame under XNU
 - **Root cause of "sensor programs, zero CSI packets":** the camera PMIC (S2MPB02) supplies BUCK1 (1.3 V), buck-boost
   (3.5 V) and LDO18 (3.3 V) are always-on/boot-on in Samsung's x1slte device tree but off after S-Boot; XNU never

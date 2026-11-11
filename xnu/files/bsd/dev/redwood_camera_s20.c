@@ -410,12 +410,46 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
     NULL, 0, cam_s20_frame_sysctl, "S", "last S20 diagnostic frame, RWCAM001, root only");
 
 
+/*
+ * Continuous front-camera stream for /dev/redwood-camera (B, 2026-11-11). The bounded optical DMA test below is the
+ * proven path; with a frame callback set it does not stop at the first frame: WDMA1 alternates between two buffers
+ * (its 32 frame-pointer slots, even/odd) and every finished frame is handed to the callback until it returns false.
+ */
+typedef bool (*redwood_s20_frame_fn)(const volatile uint16_t *pixels, uint32_t width, uint32_t height);
+static redwood_s20_frame_fn cam_s20_stream_fn;
+static const volatile uint16_t *cam_s20_stream_buf[2];
+static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
+static volatile bool cam_s20_exp_pending;
+static uint32_t cam_s20_stream_frames, cam_s20_stream_errors;
+
+void
+redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines)
+{
+	cam_s20_exp_lines = lines; cam_s20_exp_gain = gain; cam_s20_exp_frame = frame_lines;
+	cam_s20_exp_pending = true;
+}
+
+static void cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap);
+bool
+redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
+{
+	uint64_t args[2] = { 1, 14 };
+	if (fn == NULL || cam_s20_stream_fn != NULL) return false;
+	cam_s20_stream_frames = cam_s20_stream_errors = 0;
+	cam_s20_stream_fn = fn;
+	cam_s20_dma_pattern(args, 2, out, cap);
+	cam_s20_stream_fn = NULL;
+	return cam_s20_stream_frames != 0;
+}
+
 static void
 cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	const bool optical = n > 0 && v[0] == 1;
 	const uint32_t width = optical ? 1824 : 320, height = optical ? 1368 : 240, guard = 16384;
-	const uint32_t bytes = width * height * 2, total = (bytes + 2 * guard + guard - 1) & ~(guard - 1);
+	const bool stream = optical && cam_s20_stream_fn != NULL;
+	const uint32_t bytes = width * height * 2;
+	const uint32_t total = ((stream ? 2 * bytes + 3 * guard : bytes + 2 * guard) + guard - 1) & ~(guard - 1);
 	char sensor_report[4096] = "{}";
 	uint64_t sensor_mode = n > 1 ? v[1] : 2;
 	bool exported = false, sensor_started = false;
@@ -502,7 +536,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	cam_s20_wr(vc, 4, (vc_save[1] & ~0x7fU) | 6U); /* 2D unsigned RAW10 in 16 bits */
 	cam_s20_wr(vc, 8, 0); cam_s20_wr(vc, 12, 0);
 	cam_s20_wr(vc, 0xa4, width);
-	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, (uint32_t)(phys + guard));
+	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, (uint32_t)(phys + guard + ((stream && (i & 1)) ? bytes + guard : 0)));
+	cam_s20_stream_buf[0] = (const volatile uint16_t *)((uint8_t *)buffer + guard);
+	cam_s20_stream_buf[1] = (const volatile uint16_t *)((uint8_t *)buffer + guard + bytes + guard);
 	cam_s20_wr(vc, 0xb0, ~0U); /* all 32 frame pointers valid */
 	cam_s20_wr(dma, 0x24, 0x00804640U); /* Samsung's horizontal blanking */
 	cam_s20_wr(dma, 0x28, (height << 16) | width);
@@ -543,16 +579,28 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		phase = "DMA stop not acknowledged; buffer retained";
 		goto report;
 	}
+	if (stream) {
+		/* three guards: before, between and after the two frames */
+		for (i = 0; i < guard; i++) {
+			if (((volatile uint8_t *)buffer)[i] != 0xa5) guard_bad++;
+			if (((volatile uint8_t *)buffer)[guard + bytes + i] != 0xa5) guard_bad++;
+			if (((volatile uint8_t *)buffer)[2 * guard + 2 * bytes + i] != 0xa5) guard_bad++;
+		}
+		changed = cam_s20_stream_frames;
+		ended = cam_s20_stream_frames != 0;
+		irq &= ~0x01101000U;
+	} else {
 	for (i = 0; i < bytes; i++) if (((volatile uint8_t *)buffer)[guard + i] != 0xa5) changed++;
 	for (i = 0; i < total; i++) if ((i < guard || i >= guard + bytes) &&
 	    ((volatile uint8_t *)buffer)[i] != 0xa5) guard_bad++;
+	}
 	for (i = 0; i < bytes / 2; i++) {
 		uint16_t pixel = ((volatile uint16_t *)((uint8_t *)buffer + guard))[i];
 		if (pixel < lo) lo = pixel;
 		if (pixel > hi) hi = pixel;
 	}
 	phase = guard_bad ? "DMA guard overwritten" : (ended && changed && !err && !(irq & 0x01101000U) ? "frame captured" : "no clean DMA frame");
-	if (ended && changed && !guard_bad && !err && !(irq & 0x01101000U) && hi <= 1023)
+	if (!stream && ended && changed && !guard_bad && !err && !(irq & 0x01101000U) && hi <= 1023)
 		exported = cam_s20_save_frame((volatile uint16_t *)((uint8_t *)buffer + guard), width, height, optical);
 	/* No pending transfer remains, so old addresses and the pool slot are safe to restore. */
 	for (i = 0; i < 32; i++) cam_s20_wr(vc, 0x10 + i * 4, addr_save[i]);
@@ -1751,6 +1799,43 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 	/* CSIS v5.3 FRM_CNT_CH0 is 0x0500 (v5.2 used 0x0100). */
 	before = cam_s20_rd(csi, 0x0500);
+	if (cam_s20_stream_fn && cam_s20_optical_dma) {
+		volatile uint8_t *s_cmn = cam_s20_optical_dma + 0x2400, *s_vc = cam_s20_optical_dma + 0x2000;
+		uint32_t idle = 0;
+		for (;;) {
+			uint32_t st = cam_s20_rd(s_cmn, 8);
+			if (st & (1U << 8)) {
+				uint32_t ptr = (cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU;
+				bool more;
+				cam_s20_wr(s_cmn, 8, st & 0x01111110U);
+				if (st & 0x01101000U) cam_s20_stream_errors++;
+				if (cam_s20_stream_frames < 6)
+					printf("camera: S20 stream frame %u: dma status %#x, active slot %u\n", cam_s20_stream_frames, st, ptr);
+				/* At frame end the active slot is the one just finished (it advances at the next frame start; a
+				 * skipped frame moves it by two): even slots are buffer 0, odd ones buffer 1. */
+				more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 1824, 1368);
+				cam_s20_stream_frames++;
+				idle = 0;
+				if (cam_s20_exp_pending) {
+					uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
+					cam_s20_exp_pending = false;
+					/* SMIA group hold: frame length, coarse integration, analog gain (0x20 = 1x) */
+					(void)cam_3j1_write8(&bus, 0x0104, 1);
+					(void)cam_3j1_write16(&bus, 0x0340, (uint16_t)ef);
+					(void)cam_3j1_write16(&bus, 0x0202, (uint16_t)el);
+					(void)cam_3j1_write16(&bus, 0x0204, (uint16_t)eg);
+					(void)cam_3j1_write8(&bus, 0x0104, 0);
+				}
+				if (!more) break;
+			} else {
+				if (++idle > 2000) { printf("camera: S20 stream: no frame for 2 s, stopping\n"); break; }
+				cam_s20_wait_ms(1);
+			}
+		}
+		/* stop memory output before the sensor goes down, as the bounded test does */
+		cam_s20_wr(cam_s20_optical_dma, 0x2000, 0);
+		cam_s20_wr(cam_s20_optical_dma, 0x2414, 1);
+	} else
 	for (i = 0; i < (cam_s20_optical_dma ? 5000U : 500U); i++) {
 		uint32_t status = cam_s20_rd(csi, 0x0700);
 		phy_status_or |= status;
