@@ -4400,8 +4400,10 @@ redwood_camera_init(void)
 		fake = true;
 		s20_real = true;
 		s20_rotate = false;
-		/* 5 = 4 (absolute, both cameras) | 1 (half turn), no mirror: from the raw frame of 2026-11-12 */
-		fake_n = 5;
+		/* 6 = 4 (absolute, both cameras) | 2 (mirror: the line reversed). The raw frame (2026-11-12) has the scene's
+		 * top along the sensor's lines, so reversing each line fixes up and down; the half turn (5) also swapped
+		 * left and right (user: "sides inverted"). */
+		fake_n = 6;
 		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
 		redwood_camera_s20_turn = (int)fake_n;
 		fake_n = 1;

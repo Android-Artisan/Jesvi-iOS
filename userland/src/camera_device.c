@@ -36,6 +36,7 @@
 #include <IOSurface/IOSurfaceRef.h>
 #include <dispatch/dispatch.h>
 #include <Block.h>
+#include <objc/runtime.h>
 #include <dlfcn.h>
 #include <sys/sysctl.h>
 #include <errno.h>
@@ -726,12 +727,19 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 				CFTypeRef h = CFGetTypeID(values[i]) == CFDictionaryGetTypeID() ?
 				    CFDictionaryGetValue(values[i], CFSTR("PixelBufferHandler")) : NULL;
 
-				/* (a block: copied, as a block must be to outlive its caller -- CFRetain kept a stack block's
-				 * address and a later frame called freed memory: SIGBUS in mediaserverd, 2026-11-12) */
+				/* Only a block is a handler: the graph also sends other objects here (kCFNull when it takes one
+				 * away), and one of those kept and later called as a block was mediaserverd's SIGBUS; copying it
+				 * as a block was the next one's SIGSEGV (2026-11-12). */
+				const char *cls = h != NULL ? object_getClassName((id)h) : NULL;
+				bool is_block = cls != NULL && strstr(cls, "Block") != NULL;
+
+				if (h != NULL && !is_block) {
+					say("stream: %s's PixelBufferHandler is a %s, not a block: no handler", out->name, cls ? cls : "?");
+				}
 				if (out->handler != NULL) {
 					_Block_release(out->handler);
 				}
-				out->handler = h != NULL ? (void *)_Block_copy(h) : NULL;
+				out->handler = is_block ? (void *)_Block_copy(h) : NULL;
 			}
 		}
 		free(keys);
