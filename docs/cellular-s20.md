@@ -295,3 +295,74 @@ bash tools/cellular/build-ui.sh
 Use the matching full UEFI build plus this branch's loader for future modem
 tests. The standalone compiled loader does not retrofit firmware reservations
 into the currently installed UEFI. Current UI installation is independent.
+
+## Native UEFI build and first hardware baseline — 2026-11-11
+
+The full matching UEFI FD now **builds locally on the Mac**, pinned Mu-Silicium
+`4cba43c9` in isolated `work/cellular-mu`. Main source checkouts are untouched.
+The normal Stuart update failed because NuGet requires Mono and the prebuilt
+Mu-Basetools package has no macOS ARM64 build. Native BaseTools C compilation
+(`HOST_ARCH=AARCH64`) succeeds, so neither a Linux VM nor those binary packages
+are needed. Direct EDK2 `build.py` using Apple clang, Zig's LLVM library/linker
+tools and Python 3.12 built the FD in **18 seconds** (10:15:57). FD size 2 MiB;
+compressed FV uses `0x7b518`, leaving the embedded payload slot free.
+
+Local, ignored build scripts and logs: `build/cellular-basetools-native.sh`,
+`build/cellular-uefi-build-native.sh`, corresponding `.log`/`.exit` files.
+Python/UV dependencies are isolated under `build/cellular-*`; shell/default
+Python and other agents' toolchains were not changed. All six top-level
+submodules match the pinned revision. An unnecessary recursive download of
+OpenSSL unit-test submodules was stopped; only the isolated fetch process tree
+was terminated. Sources already fetched were retained.
+
+At 10:10, `tools/cellular/s5123-gpio.py --read` performed six `r PA 3` commands
+on documented CMGP CON/DAT/PUD registers through the existing kernel. It needs
+the phone lock, accepts only six reviewed bank bases, times out and stops on
+an error, and never changes a GPIO or reads an unclocked SPI/PCIe block.
+Private evidence: `logs/cellular/gpio-20261111-101006-365488/report.json`.
+
+| Signal | Function | Physical level | Pull |
+| --- | --- | --- | --- |
+| reset_n (gpm9-0) | input | 1 | down |
+| power_on (gpm20-0) | input | 0 | down |
+| pda_active (gpm25-0) | input | 0 | down |
+| phone_active (gpm28-0) | input | 0 | down |
+| cp_wakeup (gpm30-0) | input | 1 | up |
+| ps_hold (gpm31-0) | input | 1 | up |
+
+All six reads succeeded and iOS/SSH stayed up. Input highs with pull-ups do not
+prove CP execution; no SIM, registration or modem-boot claim follows. This
+completes the GPIO baseline portion of M1, not its clock/SPI portion.
+
+SPI16 facts resolved from the final overlay and CAL source:
+
+- Use `__symbols__/usi_16` at **`0x10721048`**, not the differently indexed
+  `aliases/usi16` (`0x10721028`). Fragment 68 sets UART, but later fragment 131
+  overrides the same `usi_16` to SPI. Do not stop at the earlier overlay.
+- CMU_PERIC1 is `0x10700000`: USI16 mux `+0x690` (source-select bit 4),
+  divider `+0x1820` (4 bits), IP gate `+0x20fc`, Q-channel `+0x3070`.
+- Samsung's SPI code explicitly uses IP clock = four times SCLK. CP BOOT's
+  max SCLK is 2.15 MHz. Its CAL LUT supports 8.6 MHz IP using the 26-MHz
+  oscillator path and divider 3 (register value 2), unlike the fast 400-MHz
+  path used by sensor SPI. These remain source facts, not measured clocks.
+
+### Prepared M0 boot test
+
+The installed recovery image was backed up over SSH to
+`out/cellular/m0-20261111/preinstalled-recovery.img`. It is 69,009,408 bytes,
+byte-for-byte identical to the current main recovery artifact; kernel/root tail
+also matches. AVB signature and recovery hash verified with the existing AOSP
+test key. The phone remains on its existing kernel at preparation time.
+
+`tools/cellular/prepare-m0.py` builds a candidate from that backup, changing
+only the UEFI FD, the embedded loader and required Android/AVB hashes. It keeps
+the installed BootShim, Samsung DT table, every payload argument, kernel,
+root and log body intact. The new loader is built with `GIC_V2=1`,
+`SUPER_TAIL_START=0x1e8b04000`, `SUPER_ROOT_LEN=0x100000000`. Original and
+candidate AVB verification both pass; footer bytes are unchanged, so only the
+first 16 MiB of recovery needs writing. Rollback head is prepared too.
+
+Candidate/manifest/write segments live under
+`out/cellular/m0-20261111/candidate/`. No bootloader/modem/EFS partition is part
+of this test. Hardware boot/rollback results must be appended before M0 is marked
+complete. Host checks now pass **22 Python tests** plus the allocator oracle.
