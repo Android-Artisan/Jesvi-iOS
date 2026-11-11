@@ -188,7 +188,7 @@ Wait for the user to approve native Trust before retrying; unlocking alone
 is not approval. No protected-device or Trust check is bypassed here.
 
 
-Final Finder UI check: after refreshing Finder following the reboot, the user
-confirmed both **Jesvi IOS** under Locations and **Start Here.txt** inside the
-expanded **Jesvi Files** app row. This verifies document visibility in Finder;
-backup/media controls and storage category breakdown remain separate limits.
+Final Finder UI check remains unresolved. The user corrected an accidental
+confirmation: the device/file visibility was not confirmed after the refresh.
+Native document-transfer tests pass, but this does not establish Finder UI
+visibility. Backup/media controls and storage categories also remain limits.
