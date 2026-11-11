@@ -26,8 +26,11 @@ CC=${CC:-clang}
 LD=${LD:-lld-link}
 
 "$CC" --target=aarch64-unknown-windows -ffreestanding -fno-builtin -fno-stack-protector -fshort-wchar \
-  -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter ${GIC_V2:+-DGIC_V2=1} ${SUPER_TAIL_START:+-DSUPER_TAIL_START=${SUPER_TAIL_START}ULL} ${SUPER_ROOT_LEN:+-DSUPER_ROOT_LEN=${SUPER_ROOT_LEN}ULL} ${USERDATA_WIN_OFF:+-DUSERDATA_WIN_OFF=${USERDATA_WIN_OFF}ULL -DUSERDATA_WIN_LEN=${USERDATA_WIN_LEN}ULL} -c loader.c -o loader.obj
+  -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter ${CELLULAR_PREFLIGHT_ONLY:+-DCELLULAR_PREFLIGHT_ONLY=1} ${GIC_V2:+-DGIC_V2=1} ${SUPER_TAIL_START:+-DSUPER_TAIL_START=${SUPER_TAIL_START}ULL} ${SUPER_ROOT_LEN:+-DSUPER_ROOT_LEN=${SUPER_ROOT_LEN}ULL} ${USERDATA_WIN_OFF:+-DUSERDATA_WIN_OFF=${USERDATA_WIN_OFF}ULL -DUSERDATA_WIN_LEN=${USERDATA_WIN_LEN}ULL} -c loader.c -o loader.obj
 # /base: UEFI loads an image at its preferred address when that is free. The PE default (0x140000000)
 # is in the middle of the phone's largest block of RAM, which XNU needs in one piece.
-"$LD" /subsystem:efi_application /entry:efi_main /nodefaultlib /base:0xA1000000 /out:loader.efi loader.obj
+# The preflight image must leave the original loader's preferred base free.
+LOADER_IMAGE_BASE=0xA1000000
+if [ -n "${CELLULAR_PREFLIGHT_ONLY:-}" ]; then LOADER_IMAGE_BASE=0xA3000000; fi
+"$LD" /subsystem:efi_application /entry:efi_main /nodefaultlib /base:$LOADER_IMAGE_BASE /out:loader.efi loader.obj
 ls -la loader.efi

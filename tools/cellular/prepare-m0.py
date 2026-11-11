@@ -3,6 +3,8 @@
 
 Offline only. Preserve installed BootShim, DT table, kernel, root and payload
 arguments; replace the 2-MiB FD and loader, then rebuild Android/AVB hashes.
+For allocator preflight, keep the installed FD and retain its original loader
+as fallback.efi. No native firmware replacement is needed for that probe.
 Produces a verified candidate, bounded write segments, rollback segments and
 a metadata manifest. Does not contact or write to the phone.
 """
@@ -76,10 +78,32 @@ def verify(avb, key, image):
                         '--key', str(key)], check=True, timeout=30)
 
 
+def replace_loader(old_entries, loader, with_fallback=False):
+    require(sum(name.rstrip(b'\0') == b'loader.efi' for name, _, _ in old_entries) == 1,
+            'expected exactly one installed loader')
+    require(not any(name.rstrip(b'\0') in (b'fallback.efi', b'probe.report') for name, _, _ in old_entries),
+            'backup already contains a fallback; use the original phone backup')
+    preflight = b'CELLULAR MEMORY PREFLIGHT' in loader
+    require(preflight == with_fallback, 'preflight requires the installed fallback; normal loader must not use it')
+    replaced = []
+    for name, reserved, data in old_entries:
+        if name.rstrip(b'\0') == b'loader.efi':
+            replaced.append((name, reserved, loader))
+            if with_fallback:
+                replaced.append((b'fallback.efi'.ljust(16, b'\0'), 0, data))
+                replaced.append((b'probe.report'.ljust(16, b'\0'), 0, bytes(8192)))
+        else:
+            replaced.append((name, reserved, data))
+    return replaced
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backup', type=Path, required=True)
-    parser.add_argument('--fd', type=Path, required=True)
+    firmware = parser.add_mutually_exclusive_group(required=True)
+    firmware.add_argument('--fd', type=Path)
+    firmware.add_argument('--keep-installed-fd', action='store_true')
+    parser.add_argument('--with-installed-fallback', action='store_true')
     parser.add_argument('--loader', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--avbtool', type=Path, default=RESEARCH / 'tools/bin/avbtool.py')
@@ -89,7 +113,13 @@ def main():
     spans, boot_size = boot_layout(original)
     verify(args.avbtool, args.key, args.backup)
     old_entries = entries(original)
-    fd, loader = args.fd.read_bytes(), args.loader.read_bytes()
+    require(not args.with_installed_fallback or args.keep_installed_fd,
+            'preflight must keep the installed firmware')
+    fd = (original[FD_OFFSET:FD_OFFSET + FD_SIZE] if args.keep_installed_fd else args.fd.read_bytes())
+    fd = bytearray(fd)
+    if args.keep_installed_fd:
+        fd[0x100000:0x180000] = b'\xff' * SLOT_SIZE
+    loader = args.loader.read_bytes()
     require(len(fd) == FD_SIZE and fd[0x28:0x2c] == b'_FVH', 'not the expected 2-MiB FD')
     require(fd[0x100000:0x180000] == b'\xff' * SLOT_SIZE, 'new FD occupies payload slot')
     require(loader[:2] == b'MZ' and len(loader) >= 64, 'loader is not PE/COFF')
@@ -97,10 +127,7 @@ def main():
     require(loader[pe:pe + 4] == b'PE\0\0' and struct.unpack_from('<H', loader, pe + 4)[0] == 0xaa64,
             'loader is not ARM64 PE/COFF')
     require(struct.unpack_from('<H', loader, pe + 24 + 68)[0] == 10, 'loader is not an EFI application')
-    replaced = [(name, reserved, loader if name.rstrip(b'\0') == b'loader.efi' else data)
-                for name, reserved, data in old_entries]
-    require(sum(name.rstrip(b'\0') == b'loader.efi' for name, _, _ in old_entries) == 1,
-            'expected exactly one installed loader')
+    replaced = replace_loader(old_entries, loader, args.with_installed_fallback)
     body = b''.join(struct.pack('<16sII', name, len(data), reserved) + data + bytes(-len(data) % 16)
                     for name, reserved, data in replaced) + bytes(24)
     payload = b'XNUP' + struct.pack('<I', len(body)) + body
@@ -132,12 +159,17 @@ def main():
     changed[-64:] = signed[-64:]
     require(changed[HEAD_SIZE:-64] == original[HEAD_SIZE:-64], 'kernel/root/log body changed')
     require(changed[2048:FD_OFFSET] == original[2048:FD_OFFSET], 'installed BootShim changed')
+    if args.keep_installed_fd:
+        require(changed[FD_OFFSET:SLOT] == original[FD_OFFSET:SLOT] and
+                changed[SLOT + SLOT_SIZE:FD_OFFSET + FD_SIZE] == original[SLOT + SLOT_SIZE:FD_OFFSET + FD_SIZE],
+                'installed firmware code changed')
     require(entries(changed) == replaced, 'signed payload changed')
     candidate = output / 'recovery.img'
     candidate.write_bytes(changed)
     verify(args.avbtool, args.key, candidate)
     (output / 'head.bin').write_bytes(changed[:HEAD_SIZE])
     (output / 'rollback-head.bin').write_bytes(original[:HEAD_SIZE])
+    (output / 'standalone-boot-head.bin').write_bytes(changed[:boot_size])
     footer_changed = changed[-64:] != original[-64:]
     if footer_changed:
         (output / 'footer-block.bin').write_bytes(changed[-4096:])
@@ -149,6 +181,16 @@ def main():
                     footer_changed=footer_changed, footer_block_offset=PART_SIZE - 4096,
                     kernel_root_log_body_preserved=True, bootshim_preserved=True,
                     payload_arguments_preserved=True, avb_verified=True)
+    manifest.update(installed_firmware_preserved=args.keep_installed_fd,
+                    installed_loader_fallback=args.with_installed_fallback)
+    if args.with_installed_fallback:
+        cursor = 8
+        for name, _, data in replaced:
+            if name.rstrip(b'\0') == b'probe.report':
+                manifest['preflight_report_pa'] = hex(0xe8100000 + cursor + 24)
+                manifest['preflight_report_size'] = len(data)
+                break
+            cursor += 24 + ((len(data) + 15) & ~15)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     head.unlink()
     print(json.dumps(manifest, indent=2))

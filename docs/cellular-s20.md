@@ -406,3 +406,44 @@ complete. Host checks now pass **22 Python tests** plus the allocator oracle.
 - All firmware artifacts/logs stay ignored locally. Samsung bootloader,
   modem/EFS/calibration partitions and iOS kernel/root/data were not modified.
   M0 remains incomplete despite the successful host builds/tests.
+
+
+### Allocator-only hardware isolation — 2026-11-11 ~11:17
+
+The actual allocator path passed on the original working UEFI. The preflight
+application loaded the exact installed loader as `fallback.efi` before probing,
+allocated/free'd the three pools, wrote a bounded report in its dedicated
+`probe.report` payload RAM entry, then started the original loader. Its PE base
+is `0xa3000000`, leaving the original loader's `0xa1000000` base free. No CP
+register, firmware, power/reset, cache-policy or modem DMA action occurred.
+
+Observed: download `0xff000000+0x1000000`, Wi-Fi `0xfd000000+0x2000000`, display
+`0xd4000000+0xc000000`; all allocations and frees succeeded. Original firmware
+reports **reserved 0/3**, as expected. This proves allocation/exclusion under
+real boot services, not full loader boot or safe modem DMA. iOS returned through
+the original loader in 76 seconds. Probe BOOT was removed immediately; original
+BOOT readback matched, and iOS returned again in 67 seconds. Recovery was unchanged.
+
+Reproduce build/pack offline from this worktree:
+
+```sh
+CELLULAR_PREFLIGHT_ONLY=1 GIC_V2=1 CC=/usr/bin/clang LD=/path/to/lld-link bash xnuloader/build.sh
+# Preserve this artifact separately, then rebuild the normal loader without the flag.
+python3 -B tools/cellular/prepare-m0.py --backup /private/preinstalled-recovery.img \
+  --keep-installed-fd --with-installed-fallback --loader /private/preflight.efi \
+  --output /private/preflight-candidate
+```
+
+The packaging tool verifies AVB and preserves all argument entries, original
+firmware code and exact fallback bytes. It rejects preflight without fallback,
+recursive fallback backups and combining preflight with new firmware. Actual
+phone deployment uses the normal phone lock and bounded standalone BOOT prefix;
+the local visible test runner automatically restored the original after capture.
+`preflight-report.py --manifest /private/preflight-candidate/manifest.json
+--output /private/report.txt` reads only the bounded report RAM slot, using the
+existing debug port. It refuses missing markers and malformed addresses/lengths.
+
+Evidence stays ignored in `out/cellular/m0-20261111/`; visible job
+`build/cellular-allocator-preflight.log` exited 0. **27 Python tests** and the
+163,840-case allocator oracle pass. Next isolate the full changed loader on
+original UEFI before blaming or retesting the native FD.

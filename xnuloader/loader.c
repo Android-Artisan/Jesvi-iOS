@@ -3045,7 +3045,15 @@ allocate_loader_memory(uint64_t size, uint64_t alignment, uint64_t low, uint64_t
 		uint64_t at = s20_memory_candidate(lo, hi, size, alignment);
 		if (at > best) best = at;
 	}
-	if (!best || EFI_ERROR(BS->allocate_pages(AllocateAddress, EfiLoaderData, size >> 12, &best))) return 0;
+	if (!best) {
+		print("cellular allocation: no candidate size %x align %x low %x high %x\n", size, alignment, low, high);
+		return 0;
+	}
+	efi_status status = BS->allocate_pages(AllocateAddress, EfiLoaderData, size >> 12, &best);
+	if (EFI_ERROR(status)) {
+		print("cellular allocation: address %x size %x status %x\n", best, size, status);
+		return 0;
+	}
 	*address = best;
 	return 1;
 }
@@ -5409,6 +5417,69 @@ y2s_calliope_stop(void)
 	    (uint64_t)before[3], ((before[0] | before[1] | before[2] | before[3]) & 1) ? ": was running, stopped" : "");
 }
 
+#ifdef CELLULAR_PREFLIGHT_ONLY
+/* Exercise the real allocation path without booting a kernel with new pools.
+ * The original installed loader is loaded first and started after all probe
+ * allocations have been released. No CP register/firmware access occurs here.
+ * A dedicated payload entry retains the report in FD RAM while the original
+ * loader runs iOS; the host reads it through the existing read-only debug port.
+ */
+static efi_status
+cellular_memory_preflight(void)
+{
+	struct payload_header *ph = (struct payload_header *)PAYLOAD_BASE;
+	efi_handle fallback = NULL;
+	uint8_t *report = NULL;
+	uint64_t report_size = 0;
+	efi_status status;
+	if (ph->magic != PAYLOAD_MAGIC || ph->size > PAYLOAD_MAX_SIZE - sizeof(*ph)) return EFI_ERROR_BIT | 2;
+	const uint8_t *p = (const uint8_t *)(ph + 1), *end = p + ph->size;
+	while ((uint64_t)(end - p) >= sizeof(struct payload_entry)) {
+		const struct payload_entry *entry = (const struct payload_entry *)p;
+		if (!entry->name[0]) break;
+		uint64_t padded = ((uint64_t)entry->size + 15) & ~15ULL;
+		if (padded > (uint64_t)(end - p) - sizeof(*entry)) return EFI_ERROR_BIT | 2;
+		if (memcmp(entry->name, "fallback.efi\0\0\0\0", 16) == 0) {
+			status = BS->load_image(0, IMAGE, NULL, (void *)(p + sizeof(*entry)), entry->size, &fallback);
+			print("cellular preflight: original loader LoadImage status %x\n", status);
+			if (EFI_ERROR(status)) return status;
+		} else if (memcmp(entry->name, "probe.report\0\0\0\0", 16) == 0) {
+			report = (uint8_t *)(p + sizeof(*entry));
+			report_size = entry->size;
+		}
+		p += sizeof(*entry) + padded;
+	}
+	if (!fallback || !report || report_size < 8192) return EFI_ERROR_BIT | 14;
+	print("== CELLULAR MEMORY PREFLIGHT (no modem start) ==\n");
+	print_memory_map();
+	report_cellular_memory();
+	int staging_ok = reserve_download_buffer();
+	reserve_wifi_dma();
+	reserve_display_pool();
+	print("cellular preflight: staging %d wifi %x display %x\n", (uint64_t)staging_ok, wifi_dma_size, display_pool_size);
+	if (display_pool_size) {
+		status = BS->free_pages(display_pool_base, display_pool_size >> 12);
+		print("cellular preflight: display free status %x\n", status);
+	}
+	if (wifi_dma_size) {
+		status = BS->free_pages(wifi_dma_base, wifi_dma_size >> 12);
+		print("cellular preflight: wifi free status %x\n", status);
+	}
+	if (download_base) {
+		status = BS->free_pages(download_base, DOWNLOAD_MAX_SIZE >> 12);
+		print("cellular preflight: staging free status %x\n", status);
+	}
+	print("cellular preflight: handing off to the original loader\n");
+	uint32_t report_len = log_len < report_size - 8 ? log_len : (uint32_t)(report_size - 8);
+	memset(report, 0, (size_t)report_size);
+	memcpy(report + 8, log_buf, report_len);
+	((uint32_t *)report)[1] = report_len;
+	((uint32_t *)report)[0] = 0x304d5043; /* CPM0 */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	return BS->start_image(fallback, NULL, NULL);
+}
+#endif
+
 efi_status EFIAPI
 efi_main(efi_handle image, efi_system_table *st)
 {
@@ -5442,6 +5513,9 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+#ifdef CELLULAR_PREFLIGHT_ONLY
+	return cellular_memory_preflight();
+#endif
 	if (PLAT == &platform_y2s) {
 		y2s_calliope_stop();
 	}
