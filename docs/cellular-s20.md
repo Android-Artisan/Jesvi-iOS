@@ -733,3 +733,40 @@ result must be checked. Recovery/kernel/data partitions not written in this run.
 Recovery final result: `build/cellular-recover-20261112.exit` is0. iOS/SSH
 returned; independently read installed BOOT equals verified normal-boot.bin
 byte-for-byte. Failed probe removed, phone left running normal iOS.
+
+### Correction after user battery report; isolated retest — Nov12
+
+User reports the earlier PCIe experiment worked and the later Download Mode
+followed battery exhaustion. We have no saved valid report from that attempt:
+classify its no-SSH result as **inconclusive**, not a confirmed MMIO hang or a
+confirmed pass. The prior hang diagnosis above is superseded. Recovery passed.
+
+Live battery read:5%,3687mV,+711mA,external power/charging; subsequently6->7%.
+New battery-gate.py rejects reboot testing below10%/3700mV or without positive
+charging/external power, including missing/ambiguous battery properties. Three
+new tests bring Python suite to38; sanitizer models still pass.
+
+Retest requires CELLULAR_PCIE_ACCESS_RETEST=1. Checkpoints now persist through
+the existing loader log before each potentially hazardous access. If a checkpoint
+write fails, controller access is abandoned and cleanup runs. Source review
+found Samsung probe invokes resumed_phydown (including isolation bypass/PHY
+initialization) before later rd_own_conf, so the old cold-access assumption was
+incomplete regardless of battery.
+
+Revised preflight: with CP off, all clock gates enabled and pins unowned, hold
+PERST low, temporarily bypass PHY isolation, then checkpoint/read LTSSM, PHY
+clock and root-port identity/state. Restore input-clock value, PHY isolation
+and PERST ownership. No CP power, link training, ATU, endpoint or DMA request.
+This access probe does not yet replay the full EVT1 PHY calibration table.
+
+Fresh double-read/AVB backup: out/cellular/access-retest-20261112. The first
+charge dispatcher was stopped before flashing while prerequisites were revised;
+the new visible job cellular-pcie-charge-retest-v2 waits for two ready battery
+readings, then runner rechecks charge/current kernel/BOOT immediately before
+writing. Outcome pending; saved candidate is pcie-access-isolation-candidate.
+
+EVT1 calibration preparation: phy-plan.py extracts110 ordered PHY writes from
+pinned pcie-exynos9830-rc-cal.c (SHA256
+9d0c3a2442f79cb63a7b36e6d8d8c711a9fbdae1a787cbddfdfaf7f7cf3e8805), retaining
+repeats/lane offsets and attribution. This subsection alone is not a boot
+sequence.40 host Python tests plus existing sanitizer models now pass.

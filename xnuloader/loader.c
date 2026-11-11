@@ -5852,15 +5852,20 @@ cellular_mmio_preflight(void)
 		    (uint64_t)*(volatile uint32_t *)(uintptr_t)pcie_controls[i]);
 	print("cellular PCIe map: complete; translation only, no controller read or link/power request\n");
 #ifdef CELLULAR_PCIE_ACCESS_PREFLIGHT
-	/* Root-port config access while link is down: Samsung rd_own_conf enables
-	 * existing clocks and sets PHY input clock path to 0x28. Here all gates
-	 * must already be enabled; no shared HSI2/UFS clock writes are permitted.
-	 * CP remains off; do not release isolation, PERST or enable LTSSM/DMA.
+	/* Cold root-port access is not equivalent to Linux's already-initialized
+	 * link-down path. Keep CP off and PERST asserted, temporarily bypass PHY
+	 * isolation, then restore isolation/pin ownership before fallback. No
+	 * shared HSI2/UFS clock, LTSSM, ATU, endpoint or DMA writes.
 	 */
-	if ((*(volatile uint32_t *)0x15860720 & 1) ||
-	    (*(volatile uint32_t *)0x15c30284 & 1) ||
-	    (*(volatile uint32_t *)0x15c30384 & 1) ||
-	    (*(volatile uint32_t *)0x13c30000 & 0xff)) {
+	volatile uint32_t *pmu=(volatile uint32_t *)0x15860720;
+	volatile uint32_t *con=(volatile uint32_t *)0x13c30000;
+	volatile uint32_t *dat=(volatile uint32_t *)0x13c30004;
+	volatile uint32_t *input_clock=(volatile uint32_t *)0x13d500d8;
+	uint32_t saved_pmu=*pmu,saved_con=*con,saved_dat=*dat,old_clock=0;
+	uint32_t identity=0,command=0,link=0,ltssm=0;
+	int clock_changed=0,clock_ok=0,restored=1;
+	if ((saved_pmu&1) || (*(volatile uint32_t *)0x15c30284&1) ||
+	    (*(volatile uint32_t *)0x15c30384&1) || (saved_con&0xff)) {
 		print("cellular PCIe access: owner/power guard refused\n");return 0;
 	}
 	for (uint64_t a=0x13c02018;a<=0x13c02034;a+=4) {
@@ -5868,27 +5873,59 @@ cellular_mmio_preflight(void)
 			print("cellular PCIe access: clock guard refused %x\n",a);return 0;
 		}
 	}
-	uint32_t ltssm=*(volatile uint32_t *)0x13d20054;
+#define PCIE_CHECKPOINT(message) do { \
+	print("cellular PCIe access: checkpoint " message "\n"); \
+	compose_logs(NULL,0); \
+	if (!store_logs(find_log_partition(),NULL,0)) goto pcie_access_restore; \
+} while (0)
+	PCIE_CHECKPOINT("before PERST ownership and isolation bypass");
+	uint64_t tpl=BS->raise_tpl(31);
+	*dat &= ~2u;__asm__ volatile ("dsb sy" ::: "memory");
+	*con=(*con&~0xf0u)|0x10u;__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if ((*con&0xf0u)!=0x10u || (*dat&2)) goto pcie_access_restore;
+	*pmu |= 1;__asm__ volatile ("dsb sy" ::: "memory");
+	if (!(*pmu&1) || EFI_ERROR(BS->stall(1000))) goto pcie_access_restore;
+	PCIE_CHECKPOINT("isolation bypass verified; before ELBI LTSSM read 13d20054");
+	ltssm=*(volatile uint32_t *)0x13d20054;
 	print("cellular PCIe access: LTSSM enable %x\n",(uint64_t)ltssm);
-	if (ltssm) return 0;
-	volatile uint32_t *input_clock=(volatile uint32_t *)0x13d500d8;
-	uint32_t old_clock=*input_clock;
+	if (ltssm) goto pcie_access_restore;
+	PCIE_CHECKPOINT("before PHY clock read 13d500d8");
+	old_clock=*input_clock;
 	print("cellular PCIe access: input clock before %x\n",(uint64_t)old_clock);
+	PCIE_CHECKPOINT("before PHY clock write28");
+	clock_changed=1;
 	*input_clock=0x28;__asm__ volatile ("dsb sy" ::: "memory");
-	int clock_ok=*input_clock==0x28;
-	uint32_t identity=0,command=0,link=0;
+	clock_ok=*input_clock==0x28;
 	if (clock_ok) {
+		PCIE_CHECKPOINT("before ROOT identity read13800000");
 		identity=*(volatile uint32_t *)0x13800000;
+		print("cellular PCIe access: ROOT identity read %x\n",(uint64_t)identity);
+		PCIE_CHECKPOINT("before ROOT command read13800004");
 		command=*(volatile uint32_t *)0x13800004;
+		PCIE_CHECKPOINT("before ELBI state read13d202c8");
 		link=*(volatile uint32_t *)0x13d202c8;
 		print("cellular PCIe access: ROOT id %x command/status %x link %x (not endpoint)\n",
 		    (uint64_t)identity,(uint64_t)command,(uint64_t)link);
 	}
-	*input_clock=old_clock;__asm__ volatile ("dsb sy" ::: "memory");
-	int restored=*input_clock==old_clock && !(*(volatile uint32_t *)0x15860720&1) &&
-	    *(volatile uint32_t *)0x13d20054==ltssm;
+pcie_access_restore:
+	print("cellular PCIe access: restoring clock/isolation/PERST ownership\n");flush_log();
+	if (clock_changed) {
+		*input_clock=old_clock;__asm__ volatile ("dsb sy" ::: "memory");
+		if (*input_clock!=old_clock) restored=0;
+	}
+	*pmu=(*pmu&~1u)|(saved_pmu&1);__asm__ volatile ("dsb sy" ::: "memory");
+	if ((*pmu&1)!=(saved_pmu&1)) restored=0;
+	/* CP stayed off throughout; restore only our PERST pin, no CLKREQ writes. */
+	tpl=BS->raise_tpl(31);
+	*con=(*con&~0xf0u)|(saved_con&0xf0u);__asm__ volatile ("dsb sy" ::: "memory");
+	*dat=(*dat&~2u)|(saved_dat&2);__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if (*con!=saved_con || (*dat&2)!=(saved_dat&2)) restored=0;
 	int valid=clock_ok && identity && identity!=0xffffffffu && restored;
 	print("cellular PCIe access: restored %d result %d; CP off, no link/DMA request\n",(uint64_t)restored,(uint64_t)valid);
+	flush_log();
+#undef PCIE_CHECKPOINT
 	if (!valid) return 0;
 #endif
 #endif

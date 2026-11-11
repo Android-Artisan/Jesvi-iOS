@@ -24,8 +24,8 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 CC=${CC:-clang}
 LD=${LD:-lld-link}
-if [ -n "${CELLULAR_PCIE_ACCESS_PREFLIGHT:-}" ]; then
-	echo 'CELLULAR_PCIE_ACCESS_PREFLIGHT disabled: hardware boot stalled; review power/reset access prerequisites before replacing this probe' >&2
+if [ -n "${CELLULAR_PCIE_ACCESS_PREFLIGHT:-}" ] && [ -z "${CELLULAR_PCIE_ACCESS_RETEST:-}" ]; then
+	echo 'PCIe access result inconclusive after reported battery loss; explicit checkpointed retest build required' >&2
 	exit 1
 fi
 if [ -n "${CELLULAR_PCIE_ACCESS_PREFLIGHT:-}" ] && [ -z "${CELLULAR_PCIE_MAP_PREFLIGHT:-}" ]; then

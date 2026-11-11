@@ -33,7 +33,7 @@ Validated 2026-11-11:
 - Local S20 RADIO: BOOT/MAIN/APM/VSS/INFO CRCs all pass. NV bytes never read.
 - Existing saved boot: IPC overlaps loader staging by 8 MiB; packet region
   overlaps display pool by 64 KiB. Audit exits 1 as intended.
-- Host tests: **35 Python tests passed** plus **163,840** C allocator boundary
+- Host tests: **40 Python tests passed** plus **163,840** C allocator boundary
   comparisons under ASan/UBSan (`bash tools/cellular/check.sh`). Synthetic
   fixtures contain no vendor bytes.
 - Full ARM64 loader boots on the original UEFI. Opt-in `CELLULAR_RESERVE_CP=1`
@@ -119,3 +119,16 @@ with CP off and no link/DMA request. See session/docs for hardware result.
 is now disabled in build.sh. Do not deploy its saved artifact. Mapping-only
 preflight passed; exact failing MMIO in the access attempt is unknown. See
 cellular-s20.md for recovery evidence and prerequisites to revisit.
+
+**Battery correction:** user reports battery exhaustion, so the previous PCIe
+access timeout is inconclusive. An explicit retest flag builds the revised
+isolation-aware probe with persistent pre-access checkpoints. battery-gate.py
+--require-ready enforces10%/3700mV and active external charging. See latest
+cellular-s20.md entry/session for dispatcher and result; do not use old artifacts.
+
+`phy-plan.py --source PINNED-pcie-exynos9830-rc-cal.c --output NEW.json`
+extracts the110 ordered EVT1 PHY writes for offline review. Unknown statements,
+unbounded expressions and out-of-window/unaligned offsets are refused. This is
+only the calibration subsection, not an executable initializer: common reset/
+PCS/controller stages remain separate. Repeated writes must not be deduplicated.
+Source attribution/license are retained in the output.
