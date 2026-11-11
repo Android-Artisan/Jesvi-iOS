@@ -136,7 +136,8 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences"}
+/redwood/lib/libredwood-tweaks.dylib Preferences
+/redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service"}
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
@@ -319,6 +320,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
+		# Files on the HFS+ data volume: target only its daemon and local provider.
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
+			-o obj/libredwood-files.dylib src/inject_files.c
+		$DYN -o obj/LocalFilesHost src/local_files_host.c
+		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
 			-o obj/libredwood-app.dylib src/inject_app.c
@@ -483,6 +489,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-fairplay.dylib ] && cp obj/libredwood-fairplay.dylib root/lib/
 	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
+	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
+	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
 	if [ -f obj/RedwoodAudio ]; then
@@ -533,6 +541,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	ZONE=$zone perl -pi -e 's|^l\t/usr/share/zoneinfo\t/private/var/db/timezone/zoneinfo$|l\t/usr/share/zoneinfo.default\t/private/var/db/timezone/zoneinfo|;
 		s|^l\t/var/db/timezone/zoneinfo/[^\t]*\t/private/var/db/timezone/localtime$|l\t/var/db/timezone/zoneinfo/$ENV{ZONE}\t/private/var/db/timezone/localtime|' root/etc/var.skel
 	# ... and the files of ours it puts there (var/): those under mobile/ belong to the user mobile
+	printf 'd\t755\t0\t0\t/private/var/preferences/SystemConfiguration\n' >> root/etc/var.skel
 	cp -r var root/var
 	(cd var && find . -type f | sed 's|^\./||' | sort) | while read -r f; do
 		case $f in mobile/*) owner=501 ;; *) owner=0 ;; esac
@@ -577,6 +586,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist root/LaunchDaemons/
+	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
+	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
 	[ -x ../jb/root/var/jb/usr/sbin/sshd ] && [ -f root/var/root/.ssh/authorized_keys ] && cp com.redwood.sshd.plist root/LaunchDaemons/
 	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
 	VOLUME=""
@@ -791,7 +802,8 @@ fi
 
 # --- the system image -----------------------------------------------------------------------------
 if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
-	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
+	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ obj/LocalFilesHost -nt system.apfs ] ||
+	  [ ../tools/storage/stage-provider.py -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
 	  [ $IOS/cryptex -nt system.apfs ] || [ $IOS/cryptex-app -nt system.apfs ] || [ -n "$SYSTEM" ]; }; then
 	# what ios165/select-system.py has chosen since ios165/rootfs was extracted is not in it, and would not be
 	# in the image either (so it was once with the audio plug-ins and the system's sounds: iOS found no
@@ -912,9 +924,14 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		# -f: a cryptex fetched with the cache already in it would otherwise stop the build
 		ln -f "$f" $D/
 	done
+	# A containing app gives the local provider its data/app-group containers.
+	# Relocate rather than duplicate it: a metadata-only standalone registration
+	# can otherwise win PlugInKit election over the working app extension.
+	python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
+		$IOS/system.manifest obj/system-files.manifest
 	# zlib where it saves room, as Apple keeps the root (a small file whole in its attribute): 5.4 GB of
 	# files in 2.5 GB, what fits into the phone's RAM beside iOS
-	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=$IOS/system.manifest | tail -1
-	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=$IOS/system.manifest
+	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=obj/system-files.manifest | tail -1
+	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=obj/system-files.manifest
 	rm -rf sysroot
 fi

@@ -3256,8 +3256,10 @@ capture_sensor(void)
 #define IDLE_MS                 1000
 #define FRAME_TIMEOUT_MS        1500
 #define EXPOSURE_MARGIN         40
-#define GAIN_UNITY              (hw->gain_unity)
-#define GAIN_MAX                (hw->gain_max)
+static bool s20_rotate = true;  /* the S20's front module is mounted turned by 180 degrees (cam_s20_rot=0: as sent) */
+static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
+#define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
+#define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
 #define FRAME_LINES_MAX         0xfff0
 #define RDI0_SOF                (1u << 27)      /* IFE_IRQ_STATUS0 (cam_vfe_lite16x.h: sof_irq_mask of RDI 0) */
 #define WM0_DONE                1u              /* BUS_IRQ_STATUS1 */
@@ -3770,6 +3772,133 @@ fake_session(void)
 	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
 }
 
+/*
+ * cam_s20=1 (with cam=5): the Galaxy S20's own front camera (SAK3J1, 1824x1368 RAW10 at 30 a second) behind
+ * /dev/redwood-camera. Everything of the phone is done by redwood_camera_s20.c (the sequence its bounded tests
+ * proved); here each finished frame, 10 bits in 16, is packed into a place of the ring as the fake session's are.
+ */
+extern bool redwood_camera_s20_stream(bool (*fn)(const volatile uint16_t *, uint32_t, uint32_t), char *out, size_t cap);
+extern void redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines);
+
+static bool
+s20_frame(const volatile uint16_t *px, uint32_t width, uint32_t height)
+{
+	uint32_t stride = RAW10_STRIDE(width);
+	int p = -1;
+	bool more;
+
+	lck_mtx_lock(&ios_lock);
+	if (ios_ask.pending) {
+		uint32_t lines = ios_ask.lines, gain = ios_ask.gain, frame_lines = ios_ask.frame_lines;
+
+		ios_ask.pending = false;
+		exposure_limits(&lines, &gain, &frame_lines);
+		ios_now.lines = lines;
+		ios_now.gain = gain;
+		ios_now.frame_lines = frame_lines;
+		redwood_camera_s20_exposure(lines, gain, frame_lines);
+	}
+	for (int i = 0; i < RING; i++) {
+		if (place[i].state != PLACE_READING && (p < 0 || place[i].sequence < place[p].sequence)) {
+			p = i;
+		}
+	}
+	if (p >= 0) {
+		place[p].state = PLACE_WRITING;
+	}
+	more = ios_open && ios_switch_to == 0 && ios_ms() - ios_last_read <= IDLE_MS;
+	lck_mtx_unlock(&ios_lock);
+	if (p < 0) {
+		ios_writes_late++;
+		return more;
+	}
+	uint8_t *at = (uint8_t *)(ring + (uint64_t)p * ring_place_bytes);
+
+	/* The module sits rotated by 180 degrees in the phone (the picture came upside down): the frame is written
+	 * turned, last pixel first. Width and height are even, so the 2x2 cell turns too: GR/BG becomes GB/RG (2).
+	 * cam_s20_rot=0 leaves it as the sensor sends it. */
+	for (uint32_t y = 0; y < height; y++) {
+		const volatile uint16_t *in = px + (uint64_t)(s20_rotate ? height - 1 - y : y) * width;
+		uint8_t *out = at + (uint64_t)y * stride;
+
+		for (uint32_t x = 0; x < width; x += 4, out += 5) {
+			uint16_t a, b, c, d;
+
+			if (s20_rotate) {
+				uint32_t r = width - 1 - x;
+
+				a = in[r]; b = in[r - 1]; c = in[r - 2]; d = in[r - 3];
+			} else {
+				a = in[x]; b = in[x + 1]; c = in[x + 2]; d = in[x + 3];
+			}
+
+			out[0] = (uint8_t)(a >> 2);
+			out[1] = (uint8_t)(b >> 2);
+			out[2] = (uint8_t)(c >> 2);
+			out[3] = (uint8_t)(d >> 2);
+			out[4] = (uint8_t)((a & 3) | (b & 3) << 2 | (c & 3) << 4 | (d & 3) << 6);
+		}
+	}
+	lck_mtx_lock(&ios_lock);
+	place[p].state = PLACE_READY;
+	place[p].sequence = ++ios_frames_done;
+	place[p].time = mach_absolute_time();
+	place[p].exposure_lines = ios_now.lines;
+	place[p].gain = ios_now.gain;
+	place[p].frame_lines = ios_now.frame_lines;
+	lck_mtx_unlock(&ios_lock);
+	wakeup(&ios_frames_done);
+	return more;
+}
+
+static void
+s20_session(void)
+{
+	static char report[8192];
+	uint32_t lines, gain, frame_lines;
+	bool ok;
+
+	ios_frames_done = ios_given = ios_writes_late = 0;
+	if (!ring_alloc(RAW10_STRIDE(ios_mode->width) * ios_mode->height)) {
+		return;
+	}
+	lck_mtx_lock(&ios_lock);
+	for (int i = 0; i < RING; i++) {
+		place[i].state = PLACE_FREE;
+		place[i].sequence = 0;
+	}
+	lines = ios_ask.lines;
+	gain = ios_ask.gain;
+	frame_lines = ios_ask.frame_lines;
+	ios_ask.pending = false;
+	exposure_limits(&lines, &gain, &frame_lines);
+	ios_now.lines = lines;
+	ios_now.gain = gain;
+	ios_now.frame_lines = frame_lines;
+	ios_streaming = true;
+	ios_last_read = ios_ms();
+	lck_mtx_unlock(&ios_lock);
+	redwood_camera_s20_exposure(lines, gain, frame_lines);
+	say("camera: the frames for iOS: the S20's front SAK3J1, %ux%u\n", ios_mode->width, ios_mode->height);
+	report[0] = 0;
+	ok = redwood_camera_s20_stream(s20_frame, report, sizeof(report));
+	report[400] = 0;
+	say("camera: S20 stream ended (%s): %s\n", ok ? "frames came" : "NO FRAMES", report);
+	lck_mtx_lock(&ios_lock);
+	ios_streaming = false;
+	for (int i = 0; i < RING; i++) {
+		place[i].state = PLACE_FREE;
+	}
+	lck_mtx_unlock(&ios_lock);
+	wakeup(&ios_frames_done);
+	ring_free();
+	say("camera: the frames for iOS stopped (%s): %llu done, %llu given\n", !ios_open ? "closed" : ios_switch_to != 0 ?
+	    "another sensor asked for" : "nobody reads", ios_frames_done, ios_given);
+	if (!ok) {
+		wait_ms(1000);          /* (not a busy loop of power cycles when the sensor does not come) */
+	}
+}
+
 static const char *
 ios_res(void)
 {
@@ -3851,7 +3980,8 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	f.height = ios_mode->height;
 	f.stride = RAW10_STRIDE(ios_mode->width);
 	f.format = 1;
-	f.bayer = ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
+	/* (the S20's SAK3J1 is GR/BG: Samsung's is-cis-3j1.c, OTF_INPUT_ORDER_BAYER_GR_BG) */
+	f.bayer = s20_real ? (s20_rotate ? 2 : 1) : ios_source == SOURCE_CSID_TPG ? 0 : ios_source == SOURCE_SENSOR_PATTERN ? hw->pattern_bayer : hw->bayer;
 	f.black = 64;
 	f.sequence = place[b].sequence;
 	f.time = place[b].time;
@@ -3921,7 +4051,7 @@ keep_picture(const struct redwood_camera_command *c, struct uio *uio)
 	h->height = c->b;
 	h->stride = c->c;
 	h->format = c->d;
-	h->bayer = c->d == 1 ? hw->bayer : 0;
+	h->bayer = c->d == 1 ? (s20_real ? (s20_rotate ? 2 : 1) : hw->bayer) : 0;
 	h->frame_bytes = c->bytes;
 	h->source = 2;
 	strlcpy(h->sensor, "iOS", sizeof(h->sensor));
@@ -4009,12 +4139,34 @@ camdev_make(void)
 static bool
 ios_select(unsigned index, uint32_t mode_n)
 {
+	static const struct ctab_head fake_head = {
+		.magic = "RWCTAB02",
+		.modes = 1,
+	};
+	static const struct ctab_mode fake_modes[] = {
+		/* Fixed software-camera mode; no sensor table or MMIO is used. */
+		{ 1920, 1080, 0, 0, 4, 0, 9, 148500000, 2200, 1125, 30000, RAW10_DT },
+	};
+	static const struct ctab_mode s20_modes[] = {
+		/* SAK3J1 1824x1368 at 30: line length 0x4940, frame length 0x597 (redwood_camera_s20_3j1.h) */
+		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
+	};
+	static const uint32_t fake_blocks[] = { 0 };
+
 	select_sensor(index);
 	if (!fake) {
 		find_pins();
 	}
 	if (!ctab_load()) {
-		return false;
+		if (!fake) {
+			return false;
+		}
+		ctab = &fake_head;
+		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
+		ctab_modes = s20_real ? s20_modes : fake_modes;
+		ctab_tables = (const uint8_t *)fake_blocks;
+		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
+		    fake_modes[0].width, fake_modes[0].height);
 	}
 	if (mode_n >= ctab->modes) {
 		uint64_t best = 0;
@@ -4097,7 +4249,9 @@ serve_ios(void)
 		lck_mtx_lock(&ios_lock);
 		ios_wanted = false;
 		lck_mtx_unlock(&ios_lock);
-		if (fake) {
+		if (s20_real) {
+			s20_session();
+		} else if (fake) {
 			fake_session();
 		} else {
 			ios_session();
@@ -4227,6 +4381,15 @@ redwood_camera_init(void)
 	uint32_t fake_n = 0;
 
 	fake = level == 5 && PE_parse_boot_argn("cam_fake", &fake_n, sizeof(fake_n)) && fake_n != 0;
+	/* cam_s20=1: the S20's real front camera through the same plumbing as cam_fake (nothing of the POCO is touched) */
+	fake_n = 0;
+	if (level == 5 && PE_parse_boot_argn("cam_s20", &fake_n, sizeof(fake_n)) && fake_n != 0) {
+		fake = true;
+		s20_real = true;
+		fake_n = 1;
+		(void)PE_parse_boot_argn("cam_s20_rot", &fake_n, sizeof(fake_n));
+		s20_rotate = fake_n != 0;
+	}
 	if (level >= 3) {
 		/*
 		 * Memory in one piece for the host (cam_keep_mb, default 24: a 12-megapixel NV12 picture of cam=5,

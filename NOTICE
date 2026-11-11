@@ -3,6 +3,10 @@ Third-party components in or used by HakiOS
 
 In the repository:
 
+- Files/HFS+ compatibility, userland/src/inject_files.c: adapted from Angelpro09xd/ios-sapphire
+  commit 04f94d5c6577d65bf9e112ed801c8b1fce9fff47, userland/tweaks/fileprovider/fpfix.c.
+  File-specific license is to verify; see THIRD_PARTY_LICENSES.md.
+
 - XNU (Apple): the kernel sources are fetched by xnu/apply.sh from github.com/apple-oss-distributions/xnu;
   our patch and files are a derivative work under the Apple Public Source License 2.0 (LICENSE.APSL).
 - libdeflate (Eric Biggers), xnu/files/bsd/miscfs/apfs/libdeflate/: MIT, see its COPYING.
