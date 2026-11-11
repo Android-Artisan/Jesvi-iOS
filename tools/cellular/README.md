@@ -33,14 +33,29 @@ Validated 2026-11-11:
 - Local S20 RADIO: BOOT/MAIN/APM/VSS/INFO CRCs all pass. NV bytes never read.
 - Existing saved boot: IPC overlaps loader staging by 8 MiB; packet region
   overlaps display pool by 64 KiB. Audit exits 1 as intended.
-- Host tests: **19 Python tests passed** plus **163,840** C allocator boundary
+- Host tests: **29 Python tests passed** plus **163,840** C allocator boundary
   comparisons under ASan/UBSan (`bash tools/cellular/check.sh`). Synthetic
   fixtures contain no vendor bytes.
-- ARM64 UEFI loader cross-compile/link passes; full UEFI image and phone boot
-  pending. Matching UEFI branch/worktree: `work/g980f-uefi-cellular`, `6e75773`.
+- Full ARM64 loader boots on the original UEFI. Opt-in `CELLULAR_RESERVE_CP=1`
+  reserves CP memory through existing boot services and applies Normal NC through
+  DXE. Hardware ownership/live translation checks pass 3/3 before and after iOS;
+  saved-log audit exits 0. The separately rebuilt native FD failed and must not
+  be deployed as working; it is unnecessary for this tested reservation path.
 - Cellular UI compiles with warnings as errors, is ad hoc signed, and passes
   strict signature verification. Installed after the normal expired-lock takeover;
   corrected page is visible and user-confirmed. No image flash or reboot.
 
-No loader/modem runtime changes have been installed. UI deployment is recorded
-in its own checklist. Keep generated JSON/private logs outside the source tree.
+Bounded loader tests were installed and removed afterward; the phone currently
+has its original BOOT/recovery copies. No modem power/reset/SPI/DMA/NV action.
+UI remains installed. Keep generated JSON/private logs outside the source tree.
+
+Additional tools:
+
+- `prepare-m0.py`: offline verified image packaging; `--keep-installed-fd`
+  preserves working firmware. Preflight requires `--with-installed-fallback`.
+- `preflight-report.py`: bounded RAM report reader; phone lock required.
+- `s5123-gpio.py --read`: six read-only CMGP GPIO banks; phone lock required.
+- `s5123-clocks.py --read`: nine read-only PERIC1 clock/USI/GPP8 words; lock
+  required. Default is plan only. No SPI/PCIe controller access.
+- Memory audit requires both `reserved 3/3` and `normal-nc 3/3` from the latest
+  boot. Boot-services memory descriptors alone did not prove active cache policy.

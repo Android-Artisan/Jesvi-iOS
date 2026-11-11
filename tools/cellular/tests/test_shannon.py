@@ -167,7 +167,7 @@ class MemoryTests(unittest.TestCase):
         self.assertIn(('cp_rmem', 'loader DOWNLOAD'),
                       [(c['cp'], c['owner']) for c in report['conflicts']])
         self.assertEqual(set(report['unknown']), {'display pool', 'wifi dma', 'XNU window',
-                                                 'deployed UEFI CP reservations'})
+                                                 'deployed UEFI CP reservations', 'deployed UEFI CP cache policy'})
         # Avoid a wrong claim that SLOG covers MSI: f2200000 + 2800000 = f4a00000.
         self.assertFalse(any(c['cp'] == 'cp_msi_rmem' for c in report['conflicts']))
 
@@ -175,7 +175,7 @@ class MemoryTests(unittest.TestCase):
         report = memory.audit(self.legacy, 'display pool: d3ff0000 size c000000\n'
                               'wifi dma: e8630000 size 2000000\n'
                               'phys window 880000000 size 17e000000, claim status 0\n')
-        self.assertEqual(report['unknown'], ['deployed UEFI CP reservations'])
+        self.assertEqual(report['unknown'], ['deployed UEFI CP reservations', 'deployed UEFI CP cache policy'])
         self.assertIn(dict(cp='cp_rmem_2', owner='display pool',
                            overlap_start='0xd3ff0000', overlap_size='0x10000'), report['conflicts'])
 
@@ -187,13 +187,15 @@ class MemoryTests(unittest.TestCase):
                'display pool: d4000000 size c000000\n'
                'wifi dma: e1000000 size 2000000\n'
                'phys window 880000000 size 17e000000, claim status 0\n'
-               'cellular memory: reserved 3/3\n')
+               'cellular memory: reserved 3/3\ncellular memory: normal-nc 3/3\n')
         report = memory.audit(TOOLS.parents[1], log)
         self.assertFalse(report['unknown'])
         self.assertFalse(report['conflicts'])
         # A subsequent bad reservation report must win over an earlier good one.
         report = memory.audit(TOOLS.parents[1], log + 'cellular memory: reserved 2/3\n')
         self.assertIn('deployed UEFI CP reservations', report['unknown'])
+        report = memory.audit(TOOLS.parents[1], log + 'cellular memory: normal-nc 0/3\n')
+        self.assertIn('deployed UEFI CP cache policy', report['unknown'])
         report = memory.audit(TOOLS.parents[1], '== XNULOADER run (menu) ==\n' + log +
                               '== XNULOADER run (menu) ==\ncellular memory: reserved 3/3\n')
         self.assertIn('loader DOWNLOAD', report['unknown'])

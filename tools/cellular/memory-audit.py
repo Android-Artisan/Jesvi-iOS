@@ -30,7 +30,7 @@ def literal_define(source, name):
 def audit(root, log_text):
     # Never combine an earlier boot's pool addresses with a later boot's
     # reservation marker when the later run is incomplete.
-    markers = list(re.finditer(r'^== XNULOADER (?:run \(menu\)|v3) ==', log_text, re.M))
+    markers = list(re.finditer(r'^== XNULOADER (?:run \((?:menu|usb)\)|v3) ==', log_text, re.M))
     if markers:
         log_text = log_text[markers[-1].start():]
     loader = (root / 'xnuloader/loader.c').read_text()
@@ -55,6 +55,9 @@ def audit(root, log_text):
     reserved = re.findall(r'cellular memory: reserved (\d+)/3', log_text)
     if not reserved or reserved[-1] != '3':
         unknown.append('deployed UEFI CP reservations')
+    uncached = re.findall(r'cellular memory: normal-nc (\d+)/3', log_text)
+    if not uncached or uncached[-1] != '3':
+        unknown.append('deployed UEFI CP cache policy')
     # Most recent occurrence within this boot (for repeated diagnostics).
     for label, pattern in (
         ('display pool', r'display pool:\s*([0-9a-fA-F]+)\s+size\s+([0-9a-fA-F]+)'),

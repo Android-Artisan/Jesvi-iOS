@@ -40,7 +40,7 @@ typedef struct efi_text_output {
 	void *mode;
 } efi_text_output;
 
-enum { EfiReservedMemoryType = 0, EfiLoaderData = 2, EfiConventionalMemory = 7 };
+enum { EfiReservedMemoryType = 0, EfiLoaderData = 2, EfiBootServicesData = 4, EfiConventionalMemory = 7 };
 enum { AllocateAnyPages = 0, AllocateMaxAddress = 1, AllocateAddress = 2 };
 enum { ByProtocol = 2 };
 
@@ -110,6 +110,22 @@ typedef struct {
 	uint64_t nr_tables;                     /* the configuration tables: ACPI, a device tree, ... */
 	struct { efi_guid guid; void *table; } *tables;
 } efi_system_table;
+
+/* PI DXE services: memory ownership stays in boot services; these services
+ * report/apply CPU cache attributes while preserving the other GCD bits. */
+typedef struct {
+	uint64_t base, length, capabilities, attributes;
+	uint32_t type, pad;
+	efi_handle image, device;
+} efi_gcd_memory_descriptor;
+typedef struct {
+	efi_table_header hdr;
+	void *add_memory_space, *allocate_memory_space, *free_memory_space, *remove_memory_space;
+	efi_status (EFIAPI *get_memory_space_descriptor)(uint64_t address, efi_gcd_memory_descriptor *descriptor);
+	efi_status (EFIAPI *set_memory_space_attributes)(uint64_t address, uint64_t size, uint64_t attributes);
+} efi_dxe_services;
+_Static_assert(sizeof(efi_gcd_memory_descriptor) == 56, "PI GCD descriptor ABI");
+_Static_assert(offsetof(efi_dxe_services, set_memory_space_attributes) == 64, "PI DXE service ABI");
 
 /* a device path is a list of these, each followed by its data, ending with type 0x7f subtype 0xff */
 typedef struct {

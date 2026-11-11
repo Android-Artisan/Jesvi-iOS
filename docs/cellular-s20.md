@@ -1,11 +1,12 @@
 # Galaxy S20 cellular: implementation log and checklist
 
-**Latest hardware status, 2026-11-11 11:02:** rollback is complete. Original
-BOOT and recovery prefixes were restored, then read from the running phone and
-compared byte-for-byte with the saved backups. iOS/USB/SSH returned; kernel and
-boot arguments match the baseline. Cellular UI files survived. The native UEFI
-M0 candidate failed its hardware test; **do not deploy it as a working image**.
-LTE/calls remain unavailable. See the result section below.
+**Latest hardware status, 2026-11-11 ~11:49:** memory bring-up now passes on
+our ORIGINAL working UEFI: all three CP ranges reserved, every CP page verified
+Normal Non-cacheable, iOS boot and kernel-return checks pass, memory audit exits
+0. This uses opt-in boot-service reservations, avoiding the failed native FD.
+Read-only GPIO/clock/pin baselines are complete. Original BOOT was restored after
+each bounded test; phone is back on its original images and released. No CP
+power/reset/SPI/firmware/DMA/NV action has occurred. LTE/calls remain unavailable.
 
 Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
 contains the upstream comparison, firmware/framing tools, memory audit, compiled
@@ -25,10 +26,11 @@ change was deployed with it.
   `work/hackios-xnu-kernel` worktree stays on `x1slte` with other sessions' work.
 - Owner/session: `codex-cellular`. Shared coordination:
   `sessions/codex-cellular.md`, `tools/team.sh`, `tools/phone-lock.sh` in the research root.
-- B holds the phone for camera work. No boot, modem reset, flash, network change
-  or shared build performed for this branch. Keep kernel sources/build output
-  local to this worktree when kernel implementation starts; do not symlink its
-  `xnu-src` to the main worktree. No push requested or performed.
+- Phone operations use the shared lock as `codex-cellular`. B's original
+  camera ownership was respected; expired-lock takeover and later test locks
+  were logged. Bounded cellular boot tests are recorded below. Main kernel
+  sources/build output remain untouched; do not symlink its `xnu-src` here.
+  No push requested or performed.
 - Evidence from another session's untracked `tools/cellular/README.md` was read
   and checked against Samsung source. That directory was left in place.
 
@@ -215,10 +217,14 @@ the first progress message: SLOG ends at `0xf4a00000`; it does not cover MSI at
 - [x] Implement CP-aware loader allocations and matching UEFI source reservations.
 - [x] Compile the ARM64 UEFI loader; validate 163,840 allocator boundary cases
   with ASan/UBSan and pass 19 Python format/audit/reservation tests.
-- [ ] M0: relocate loader staging and reserve CP regions in UEFI/pool allocation.
-  Verify USB recovery, display, Wi-Fi and sound still work; audit each new boot.
-- [ ] M1: bounded, opt-in read-only GPIO/clock snapshot from actual S20 wiring.
-  No unclocked PCIe register reads; verify CMGP and shared SPI pin ownership.
+- [x] M0 memory: relocated staging, reserved CP regions through working UEFI,
+  verified live Normal-NC mappings on every CP page before and after iOS.
+  Full saved-log audit exits 0; bounded tests restore exact original BOOT.
+- [ ] M0 regression completion: USB recovery/iOS boot/Wi-Fi driver are verified;
+  independent display/touch/audio regression remains before shipping broadly.
+- [x] M1: opt-in read-only CMGP GPIO, PERIC1 CMU/SYSREG and shared GPP8 pin
+  snapshots collected. No SPI/PCIe controller read or write. Active pin/clock
+  ownership and restore sequences must still be enforced before M2 writes.
 - [ ] M2: implement CP power/reset and SPI BOOT, one explicit attempt per boot;
   timeouts and rollback. Prove BOOT accepted / CP status handshake, not just TX.
 - [ ] M3: implement channel-1 host clocks/PHY, PCIe enumeration/BAR setup,
@@ -447,3 +453,88 @@ Evidence stays ignored in `out/cellular/m0-20261111/`; visible job
 `build/cellular-allocator-preflight.log` exited 0. **27 Python tests** and the
 163,840-case allocator oracle pass. Next isolate the full changed loader on
 original UEFI before blaming or retesting the native FD.
+
+
+### Retained CP reservations on the original UEFI — 2026-11-11 ~11:43
+
+The full changed loader booted the original iOS kernel in 62 seconds on the
+original FD. That isolated the earlier failure to the native FD or its interaction;
+allocator and ordinary loader boot work without it. A subsequent experiment
+claims the CP regions through existing UEFI services, preserving firmware code:
+
+1. Validate the complete memory map and DXE/GCD capabilities before changes.
+   Only the exact legacy `0xf0000000+16 MiB` BootServicesData descriptor may
+   be relinquished. Packet/MSI ranges must already be free or reserved.
+2. Allocate CP IPC 8 MiB, packet 64 MiB, MSI **64 KiB** as ReservedMemoryType.
+   MSI is rounded from its actual 4-KiB span to the firmware's 64-KiB reserved
+   allocation granule. No firmware bytes, modem partition or NV are accessed.
+3. Set Normal Non-cacheable through DXE SetMemorySpaceAttributes, preserving
+   unrelated attributes. The pinned ARM implementation maps **EFI_MEMORY_WC**
+   to Normal NC (MAIR 0x44); EFI_MEMORY_UC instead maps Device memory. Initial
+   Device-UC preflight was rolled back; the corrected Normal-NC path passed.
+4. Verify reserved ownership separately from cache policy. GetMemoryMap cache
+   flags remained stale for these allocations, so GCD and live EL1 translation
+   are checked for **every 4-KiB CP page**, not inferred from return codes.
+   PAR_EL1 fault, output address and Attr are validated; PAR_EL1 is restored.
+   [Arm's PAR_EL1 register description](https://documentation-service.arm.com/static/5e7b6b167158f500bd5bf124)
+   documents the status/address/attribute fields. Local pinned ArmMmuLib/CpuDxe
+   sources establish the Normal-NC 0x44 mapping.
+
+`CELLULAR_RESERVE_CP=1` opts in when building the loader. It is not automatically
+enabled in the default build yet. Preflight uses the same operations, then undoes
+all attributes/ownership before the original loader fallback. A failed normal
+reservation attempts rollback and reports unavailable; no modem is started.
+
+Hardware evidence:
+
+- Normal-NC preflight: reserved **3/3**, live Normal-NC **3/3**; every allocation,
+  cache setter, free and restore returned 0. Original loader booted iOS; probe
+  was removed and original BOOT verified byte-for-byte.
+- Full retained-reservation iOS boot: **70 seconds**, same original kernel.
+  `reserved-normal-v2-full-log.txt` and `reserved-normal-v2-after-return-log.txt`
+  prove reserved **3/3**, Normal-NC **3/3**, staging `ff000000+1000000`, Wi-Fi
+  `fd000000+2000000`, display `d4000000+c000000`, same high XNU window.
+  The after-return audit exits **0**, with no listed conflict or unknown.
+- Wi-Fi: all 512 DMA grants accepted, firmware loaded, station joined, RX/TX
+  packets observed. The collector's `.106` HTTP check failed because the actual
+  address announced by rwlogd was `.105` in both baseline and test logs.
+  USB/SSH worked. This is not an independent Wi-Fi throughput/sound/touch test.
+- Original BOOT restored afterward, independently read back identical, and iOS
+  returned in **66 seconds**. Recovery stayed original throughout isolation.
+  Visible job `build/cellular-reserved-normal-v2.log` exited **0**.
+- An earlier retained boot succeeded in 67 seconds but optional `/sbin/ifconfig`
+  was absent, interrupting log capture. Its finally-block restored BOOT correctly.
+  The corrected collector makes optional network checks nonfatal.
+
+All evidence is private/ignored in `out/cellular/m0-20261111/`. Host checks:
+**29 Python tests**, **19 UEFI ownership/cache cases**, **163,840 allocator
+oracle comparisons** under ASan/UBSan. This remains a partial DMA audit; PCIe1,
+S2MPU/IOMMU, IPC synchronization and modem/audio ownership are separate stages.
+
+### M1 completed: clock and shared pin snapshot — 2026-11-11 ~11:49
+
+`tools/cellular/s5123-clocks.py --read` requires the phone lock and performs nine
+single-word reads: PERIC1 mux/divider/two gates/Q-channel, SYSREG USI16 mode,
+and GPP8 CON/DAT/PUD. The latter bank is **0x10730060**, not 0x10740060.
+No SPI controller or unclocked PCIe register is touched. Evidence:
+`logs/cellular/clocks-20261111-114840-552162/report.json`.
+
+Observed: mux `0x10` (CMU_TOP source, busy 0), divider 0 (divide 1, busy 0),
+both gates `0x200000`, Q-channel `0x3f0002`, USI16 mode **0**. GPP8 pins 4..7
+are all inputs, level 0, pull-down. These observations do not prove the SPI
+controller can be accessed. Pins must be explicitly assigned for SPI; GPP8-6
+is later shared with dump notification and must be handed back appropriately.
+
+Clock planning correction: the CAL table's nominal 8.6-MHz row cannot justify
+exceeding the 2.15-MHz BOOT limit. With a 26-MHz oscillator and IP=4*SCLK,
+divide **3** gives ~2.1667 MHz SCLK; conservative divide **4** (register 3)
+gives **1.625 MHz**. The new tool/tests enforce that bound and avoid inventing
+a rate when CMU_TOP is selected. This is a source-based plan, not measured SCLK.
+
+SPI16 board behavior resolved for the next implementation: mode 0, 8-bit,
+64-byte FIFO, status RX count at bit 15/TX count at bit 6 (mask 0x7f), TX_DONE
+bit 25, controller-managed auto-CS with NSC count 2 (overlay mode 1). Samsung's
+PIO path splits a logical transfer into <=64-byte packets, receives/drains
+ignored RX even for TX-only, resets/flushed FIFOs between packets, and uses no
+DMA. Preserve that wire behavior rather than assuming a continuous manual CS.
+Controller completion alone must not be called CP BOOT acceptance.

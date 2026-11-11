@@ -11,6 +11,7 @@
  */
 #include "efi.h"
 #include "s20_memory.h"
+#include "s20_efi_memory.h"
 #include "identity.h"         /* who iOS shall think we are: from the iPhone's own device tree (mkidentity.py) */
 
 /* ------------------------------------------------------------------------ */
@@ -3077,12 +3078,44 @@ reserve_download_buffer(void)
 
 /* Confirm firmware ownership separately from our allocator exclusions. A new
  * loader on an old UEFI must not claim that the CP is fully reserved. */
+static efi_dxe_services *
+cellular_dxe_services(void)
+{
+	static const efi_guid guid = {0x05ad34ba, 0x6f02, 0x4214, {0x95,0x2e,0x4d,0xa0,0x39,0x8e,0x2b,0xb9}};
+	if (ST->nr_tables > 256) return NULL;
+	for (uint64_t i = 0; i < ST->nr_tables; i++) {
+		if (memcmp(&ST->tables[i].guid, &guid, sizeof(guid))) continue;
+		efi_dxe_services *dxe = ST->tables[i].table;
+		if (dxe && dxe->hdr.signature == 0x565245535f455844ULL && dxe->hdr.header_size >= sizeof(*dxe)) return dxe;
+	}
+	return NULL;
+}
+
+static int
+cellular_normal_nc(uint64_t base, uint64_t size)
+{
+	efi_dxe_services *dxe = cellular_dxe_services();
+	efi_gcd_memory_descriptor d;
+	if (!dxe || (READ_SYSREG(CurrentEL) >> 2) != 1 ||
+	    EFI_ERROR(dxe->get_memory_space_descriptor(base, &d)) ||
+	    d.base > base || d.length > ~0ULL - d.base || d.base + d.length < base + size ||
+	    (d.attributes & 0x1f) != 2 /* EFI_MEMORY_WC = Normal NC in ArmMmuLib */) return 0;
+	uint64_t saved = READ_SYSREG(PAR_EL1);
+	int okay = 1;
+	for (uint64_t address = base; address < base + size; address += 4096) {
+		__asm__ volatile ("at s1e1r, %0; isb" :: "r"(address) : "memory");
+		if (!s20_par_normal_nc(READ_SYSREG(PAR_EL1), address)) { okay = 0; break; }
+	}
+	__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved) : "memory");
+	return okay;
+}
+
 static void
 report_cellular_memory(void)
 {
 	static uint8_t map_buf[65536];
 	uint64_t map_size = sizeof(map_buf), key, stride;
-	uint32_t version, reserved = 0;
+	uint32_t version, reserved = 0, normal_nc = 0;
 	if (PLAT != &platform_y2s) return;
 	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
 	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) {
@@ -3090,21 +3123,13 @@ report_cellular_memory(void)
 		return;
 	}
 	for (unsigned i = 0; i < sizeof(s20_cp_regions) / sizeof(s20_cp_regions[0]); i++) {
-		uint64_t cursor = s20_cp_regions[i].base, end = cursor + s20_cp_regions[i].size;
-		while (cursor < end) {
-			uint64_t next = cursor;
-			for (uint64_t off = 0; off + stride <= map_size; off += stride) {
-				efi_memory_descriptor *d = (efi_memory_descriptor *)(map_buf + off);
-				if (d->type != EfiReservedMemoryType || d->pages > (~0ULL - d->phys_start) / 4096) continue;
-				uint64_t hi = d->phys_start + (d->pages << 12);
-				if (d->phys_start <= cursor && hi > cursor) { next = hi < end ? hi : end; break; }
-			}
-			if (next == cursor) break;
-			cursor = next;
-		}
-		reserved += cursor == end;
+		int owned = s20_efi_map_covers(map_buf, map_size, stride,
+		    s20_cp_regions[i].base, s20_cp_regions[i].size, EfiReservedMemoryType, 0);
+		reserved += owned;
+		if (owned) normal_nc += cellular_normal_nc(s20_cp_regions[i].base, s20_cp_regions[i].size);
 	}
 	print("cellular memory: reserved %d/3 (UEFI; no modem start requested)\n", (uint64_t)reserved);
+	print("cellular memory: normal-nc %d/3 (DXE and live EL1 translation; every CP page)\n", (uint64_t)normal_nc);
 }
 
 static void
@@ -5148,6 +5173,8 @@ stage_write(const char *part, uint64_t off)
 static int
 log_access(void)
 {
+	/* Recheck firmware ownership/cache policy after the kernel returned. */
+	report_cellular_memory();
 	if (stage_buf == NULL) {
 		uint64_t at = 0;
 
@@ -5417,6 +5444,99 @@ y2s_calliope_stop(void)
 	    (uint64_t)before[3], ((before[0] | before[1] | before[2] | before[3]) & 1) ? ": was running, stopped" : "");
 }
 
+#ifdef CELLULAR_RESERVE_CP
+/* Opt-in legacy-FD reservation: no modem action. Claim each CP range through
+ * boot services, then set Normal NC through DXE (which calls CPU Arch).
+ * Only the known fixed XNU Download descriptor may be relinquished. All
+ * other ranges must already be free or reserved; partial ownership fails.
+ * Preflight restores original attributes/ownership before fallback handoff;
+ * normal iOS runs retain the reservations. A failed request is rolled back.
+ */
+static struct {
+	uint64_t size, attributes;
+	int claimed, cache_changed;
+} cp_probe[3];
+static int cp_old_download_freed;
+static efi_dxe_services *cp_dxe;
+
+static int
+reserve_cellular_memory(void)
+{
+	static uint8_t map[65536];
+	uint64_t bytes = sizeof(map), key, stride;
+	uint32_t version;
+	if (PLAT != &platform_y2s) return 0;
+	cp_dxe = cellular_dxe_services();
+	if (!cp_dxe) return 0;
+	if (EFI_ERROR(BS->get_memory_map(&bytes, map, &key, &stride, &version)) ||
+	    stride < sizeof(efi_memory_descriptor) || bytes > sizeof(map) || bytes % stride) return 0;
+	int legacy = 0;
+	for (uint64_t off = 0; off < bytes; off += stride) {
+		efi_memory_descriptor *d = (efi_memory_descriptor *)(map + off);
+		if (d->phys_start == 0xf0000000 && d->pages == 0x1000 && d->type == EfiBootServicesData) legacy++;
+	}
+	/* Validate all ownership and GCD ranges before changing any of them. */
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		cp_probe[i].size = (s20_cp_regions[i].size + 0xffff) & ~0xffffULL;
+		efi_gcd_memory_descriptor d;
+		efi_status status = cp_dxe->get_memory_space_descriptor(base, &d);
+		if (EFI_ERROR(status) || d.base > base || d.length > ~0ULL - d.base ||
+		    d.base + d.length < base + cp_probe[i].size || !(d.capabilities & 2)) return 0;
+		cp_probe[i].attributes = d.attributes;
+		print("cellular reservation: GCD %x size %x attributes %x capabilities %x\n",
+		    base, cp_probe[i].size, d.attributes, d.capabilities);
+		if (s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiReservedMemoryType, 0)) continue;
+		if (i == 0 && legacy == 1) continue;
+		if (!s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiConventionalMemory, 0)) return 0;
+	}
+	if (legacy == 1) {
+		efi_status status = BS->free_pages(0xf0000000, 0x1000);
+		print("cellular reservation: release fixed download status %x\n", status);
+		if (EFI_ERROR(status)) return 0;
+		cp_old_download_freed = 1;
+	}
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		if (!s20_efi_map_covers(map, bytes, stride, base, cp_probe[i].size, EfiReservedMemoryType, 0)) {
+			uint64_t at = base;
+			efi_status status = BS->allocate_pages(AllocateAddress, EfiReservedMemoryType, cp_probe[i].size >> 12, &at);
+			print("cellular reservation: claim %x size %x status %x\n", base, cp_probe[i].size, status);
+			if (EFI_ERROR(status)) return 0;
+			cp_probe[i].claimed = 1;
+		}
+		if ((cp_probe[i].attributes & 0x1f) != 2) {
+			cp_probe[i].cache_changed = 1;
+			efi_status status = cp_dxe->set_memory_space_attributes(base, cp_probe[i].size,
+			    (cp_probe[i].attributes & ~0x1fULL) | 2);
+			print("cellular reservation: set Normal NC %x size %x status %x\n", base, cp_probe[i].size, status);
+			if (EFI_ERROR(status)) return 0;
+		}
+	}
+	return 1;
+}
+
+static void
+release_cellular_memory(void)
+{
+	for (unsigned i = 0; i < 3; i++) {
+		uint64_t base = s20_cp_regions[i].base;
+		if (cp_probe[i].cache_changed) {
+			efi_status status = cp_dxe->set_memory_space_attributes(base, cp_probe[i].size, cp_probe[i].attributes);
+			print("cellular reservation: restore attributes %x status %x\n", base, status);
+		}
+		if (cp_probe[i].claimed) {
+			efi_status status = BS->free_pages(base, cp_probe[i].size >> 12);
+			print("cellular reservation: release %x status %x\n", base, status);
+		}
+	}
+	if (cp_old_download_freed) {
+		uint64_t at = 0xf0000000;
+		efi_status status = BS->allocate_pages(AllocateAddress, EfiBootServicesData, 0x1000, &at);
+		print("cellular reservation: restore fixed download status %x\n", status);
+	}
+}
+#endif
 #ifdef CELLULAR_PREFLIGHT_ONLY
 /* Exercise the real allocation path without booting a kernel with new pools.
  * The original installed loader is loaded first and started after all probe
@@ -5451,6 +5571,9 @@ cellular_memory_preflight(void)
 	}
 	if (!fallback || !report || report_size < 8192) return EFI_ERROR_BIT | 14;
 	print("== CELLULAR MEMORY PREFLIGHT (no modem start) ==\n");
+#ifdef CELLULAR_RESERVE_CP
+	print("cellular reservation: probe result %d\n", (uint64_t)reserve_cellular_memory());
+#endif
 	print_memory_map();
 	report_cellular_memory();
 	int staging_ok = reserve_download_buffer();
@@ -5469,6 +5592,11 @@ cellular_memory_preflight(void)
 		status = BS->free_pages(download_base, DOWNLOAD_MAX_SIZE >> 12);
 		print("cellular preflight: staging free status %x\n", status);
 	}
+#ifdef CELLULAR_RESERVE_CP
+	release_cellular_memory();
+	print("cellular reservation: after undo\n");
+	report_cellular_memory();
+#endif
 	print("cellular preflight: handing off to the original loader\n");
 	uint32_t report_len = log_len < report_size - 8 ? log_len : (uint32_t)(report_size - 8);
 	memset(report, 0, (size_t)report_size);
@@ -5515,6 +5643,16 @@ efi_main(efi_handle image, efi_system_table *st)
 	print("platform %s\n", PLAT->name);
 #ifdef CELLULAR_PREFLIGHT_ONLY
 	return cellular_memory_preflight();
+#endif
+#ifdef CELLULAR_RESERVE_CP
+	if (PLAT == &platform_y2s) {
+		if (reserve_cellular_memory()) {
+			print("cellular reservation: retained for iOS; modem stays off\n");
+		} else {
+			print("cellular reservation: failed; restoring original ownership; modem unavailable\n");
+			release_cellular_memory();
+		}
+	}
 #endif
 	if (PLAT == &platform_y2s) {
 		y2s_calliope_stop();

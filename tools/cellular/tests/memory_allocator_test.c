@@ -3,6 +3,42 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../../../xnuloader/s20_memory.h"
+#include "../../../xnuloader/s20_efi_memory.h"
+#include <string.h>
+
+static void map_coverage_tests(void)
+{
+    assert(s20_par_normal_nc(0x44000000f0000800ULL, 0xf0000000));
+    assert(!s20_par_normal_nc(0x44000000f0000801ULL, 0xf0000000));
+    assert(!s20_par_normal_nc(0xff000000f0000800ULL, 0xf0000000));
+    assert(!s20_par_normal_nc(0x00000000f0000800ULL, 0xf0000000));
+    assert(!s20_par_normal_nc(0x44000000f0001800ULL, 0xf0000000));
+    struct padded { efi_memory_descriptor d; uint64_t extra; } map[] = {
+        {{.type=0, .phys_start=0x3000, .pages=1, .attribute=1}, 0},
+        {{.type=0, .phys_start=0x1000, .pages=2, .attribute=1}, 0},
+    };
+    assert(s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3000, 0, 1));
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3001, 0, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0, 0x4000, 0, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0, 0, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map)-1, sizeof(map[0]), 0x1000, 4096, 0, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map), 0, 0x1000, 4096, 0, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map), 8, 0x1000, 4096, 0, 0));
+    map[0].d.attribute=8;
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3000, 0, 1));
+    assert(s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3000, 0, 0));
+    map[0].d.attribute=9; /* A capability mask with UC+WB is not active UC. */
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3000, 0, 1));
+    map[0].d.type=7;
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x1000, 0x3000, 0, 0));
+    map[0].d.pages=UINT64_MAX;
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), 0x3000, 0x1000, 7, 0));
+    assert(!s20_efi_map_covers(map, sizeof(map), sizeof(map[0]), UINT64_MAX-1, 4096, 0, 0));
+    uint8_t unaligned[sizeof(map)+1];
+    memcpy(unaligned+1, map, sizeof(map));
+    assert(s20_efi_map_covers(unaligned+1, sizeof(map), sizeof(map[0]), 0x1000, 4096, 0, 1));
+    puts("UEFI ownership/cache coverage: 19 cases passed");
+}
 
 static int valid(uint64_t lo, uint64_t hi, uint64_t at, uint64_t size, uint64_t align)
 {
@@ -27,6 +63,7 @@ static uint64_t brute(uint64_t lo, uint64_t hi, uint64_t size, uint64_t align)
 
 int main(void)
 {
+    map_coverage_tests();
     /* Historical 192-MiB pool fits exactly at d4000000 without headroom. */
     assert(s20_low_dma_candidate(0xd0000000, 0xe0000000, 0xc000000, 0x10000) == 0xd4000000);
     assert(s20_low_dma_candidate(0xf0000000, 0xf0800000, 4096, 4096) == 0);
