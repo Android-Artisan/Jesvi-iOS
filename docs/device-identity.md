@@ -23,31 +23,24 @@ native TrollStore check returning 0. A debugging-entitled test IPA installed
 with exit 0 after that reboot and was removed. Developer Mode therefore needs
 no per-boot toggle in this port.
 
-The Finder iPhone-style trust/sidebar/eject feature remains separate work.
-USB presently supplies CDC serial and Ethernet; the stock lockdownd and AFC
-executables are available, but the job recipe excludes lockdown/USB services
-and the kernel has no native device-side USB multiplexing interface. The
-lockdown launch recipe exposes TCP port 62078, which can be tested over the
-existing USB Ethernet link before changing USB descriptors or transport.
-No native Finder support is claimed by these name/development changes.
+Native USB mux now supplies the iPhone-style Mac discovery and trust path,
+alongside the existing serial and Ethernet functions. The user accepted Trust,
+and the Mac's native pairing, session validation and AFC file-sharing checks
+succeeded. Finder shows Jesvi IOS, model iPhone X and storage. See
+`tools/usb/README.md` for the transport and tests. The device summary loads,
+but Finder's management panel reports Activation Failed. The user chose to
+retain that status; no activation compatibility spoof is enabled.
 
 The intermittent cold Safari error is deferred at the user's request. Normal
 DNS and HTTPS probes succeeded (DNS ~0.03 s; HTTPS ~0.06–0.09 s), which does
 not establish what fails in a cold WebKit process. No speculative Safari or
 network workaround has been applied.
 
-## Native Finder feasibility probe
+## Apple Account and iCloud
 
-The stock lockdownd was temporarily loaded with a USB-address-only listener,
-no keepalive/panic-on-crash policy, and logging. QueryType over TCP 62078 was
-reset. Its own logs identify the missing `IOUSBDeviceController`, and explicitly
-reject the unpaired Wi-Fi-style connection. The temporary job was then unloaded.
-No native pairing support or Finder device entry is enabled by default.
-The next transport work is a device-side USB mux/controller bridge; exposing
-TCP alone cannot substitute for the initial USB trust/pairing path.
-
-A follow-up loopback and Unix-socket test also failed. On the Unix socket,
-stock lockdownd explicitly rejected a non-kernel peer. A userspace TCP-to-Unix
-relay therefore does not solve this transport gap. The diagnostic source and
-exact observations are recorded in `tools/usb/README.md`; the temporary launch
-job was unloaded and is not enabled in default builds.
+These USB changes do not establish native Apple Account/iCloud support. The
+live native activation API returned `Unactivated`. The existing activation
+chain still lacks supported Secure Enclave/UIK operations and an Apple-issued
+device identity. Full sign-in, push-backed synchronization and iCloud services
+remain unverified and blocked beyond the USB transport. Seeing iCloud Drive in
+Files alone does not establish account authentication or synchronization.

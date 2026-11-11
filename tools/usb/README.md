@@ -1,41 +1,86 @@
-# Native Finder transport investigation
+# Native USB mux and Finder
 
-This directory contains a diagnostic, not a Finder implementation. The current
-gadget has serial and Ethernet interfaces; it has no USB mux interface. Changing
-the USB product name does not add Finder pairing or file sharing.
+`usb_mux=1` adds a native USB mux interface alongside the existing CDC serial
+and Ethernet functions. The device name is Jesvi IOS. Stock macOS usbmuxd and
+MobileDevice.framework handle discovery, trust, TLS sessions, and AFC; no Mac
+helper daemon is needed for normal use. The on-device lockdownd is socket
+activated and listens only on loopback and its native local control socket.
 
-Build the probe with `bash tools/usb/build.sh`. It uses the locally supplied
-iPhoneOS SDK and signs only our executable. The executable sends one `QueryType`
-request and reads at most 16 KiB. It does not request pairing, change trust,
-install software, or copy pairing credentials. Socket reads/writes time out
-after five seconds. Use `lockdown-probe unix`, `loopback`, or `usb` on the phone;
-the respective destinations are `/var/run/lockdown.sock`, `127.0.0.1:62078`, and
-`10.77.0.2:62078`. A listener must already exist.
+The mux worker connects to native services with actual kernel TCP sockets.
+Stock lockdownd checks TCP_PEERPID and classifies those loopback peers as USB.
+The IOKit mux/interface services publish actual USB configuration state so
+native lockdownd can handle Trust and disconnect notifications. The transport
+does not fabricate pairing responses, activation records, or account tokens.
 
-## Live results, 2026-11-11
+USB interface 4 uses bulk OUT 0x05 and IN 0x85. The research interoperability
+mode uses VID/PID 05ac/12a8 for the built-in desktop mobile-device driver match.
+Its serial string matches this port's existing synthetic MobileGestalt identity;
+it is not an Apple-issued identity or activation credential. The older serial
+and ECM-only modes retain their existing descriptors when `usb_mux=0`.
 
-The stock iOS 16.5 lockdownd was temporarily loaded from a diagnostic launch
-recipe, with no keepalive or panic-on-crash policy. The listener was restricted
-to the USB address, then loopback for the local test. The Unix socket was also
-tested. Each temporary job was unloaded afterward.
+The worker supports sixteen connections, bounded queues, host receive-window
+flow control, and split mux frames up to 64 KiB. A single mux packet can span
+several 16 KiB USB receive transfers; upstream usbmuxd uses a 48 KiB transmit
+MTU. USB disconnect clears queues and closes kernel sockets. All socket I/O is
+outside the DWC3 polling path. Native install/check-in services remain subject
+to their existing entitlement and pairing requirements.
 
-- The TCP request was reset. Native log: `socket_accept_callback: Killing the
-  WiFi connection immediately.`
-- The Unix socket closed the request. Native log: `peer_is_safe: non kernel
-  peer, pid 380!`, followed by `socket_accept_callback: Peer is unsafe.`
-- Native log also reports `we failed to create an IOUSBDeviceController`.
+## Build and diagnostics
 
-The Unix socket therefore cannot be used as a userspace proxy for initial USB
-pairing. The TCP listener also does not establish initial USB trust. Do not
-enable lockdownd in the default job list on the strength of these probes.
+The standard x1slte command line enables `usb_mux=1`. Build the kernel and userland normally. The latter includes
+`com.redwood.usbmux-lockdown.plist`. Kernel, root APFS image, and loader command
+line must all be deployed together. The payload builder checks the final,
+resolved command length after root-window substitution.
 
-The next implementation requires a device-side USB mux transport and the
-kernel connection path accepted by stock lockdownd. It must retain the existing
-serial/Ethernet interfaces for recovery, handle USB disconnect/reconnect, and
-use the native trust/pairing flow. Actual Finder sidebar, trust prompt, eject,
-and AFC file-sharing tests are still pending.
+- `bash tools/usb/check.sh`: host framing/descriptor checks with ASan and UBSan,
+  including incomplete and oversized headers and a 48 KiB split frame.
+- `python3 tools/usb/mac-list.py`: list public discovery fields through the
+  Mac's existing `/var/run/usbmuxd`, without reading pairing records.
+- `python3 tools/usb/mac-probe.py DEVICE_ID`: read native device type, display
+  name, and OS version over the actual USB connection.
+- `bash tools/usb/build.sh`: compile/sign the on-device QueryType diagnostic
+  with the locally supplied SDK. `lockdown-probe loopback` is a userspace
+  negative control; root `sysctl -n kern.usb_lockdown_query` uses the accepted
+  kernel peer path. The Unix socket is a local control channel, not a host
+  lockdown stream.
 
-The host USB wire framing reference is upstream
-[usbmuxd device.c](https://github.com/libimobiledevice/usbmuxd/blob/master/src/device.c).
-Its host daemon protocol is a different layer and cannot simply be placed on
-a new USB bulk endpoint.
+## Verification on SM-G980F, iOS 16.5, 2026-11-11
+
+Native Mac discovery, QueryType, DeviceName=Jesvi IOS, and ProductVersion=16.5
+passed. The user saw and approved the native Trust prompt. Apple's native
+AMDevicePair, ValidatePairing, StartSession and StartService(com.apple.afc)
+returned success. An AFC test created a UUID-named file, wrote/read/verified
+its contents, and removed only that file. Pairing remained valid after a USB
+link restart. The user confirmed Finder shows Jesvi IOS, iPhone X and storage.
+A 256 KiB deterministic-pattern write/read/verify/cleanup then passed after
+reboot, with the existing pairing retained. The initial 16 KiB packet limit
+was corrected to reassemble 48 KiB host frames. Finder loading remains a
+separate UI result: the user confirmed the spinner clears, then clarified that
+Finder's management panel reports Activation Failed while the device summary
+still shows name, battery and storage. The user chose to keep that real status
+visible. Native AFC remains usable; the normal activation-gated Finder panel,
+backup, restore and media sync are not claimed. A native application-list query
+returned -402653091 while AFC still passed; no compatibility bypass was added.
+
+Native pairing initially failed despite lockdownd holding its required
+entitlement. The research AMFI stand-in has no private OSEntitlements object;
+CS_OPS_ENTITLEMENTS_BLOB therefore returned success with an empty output. The
+kernel now falls back to its existing embedded XML blob, retaining the normal
+process/signature checks. On the live daemon, XML output changed from empty
+to the existing 5351-byte blob; DER stayed 3488 bytes. No entitlements are
+added. Pairing progressed to the normal locked-device/Trust flow and succeeded.
+
+## iCloud
+
+Full native Apple Account sign-in and sync are not established by USB pairing.
+The native MAEGetActivationStateWithError read returned `Unactivated`. Existing
+activation diagnostics identify unsupported UIK operations in MiniAppleKeyStore
+and the absent Secure Enclave-backed activation/device identity. This USB work
+does not provide those keys, Apple-issued certificates, or push credentials.
+An iCloud Drive location in Files is not evidence that an account is signed in
+or synchronizing. No account credentials were requested or used in these tests.
+
+Protocol references:
+[usbmuxd device.c](https://github.com/libimobiledevice/usbmuxd/blob/master/src/device.c),
+[USB MTU/MRU definitions](https://github.com/libimobiledevice/usbmuxd/blob/master/src/usb.h).
+The host daemon socket protocol is a different layer from USB wire framing.

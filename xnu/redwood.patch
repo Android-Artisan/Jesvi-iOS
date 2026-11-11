@@ -81,10 +81,10 @@ index 4b83160780c3..b6e8ed633c1d 100644
  
  #
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cf..ec3d4cdcb612 100644
+index 44274016a4cf..d4c7a214e22a 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,64 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,65 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -102,6 +102,7 @@ index 44274016a4cf..ec3d4cdcb612 100644
 +bsd/dev/redwood_exynos990_usb.c	standard
 +bsd/dev/redwood_usb_stubs.c	standard
 +bsd/dev/redwood_usbnet.c	standard
++bsd/dev/redwood_usbmux.c	standard
 +bsd/dev/redwood_s2mpb02_torch.c	standard
 +bsd/dev/redwood_dbgport.c	standard
 +bsd/dev/redwood_cs40l25.c	standard
@@ -149,7 +150,7 @@ index 44274016a4cf..ec3d4cdcb612 100644
  bsd/dev/dev_perfmon.c optional config_perfmon
  
  bsd/libkern/crc32.c			standard
-@@ -155,6 +213,53 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+@@ -155,6 +214,53 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
  bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
@@ -203,7 +204,7 @@ index 44274016a4cf..ec3d4cdcb612 100644
  
  bsd/miscfs/routefs/routefs_ops.c	optional routefs
  
-@@ -361,6 +466,7 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +467,7 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -211,7 +212,7 @@ index 44274016a4cf..ec3d4cdcb612 100644
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -383,6 +489,7 @@ bsd/kern/kern_debug.c			standard
+@@ -383,6 +490,7 @@ bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
  bsd/kern/kern_descrip.c			standard
  bsd/kern/kern_guarded.c			standard
@@ -949,6 +950,26 @@ index 88adf2dda936..2b2f528d2273 100644
  	/*
  	 * We first evaluate policies that may deny the granting of
  	 * privilege unilaterally.
+diff --git a/bsd/kern/kern_proc.c b/bsd/kern/kern_proc.c
+index 407a18be752f..9b877fcd8003 100644
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3322,6 +3322,15 @@ csops_internal(pid_t pid, int ops, user_addr_t uaddr, user_size_t usersize, user
+ 
+ 		void* osent = csblob_os_entitlements_get(blob);
+ 		if (!osent) {
++			/* Redwood's AMFI stand-in retains the signature's XML blob rather
++			 * than constructing Apple's private OSEntitlements object. Expose
++			 * that existing blob to SecTask just as the kernel query helpers do.
++			 * No entitlements are added or synthesized here.
++			 */
++			error = cs_entitlements_blob_get(pt, &start, &length);
++			if (error == 0 && start != NULL) {
++				error = csops_copy_token(start, length, usize, uaddr);
++			}
+ 			goto out;
+ 		}
+ 		CS_GenericBlob* xmlblob = NULL;
 diff --git a/bsd/kern/kern_sig.c b/bsd/kern/kern_sig.c
 index ae4a5f33df1e..3ac092333d5b 100644
 --- a/bsd/kern/kern_sig.c
@@ -1972,7 +1993,7 @@ index 5219fb0d9ed6..d88015b06b3a 100644
  //	Now check if we are trying to root on a memory device
  //
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52062e0..be51e603cf3d 100644
+index 5fb0a52062e0..37077be9d33a 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
 @@ -79,6 +79,16 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
@@ -1992,6 +2013,12 @@ index 5fb0a52062e0..be51e603cf3d 100644
  iokit/Kernel/IOPlatformIO.cpp				optional iokitcpp
  
  iokit/Kernel/IOCPU.cpp					optional iokitcpp
+@@ -148,3 +158,5 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
+ 
+ # Skywalk
+ iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
++
++iokit/Kernel/MiniUSBDeviceMux.cpp			optional iokitcpp
 diff --git a/libkern/conf/files b/libkern/conf/files
 index ece14c7d41d3..4a903f73a9ef 100644
 --- a/libkern/conf/files

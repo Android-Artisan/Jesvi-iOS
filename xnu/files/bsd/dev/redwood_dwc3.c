@@ -304,10 +304,12 @@ SYSCTL_DECL(_kern_redwood);
 #define PEP_ECM_OUT             4
 #define PEP_ECM_IN              7
 #define PEP_ECM_NOTIFY          9
-#define NPEPS                   10
+#define PEP_MUX_OUT             10
+#define PEP_MUX_IN              11
+#define NPEPS                   12
 
 /* memory the controller reaches: one 32 KB block below 4 GB, mapped uncached */
-#define DMA_SIZE                (128 * 1024)
+#define DMA_SIZE                (192 * 1024)
 #define EVT_OFF                 0x0000u
 #define EVT_SIZE                4096u
 #define TRB_OFF(slot)           (0x1000u + (slot) * 64u)       /* one TRB per cache line */
@@ -325,6 +327,9 @@ SYSCTL_DECL(_kern_redwood);
 #define ECM_RX_TRBS             0x9200u
 #define ECM_TX_BUFS             0x10000u        /* ECM_BATCH x ECM_BUF */
 #define ECM_RX_BUFS             0x14000u
+#define MUX_OUT_OFF             0x18000u
+#define MUX_IN_OFF              0x1c000u
+#define MUX_BUF                 16384u
 
 #define RING_SIZE               (1024u * 1024u)        /* the log on its way out; a power of two */
 
@@ -336,6 +341,13 @@ enum { EP0_IDLE, EP0_SETUP, EP0_DATA, EP0_STATUS_WAIT, EP0_STATUS };
 
 static uint32_t steps, poll_ms = 2, drain_ms = 1000, crlf = 1, full_speed, susphy, glue_flags;
 static const struct redwood_usb_glue *glue;
+static uint32_t mux_on;
+static bool mux_zlp;
+static uint32_t mux_rx_pending;
+extern void redwood_usbmux_link(bool);
+extern bool redwood_usbmux_rx(const uint8_t *, size_t);
+extern size_t redwood_usbmux_tx(uint8_t *, size_t);
+static void pump_mux(void);
 static uint32_t ecm_on;                 /* usb_ecm=1 */
 static int ecm_note_next;
 /*
@@ -642,7 +654,7 @@ apply(const struct usbacm_reply *r)
 		}
 	}
 	if (r->effects & (USBACM_EFF_HALT | USBACM_EFF_CLEAR_HALT)) {
-		int p = r->ep == USBACM_EP_OUT ? PEP_OUT : r->ep == USBACM_EP_IN ? PEP_IN : r->ep == USBECM_EP_OUT ? PEP_ECM_OUT :
+		int p = r->ep == USBMUX_EP_OUT ? PEP_MUX_OUT : r->ep == USBMUX_EP_IN ? PEP_MUX_IN : r->ep == USBACM_EP_OUT ? PEP_OUT : r->ep == USBACM_EP_IN ? PEP_IN : r->ep == USBECM_EP_OUT ? PEP_ECM_OUT :
 		    r->ep == USBECM_EP_IN ? PEP_ECM_IN : r->ep == USBECM_EP_NOTIFY ? PEP_ECM_NOTIFY : PEP_NOTIFY;
 
 		if (r->effects & USBACM_EFF_HALT) {
@@ -650,6 +662,9 @@ apply(const struct usbacm_reply *r)
 			(void)depcmd(p, CMD_SETSTALL, 0, 0, 0, NULL);
 		} else {
 			(void)depcmd(p, CMD_CLEARSTALL, 0, 0, 0, NULL);
+			if (p == PEP_MUX_OUT && mux_on && acm.config && !pep[p].active) {
+				(void)start_xfer(p,dma_pa+MUX_OUT_OFF,MUX_BUF,TRBCTL_NORMAL);
+			}
 			if (p == PEP_OUT && steps >= 5 && !pep[PEP_OUT].active) {
 				(void)start_xfer(PEP_OUT, dma_pa + OUT_OFF, 512, TRBCTL_NORMAL);
 			}
@@ -766,6 +781,11 @@ ep0_notready(int p, uint32_t status)
 static void
 bulk_down(void)
 {
+	if (mux_on) {
+		end_xfer(PEP_MUX_OUT); end_xfer(PEP_MUX_IN);
+		wr(DALEPENA,rd(DALEPENA)&~((1u<<PEP_MUX_OUT)|(1u<<PEP_MUX_IN)));
+		redwood_usbmux_link(false); mux_zlp=false; mux_rx_pending=0;
+	}
 	end_xfer(PEP_OUT);
 	end_xfer(PEP_IN);
 	end_xfer(PEP_NOTIFY);
@@ -947,6 +967,12 @@ bulk_up(void)
 		}
 	}
 	if (steps >= 5) {
+        if (mux_on) {
+            if (ep_config(PEP_MUX_OUT,2,mps,DEPCFG_ACTION_INIT,0) || ep_config(PEP_MUX_IN,2,mps,DEPCFG_ACTION_INIT,0)) { say("usbmux: endpoints failed\n"); return; }
+            wr(DALEPENA,rd(DALEPENA)|(1u<<PEP_MUX_OUT)|(1u<<PEP_MUX_IN));
+            redwood_usbmux_link(true);
+            (void)start_xfer(PEP_MUX_OUT,dma_pa+MUX_OUT_OFF,MUX_BUF,TRBCTL_NORMAL);
+        }
 		(void)start_xfer(PEP_OUT, dma_pa + OUT_OFF, mps, TRBCTL_NORMAL);
 		pump_in();
 	}
@@ -1260,6 +1286,20 @@ pump_in(void)
 	}
 }
 
+static void
+pump_mux(void)
+{
+ if(!mux_on || quiescing || !acm.config)return;
+ if(mux_rx_pending && redwood_usbmux_rx((const uint8_t *)(uintptr_t)(dma+MUX_OUT_OFF),mux_rx_pending)){
+  mux_rx_pending=0;
+  if(!(acm.halted&64))(void)start_xfer(PEP_MUX_OUT,dma_pa+MUX_OUT_OFF,MUX_BUF,TRBCTL_NORMAL);
+ }
+ if(pep[PEP_MUX_IN].active || (acm.halted&128))return;
+ if(mux_zlp){mux_zlp=false;(void)start_xfer(PEP_MUX_IN,dma_pa+MUX_IN_OFF,0,TRBCTL_NORMAL);return;}
+ size_t n=redwood_usbmux_tx((uint8_t *)(uintptr_t)(dma+MUX_IN_OFF),MUX_BUF);
+ if(n){mux_zlp=(n%(high_speed?USBACM_HS_BULK:USBACM_FS_BULK))==0;(void)start_xfer(PEP_MUX_IN,dma_pa+MUX_IN_OFF,(uint32_t)n,TRBCTL_NORMAL);}
+}
+
 static void console(char *line);
 
 static void
@@ -1268,6 +1308,12 @@ bulk_complete(int p)
 	volatile struct trb *t = trb_of(p);
 	uint32_t left = t->size & TRB_SIZE_MASK, done = pep[p].len > left ? pep[p].len - left : 0;
 
+    if (p==PEP_MUX_OUT) {
+        if(done){mux_rx_pending=done;pump_mux();}
+        else if(acm.config && !(acm.halted&64))(void)start_xfer(PEP_MUX_OUT,dma_pa+MUX_OUT_OFF,MUX_BUF,TRBCTL_NORMAL);
+        return;
+    }
+    if(p==PEP_MUX_IN){pump_mux();return;}
 	if (p == PEP_ECM_OUT) {
 		(void)ecm_rx_scan();
 		if (acm.config != 0 && acm.ecm_alt == 1 && !(acm.halted & 8)) {
@@ -1277,6 +1323,7 @@ bulk_complete(int p)
 	}
 	if (p == PEP_ECM_IN) {
 		pump_ecm();
+		pump_mux();
 		return;
 	}
 	if (p == PEP_ECM_NOTIFY) {
@@ -1329,7 +1376,7 @@ on_reset(void)
 	}
 	bulk_down();
 	for (int p = 2; p < NPEPS; p++) {
-		if (p == 2 || p == 3 || p == 5 || (ecm_on && (p == 4 || p == 7 || p == 9))) {
+		if (p == 2 || p == 3 || p == 5 || (ecm_on && (p == 4 || p == 7 || p == 9)) || (mux_on && (p==PEP_MUX_OUT || p==PEP_MUX_IN))) {
 			(void)depcmd(p, CMD_CLEARSTALL, 0, 0, 0, NULL);
 		}
 	}
@@ -1951,6 +1998,8 @@ core_init(void)
 	wr(DALEPENA, 3);
 	usbacm_init(&acm);
 	acm.ecm = ecm_on != 0;
+	acm.mux = mux_on != 0;
+	if(mux_on)acm.strings[3]="d6ca5f8da676e44a1ed9455d72d070481d33dd9e";
 	if (ecm_on) {
 		acm.strings[2] = "Jesvi IOS";
 	}
@@ -2228,6 +2277,7 @@ tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		events();
 		pump_in();
 		pump_ecm();
+		pump_mux();
 	}
 	if (!connected && !link_stopped && glue->phy_state != NULL) {
 		uint64_t now = mach_absolute_time(), ns;
@@ -2333,6 +2383,8 @@ usb_gadget_init(void)
 	(void)PE_parse_boot_argn("usb_gadget_susphy", &susphy, sizeof(susphy));
 	(void)PE_parse_boot_argn("usb_gadget_crlf", &crlf, sizeof(crlf));
 	(void)PE_parse_boot_argn("usb_ecm", &ecm_on, sizeof(ecm_on));
+	(void)PE_parse_boot_argn("usb_mux", &mux_on, sizeof(mux_on));
+	if(mux_on)ecm_on=1;
 	if (PE_parse_boot_argn("usb_gadget_poll", &value, sizeof(value)) && value >= 1 && value <= 50) {
 		poll_ms = value;
 	}
