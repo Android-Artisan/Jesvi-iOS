@@ -57,7 +57,7 @@ ideas. Qualcomm QMI/IPA drivers cannot operate Samsung SPI/PCIe/SIPC hardware.
 | CP memory ownership/cache | Tested on phone | Reserved 3/3, every CP page Normal NC, audit0 before/after iOS |
 | GPIO/clock/pin baseline | Read-only snapshots done | Documented actual state; no unclocked SPI/PCIe access |
 | SPI16 transport | Host model and phone internal loopback pass | Next: bounded CP power/reset, real BOOT transfer and CP acceptance proof |
-| CP power + firmware boot | LOW-only GPIO proven; powered probe compiled/host tested, not run | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
+| CP power + firmware boot | Powered SPI BOOT64496 bytes and safe shutdown proven; PCIe acceptance pending | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
 | PCIe1 transport | Pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
 | SIPC5 + Samsung IPC | Framing parser only | Queues/doorbells/interrupts, flow control and crash recovery |
 | SIM + network registration | Pending | Actual SIM/operator/signal and bounded rejection/reconnect handling |

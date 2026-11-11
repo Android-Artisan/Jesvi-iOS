@@ -48,8 +48,8 @@ Validated 2026-11-11:
 Bounded loader tests were installed and removed afterward; the phone currently
 had its original BOOT/recovery copies restored after each test. Other agents have
 since updated the phone; refresh the baseline before the next deployment.
-Internal SPI loopback and reset/power LOW-only GPIO writes are proven. No actual
-CP power-on, BOOT firmware transmission, modem DMA or NV access yet.
+Internal SPI loopback and reset/power LOW-only GPIO writes are proven. Actual CP power/BOOT transmission has since passed:64496 bytes, safe shutdown
+and exact BOOT restore. No modem DMA, NV access, LTE or call proof yet.
 UI remains installed. Keep generated JSON/private logs outside the source tree.
 
 Additional tools:
@@ -63,7 +63,7 @@ Additional tools:
 - Memory audit requires both `reserved 3/3` and `normal-nc 3/3` from the latest
   boot. Boot-services memory descriptors alone did not prove active cache policy.
 
-### Guarded CP BOOT probe (compiled and host tested, not deployed)
+### Guarded CP BOOT probe (phone SPI transfer and shutdown passed)
 
 `s5123-boot.h` sequences CRC validation, ownership checks, power/reset, bounded
 SPI and shutdown. The UEFI adapter requires all memory/MMIO/loopback/GPIO
@@ -95,3 +95,27 @@ private directory is explicitly named `cp-boot-OFFLINE-OLD-BASELINE`; do not
 deploy it against the newer installed camera/Files/USB kernel. Fresh baseline
 required. The manifest now records standalone BOOT size and both candidate
 and original-prefix SHA256 hashes for deployment/readback checks.
+
+### Current backup and PCIe prerequisites
+
+`capture-baseline.py --output out/cellular/NEW-DIRECTORY` requires the cellular
+phone lock and reads current recovery twice, compares BOOT to its prefix, checks
+kernel/BOOT stability, and verifies AVB. It writes baseline.json last. Use a
+visible Terminal job; output is private/ignored. Revalidate before deployment.
+Historical m0 and earlier-current backups must not overwrite newer agent work.
+
+`s5123-pcie-baseline.py` defaults to a plan. `--read` takes21 individually
+whitelisted CMU/GPIO/PMU snapshots; isolated controller addresses are refused.
+Phone readings: PCIe gates enabled, PHY isolated, GPF3 pins input.
+
+`CELLULAR_PCIE_MAP_PREFLIGHT=1` requires memory/MMIO/fallback preflights and
+excludes powered CP BOOT. Nine UEFI PCIe regions passed actual live Device
+identity checks; iOS returned, BOOT restored exact, final iOS64s. No controller
+access in that test. `CELLULAR_PCIE_ACCESS_PREFLIGHT=1` additionally prepares
+a separate root-port identity read using a saved/restored PHY input clock,
+with CP off and no link/DMA request. See session/docs for hardware result.
+
+**PCIe root-access probe failed on hardware.** `CELLULAR_PCIE_ACCESS_PREFLIGHT`
+is now disabled in build.sh. Do not deploy its saved artifact. Mapping-only
+preflight passed; exact failing MMIO in the access attempt is unknown. See
+cellular-s20.md for recovery evidence and prerequisites to revisit.

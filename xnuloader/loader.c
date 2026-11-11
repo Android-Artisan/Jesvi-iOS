@@ -5790,6 +5790,17 @@ cellular_mmio_preflight(void)
 		{0x10730000, 0x1000}, /* GPIO PERIC1 */
 		{0x15c30000, 0x1000}, /* GPIO CMGP */
 		{0x10960000, 0x1000}, /* SPI16: mapping only, no controller access */
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+		{0x13c00000, 0x4000}, /* HSI2 clock controls; never write shared UFS clocks */
+		{0x13c30000, 0x1000}, /* GPF3 CLKREQ/PERST inputs */
+		{0x13c20000, 0x2000}, /* PCIe1 SYSREG: mapping only */
+		{0x13d20000, 0x2000}, /* ELBI: mapping only; PHY remains isolated */
+		{0x13d50000, 0x2000}, /* PHY: mapping only */
+		{0x13800000, 0x301000}, /* DBI: mapping only */
+		{0x13d40000, 0x1000}, /* PCS: mapping only */
+		{0x14ffe000, 0x2000}, /* configuration window: mapping only */
+		{0x13d00000, 0x1000}, /* IA: mapping only */
+#endif
 	};
 	static const uint64_t clock_pin_regs[] = {
 		0x10700690,0x10701820,0x107020fc,0x1070208c,0x10703070,
@@ -5832,6 +5843,55 @@ cellular_mmio_preflight(void)
 		    (uint64_t)bank[0], (uint64_t)bank[1], (uint64_t)bank[2]);
 	}
 	print("cellular MMIO: complete; SPI controller not read; CP unchanged\n");
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+	static const uint64_t pcie_controls[]={0x13c00600,0x13c00610,0x13c02018,0x13c0201c,
+	    0x13c02020,0x13c02024,0x13c02028,0x13c0202c,0x13c02030,0x13c02034,
+	    0x13c30000,0x13c30004,0x13c30008};
+	for (unsigned i=0;i<sizeof(pcie_controls)/sizeof(pcie_controls[0]);i++)
+		print("cellular PCIe map: control %x value %x\n",pcie_controls[i],
+		    (uint64_t)*(volatile uint32_t *)(uintptr_t)pcie_controls[i]);
+	print("cellular PCIe map: complete; translation only, no controller read or link/power request\n");
+#ifdef CELLULAR_PCIE_ACCESS_PREFLIGHT
+	/* Root-port config access while link is down: Samsung rd_own_conf enables
+	 * existing clocks and sets PHY input clock path to 0x28. Here all gates
+	 * must already be enabled; no shared HSI2/UFS clock writes are permitted.
+	 * CP remains off; do not release isolation, PERST or enable LTSSM/DMA.
+	 */
+	if ((*(volatile uint32_t *)0x15860720 & 1) ||
+	    (*(volatile uint32_t *)0x15c30284 & 1) ||
+	    (*(volatile uint32_t *)0x15c30384 & 1) ||
+	    (*(volatile uint32_t *)0x13c30000 & 0xff)) {
+		print("cellular PCIe access: owner/power guard refused\n");return 0;
+	}
+	for (uint64_t a=0x13c02018;a<=0x13c02034;a+=4) {
+		if (!(*(volatile uint32_t *)(uintptr_t)a & (1u<<21))) {
+			print("cellular PCIe access: clock guard refused %x\n",a);return 0;
+		}
+	}
+	uint32_t ltssm=*(volatile uint32_t *)0x13d20054;
+	print("cellular PCIe access: LTSSM enable %x\n",(uint64_t)ltssm);
+	if (ltssm) return 0;
+	volatile uint32_t *input_clock=(volatile uint32_t *)0x13d500d8;
+	uint32_t old_clock=*input_clock;
+	print("cellular PCIe access: input clock before %x\n",(uint64_t)old_clock);
+	*input_clock=0x28;__asm__ volatile ("dsb sy" ::: "memory");
+	int clock_ok=*input_clock==0x28;
+	uint32_t identity=0,command=0,link=0;
+	if (clock_ok) {
+		identity=*(volatile uint32_t *)0x13800000;
+		command=*(volatile uint32_t *)0x13800004;
+		link=*(volatile uint32_t *)0x13d202c8;
+		print("cellular PCIe access: ROOT id %x command/status %x link %x (not endpoint)\n",
+		    (uint64_t)identity,(uint64_t)command,(uint64_t)link);
+	}
+	*input_clock=old_clock;__asm__ volatile ("dsb sy" ::: "memory");
+	int restored=*input_clock==old_clock && !(*(volatile uint32_t *)0x15860720&1) &&
+	    *(volatile uint32_t *)0x13d20054==ltssm;
+	int valid=clock_ok && identity && identity!=0xffffffffu && restored;
+	print("cellular PCIe access: restored %d result %d; CP off, no link/DMA request\n",(uint64_t)restored,(uint64_t)valid);
+	if (!valid) return 0;
+#endif
+#endif
 	return 1;
 }
 #endif

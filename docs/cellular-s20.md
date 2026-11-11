@@ -660,3 +660,76 @@ transfer/packet counts, failed prerequisites and unsafe cleanup; separates
 controller success from unproven CP/SIM/LTE/VoLTE and partition restoration.
 Host suite now35 Python tests plus existing sanitizer models, all passing.
 Phone remains with codex-files; no phone writes or modem power-up this turn.
+
+### First powered S5123 BOOT transfer — PASSED 2026-11-11
+
+User explicitly assigned phone turn. Fresh current installation backed up twice
+with matching BOOT/recovery prefix and verified AVB. Probe preserved its kernel,
+root, arguments, firmware and installed-loader fallback. Test ran in visible
+`build/cellular-powered-boot.py`; log/exit records exit0.
+
+- Reserved/live-NC3/3, MMIO,16-byte internal loopback and GPIO-low checks pass.
+- Reset/power sequence and SPI pad ownership readbacks pass.
+- Actual firmware BOOT:64496 queued/completed bytes,1008 packets, PIO error0.
+- Four-second input observation: first0x2,last0x6,changed0x6,rising0x6;
+  bit0 PHONE_ACTIVE,bit1 CP2AP_WAKE,bit2 PS_HOLD. Wake and power-hold transitions
+  are observed; PHONE_ACTIVE remains0. This is not yet PCIe/firmware acceptance.
+- Shutdown reset/power0 verified; SPI/clock/pad/AP ownership restored1;
+  lifecycle phase6/error0/cleanup_safe1, before releasing CP RAM.
+- Original installed kernel returned116s after probe. Current BOOT restored,
+  independent byte-exact readback passed; final iOS returned66s.
+- Post-restore GPIO/clock reads match pretest baseline, PHY1 isolation0.
+  Cold reboot returned reset/power pins to original input ownership.
+
+Private evidence under `out/cellular/current-baseline-20261111/`: baseline.json,
+cp-boot-report.txt, current backup and candidate. Historical name is a timestamp,
+not a claim that the backup remains current after other agents deploy. Refresh
+before the next flash. Subsequent Finder work has already advanced installation.
+
+### PCIe1 prerequisite baseline — 2026-11-11 21:20
+
+New `s5123-pcie-baseline.py` performs21 whitelisted one-word CMU/GPIO/PMU
+reads only, requires phone lock. It never accesses isolated ELBI/DBI/PHY or
+writes shared HSI2 clocks (storage also uses HSI2). Phone report complete:
+PHY control0, GPF3 CON/DAT0 and pull0x11, bus/ref mux0x10, eight gate fields
+0x200000, dummy refQCH2 and other sixQCH0x3f0002. Saved evidence:
+`logs/cellular/pcie-baseline-20261111-212046-524852/report.json`.
+
+Source board overlay fragment135 selects chip-ver1 (EVT1); fragment88 enables
+PCIe2 with MSI and endpoint type4. Base node name pcie2 means channel1. PERST
+is GPF3-1, CLKREQ GPF3-0, bank13c30000. Use PMU offset720, not header default71c.
+No controller/link access yet. Next: isolated UEFI mapping/access and shutdown
+preflight, EVT1 PHY + bounded PCIe1 link/enumeration; then MAIN/APM/IPC and SIM.
+
+### PCIe mapping pass; root-access probe FAILED; recovery — Nov11/12
+
+Mapping-only test `build/cellular-pcie-map.log/.exit`:exit0, all9 live Device
+identity mappings pass, clock/pin baseline matches. iOS returned114s, current
+BOOT restored independently byte-exact, final iOS64s. It did not dereference
+ELBI/PHY/DBI. Private baseline `pcie-baseline-20261111-2125`.
+
+The separate `CELLULAR_PCIE_ACCESS_PREFLIGHT` attempted idle/gate guards,
+ELBI LTSSM read, PHY D8 input-clock snapshot/set28, root DBI identity/command
+and ELBI link-state reads, then D8 restore. **The phone did not return to SSH;
+runner exit1. User put it in Download Mode. No valid report was recovered;
+the exact access that stalled is UNKNOWN.** Successful mappings and gate bits
+were insufficient evidence that these controller reads were safe.
+
+The access flag is now blocked by build.sh. Code retained only as a failed
+experiment for diagnosis. Do not run old access-candidate/runner again. Review
+controller reset/isolation/clock and security state against working Samsung
+boot before another access; persist checkpoints before any risky MMIO. No
+modem power/link/DMA request was in this failed probe. Earlier powered SPI
+BOOT pass remains valid and distinct from failed PCIe access.
+
+Recovery Nov12: B had prepared newer22:07 normal main images after the failure.
+Verified matching BOOT/recovery prefix and AVB; no probe entries. User authorized
+recovery. Flashing ONLY normal BOOT via Heimdall returned0. Backup/source copied
+privately to `out/cellular/recovery-20261112`; SHA256 of normal BOOT:
+4ed24ba3bb47d14bb5ed2098e3dcbc51a7a6512383585773e442271b94a174cc.
+Visible runner `build/cellular-recover-20261112.py/.log/.exit`; final SSH/readback
+result must be checked. Recovery/kernel/data partitions not written in this run.
+
+Recovery final result: `build/cellular-recover-20261112.exit` is0. iOS/SSH
+returned; independently read installed BOOT equals verified normal-boot.bin
+byte-for-byte. Failed probe removed, phone left running normal iOS.
