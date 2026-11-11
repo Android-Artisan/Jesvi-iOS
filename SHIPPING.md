@@ -4,6 +4,16 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — video encoding: our own H.264 encoder for VideoToolbox (the S20 has no AVE)
+- `userland/src/h264_encoder.c`: a VideoToolbox encoder (interface reverse-engineered from AppleVideoEncoder, see
+  tools/camera/CHECKLIST.md) over OpenH264 2.7.0 (BSD, `work/third-party/openh264`, `make OS=ios ARCH=arm64`), registered
+  in mediaserverd by libredwood-media (iOS runs compression sessions there; `h264=0` leaves it out). Baseline profile,
+  constant SPS/PPS, 4 slices / 4 threads, key frame every second, ~12 Mbit/s at 1080p30.
+- Front camera's video format 1920x1080 (was 3840x2160).
+- Tested: `vt_enc_test 1920 1080 90` (public VTCompressionSession API on the phone): 90 of 90 frames at 52 frames/s;
+  the stream decodes 90/90 on macOS VideoToolbox with the test pattern intact. Camera.app recording: to be confirmed
+  (set Settings > Camera > Formats > Most Compatible: there is no HEVC encoder).
+
 ## 2026-11-12 — front camera orientation default (`cam_turn=2`)
 - User-confirmed orientation (preview and photos): libredwood-media's turn plus a mirror; default from boot now
   (`cam_turn=` **2**), live via `tools/poke 'cam.turn N'` (read at stream start). Built (kernel 04:36:50), not flashed yet

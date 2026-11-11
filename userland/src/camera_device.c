@@ -437,7 +437,8 @@ static const struct camera {
 	/* (turned: true on the Galaxy S20 too: its front SAK3J1's frames came upside down and mirrored with false, 2026-11-11;
 	 * kern.redwood.camera_turn bit 0 flips it once more, live) */
 	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 2.87, 2.2, 1.0, 70.0,
-	  { { 3088, 2320, 30 }, { 3840, 2160, 30 } } },        /* "Photo", "Video-30" */
+	  { { 3088, 2320, 30 }, { 1920, 1080, 30 } } },        /* "Photo", "Video-30" (1080p, as the iPhone X's front camera
+	                                                         * records; 4K was a CPU ISP and encoder load the S20 cannot carry) */
 };
 
 struct stream {

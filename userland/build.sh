@@ -334,9 +334,13 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
 			-o obj/libredwood-app.dylib src/inject_app.c
+		# (+ src/h264_encoder.c: a software H.264 encoder for VideoToolbox, the S20 having no AVE; OpenH264 from
+		#  ../../third-party/openh264, built with: make OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT=<sdk> libraries)
+		OH=${OPENH264:-../../third-party/openh264}
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
-			-framework CoreVideo -framework IOSurface -lobjc \
-			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
+			-framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -I$OH/codec/api \
+			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c src/h264_encoder.c \
+			$OH/libopenh264.a
 		# ... and inside appstored (STOREFRONT=1), which answers with a storefront and watches for a bag
 		# request being built (src/inject_store.c)
 		# (-lc++abi for __cxa_throw: every C++ exception thrown in the process is watched, which is how

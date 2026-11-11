@@ -648,6 +648,13 @@ redwood_media_init(void)
 		return;
 	}
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
+	/* The S20 has no AVE (the iPhone's video encoder): our software H.264 encoder (src/h264_encoder.c) is
+	 * registered with VideoToolbox here, where compression sessions run (iOS runs them in this process).
+	 * h264=0 leaves it out. */
+	if (!boot_arg("h264=0")) {
+		extern bool redwood_h264_register(void);
+		(void)redwood_h264_register();
+	}
 	metal_left_alone = boot_arg("mediamtl=1");
 	if (metal_left_alone) {
 		say("redwood: mediaserverd: mediamtl=1: the capture stack may have the Metal device (it "
