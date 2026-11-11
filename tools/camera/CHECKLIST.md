@@ -203,3 +203,56 @@ live kernel before comparing results. Keep new evidence separate from old runs.
   pixels 1..1023; `ssh s20 /var/root/s20-frame > frame.raw; python3 tools/camraw.py frame.raw PREFIX` → real scene
   (ceiling, fan blades). Still to do from the milestone list: scene-change check, repeat across boots, feed real frames
   to the iOS capture bridge / Camera.app, image quality, rear cameras.
+
+## ROADMAP after the first live camera (user's list, 2026-11-11 ~14:00) — continue from here
+
+State: front SAK3J1 live in Camera.app through `cam=5 cam_s20=1` (default in `x1slte.cmdline`), commits 60e706a +
+9027baf on `x1slte`. **User verified: preview shows, photo saves to Photos.** Everything below is open.
+Code map: kernel `xnu-src/.../bsd/dev/redwood_camera_s20.c` (sensor/receiver/DMA + stream loop),
+`redwood_camera.c` (`s20_session`, `/dev/redwood-camera`), `redwood_s2mpb02_torch.c` (camera PMIC + flash LED);
+userland `userland/src/camera_device.c` (capture device in mediaserverd), `camera_isp.c` (CPU ISP), `inject_media.c`.
+
+### 1. Front camera quality ("looks like a 2000s photo")
+- [ ] Confirm orientation/mirroring after the 180-degree turn (kernel 13:56:21) and natural colours (Bayer GB/RG).
+- [ ] Full resolution: now the binned 1824x1368 mode. Add the sensor's full modes from Samsung's setfile
+  (`is-cis-3j1-setA.h`: 3648x2736 4:3, 3968x2232 16:9, 2736x2736) for stills; keep a binned mode for preview.
+- [ ] Colour tuning file for this sensor (log: "no colour tuning ... no colour matrix, no lens shading"): colour
+  matrix, lens shading, black level, noise reduction/sharpening in `camera_isp.c`. Samsung's calibration is in the
+  module EEPROM (read at Samsung's S_INPUT) and `setfile_3j1.bin`.
+- [ ] Exposure limits: analog gain max is 16x now; check flicker (50 Hz banding), long exposure, HDR off.
+- [ ] Front autofocus: the DT lists an actuator for the 3J1 (`af` node, i2c ch 3) — check and drive it.
+
+### 2. Frame rate / smoothness
+- [ ] Preview is ~15 fps: `s20_frame()` packs from the write-combined DMA mapping (slow reads) and misses every other
+  frame. Fix: cached mapping of the DMA buffers (+ cache invalidate per frame) or let WDMA write packed RAW10 directly
+  into the ring (no CPU pack); move packing off the polling loop; use the CSIS/DMA interrupt (GIC SPI 215 is masked).
+- [ ] Request camera DVFS while streaming like Samsung (`acpm` INTCAM 11, CAM 12, INT 1 — only ever raise, never lower).
+- [ ] CPU ISP cost in userland (`camera_isp.c`) at full resolution; consider GPU (Metal) debayer.
+
+### 3. Video
+- [ ] Video recording does not save (user). Find where the recording path stops (mediaserverd / AVAssetWriter / H.264
+  encoder: no hardware encoder on this port — check VideoToolbox software path).
+- [ ] Link the microphone to video (`/dev/redwood-mic` works for Voice Memos; the capture graph needs an audio device
+  for the camera session).
+- [ ] Video modes the S20 hardware has: HD/FHD up to 120 fps (slow-mo; super slow-mo higher), UHD 60, 8K 24 (rear main).
+  Needs the sensors' high-speed/UHD modes, the receiver at those link rates, and an encoder that keeps up.
+
+### 4. Rear cameras (three) + switching by zoom
+- [ ] Rear main S5K2LD (position 0, I2C0, MCLK0, CSIS per DT fragment@20 `is_sensor0`, C-PHY `use_cphy`): retry
+  `cam.s20.id` now that the PMIC base supplies are on (its earlier NACK likely had the same cause); then power
+  sequence (incl. VDDPHY_1.05V_CAM, OIS/AF rails), C-PHY receiver recipe (`__set_phy_cfg_0503_0000_dcphy` mode C),
+  sensor setfile, stream. Careful: the S20 Ultra tree (live-fdt) is NOT this phone; use boot-dtb.0 + dtbo.1.
+- [ ] Rear ultra-wide / second sensor S5KGW2 (position 2, I2C1, MCLK0) and telephoto S5K2LA (position 4, I2C4, MCLK3).
+- [ ] Expose them to iOS as the back cameras (`REDWOOD_CAMERA_SENSOR` switch already exists in the device contract:
+  0 macro, 1 wide, 2 front, 3 ultra-wide) and switch lens by zoom level (0.5x / 1x / 3x) like the Camera app expects.
+- [ ] Autofocus and OIS for the rear main (actuator + OIS MCU; CMU OIS_MCU clocks exist in the register list).
+
+### 5. Flash
+- [ ] Link the rear flash LED (S2MPB02 FLED, already driven as the torch in `redwood_s2mpb02_torch.c`) to the capture
+  path: flash on photo, torch during video, front "screen flash".
+
+### 6. Robustness
+- [ ] Repeated open/close, app switching, lock/unlock, sensor switch; no leaks, rails off when idle
+  (base supplies BUCK1/BB/LDO18 stay on from boot by design, as on Samsung).
+- [ ] Thermal behaviour during long preview/recording; suspend/resume.
+- [ ] Remove or gate the diagnostics (`cam.s20.front.stream` bits) once the driver is final; keep `cam_pmic_base`.

@@ -12,8 +12,9 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - `x1slte.cmdline`: `cam_fake=1` replaced by `cam_s20=1` (`cam_fake=1` still gives the chart).
 - Tested (kernel 13:56:21): `camera_test raw 45` on the phone: 45 of 45 frames, AE converges (32 ms, 9x indoors), white
   balance R 1.27 B 1.84, Bayer GB/RG after the turn; user saw live frames in Camera.app (before the turn: upside down).
-- Open: about 15 frames/s (packing reads the write-combined DMA mapping), no colour matrix/lens shading file for this
-  sensor, photo save and rear cameras not verified yet.
+- User verified in Camera.app: live preview and **photo saves to Photos**.
+- Open (roadmap in `tools/camera/CHECKLIST.md`): video does not save and has no mic; ~15 frames/s; binned 1824x1368
+  only and no colour tuning (soft, dated look); rear cameras, zoom switching and flash not done.
 
 ## 2026-11-11 — front camera link works: first real sensor frame under XNU
 - **Root cause of "sensor programs, zero CSI packets":** the camera PMIC (S2MPB02) supplies BUCK1 (1.3 V), buck-boost
@@ -31,6 +32,8 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Not yet: live preview in Camera.app (still the synthetic bridge), rear cameras, exposure/colour tuning.
 
 ## Open (known issues)
+- Camera: front only, photos only. Video recording, microphone in video, full resolution, colour tuning, rear
+  cameras, zoom switching and flash are open (`tools/camera/CHECKLIST.md`, section ROADMAP).
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
 - CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.
