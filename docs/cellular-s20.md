@@ -1,10 +1,11 @@
 # Galaxy S20 cellular: implementation log and checklist
 
-**Latest hardware status, 2026-11-11 ~10:39:** the native UEFI M0 candidate did
-not return USB/iOS when actually selected through standalone BOOT. **Do not
-deploy this candidate as a working image.** Known-good rollback is prepared;
-the user has been asked for Download Mode. See the critical handoff at
-`sessions/codex-cellular.md` in the research root and the result section below.
+**Latest hardware status, 2026-11-11 11:02:** rollback is complete. Original
+BOOT and recovery prefixes were restored, then read from the running phone and
+compared byte-for-byte with the saved backups. iOS/USB/SSH returned; kernel and
+boot arguments match the baseline. Cellular UI files survived. The native UEFI
+M0 candidate failed its hardware test; **do not deploy it as a working image**.
+LTE/calls remain unavailable. See the result section below.
 
 Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
 contains the upstream comparison, firmware/framing tools, memory audit, compiled
@@ -373,7 +374,7 @@ Candidate/manifest/write segments live under
 of this test. Hardware boot/rollback results must be appended before M0 is marked
 complete. Host checks now pass **22 Python tests** plus the allocator oracle.
 
-### M0 hardware result: failed boot, rollback in progress
+### M0 hardware result: failed boot, verified rollback complete
 
 - First attempt: wrote only the candidate recovery head through existing Log
   access; device readback succeeded. Cold reboot returned iOS/SSH in 70 seconds,
@@ -387,11 +388,17 @@ complete. Host checks now pass **22 Python tests** plus the allocator oracle.
   device readback succeeded. Reboot did not return USB/iOS within ~270 seconds.
   No proof that the new loader ran; the new FD and new loader were changed
   together, so the failing component is not isolated. No modem was started.
-- Reverting is the immediate next step. Visible Terminal watcher
-  `build/cellular-m0-rollback.py` waits for Download Mode and flashes only the
-  saved original BOOT prefix. Then restore the original recovery head through
-  the known-good loader. Do not continue experimental boots until both copies
-  are restored and iOS/USB have been verified.
+- Rollback completed at ~11:02 after the user entered Download Mode. Heimdall
+  restored the saved original BOOT prefix successfully; iOS/SSH returned. The
+  known-good loader then restored the original 16 MiB recovery head with device
+  readback confirmation. Cold reboot returned iOS/SSH in 63 seconds, with the
+  original kernel and boot arguments. Independent SSH reads of both installed
+  prefixes matched their saved originals byte-for-byte. Cellular UI files remain
+  installed. Logs: `build/cellular-m0-rollback.log` and
+  `build/cellular-m0-restore-recovery.log` in the research root.
+- Before another device test, isolate the changed loader from the changed FD
+  offline. Both were replaced together in this failed test; no root cause has
+  been established. Preserve the verified original images and rollback path.
 - Backup BOOT prefix: `out/cellular/m0-20261111/rollback-boot-head.bin`, SHA256
   `5fa3cc24b57946e88a9795fac06f39bd0139ac62cae4f3df32e9520d294a2579`.
   Original recovery head: `out/cellular/m0-20261111/candidate/rollback-head.bin`.
