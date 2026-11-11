@@ -17,7 +17,7 @@ class FallbackTests(unittest.TestCase):
         changed = prepare.replace_loader(self.original, loader, True)
         self.assertEqual(changed[0][2], loader)
         self.assertEqual(changed[1], (b'fallback.efi'.ljust(16, b'\0'), 0, b'original loader'))
-        self.assertEqual(changed[2], (b'probe.report'.ljust(16, b'\0'), 0, bytes(8192)))
+        self.assertEqual(changed[2], (b'probe.report'.ljust(16, b'\0'), 0, bytes(16384)))
         self.assertEqual(changed[3], self.original[1])
 
     def test_reject_missing_or_inappropriate_fallback(self):

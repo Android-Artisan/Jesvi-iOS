@@ -9,8 +9,9 @@ spec.loader.exec_module(clocks)
 
 class ClockTests(unittest.TestCase):
     def test_reviewed_single_word_reads_only(self):
-        self.assertEqual(len(clocks.REGISTERS), 9)
+        self.assertEqual(len(clocks.REGISTERS), 13)
         self.assertEqual(clocks.REGISTERS['gpp8_con'], 0x10730060)
+        self.assertEqual(clocks.REGISTERS['pcie1_phy_control'], 0x15860720)
         self.assertEqual(clocks.REGISTERS['usi_mode'], 0x10721048)
         for address in clocks.REGISTERS.values():
             self.assertTrue(clocks.command(address).endswith(f"'r {address:#x} 1'"))
@@ -31,6 +32,8 @@ class ClockTests(unittest.TestCase):
         decoded = clocks.decode(values)
         self.assertEqual(decoded['usi_mode'], 'spi')
         self.assertTrue(decoded['pins']['gpp8-6']['shared_with_dump_notification'])
+        self.assertTrue(decoded['pcie1_phy_isolation_asserted'])
+        self.assertEqual(decoded['ap2cp_wakeup']['pin'], 'gpg1-3')
         self.assertFalse(decoded['estimated_within_boot_limit'])  # 26/3/4 MHz exceeds 2.15 MHz.
         values['divider']=3
         self.assertTrue(clocks.decode(values)['estimated_within_boot_limit'])

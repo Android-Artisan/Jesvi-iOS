@@ -20,7 +20,7 @@ def report_region(manifest):
     if not (manifest.get('installed_firmware_preserved') and manifest.get('installed_loader_fallback')):
         raise ValueError('not an original-firmware allocator preflight manifest')
     address, size = int(manifest['preflight_report_pa'], 16), manifest['preflight_report_size']
-    if size != 8192 or address & 3 or not 0xe8100000 <= address <= 0xe8180000 - size:
+    if size not in (8192, 16384) or address & 3 or not 0xe8100000 <= address <= 0xe8180000 - size:
         raise ValueError('report is outside the bounded UEFI payload RAM slot')
     return address, size
 

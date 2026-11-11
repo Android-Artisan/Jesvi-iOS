@@ -120,7 +120,8 @@ typedef struct {
 } efi_gcd_memory_descriptor;
 typedef struct {
 	efi_table_header hdr;
-	void *add_memory_space, *allocate_memory_space, *free_memory_space, *remove_memory_space;
+	efi_status (EFIAPI *add_memory_space)(uint32_t type, uint64_t base, uint64_t size, uint64_t capabilities);
+	void *allocate_memory_space, *free_memory_space, *remove_memory_space;
 	efi_status (EFIAPI *get_memory_space_descriptor)(uint64_t address, efi_gcd_memory_descriptor *descriptor);
 	efi_status (EFIAPI *set_memory_space_attributes)(uint64_t address, uint64_t size, uint64_t attributes);
 } efi_dxe_services;

@@ -22,7 +22,7 @@ BANKS = (
     ('power_on', 'gpm20-0', 0x280),
     ('pda_active', 'gpm25-0', 0x320),
     ('phone_active', 'gpm28-0', 0x380),
-    ('cp_wakeup', 'gpm30-0', 0x3c0),
+    ('cp2ap_wakeup', 'gpm30-0', 0x3c0),
     ('ps_hold', 'gpm31-0', 0x3e0),
 )
 

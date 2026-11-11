@@ -6,7 +6,8 @@ Normal Non-cacheable, iOS boot and kernel-return checks pass, memory audit exits
 0. This uses opt-in boot-service reservations, avoiding the failed native FD.
 Read-only GPIO/clock/pin baselines are complete. Original BOOT was restored after
 each bounded test; phone is back on its original images and released. No CP
-power/reset/SPI/firmware/DMA/NV action has occurred. LTE/calls remain unavailable.
+power/reset/firmware/DMA/NV action has occurred. Later SPI internal-loopback
+results are recorded below; no modem BOOT was sent. LTE/calls remain unavailable.
 
 Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
 contains the upstream comparison, firmware/framing tools, memory audit, compiled
@@ -561,3 +562,45 @@ The firmware BOOT bytes have not been transmitted to the phone.
 
 User-facing flow/comparison and remaining proof:
 [cellular-flow.md](cellular-flow.md).
+
+
+### UEFI mappings and real SPI internal loopback — 2026-11-11 ~12:16
+
+The original firmware can add missing peripheral MMIO mappings through DXE.
+A preflight verified every page as Device/identity before known-safe reads.
+CMU PERIC1 and SPI16 were GCD holes and were added; SYSREG/GPIO already had
+Device mappings. UEFI reads matched the kernel GPIO/clock baseline. SPI was
+mapped/translated but not read during that first test. Added mappings live only
+until cold reset. Original BOOT was restored, iOS returned in63s; job exit0.
+
+The next preflight exercised actual SPI16 INTERNAL LOOPBACK with a generated
+16-byte pattern, not firmware. It required reserved/live Normal-NC3/3, no USI
+owner, external GPP8 pads left as GPIO inputs, stable/enabled gates and safe
+CP control levels. It selected oscillator/divide4, enabled USI SPI mode and
+internal loopback, then used the same bounded PIO engine. **Completed16,
+received16, mismatches0, error0. Controller readback/restoration1; clock/USI/pin
+restoration1.** External pins remained inputs; no CP power/reset/pinmux write,
+CP firmware, NV or subscriber operation occurred. Fallback booted iOS in98s.
+Original BOOT was restored byte-for-byte; iOS returned in74s. Visible job
+`build/cellular-spi-loopback.log/.exit`: exit0. Private report
+`out/cellular/m0-20261111/spi-loopback-preflight-report.txt`.
+
+Build-only guards require CELLULAR_SPI_LOOPBACK together with the original-loader
+preflight, MMIO preflight and CP reservations. They cannot enter a normal loader
+build. Probe RAM reports now allow16KiB and reject truncation; the reader remains
+compatible with old8KiB reports. No caller sends real BOOT yet.
+
+Further board facts verified before CP control writes:
+
+- **AP2CP_WAKE is GPG1-3**, PERIC1 bank `0x107300c0`; baseline input/low/pulldown.
+  It shares a GPIO bank with Bluetooth, so future RMW must preserve other pins.
+- **GPM30-0 is CP2AP_WAKE**, an input; renamed in the read-only GPIO tool to
+  avoid driving the wrong direction.
+- Modem PCIe endpoint host `pcie@13D20000`, ch-num1, uses DT **pmu-offset0x720**.
+  Do not copy the neighboring host's0x71c or a driver's default macro. Actual
+  PMU `0x15860720` reads0, PHY isolation asserted. No PCIe controller read.
+- Updated read-only13-word baseline evidence:
+  `logs/cellular/clocks-20261111-122121-801233/report.json`.
+
+User now targets Jio India LTE/VoLTE with a physical SIM inserted. This does not
+mean our backend has read/detected the SIM. See [cellular-jio.md](cellular-jio.md).

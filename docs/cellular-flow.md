@@ -1,8 +1,10 @@
 # Cellular approach: Pixel versus our Galaxy S20
 
 Status: 2026-11-11. Our S20 has no working LTE/calls yet. Memory protection
-and read-only hardware baselines are tested. SPI PIO is implemented/tested on
-a host controller model; it has not sent firmware to the real modem.
+and read-only hardware baselines are tested. SPI PIO passes the host model
+and a generated16-byte INTERNAL LOOPBACK on the real controller. No firmware
+has been sent to the modem. User has inserted a Jio India SIM; target LTE/VoLTE
+requirements are recorded in [cellular-jio.md](cellular-jio.md).
 
 ## Architecture
 
@@ -54,7 +56,7 @@ ideas. Qualcomm QMI/IPA drivers cannot operate Samsung SPI/PCIe/SIPC hardware.
 | Cellular Settings page | Installed, user-confirmed | Native page; service/calls honestly unavailable |
 | CP memory ownership/cache | Tested on phone | Reserved 3/3, every CP page Normal NC, audit0 before/after iOS |
 | GPIO/clock/pin baseline | Read-only snapshots done | Documented actual state; no unclocked SPI/PCIe access |
-| SPI16 transport | Host PIO model passes | Next: mappings/clocks/reset/loopback, then real BOOT and acceptance proof |
+| SPI16 transport | Host model and phone internal loopback pass | Next: bounded CP power/reset, real BOOT transfer and CP acceptance proof |
 | CP power + firmware boot | Pending | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
 | PCIe1 transport | Pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
 | SIPC5 + Samsung IPC | Framing parser only | Queues/doorbells/interrupts, flow control and crash recovery |

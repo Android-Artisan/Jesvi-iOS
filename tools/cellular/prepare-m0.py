@@ -91,7 +91,7 @@ def replace_loader(old_entries, loader, with_fallback=False):
             replaced.append((name, reserved, loader))
             if with_fallback:
                 replaced.append((b'fallback.efi'.ljust(16, b'\0'), 0, data))
-                replaced.append((b'probe.report'.ljust(16, b'\0'), 0, bytes(8192)))
+                replaced.append((b'probe.report'.ljust(16, b'\0'), 0, bytes(16384)))
         else:
             replaced.append((name, reserved, data))
     return replaced
