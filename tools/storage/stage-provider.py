@@ -49,8 +49,8 @@ def stage(root, executable, manifest, output):
         plistlib.dump({
             'CFBundleIdentifier': 'org.hakios.LocalFilesHost',
             'CFBundleExecutable': 'LocalFilesHost',
-            'CFBundleName': 'Local Files Support',
-            'CFBundleDisplayName': 'Local Files Support',
+            'CFBundleName': 'Jesvi Files',
+            'CFBundleDisplayName': 'Jesvi Files',
             'CFBundlePackageType': 'APPL',
             'CFBundleVersion': '1',
             'CFBundleShortVersionString': '1.0',
@@ -59,6 +59,8 @@ def stage(root, executable, manifest, output):
             'UIDeviceFamily': [1, 2],
             'UIRequiredDeviceCapabilities': ['arm64'],
             'SBAppTags': ['hidden'],
+            'UIFileSharingEnabled': True,
+            'LSSupportsOpeningDocumentsInPlace': True,
         }, stream)
     # Preserve the extension's owners, links and empty localization directories
     # at the new path; otherwise mkapfs would recreate its old framework path.
