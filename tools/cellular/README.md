@@ -33,7 +33,7 @@ Validated 2026-11-11:
 - Local S20 RADIO: BOOT/MAIN/APM/VSS/INFO CRCs all pass. NV bytes never read.
 - Existing saved boot: IPC overlaps loader staging by 8 MiB; packet region
   overlaps display pool by 64 KiB. Audit exits 1 as intended.
-- Host tests: **30 Python tests passed** plus **163,840** C allocator boundary
+- Host tests: **35 Python tests passed** plus **163,840** C allocator boundary
   comparisons under ASan/UBSan (`bash tools/cellular/check.sh`). Synthetic
   fixtures contain no vendor bytes.
 - Full ARM64 loader boots on the original UEFI. Opt-in `CELLULAR_RESERVE_CP=1`
@@ -80,3 +80,18 @@ A subsequent probe must account for that ownership rather than blindly reuse it.
 Validation: 23 ownership/cache cases, 163840 allocator comparisons, eight PIO
 streams/six PIO failures, and 22 injected boot-lifecycle failures under sanitizers.
 Even a fully transmitted BOOT is not proof of CP acceptance, SIM or LTE.
+
+`boot-audit.py --manifest candidate/manifest.json --report probe-report.txt`
+checks one complete powered probe report offline. It requires memory/MMIO/GPIO
+evidence, exact expected byte/packet counts, lifecycle completion and verified
+shutdown/fallback. Missing, mixed, short or unsafe reports fail. A pass means
+controller transfer and shutdown only; CP acceptance, SIM, LTE/VoLTE and
+independent BOOT restoration remain explicitly unproven.
+
+The compiled powered-probe image was packaged end-to-end offline against the
+historical backup: AVB verified, firmware/fallback preserved, BOOT64496 bytes
+CRC checked, footer unchanged. This validates packaging, not hardware. The
+private directory is explicitly named `cp-boot-OFFLINE-OLD-BASELINE`; do not
+deploy it against the newer installed camera/Files/USB kernel. Fresh baseline
+required. The manifest now records standalone BOOT size and both candidate
+and original-prefix SHA256 hashes for deployment/readback checks.

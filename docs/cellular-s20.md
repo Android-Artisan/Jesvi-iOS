@@ -646,3 +646,17 @@ device and initializes MSI. Our CP2AP_WAKE already reads high with a pull-up
 before boot, so copying that GPIO check alone would falsely imply acceptance.
 The first bounded BOOT probe deliberately leaves PCIe isolated and reports
 acceptance unproven; PCIe enumeration is a separate implementation/test stage.
+
+### Offline packaging and result audit — 2026-11-11 ~16:15
+
+Fixed powered-probe marker detection in the fallback packager. The actual
+compiled probe now completes offline packaging/AVB verification against the
+historical full backup; BOOT64496 bytes, CRC checked, fallback and firmware
+preserved, footer unchanged. This old-baseline artifact is not for deployment.
+Manifest includes exact standalone candidate/original-prefix hashes and size.
+
+Added `tools/cellular/boot-audit.py`: rejects missing/mixed reports, incomplete
+transfer/packet counts, failed prerequisites and unsafe cleanup; separates
+controller success from unproven CP/SIM/LTE/VoLTE and partition restoration.
+Host suite now35 Python tests plus existing sanitizer models, all passing.
+Phone remains with codex-files; no phone writes or modem power-up this turn.

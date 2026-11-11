@@ -29,6 +29,14 @@ class FallbackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare.replace_loader(self.original, b'MZ normal loader', True)
 
+    def test_cp_probe_marker_requires_and_preserves_fallback(self):
+        loader = b'MZ CELLULAR CP BOOT PREFLIGHT'
+        with self.assertRaises(ValueError):
+            prepare.replace_loader(self.original, loader)
+        changed = prepare.replace_loader(self.original, loader, True)
+        self.assertEqual(changed[1][2], self.original[0][2])
+        self.assertEqual(changed[3], self.original[1])
+
     def test_reject_recursive_or_ambiguous_backup(self):
         for records in ([], self.original + self.original[:1],
                         self.original + [(b'fallback.efi'.ljust(16, b'\0'), 0, b'old')]):

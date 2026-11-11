@@ -85,7 +85,8 @@ def replace_loader(old_entries, loader, with_fallback=False):
             'expected exactly one installed loader')
     require(not any(name.rstrip(b'\0') in (b'fallback.efi', b'probe.report') for name, _, _ in old_entries),
             'backup already contains a fallback; use the original phone backup')
-    preflight = b'CELLULAR MEMORY PREFLIGHT' in loader
+    preflight = any(marker in loader for marker in
+                    (b'CELLULAR MEMORY PREFLIGHT', b'CELLULAR CP BOOT PREFLIGHT'))
     require(preflight == with_fallback, 'preflight requires the installed fallback; normal loader must not use it')
     replaced = []
     for name, reserved, data in old_entries:
@@ -210,6 +211,9 @@ def main():
                     backup_sha256=sha(original), candidate_sha256=sha(changed),
                     fd_sha256=sha(fd), loader_sha256=sha(loader),
                     partition_size=PART_SIZE, head_size=HEAD_SIZE,
+                    standalone_boot_size=boot_size,
+                    standalone_boot_sha256=sha(changed[:boot_size]),
+                    original_boot_prefix_sha256=sha(original[:boot_size]),
                     footer_changed=footer_changed, footer_block_offset=PART_SIZE - 4096,
                     kernel_root_log_body_preserved=True, bootshim_preserved=True,
                     payload_arguments_preserved=True, avb_verified=True)
