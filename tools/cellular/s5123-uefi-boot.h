@@ -128,10 +128,26 @@ static int cp_hw_send(void *context,const uint8_t *data,size_t length,uint32_t *
         error<0?"-":"",(uint64_t)(error<0?-error:error),(uint64_t)cp_boot_hw.pio.queued_bytes,
         (uint64_t)*completed,(uint64_t)cp_boot_hw.pio.packets,(uint64_t)cp_boot_hw.pio.last_status);
     if (!error) {
-        BS->stall(20000);
-        print("cellular CP BOOT: observed PHONE_ACTIVE %d CP2AP_WAKE %d PS_HOLD %d (not acceptance proof)\n",
-            (uint64_t)(cellular_reg_read(0x15c30384)&1),(uint64_t)(cellular_reg_read(0x15c303c4)&1),
-            (uint64_t)(cellular_reg_read(0x15c303e4)&1));
+        /* Samsung polls wake at 20 ms up to 200 times. A same-modem Linux
+         * reference observed ~460 ms after TX: one 20 ms snapshot is too early.
+         * Our pulled-up inputs may start high, so record transitions separately
+         * and never promote a level (or transition) to firmware acceptance.
+         */
+        uint32_t first=(cellular_reg_read(0x15c30384)&1) |
+            ((cellular_reg_read(0x15c303c4)&1)<<1) |
+            ((cellular_reg_read(0x15c303e4)&1)<<2);
+        uint32_t previous=first, changed=0, rises=0;
+        for (unsigned sample=0;sample<200;sample++) {
+            if (EFI_ERROR(BS->stall(20000))) return -1;
+            uint32_t current=(cellular_reg_read(0x15c30384)&1) |
+                ((cellular_reg_read(0x15c303c4)&1)<<1) |
+                ((cellular_reg_read(0x15c303e4)&1)<<2);
+            changed |= previous ^ current;
+            rises |= ~previous & current;
+            previous=current;
+        }
+        print("cellular CP BOOT: GPIO observation 4000ms first %x last %x changed %x rising %x (bits: PHONE_ACTIVE,CP2AP_WAKE,PS_HOLD; not acceptance proof)\n",
+            (uint64_t)first,(uint64_t)previous,(uint64_t)changed,(uint64_t)rises);
     }
     return error;
 }
