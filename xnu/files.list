@@ -94,6 +94,9 @@ bsd/dev/redwood_usb_acm.h
 bsd/dev/redwood_usb_compat.h
 bsd/dev/redwood_usb_glue.h
 bsd/dev/redwood_usb_stubs.c
+bsd/dev/redwood_usbmux.c
+bsd/dev/redwood_usbmux_probe.h
+bsd/dev/redwood_usbmux_wire.h
 bsd/dev/redwood_usbnet.c
 bsd/dev/redwood_virtio_blk.c
 bsd/dev/redwood_virtio_input.c
@@ -247,6 +250,7 @@ iokit/Kernel/MiniIOMobileFramebufferMode.h
 iokit/Kernel/MiniIONetworkStack.cpp
 iokit/Kernel/MiniIOSurface.cpp
 iokit/Kernel/MiniIOSurface.h
+iokit/Kernel/MiniUSBDeviceMux.cpp
 iokit/Kernel/RedwoodBattery.cpp
 iokit/Kernel/RedwoodGPU.cpp
 iokit/Kernel/RedwoodMali.cpp

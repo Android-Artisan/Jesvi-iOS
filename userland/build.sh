@@ -586,6 +586,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist root/LaunchDaemons/
+	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
+	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
 	[ -x ../jb/root/var/jb/usr/sbin/sshd ] && [ -f root/var/root/.ssh/authorized_keys ] && cp com.redwood.sshd.plist root/LaunchDaemons/
 	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
 	VOLUME=""

@@ -109,11 +109,12 @@ cmd_payload() {
 	# boot_args.CommandLine is 608 bytes (xnuloader BOOT_LINE_LENGTH, pexpert arm64/boot.h) and the loader puts
 	# "debug=0x8 rd=md0 ufs_shared_pa=0x...  " (~52) in front: past ~550 here the END of the line is cut off silently
 	# (2026-11-06: touch_lat and bt_addr were lost that way)
-	[ ${#cmdline} -le 550 ] || die "boot line is ${#cmdline} characters (most 550: the loader adds ~52 and XNU keeps 607): shorten x1slte.cmdline"
 	cmdline=${cmdline//@ROOT_PART@/$ROOT_PART}
 	cmdline=${cmdline//@ROOT_OFF@/$ROOT_UD_OFF_HEX}
 	cmdline=${cmdline//@ROOT_LEN@/$ROOT_UD_LEN_HEX}
 	cmdline=${cmdline//@VAR_WIN@/${VAR_UD_FIRST:-}:${VAR_UD_BLOCKS:-}}
+	# Validate the resolved command, rather than the longer placeholder names.
+	[ ${#cmdline} -le 550 ] || die "boot line is ${#cmdline} characters (most 550: the loader adds ~52 and XNU keeps 607): shorten x1slte.cmdline"
 	# the loader for this phone: GIC_V2 (the GICv3 system registers are undefined here: a loader built
 	# without it takes a UEFI exception reading ICC_PMR_EL1 on the way into the kernel)
 	rsize=$(printf '%x' "$(wc -c < userland/root.apfs)")     # (root.apfs grows with GL=test: libOSMesa)
