@@ -434,8 +434,9 @@ static const struct camera {
 } cameras[2] = {
 	{ 1, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 4.0, 1.8, 1.22, 65.0,
 	  { { 4032, 3024, 30 }, { 4224, 2376, 60 } } },        /* "Photo", "Video-60" */
-	/* (turned: false on the Galaxy S20: its front SAK3J1 sits the right way up, and the kernel no longer turns it) */
-	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", false, 2.87, 2.2, 1.0, 70.0,
+	/* (turned: true on the Galaxy S20 too: its front SAK3J1's frames came upside down and mirrored with false, 2026-11-11;
+	 * kern.redwood.camera_turn bit 0 flips it once more, live) */
+	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 2.87, 2.2, 1.0, 70.0,
 	  { { 3088, 2320, 30 }, { 3840, 2160, 30 } } },        /* "Photo", "Video-30" */
 };
 

@@ -256,6 +256,36 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 		}
 		gain = (uint32_t)(g * f->gain_unity);
 	}
+	/*
+	 * Anti-flicker (50 Hz mains: lights pulse every 10 ms): an exposure of whole 10 ms periods sees every row of
+	 * the rolling shutter get the same light; anything else shows bands rolling through the picture. So the
+	 * lines go down to a whole number of periods and the gain makes up the rest; only a scene too bright for one
+	 * period at 1x gets a shorter exposure. (On the S20, 2026-11-11: banding in dim light and AE hunting.)
+	 */
+	if (f->line_ns > 0) {
+		uint32_t band = (uint32_t)(10000000.0 / f->line_ns + 0.5);
+
+		if (band > 4 && lines >= band) {
+			uint32_t q = lines / band * band;
+			double g = (double)gain * lines / q;
+			double gmax = f->gain_max;
+
+			if (g > gmax) {
+				digital *= g / gmax;
+				digital = digital > 4 ? 4 : digital;
+				g = gmax;
+			}
+			gain = (uint32_t)g;
+			lines = q;
+			if (frame_lines != 0 && frame_lines < lines + f->margin) {
+				frame_lines = lines + f->margin;
+			}
+		} else if (band > 4 && want >= band) {
+			/* (bright enough for a whole period only with a little more than 1x: still one period) */
+			lines = band;
+			gain = f->gain_unity;
+		}
+	}
 	isp->digital = (float)digital;
 	isp->asked_lines = lines;
 	isp->asked_gain = gain;
