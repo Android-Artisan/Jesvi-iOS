@@ -186,3 +186,9 @@ while the real condition is a pending Trust dialog. AMDevicePairWithOptions
 with ExtendedPairingErrors reports PairingDialogResponsePending explicitly.
 Wait for the user to approve native Trust before retrying; unlocking alone
 is not approval. No protected-device or Trust check is bypassed here.
+
+
+Final Finder UI check: after refreshing Finder following the reboot, the user
+confirmed both **Jesvi IOS** under Locations and **Start Here.txt** inside the
+expanded **Jesvi Files** app row. This verifies document visibility in Finder;
+backup/media controls and storage category breakdown remain separate limits.
