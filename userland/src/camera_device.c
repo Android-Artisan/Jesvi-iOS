@@ -456,6 +456,7 @@ struct stream {
 	float           zoom;           /* ZoomFactor: the picture is the middle 1/zoom of the sensor each way */
 	const struct camera *camera;
 	uint64_t        render_ticks;   /* the moving pictures' ISP time since the last per-second line */
+	uint64_t        read_ticks, stats_ticks; /* reading a frame from the kernel; measuring, AE/AWB/AF */
 	CFStringRef     port;
 	bool            af_now;         /* a focus asked for (AutoFocusNow and the like): a search at the next frame */
 	bool            af_locked;      /* LockAFNow: no search but one asked for */
@@ -999,7 +1000,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	}
 	CVPixelBufferLockBaseAddress(pb, 0);
 
-	struct render_job job = { isp, f, raw, pb, pf, width, height, 8, strcmp(out->name, "StillImage") == 0 && pf != PF_BGRA };
+	struct render_job job = { isp, f, raw, pb, pf, width, height, 48, strcmp(out->name, "StillImage") == 0 && pf != PF_BGRA };
 	uint64_t began = mach_absolute_time();
 
 	/*
@@ -1356,6 +1357,92 @@ worker(void *context)
 	return r;
 }
 
+/*
+ * The frames' drawing on a thread of its own (2026-11-12): the worker reads frame n+1 from the kernel and measures
+ * it while frame n is drawn into the graph's buffers and given -- one after the other the two were 36 ms a frame,
+ * under the sensor's 30 a second.
+ */
+struct render_handoff {
+	pthread_mutex_t lock;
+	pthread_cond_t  cond;
+	bool            has_job, quit;
+	struct stream   *s;
+	struct isp      isp;            /* the ISP's state as the frame was measured */
+	const uint8_t   *buffer;        /* the frame (header first) */
+	CFDictionaryRef metadata;
+};
+
+static void
+give_frame(struct stream *s, const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw,
+    CFDictionaryRef metadata)
+{
+	pthread_mutex_lock(&s->lock);
+	for (int i = 0; s->graph_running && i < OUTPUTS; i++) {
+		struct output *out = &s->out[i];
+
+		/*
+		 * The scalers' outputs are the moving picture and are given every frame. The still image
+		 * output is the whole sensor (4032x3024) and is the photograph: a frame goes to it only
+		 * when the graph has asked for one, which is not something to make thirty times a second.
+		 */
+		bool still = strcmp(out->name, "StillImage") == 0;
+
+		if (out->handler == NULL || out->config == NULL || !(out->enabled || i == 0)) {
+			continue;
+		}
+		if (still && s->stills_wanted == 0) {
+			continue;
+		}
+		deliver(s, out, isp, f, raw, metadata);
+		if (still) {
+			s->stills_wanted--;
+			say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
+		}
+	}
+	pthread_mutex_unlock(&s->lock);
+}
+
+static void *
+render_body(void *context)
+{
+	struct render_handoff *h = context;
+
+	pthread_setname_np("redwood-camera-draw");
+	pthread_mutex_lock(&h->lock);
+	for (;;) {
+		while (!h->has_job && !h->quit) {
+			pthread_cond_wait(&h->cond, &h->lock);
+		}
+		if (!h->has_job && h->quit) {
+			break;
+		}
+		pthread_mutex_unlock(&h->lock);
+		const struct redwood_camera_frame *f = (const void *)h->buffer;
+
+		give_frame(h->s, &h->isp, f, h->buffer + f->header_bytes, h->metadata);
+		if (h->metadata != NULL) {
+			CFRelease(h->metadata);
+		}
+		pthread_mutex_lock(&h->lock);
+		h->metadata = NULL;
+		h->has_job = false;
+		pthread_cond_broadcast(&h->cond);
+	}
+	pthread_mutex_unlock(&h->lock);
+	return NULL;
+}
+
+/* until the drawing thread has given the frame before (its buffer free again) */
+static void
+render_wait(struct render_handoff *h)
+{
+	pthread_mutex_lock(&h->lock);
+	while (h->has_job) {
+		pthread_cond_wait(&h->cond, &h->lock);
+	}
+	pthread_mutex_unlock(&h->lock);
+}
+
 static void *
 worker_body(void *context)
 {
@@ -1364,8 +1451,12 @@ worker_body(void *context)
 	struct redwood_camera_frame head;
 	struct isp isp;
 	struct isp_stats st;
-	uint8_t *buffer = NULL;
+	uint8_t *buffer = NULL, *buffers[2] = { NULL, NULL };
 	size_t bytes = 0;
+	int next_buffer = 0;
+	struct render_handoff *h = calloc(1, sizeof(*h));
+	pthread_t drawer;
+	bool drawer_up = false;
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
 	float lux = -1, cct = -1;
@@ -1391,7 +1482,18 @@ worker_body(void *context)
 				}
 				continue;
 			}
-			if (head.sensor != s->camera->sensor) {
+			/*
+			 * The Galaxy S20 (kern.redwood.camera_turn is its): both of iOS's cameras are the one front SAK3J1 so
+			 * far, so the kernel's sensor is taken as it is -- the switch restarted the sensor (about 0.7 s) at
+			 * every camera start and every flip (2026-11-12). The back camera's pictures are black anyway.
+			 */
+			static int one_sensor = -1;
+			if (one_sensor < 0) {
+				int t;
+				size_t tl = sizeof(t);
+				one_sensor = sysctlbyname("kern.redwood.camera_turn", &t, &tl, NULL, 0) == 0;
+			}
+			if (head.sensor != s->camera->sensor && !one_sensor) {
 				/* another camera's frames (the kernel's last sensor): changed, and the next ones are this one's */
 				if (!switched) {
 					struct redwood_camera_command c = { .command = REDWOOD_CAMERA_SENSOR, .a = s->camera->sensor, .b = ~0u };
@@ -1403,11 +1505,21 @@ worker_body(void *context)
 				continue;
 			}
 			bytes = sizeof(head) + (size_t)head.stride * head.height;
-			buffer = malloc(bytes);
+			buffers[0] = malloc(bytes);
+			buffers[1] = malloc(bytes);
+			buffer = buffers[0];
+			if (h != NULL && buffers[1] != NULL) {
+				pthread_mutex_init(&h->lock, NULL);
+				pthread_cond_init(&h->cond, NULL);
+				h->s = s;
+				drawer_up = pthread_create(&drawer, NULL, render_body, h) == 0;
+			}
 			say("frames of %ux%u from the kernel (the %s)", head.width, head.height, s->camera->name);
 			continue;
 		}
+		uint64_t t_read = mach_absolute_time();
 		n = read(device, buffer, bytes);
+		s->read_ticks += mach_absolute_time() - t_read;
 		if (n != (ssize_t)bytes) {
 			if (n < 0 && errno == EIO) {
 				say("the kernel's camera has had a fault: no more frames");
@@ -1422,6 +1534,7 @@ worker_body(void *context)
 		const uint8_t *raw = buffer + f->header_bytes;
 		struct redwood_camera_command c;
 
+		uint64_t t_stats = mach_absolute_time();
 		isp_measure(&isp, f, raw, &st);
 		isp_awb(&isp, &st);
 		if (f->sensor != tuned_for) {
@@ -1474,6 +1587,7 @@ worker_body(void *context)
 			af.sweep = true;
 		}
 		af_frame(device, &af, f, raw, s->af_window, s->af_locked);
+		s->stats_ticks += mach_absolute_time() - t_stats;
 		s->frames++;
 
 		CFDictionaryRef metadata = frame_metadata(&isp, f, &st, s->port);
@@ -1493,32 +1607,23 @@ worker_body(void *context)
 			s->metadata = CFRetain(metadata);
 			pthread_mutex_unlock(&s->metadata_lock);
 		}
-		pthread_mutex_lock(&s->lock);
-		for (int i = 0; s->graph_running && i < OUTPUTS; i++) {
-			struct output *out = &s->out[i];
-
-			/*
-			 * The scalers' outputs are the moving picture and are given every frame. The still image
-			 * output is the whole sensor (4032x3024) and is the photograph: a frame goes to it only
-			 * when the graph has asked for one, which is not something to make thirty times a second.
-			 */
-			bool still = strcmp(out->name, "StillImage") == 0;
-
-			if (out->handler == NULL || out->config == NULL || !(out->enabled || i == 0)) {
-				continue;
+		if (drawer_up) {
+			/* to the drawing thread; this one reads the next frame into the other buffer meanwhile */
+			render_wait(h);
+			pthread_mutex_lock(&h->lock);
+			h->isp = isp;
+			h->buffer = buffer;
+			h->metadata = metadata;         /* (released by the drawing thread) */
+			h->has_job = true;
+			pthread_cond_broadcast(&h->cond);
+			pthread_mutex_unlock(&h->lock);
+			next_buffer ^= 1;
+			buffer = buffers[next_buffer];
+		} else {
+			give_frame(s, &isp, f, raw, metadata);
+			if (metadata != NULL) {
+				CFRelease(metadata);
 			}
-			if (still && s->stills_wanted == 0) {
-				continue;
-			}
-			deliver(s, out, &isp, f, raw, metadata);
-			if (still) {
-				s->stills_wanted--;
-				say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
-			}
-		}
-		pthread_mutex_unlock(&s->lock);
-		if (metadata != NULL) {
-			CFRelease(metadata);
 		}
 		if (s->graph_running && s->frames % 30 == 0) {
 			/* every second the graph has the frames: what each output took (given / no buffer in its pool) */
@@ -1540,9 +1645,10 @@ worker_body(void *context)
 				double fps = t_last ? 30.0 * 24000000.0 / (double)(t_now - t_last) : 0;
 
 				t_last = t_now;
-				say("frame %llu (format %d): %.1f fps, render %.1f ms a frame; given/refused:%s", s->frames, s->format_index,
-				    fps, s->render_ticks / 24000.0 / 30, line);
-				s->render_ticks = 0;
+				say("frame %llu (format %d): %.1f fps; a frame: read %.1f ms, stats %.1f, render %.1f; given/refused:%s",
+				    s->frames, s->format_index, fps, s->read_ticks / 24000.0 / 30, s->stats_ticks / 24000.0 / 30,
+				    s->render_ticks / 24000.0 / 30, line);
+				s->render_ticks = s->read_ticks = s->stats_ticks = 0;
 			}
 		}
 		if (s->frames == 1 || s->frames % 300 == 0) {
@@ -1551,7 +1657,17 @@ worker_body(void *context)
 			    (double)f->gain / f->gain_unity, isp.digital, st.mean[1], isp.wb[0], isp.wb[2], lux, cct);
 		}
 	}
-	free(buffer);
+	if (drawer_up) {
+		render_wait(h);
+		pthread_mutex_lock(&h->lock);
+		h->quit = true;
+		pthread_cond_broadcast(&h->cond);
+		pthread_mutex_unlock(&h->lock);
+		pthread_join(drawer, NULL);
+	}
+	free(h);
+	free(buffers[0]);
+	free(buffers[1]);
 	close(device);
 	say("the frames stopped (%llu)", s->frames);
 	return NULL;
