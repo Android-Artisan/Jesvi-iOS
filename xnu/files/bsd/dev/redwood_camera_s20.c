@@ -132,6 +132,7 @@ cam_s20_smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 static bool cam_3j1_write16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t value);
 static bool cam_3j1_read8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t *value);
 static bool cam_3j1_write8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t value);
+static bool cam_3j1_read16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t *value);
 static bool cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count);
 static uint64_t cam_s20_smc4(uint64_t fn, uint64_t a, uint64_t b, uint64_t c);
 
@@ -412,11 +413,24 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 					}
 					more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 2016, 1512, ((2016 * 10 / 8) + 15) & ~15U);
 					cam_s20_stream_frames++;
+					if (cam_s20_stream_frames % 30 == 1) {
+						/* what the sensor really has: coarse integration, analog gain, frame length */
+						uint16_t cit = 0, ag = 0, fll = 0;
+
+						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
+						(void)cam_3j1_read16(&sensor_bus, 0x0202, &cit);
+						(void)cam_3j1_read16(&sensor_bus, 0x0204, &ag);
+						(void)cam_3j1_read16(&sensor_bus, 0x0340, &fll);
+						printf("camera: rear frame %u: sensor has exposure %u lines, gain %#x, frame %u lines (asked %u, %#x, %u)\n",
+						    cam_s20_stream_frames, cit, ag, fll, cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame);
+					}
 					idle = 0;
 					if (cam_s20_exp_pending) {
 						uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
 
 						cam_s20_exp_pending = false;
+						/* (the SMIA registers are on page 0x4000: the tables leave others selected) */
+						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
 						(void)cam_3j1_write8(&sensor_bus, 0x0104, 1);
 						if (ef) (void)cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)ef);
 						(void)cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)el);

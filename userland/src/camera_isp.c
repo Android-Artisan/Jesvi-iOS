@@ -544,6 +544,62 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		v_at = cells_h > 1 ? (float)cy0 / (cells_h - 1) : 0;
 		const uint8_t *t0 = raw + (size_t)cy0 * 2 * f->stride, *t1 = raw + (size_t)cy1 * 2 * f->stride;
 		float gains[3] = { 1, 1, 1 };
+		/*
+		 * The two rows of cells this line is between, decoded once into R, G (the two greens' mean), B (2026-11-12:
+		 * decoding four cells for every pixel made the rear main's 2016x1512 frames 50-65 ms to draw). Kept from the
+		 * line before when it was between the same rows.
+		 */
+		static __thread float *rows_rgb[2];
+		static __thread uint32_t rows_cap, rows_cy[2] = { ~0u, ~0u };
+		static __thread const uint8_t *rows_raw;
+		static __thread uint64_t rows_seq;
+
+		if (cells_w > rows_cap) {
+			for (int k = 0; k < 2; k++) {
+				free(rows_rgb[k]);
+				rows_rgb[k] = malloc(sizeof(float) * 3 * cells_w);
+			}
+			rows_cap = cells_w;
+			rows_cy[0] = rows_cy[1] = ~0u;
+		}
+		if (rows_raw != raw || rows_seq != f->sequence) {
+			rows_raw = raw;
+			rows_seq = f->sequence;
+			rows_cy[0] = rows_cy[1] = ~0u;
+		}
+		for (int k = 0; k < 2 && rows_rgb[1] != NULL; k++) {
+			uint32_t want = k ? cy1 : cy0;
+
+			if (rows_cy[k] == want) {
+				continue;
+			}
+			if (rows_cy[!k] == want) {          /* (the other buffer has it: swap) */
+				float *t = rows_rgb[k];
+
+				rows_rgb[k] = rows_rgb[!k];
+				rows_rgb[!k] = t;
+				rows_cy[!k] = rows_cy[k];
+				rows_cy[k] = want;
+				continue;
+			}
+			const uint8_t *top = raw + (size_t)want * 2 * f->stride;
+			float *o = rows_rgb[k];
+
+			for (uint32_t cx = 0; cx < cells_w; cx++, o += 3) {
+				int v[4], g = 0;
+
+				cell(top, f->stride, cx, v);
+				for (int j = 0; j < 4; j++) {
+					g += j != r && j != b ? v[j] : 0;
+				}
+				o[0] = (float)v[r];
+				o[1] = g * 0.5f;
+				o[2] = (float)v[b];
+			}
+			rows_cy[k] = want;
+		}
+		(void)t0;
+		(void)t1;
 
 		for (uint32_t x = 0; x < width; x++) {
 			float fx = x0 + (x + 0.5f) * cw / width - 0.5f, tx, c[3] = { 0, 0, 0 };
@@ -552,7 +608,15 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			cx0 = cx0 > cells_w - 1 ? cells_w - 1 : cx0;
 			cx1 = cx0 + 1 > cells_w - 1 ? cells_w - 1 : cx0 + 1;
 			tx = fx < (float)cx0 ? 0 : fx - cx0;
-			for (int k = 0; k < 4; k++) {
+			if (rows_rgb[1] != NULL) {
+				const float *a0 = rows_rgb[0] + 3 * cx0, *a1 = rows_rgb[0] + 3 * cx1;
+				const float *b0 = rows_rgb[1] + 3 * cx0, *b1 = rows_rgb[1] + 3 * cx1;
+				float w00 = (1 - tx) * (1 - ty), w01 = tx * (1 - ty), w10 = (1 - tx) * ty, w11 = tx * ty;
+
+				for (int ch = 0; ch < 3; ch++) {
+					c[ch] = w00 * a0[ch] + w01 * a1[ch] + w10 * b0[ch] + w11 * b1[ch];
+				}
+			} else for (int k = 0; k < 4; k++) {
 				int v[4];
 				float w = (k & 1 ? tx : 1 - tx) * (k & 2 ? ty : 1 - ty);
 
