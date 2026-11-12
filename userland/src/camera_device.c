@@ -35,11 +35,15 @@
 #include <CoreVideo/CoreVideo.h>
 #include <IOSurface/IOSurfaceRef.h>
 #include <dispatch/dispatch.h>
+#include <Block.h>
+#include <objc/runtime.h>
 #include <dlfcn.h>
+#include <sys/sysctl.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <mach/mach_time.h>
 #include <math.h>
+#include <notify.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -47,6 +51,9 @@
 #include <string.h>
 #include <unistd.h>
 #include "camera_isp.h"
+
+static const char *tuning_dir(void);
+static const char *rw_path(const char *leaf, char *buf, size_t size);
 
 void redwood_camera_say(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
@@ -372,6 +379,8 @@ format(int sensor_width, int sensor_height, int max_fps, bool binned, double fov
 	put(f, "SensorWidth", number_i(sensor_width));
 	put(f, "SensorHeight", number_i(sensor_height));
 	put(f, "ISOBase", number_f(32));
+	/* Live Photo: the movie around the photograph (BWIrisStagingNode) is only made for a format that says so */
+	put(f, "IrisSupported", CFRetain(kCFBooleanTrue));
 	put(f, "DefaultAEMaxGain", number_f(64));
 
 	/*
@@ -432,9 +441,13 @@ static const struct camera {
 	int             formats[2][3];  /* sensor width, height, frames a second of "Photo" and of a video format */
 } cameras[2] = {
 	{ 1, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 4.0, 1.8, 1.22, 65.0,
-	  { { 4032, 3024, 30 }, { 4224, 2376, 60 } } },        /* "Photo", "Video-60" */
+	  { { 4032, 3024, 30 }, { 1920, 1080, 30 } } },        /* "Photo", "Video-30": 1080p, as the front (4224x2376 at 60 was
+	                                                         * never picked for video: no recording began, 2026-11-12) */
+	/* (turned: true on the Galaxy S20 too: its front SAK3J1's frames came upside down and mirrored with false, 2026-11-11;
+	 * kern.redwood.camera_turn bit 0 flips it once more, live) */
 	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 2.87, 2.2, 1.0, 70.0,
-	  { { 3088, 2320, 30 }, { 3840, 2160, 30 } } },        /* "Photo", "Video-30" */
+	  { { 3088, 2320, 30 }, { 1920, 1080, 30 } } },        /* "Photo", "Video-30" (1080p, as the iPhone X's front camera
+	                                                         * records; 4K was a CPU ISP and encoder load the S20 cannot carry) */
 };
 
 struct stream {
@@ -444,21 +457,29 @@ struct stream {
 	CFDictionaryRef metadata;       /* the last frame's (frame_metadata()), for a buffer that has none of its own */
 	pthread_mutex_t metadata_lock;  /* (not `lock': AddAttachmentsToSampleBuffer may come while a frame is given out) */
 	unsigned        stills_wanted;  /* photographs asked for by StillImageCaptureNow, not yet given */
+	bool            flash_on;       /* FlashMode ForceFlashOn: the front camera's photographs with the screen lit */
+	uint64_t        flash_ready;    /* the frame from which a lit photograph may be taken (0: no flash going) */
 	int             format_index;
 	double          min_fps, max_fps;
 	float           zoom;           /* ZoomFactor: the picture is the middle 1/zoom of the sensor each way */
 	const struct camera *camera;
+	uint64_t        render_ticks;   /* the moving pictures' ISP time since the last per-second line */
+	uint64_t        read_ticks, stats_ticks; /* reading a frame from the kernel; measuring, AE/AWB/AF */
 	CFStringRef     port;
 	bool            af_now;         /* a focus asked for (AutoFocusNow and the like): a search at the next frame */
 	bool            af_locked;      /* LockAFNow: no search but one asked for */
 	float           af_window[4];   /* AFWindowParams: where to focus, as fractions of the frame (x0, y0, x1, y1) */
+	float           ev_bias;        /* ExposureBias, in stops (Camera.app's sun slider) */
+	bool            ae_locked;      /* LockAENow until UnlockAENow */
 	struct output   out[OUTPUTS];
 	pthread_mutex_t lock;
 	pthread_t       worker;
 	volatile bool   running;
 	volatile bool   graph_running;  /* the capture graph has started this stream: frames may be given out */
 	bool            worker_started;
+	volatile bool   worker_busy;    /* the worker thread has not returned yet (it may outlive a stop: stream_stop) */
 	int             torch;
+	int             last_turn;
 	uint64_t        frames, stills_given;
 };
 
@@ -720,10 +741,19 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 				CFTypeRef h = CFGetTypeID(values[i]) == CFDictionaryGetTypeID() ?
 				    CFDictionaryGetValue(values[i], CFSTR("PixelBufferHandler")) : NULL;
 
-				if (out->handler != NULL) {
-					CFRelease(out->handler);
+				/* Only a block is a handler: the graph also sends other objects here (kCFNull when it takes one
+				 * away), and one of those kept and later called as a block was mediaserverd's SIGBUS; copying it
+				 * as a block was the next one's SIGSEGV (2026-11-12). */
+				const char *cls = h != NULL ? object_getClassName((id)h) : NULL;
+				bool is_block = cls != NULL && strstr(cls, "Block") != NULL;
+
+				if (h != NULL && !is_block) {
+					say("stream: %s's PixelBufferHandler is a %s, not a block: no handler", out->name, cls ? cls : "?");
 				}
-				out->handler = h != NULL ? (void *)CFRetain(h) : NULL;
+				if (out->handler != NULL) {
+					_Block_release(out->handler);
+				}
+				out->handler = is_block ? (void *)_Block_copy(h) : NULL;
 			}
 		}
 		free(keys);
@@ -740,8 +770,15 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		 */
 		pthread_mutex_lock(&s->lock);
 		s->stills_wanted++;
+		if (s->flash_on && s->camera->sensor == 2 && s->flash_ready == 0) {
+			/* the screen lit (SpringBoard, inject_sb.c), and the photograph some frames later, as the exposure
+			 * comes down to the lit face */
+			s->flash_ready = s->frames + 10;
+			notify_post("com.redwood.screenflash.on");
+			say("stream: the screen lit for the photograph (from frame %llu)", (unsigned long long)s->flash_ready);
+		}
 		pthread_mutex_unlock(&s->lock);
-		say_once("stream: a photograph asked for", key, value);
+		say_value("stream: a photograph asked for", key, value);
 		return 0;
 	}
 	if (key_is(key, "VideoOutputsColorInfo")) {
@@ -779,6 +816,33 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 			s->af_locked = false;
 			s->af_now = true;
 		}
+		return 0;
+	}
+	if (key_is(key, "ExposureBias")) {
+		/* a number, or { ExposureBiasValue, ExposureBiasCommandID }: 1/256 stop steps around 256? said, to learn */
+		double v = 0;
+		CFTypeRef n = value;
+
+		if (value != NULL && CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+			n = CFDictionaryGetValue(value, CFSTR("ExposureBiasValue"));
+		}
+		if (n != NULL && CFGetTypeID(n) == CFNumberGetTypeID()) {
+			CFNumberGetValue(n, kCFNumberDoubleType, &v);
+			/* a multiplier, 256 being 1 (Camera.app's slider: 35 to 2715, about -2.9 to +3.4 stops) */
+			s->ev_bias = v > 0 ? (float)log2(v / 256.0) : 0;
+			s->ev_bias = s->ev_bias < -3.5f ? -3.5f : s->ev_bias > 3.5f ? 3.5f : s->ev_bias;
+		}
+		say_value("stream: exposure:", key, value);
+		return 0;
+	}
+	if (key_is(key, "LockAENow") || key_is(key, "UnlockAENow")) {
+		s->ae_locked = key_is(key, "LockAENow");
+		say_value("stream: exposure:", key, value);
+		return 0;
+	}
+	if (key_is(key, "FlashMode")) {
+		s->flash_on = value != NULL && CFGetTypeID(value) == CFStringGetTypeID() && CFEqual(value, CFSTR("ForceFlashOn"));
+		say_value("stream: flash:", key, value);
 		return 0;
 	}
 	say_once("stream: set (not used)", key, value);
@@ -963,7 +1027,6 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	CVPixelBufferRef pb = output_buffer(out);
 	uint32_t pf, width, height;
 
-	(void)s;
 	if (pb == NULL) {
 		return;
 	}
@@ -981,11 +1044,42 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	}
 	CVPixelBufferLockBaseAddress(pb, 0);
 
-	struct render_job job = { isp, f, raw, pb, pf, width, height, 8, strcmp(out->name, "StillImage") == 0 && pf != PF_BGRA };
+	/* (a binned frame's pixels are each worth one of the picture's: demosaiced, not taken a 2x2 cell a pixel) */
+	static int demosaic_binned = -1;
+	if (demosaic_binned < 0) {
+		demosaic_binned = access(rw_path("redwood-binned-demosaic", (char[160]){0}, 160), F_OK) == 0;
+	}
+	struct render_job job = { isp, f, raw, pb, pf, width, height, 48,
+		(strcmp(out->name, "StillImage") == 0 || (f->width < 2000 && demosaic_binned)) && pf != PF_BGRA };
 	uint64_t began = mach_absolute_time();
 
-	dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
-	if (job.still) {
+	/*
+	 * The Back Camera is black for now (2026-11-12, the user: only the front is being tested, and both showing the
+	 * same sensor made it unclear which is which). `touch /var/root/redwood-rear-live' gives it pictures again.
+	 */
+	if (s->camera->sensor == 1 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
+		if (pf == PF_BGRA) {
+			for (uint32_t r = 0; r < height; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddress(pb) + r * CVPixelBufferGetBytesPerRow(pb), 0, (size_t)width * 4);
+			}
+		} else {
+			for (uint32_t r = 0; r < height; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 0) + r * CVPixelBufferGetBytesPerRowOfPlane(pb, 0),
+				    pf == PF_420V ? 16 : 0, width);
+			}
+			for (uint32_t r = 0; r < height / 2; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 1) + r * CVPixelBufferGetBytesPerRowOfPlane(pb, 1), 128, width);
+			}
+		}
+	} else {
+		dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
+	}
+	bool photograph = strcmp(out->name, "StillImage") == 0;
+
+	if (!photograph) {
+		s->render_ticks += mach_absolute_time() - began;
+	}
+	if (photograph) {
 		static mach_timebase_info_data_t tb;
 
 		if (tb.denom == 0) {
@@ -1291,7 +1385,11 @@ load_tuning(struct isp *isp, uint32_t sensor)
 	if (sensor >= sizeof(names) / sizeof(names[0])) {
 		return;
 	}
-	snprintf(path, sizeof(path), "/redwood/fw/camera-%s.isp", names[sensor]);
+	/* the phone's own (made on it, see tune_on_phone()) before the image's */
+	snprintf(path, sizeof(path), "%s/camera-%s.isp", tuning_dir(), names[sensor]);
+	if (access(path, R_OK) != 0) {
+		snprintf(path, sizeof(path), "/redwood/fw/camera-%s.isp", names[sensor]);
+	}
 	if (isp_load_tuning(isp, path)) {
 		say("the %s's colour tuning from %s: %u colour matrices' lights, %u lens shadings'", names[sensor], path,
 		    isp->tuning->ccm.lights, isp->tuning->lsc.lights);
@@ -1302,16 +1400,315 @@ load_tuning(struct isp *isp, uint32_t sensor)
 	}
 }
 
+
+/*
+ * Colour tuning made on the phone (2026-11-12; the S20's front SAK3J1 had none: no colour matrix, no lens shading).
+ *   touch /var/root/redwood-lsc-capture   the next frame is a flat field (a white sheet over the lens, evenly
+ *                                         lit): the lens shading is measured from it
+ *   /var/root/redwood-ccm                 the colour matrix, nine numbers row by row (camera RGB, white balanced,
+ *                                         to linear sRGB; each row summing to 1); a generic phone sensor's if absent
+ *   touch /var/root/redwood-tuning-reload the matrix file read again (the lens shading kept)
+ * Both are written into /var/root/camera-<sensor>.isp (RWCISP02, as tools/camtuning.py makes them), which
+ * load_tuning() takes before the image's.
+ */
+
+/* a directory mediaserverd's sandbox lets it read and write (its /var/root is closed to it) */
+static const char *
+tuning_dir(void)
+{
+	static const char *dir;
+	static const char *const dirs[] = { "/var/mobile/Library/Caches/com.apple.mediaserverd", "/var/mobile/Library/Caches",
+		"/var/tmp", "/tmp", "/var/mobile/Media", "/var/root" };
+
+	if (dir != NULL) {
+		return dir;
+	}
+	for (int i = 0; i < 6; i++) {
+		char t[160];
+		FILE *x;
+
+		snprintf(t, sizeof(t), "%s/redwood-write-test", dirs[i]);
+		x = fopen(t, "w");
+		say("tuning: %s: %s", dirs[i], x ? "writable" : strerror(errno));
+		if (x != NULL) {
+			fclose(x);
+			unlink(t);
+			dir = dirs[i];
+			return dir;
+		}
+	}
+	dir = "/var/root";
+	return dir;
+}
+
+
+static const char *
+rw_path(const char *leaf, char *buf, size_t size)
+{
+	snprintf(buf, size, "%s/%s", tuning_dir(), leaf);
+	return buf;
+}
+
+#define LSC_GRID (LSC_W * LSC_H)
+static float phone_lsc[3][LSC_H][LSC_W];
+static bool phone_lsc_have;
+
+static void
+read_ccm(float m[9])
+{
+	static const float generic[9] = { 1.72f, -0.56f, -0.16f, -0.28f, 1.58f, -0.30f, 0.02f, -0.66f, 1.64f };
+	FILE *fp = fopen(rw_path("redwood-ccm", (char[160]){0}, 160), "r");
+	int n = 0;
+
+	memcpy(m, generic, sizeof(generic));
+	if (fp != NULL) {
+		float v[9];
+
+		for (n = 0; n < 9 && fscanf(fp, " %f ,", &v[n]) == 1; n++) {
+		}
+		fclose(fp);
+		if (n == 9) {
+			memcpy(m, v, sizeof(v));
+		}
+	}
+}
+
+static bool
+write_tuning(const char *name, const float ccm[9])
+{
+	char path[96];
+	FILE *fp;
+	uint32_t one = 1, zero = 0;
+	float range[2] = { -1e9f, 1e9f };
+
+	snprintf(path, sizeof(path), "%s/camera-%s.isp", tuning_dir(), name);
+	if ((fp = fopen(path, "wb")) == NULL) {
+		static const char *const dirs[] = { "/var/tmp", "/tmp", "/var/mobile/Library/Caches", "/var/mobile/Media" };
+
+		say("tuning: %s: %s", path, strerror(errno));
+		for (int i = 0; i < 4; i++) {
+			char t[128];
+			FILE *x;
+
+			snprintf(t, sizeof(t), "%s/redwood-write-test", dirs[i]);
+			x = fopen(t, "w");
+			say("tuning: can write %s: %s", dirs[i], x ? "yes" : strerror(errno));
+			if (x) {
+				fclose(x);
+				unlink(t);
+			}
+		}
+		return false;
+	}
+	fwrite("RWCISP02", 1, 8, fp);
+	/* the matrix: one light range, one temperature range */
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(ccm, 4, 9, fp);
+	/* the lens shading: R, Gr, Gb, B (G twice), or none (gains of 1) */
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	for (int c = 0; c < 4; c++) {
+		int k = c == 0 ? 0 : c == 3 ? 2 : 1;
+
+		for (int gy = 0; gy < LSC_H; gy++) {
+			for (int gx = 0; gx < LSC_W; gx++) {
+				float g = phone_lsc_have ? phone_lsc[k][gy][gx] : 1.0f;
+
+				fwrite(&g, 4, 1, fp);
+			}
+		}
+	}
+	fwrite(&zero, 4, 1, fp);        /* no reference lights */
+	fclose(fp);
+	return true;
+}
+
+static void
+tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw)
+{
+	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k4h7" };
+	const char *name = f->sensor < 4 ? names[f->sensor] : NULL;
+	char cap_p[160], rel_p[160];
+	bool capture = access(rw_path("redwood-lsc-capture", cap_p, sizeof(cap_p)), F_OK) == 0,
+	    reload = access(rw_path("redwood-tuning-reload", rel_p, sizeof(rel_p)), F_OK) == 0;
+	float ccm[9];
+
+	if (isp->trim[1] == 0 && access(rw_path("redwood-ccm", (char[160]){0}, 160), R_OK) == 0) {
+		reload = true;          /* (a new stream: the matrix and the trim taken again) */
+	}
+	if (name == NULL || (!capture && !reload)) {
+		return;
+	}
+	unlink(cap_p);
+	unlink(rel_p);
+	if (!phone_lsc_have && isp->tuning != NULL && isp->tuning->lsc.lights > 0) {
+		/* (the lens shading of the file already there, kept when only the matrix changes) */
+		memcpy(phone_lsc, isp->lsc.gain, sizeof(phone_lsc));
+		phone_lsc_have = true;
+	}
+	if (capture) {
+		struct isp tmp = *isp;
+		float darkest = 0;
+
+		if (!isp_lsc_from_flat(&tmp, f, raw, &darkest)) {
+			say("tuning: that frame is no flat field (too dark, or clipped): nothing measured");
+			return;
+		}
+		memcpy(phone_lsc, tmp.lsc.gain, sizeof(phone_lsc));
+		phone_lsc_have = true;
+		say("tuning: the lens shading measured (the corners at %.0f %% of the centre)", darkest * 100);
+	}
+	read_ccm(ccm);
+	{
+		/* redwood-wb-trim: "R B", the white balance's red and blue made that much stronger (a cast the
+		 * grey-world estimate leaves: green, 2026-11-12) */
+		FILE *tf = fopen(rw_path("redwood-wb-trim", (char[160]){0}, 160), "r");
+		float tr = 1, tb = 1;
+
+		if (tf != NULL) {
+			if (fscanf(tf, "%f %f", &tr, &tb) != 2) {
+				tr = tb = 1;
+			}
+			fclose(tf);
+		}
+		isp->trim[0] = tr;
+		isp->trim[1] = 1;
+		isp->trim[2] = tb;
+		say("tuning: white balance trim R %.3f B %.3f", tr, tb);
+	}
+	if (write_tuning(name, ccm)) {
+		load_tuning(isp, f->sensor);
+		say("tuning: camera-%s.isp written; matrix %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f", name, ccm[0],
+		    ccm[1], ccm[2], ccm[3], ccm[4], ccm[5], ccm[6], ccm[7], ccm[8]);
+	}
+}
+
+static int one_sensor = -1;             /* the S20 (kern.redwood.camera_turn there): one sensor for both cameras */
+static void *worker_body(void *context);
+
+/* the worker, and a flag when it is over (stream_stop does not wait for ever for it) */
 static void *
 worker(void *context)
+{
+	struct stream *s = stream_of(context);
+	void *r = worker_body(context);
+
+	s->worker_busy = false;
+	return r;
+}
+
+/*
+ * The frames' drawing on a thread of its own (2026-11-12): the worker reads frame n+1 from the kernel and measures
+ * it while frame n is drawn into the graph's buffers and given -- one after the other the two were 36 ms a frame,
+ * under the sensor's 30 a second.
+ */
+struct render_handoff {
+	pthread_mutex_t lock;
+	pthread_cond_t  cond;
+	bool            has_job, quit;
+	struct stream   *s;
+	struct isp      isp;            /* the ISP's state as the frame was measured */
+	const uint8_t   *buffer;        /* the frame (header first) */
+	CFDictionaryRef metadata;
+};
+
+static void
+give_frame(struct stream *s, const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw,
+    CFDictionaryRef metadata)
+{
+	pthread_mutex_lock(&s->lock);
+	for (int i = 0; s->graph_running && i < OUTPUTS; i++) {
+		struct output *out = &s->out[i];
+
+		/*
+		 * The scalers' outputs are the moving picture and are given every frame. The still image
+		 * output is the whole sensor (4032x3024) and is the photograph: a frame goes to it only
+		 * when the graph has asked for one, which is not something to make thirty times a second.
+		 */
+		bool still = strcmp(out->name, "StillImage") == 0;
+
+		if (out->handler == NULL || out->config == NULL || !(out->enabled || i == 0)) {
+			continue;
+		}
+		if (still && s->stills_wanted == 0) {
+			continue;
+		}
+		if (still && s->flash_ready != 0 && s->frames < s->flash_ready) {
+			continue;               /* (the screen's light not in the exposure yet) */
+		}
+		deliver(s, out, isp, f, raw, metadata);
+		if (still) {
+			s->stills_wanted--;
+			say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
+			if (s->stills_wanted == 0 && s->flash_ready != 0) {
+				s->flash_ready = 0;
+				notify_post("com.redwood.screenflash.off");
+			}
+		}
+	}
+	pthread_mutex_unlock(&s->lock);
+}
+
+static void *
+render_body(void *context)
+{
+	struct render_handoff *h = context;
+
+	pthread_setname_np("redwood-camera-draw");
+	pthread_mutex_lock(&h->lock);
+	for (;;) {
+		while (!h->has_job && !h->quit) {
+			pthread_cond_wait(&h->cond, &h->lock);
+		}
+		if (!h->has_job && h->quit) {
+			break;
+		}
+		pthread_mutex_unlock(&h->lock);
+		const struct redwood_camera_frame *f = (const void *)h->buffer;
+
+		give_frame(h->s, &h->isp, f, h->buffer + f->header_bytes, h->metadata);
+		if (h->metadata != NULL) {
+			CFRelease(h->metadata);
+		}
+		pthread_mutex_lock(&h->lock);
+		h->metadata = NULL;
+		h->has_job = false;
+		pthread_cond_broadcast(&h->cond);
+	}
+	pthread_mutex_unlock(&h->lock);
+	return NULL;
+}
+
+/* until the drawing thread has given the frame before (its buffer free again) */
+static void
+render_wait(struct render_handoff *h)
+{
+	pthread_mutex_lock(&h->lock);
+	while (h->has_job) {
+		pthread_cond_wait(&h->cond, &h->lock);
+	}
+	pthread_mutex_unlock(&h->lock);
+}
+
+static void *
+worker_body(void *context)
 {
 	CMBaseObjectRef o = context;
 	struct stream *s = stream_of(o);
 	struct redwood_camera_frame head;
 	struct isp isp;
 	struct isp_stats st;
-	uint8_t *buffer = NULL;
+	uint8_t *buffer = NULL, *buffers[2] = { NULL, NULL };
 	size_t bytes = 0;
+	int next_buffer = 0;
+	struct render_handoff *h = calloc(1, sizeof(*h));
+	pthread_t drawer;
+	bool drawer_up = false, asked_binned = false;
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
 	float lux = -1, cct = -1;
@@ -1324,6 +1721,17 @@ worker(void *context)
 		return NULL;
 	}
 	isp_init(&isp);
+	/*
+	 * The white balance where the last stream left it, and a quick one for the first frames: from gains of 1 every
+	 * start was green for a second or two (the raw frame's green is the strongest; 2026-11-12).
+	 */
+	static float last_wb[3];
+	if (last_wb[0] > 0) {
+		memcpy(isp.wb, last_wb, sizeof(last_wb));
+		isp.awb_fast = 4;
+	} else {
+		isp.awb_fast = 12;
+	}
 	while (s->running && failures < 5) {
 		ssize_t n;
 
@@ -1337,7 +1745,17 @@ worker(void *context)
 				}
 				continue;
 			}
-			if (head.sensor != s->camera->sensor) {
+			/*
+			 * The Galaxy S20 (kern.redwood.camera_turn is its): both of iOS's cameras are the one front SAK3J1 so
+			 * far, so the kernel's sensor is taken as it is -- the switch restarted the sensor (about 0.7 s) at
+			 * every camera start and every flip (2026-11-12). The back camera's pictures are black anyway.
+			 */
+			if (one_sensor < 0) {
+				int t;
+				size_t tl = sizeof(t);
+				one_sensor = sysctlbyname("kern.redwood.camera_turn", &t, &tl, NULL, 0) == 0;
+			}
+			if (head.sensor != s->camera->sensor && !one_sensor) {
 				/* another camera's frames (the kernel's last sensor): changed, and the next ones are this one's */
 				if (!switched) {
 					struct redwood_camera_command c = { .command = REDWOOD_CAMERA_SENSOR, .a = s->camera->sensor, .b = ~0u };
@@ -1348,12 +1766,37 @@ worker(void *context)
 				}
 				continue;
 			}
+			/*
+			 * The S20: the binned 1824x1368 mode for the stream (a quarter of the full mode's 12 MB a frame: with
+			 * every frame demosaiced on the CPU the phone sat at 95 C, throttled, the preview at 17 frames a
+			 * second; 2026-11-12). redwood-full-stream in the tuning directory keeps the full mode.
+			 */
+			/* (the user, 2026-11-12: binned looked much worse and stuttered: the full mode, unless redwood-binned-stream) */
+			bool want_binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
+			if (one_sensor > 0 && !asked_binned && (head.width > 2000) == want_binned) {
+				struct redwood_camera_command mc = { .command = REDWOOD_CAMERA_SENSOR, .a = head.sensor, .b = want_binned ? 1 : 0 };
+
+				asked_binned = true;
+				say("the %s mode asked for (the frames were %ux%u)", want_binned ? "binned" : "full", head.width, head.height);
+				(void)write(device, &mc, sizeof(mc));
+				continue;
+			}
 			bytes = sizeof(head) + (size_t)head.stride * head.height;
-			buffer = malloc(bytes);
+			buffers[0] = malloc(bytes);
+			buffers[1] = malloc(bytes);
+			buffer = buffers[0];
+			if (h != NULL && buffers[1] != NULL) {
+				pthread_mutex_init(&h->lock, NULL);
+				pthread_cond_init(&h->cond, NULL);
+				h->s = s;
+				drawer_up = pthread_create(&drawer, NULL, render_body, h) == 0;
+			}
 			say("frames of %ux%u from the kernel (the %s)", head.width, head.height, s->camera->name);
 			continue;
 		}
+		uint64_t t_read = mach_absolute_time();
 		n = read(device, buffer, bytes);
+		s->read_ticks += mach_absolute_time() - t_read;
 		if (n != (ssize_t)bytes) {
 			if (n < 0 && errno == EIO) {
 				say("the kernel's camera has had a fault: no more frames");
@@ -1368,8 +1811,13 @@ worker(void *context)
 		const uint8_t *raw = buffer + f->header_bytes;
 		struct redwood_camera_command c;
 
+		uint64_t t_stats = mach_absolute_time();
 		isp_measure(&isp, f, raw, &st);
 		isp_awb(&isp, &st);
+		memcpy(last_wb, isp.wb, sizeof(last_wb));
+		if (s->frames % 15 == 0) {
+			tune_on_phone(&isp, f, raw);
+		}
 		if (f->sensor != tuned_for) {
 			tuned_for = f->sensor;
 			load_tuning(&isp, f->sensor);
@@ -1383,7 +1831,67 @@ worker(void *context)
 		isp_tune(&isp, lux, cct);
 		isp.zoom = s->zoom;
 		isp.turned = s->camera->turned;
-		if (isp_ae(&isp, f, &st, &c)) {
+		{
+			/* the kernel's say (kern.redwood.camera_turn, the S20): bit 0 turns the front camera's pictures half round */
+			int turn = 0;
+			size_t len = sizeof(turn);
+			isp.mirror = false;
+			/* bit 2 set: the kernel says, for every camera (the S20's frames all come from one sensor so far):
+			 * bit 0 turn half round, bit 1 mirror. The raw frame (2026-11-12, phone upright) has the scene's top at
+			 * the sensor's right; iOS turns portrait pictures 90 degrees clockwise, so they need the half turn: 5. */
+			/* /var/root/redwood-camera-turn, when there, overrides the kernel's (5 since 2026-11-12: the preview a
+			 * mirror, photographs and videos as others see you -- iOS turns those itself; the user checked all three) */
+			bool from_file = false;
+			FILE *tf = fopen(rw_path("redwood-camera-turn", (char[160]){0}, 160), "r");
+
+			if (tf != NULL) {
+				from_file = fscanf(tf, "%d", &turn) == 1;
+				fclose(tf);
+			}
+			if ((from_file || sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0) && (turn & 4)) {
+				isp.turned = (turn & 1) != 0;
+				isp.mirror = (turn & 2) != 0;
+				if (turn != s->last_turn) {
+					say("orientation: turn %d (turned %d, mirrored %d) for the %s", turn, isp.turned, isp.mirror, s->camera->name);
+					s->last_turn = turn;
+				}
+			}
+		}
+		{
+			/*
+			 * Where Camera.app was tapped (the focus window) counts most for the exposure, as on an iPhone; the
+			 * sun slider (ExposureBias) moves the target. Both through the green mean that AE goes by.
+			 */
+			bool tapped = !(s->af_window[0] == 0.3f && s->af_window[1] == 0.3f && s->af_window[2] == 0.7f &&
+			    s->af_window[3] == 0.7f);
+			uint32_t cw = f->width / 2, chh = f->height / 2, n = 0;
+			double sum = 0;
+
+			if (tapped) {
+				uint32_t x0 = (uint32_t)(s->af_window[0] * cw), x1 = (uint32_t)(s->af_window[2] * cw);
+				uint32_t y0 = (uint32_t)(s->af_window[1] * chh), y1 = (uint32_t)(s->af_window[3] * chh);
+				int r_at = (int)(f->bayer & 3), b_at = 3 - (int)(f->bayer & 3);   /* (as camera_isp.c's cell_places) */
+				for (uint32_t cy = y0; cy < y1 && cy < chh; cy += 6) {
+					for (uint32_t cx = x0; cx < x1 && cx < cw; cx += 6) {
+						const uint8_t *g0 = raw + (size_t)cy * 2 * f->stride + (size_t)(cx >> 1) * 5;
+						unsigned o = (cx & 1) * 2;
+						int v[4] = { (g0[o] << 2) - 64, (g0[o + 1] << 2) - 64, (g0[f->stride + o] << 2) - 64,
+							(g0[f->stride + o + 1] << 2) - 64 };
+
+						for (int j = 0; j < 4; j++) {
+							sum += j != r_at && j != b_at ? (v[j] > 0 ? v[j] : 0) / 2.0 : 0;
+						}
+						n++;
+					}
+				}
+				if (n > 16) {
+					st.mean[1] = 0.75 * (sum / n) + 0.25 * st.mean[1];
+				}
+			}
+			/* the sun slider: on the picture at once (Camera.app's own feel), not through AE (a second to follow) */
+			isp.bias = exp2f(s->ev_bias);
+		}
+		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
 		}
 		if (s->af_now) {
@@ -1394,6 +1902,7 @@ worker(void *context)
 			af.sweep = true;
 		}
 		af_frame(device, &af, f, raw, s->af_window, s->af_locked);
+		s->stats_ticks += mach_absolute_time() - t_stats;
 		s->frames++;
 
 		CFDictionaryRef metadata = frame_metadata(&isp, f, &st, s->port);
@@ -1413,40 +1922,70 @@ worker(void *context)
 			s->metadata = CFRetain(metadata);
 			pthread_mutex_unlock(&s->metadata_lock);
 		}
-		pthread_mutex_lock(&s->lock);
-		for (int i = 0; s->graph_running && i < OUTPUTS; i++) {
-			struct output *out = &s->out[i];
-
-			/*
-			 * The scalers' outputs are the moving picture and are given every frame. The still image
-			 * output is the whole sensor (4032x3024) and is the photograph: a frame goes to it only
-			 * when the graph has asked for one, which is not something to make thirty times a second.
-			 */
-			bool still = strcmp(out->name, "StillImage") == 0;
-
-			if (out->handler == NULL || out->config == NULL || !(out->enabled || i == 0)) {
-				continue;
-			}
-			if (still && s->stills_wanted == 0) {
-				continue;
-			}
-			deliver(s, out, &isp, f, raw, metadata);
-			if (still) {
-				s->stills_wanted--;
-				say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
+		if (drawer_up) {
+			/* to the drawing thread; this one reads the next frame into the other buffer meanwhile */
+			render_wait(h);
+			pthread_mutex_lock(&h->lock);
+			h->isp = isp;
+			h->buffer = buffer;
+			h->metadata = metadata;         /* (released by the drawing thread) */
+			h->has_job = true;
+			pthread_cond_broadcast(&h->cond);
+			pthread_mutex_unlock(&h->lock);
+			next_buffer ^= 1;
+			buffer = buffers[next_buffer];
+		} else {
+			give_frame(s, &isp, f, raw, metadata);
+			if (metadata != NULL) {
+				CFRelease(metadata);
 			}
 		}
-		pthread_mutex_unlock(&s->lock);
-		if (metadata != NULL) {
-			CFRelease(metadata);
+		if (s->graph_running && s->frames % 30 == 0) {
+			/* every second the graph has the frames: what each output took (given / no buffer in its pool) */
+			char line[400];
+			size_t at = 0;
+
+			for (int i = 0; i < OUTPUTS && at < sizeof(line) - 80; i++) {
+				struct output *out = &s->out[i];
+
+				if (out->handler != NULL) {
+					at += (size_t)snprintf(line + at, sizeof(line) - at, " %s %llu/%llu%s", out->name,
+					    (unsigned long long)out->delivered, (unsigned long long)out->refused, out->enabled ? "" : " (off)");
+				}
+			}
+			line[at] = 0;
+			{
+				static uint64_t t_last;
+				uint64_t t_now = mach_absolute_time();
+				double fps = t_last ? 30.0 * 24000000.0 / (double)(t_now - t_last) : 0;
+
+				t_last = t_now;
+				say("frame %llu (format %d): %.1f fps; a frame: read %.1f ms, stats %.1f, render %.1f; given/refused:%s",
+				    s->frames, s->format_index, fps, s->read_ticks / 24000.0 / 30, s->stats_ticks / 24000.0 / 30,
+				    s->render_ticks / 24000.0 / 30, line);
+				s->render_ticks = s->read_ticks = s->stats_ticks = 0;
+			}
 		}
-		if (s->frames == 1 || s->frames % 300 == 0) {
+		if (s->frames == 1 || s->frames % 30 == 0) {
 			say("frame %llu: exposure %.1f ms, gain %.1fx, digital %.2fx, green %.0f above black; white balance R %.2f "
 			    "B %.2f, lux index %.0f, about %.0f K", f->sequence, f->exposure_lines * (double)f->line_ns / 1e6,
 			    (double)f->gain / f->gain_unity, isp.digital, st.mean[1], isp.wb[0], isp.wb[2], lux, cct);
+			if (s->ev_bias != 0 || s->ae_locked) {
+				say("exposure bias %+.2f stops%s", s->ev_bias, s->ae_locked ? ", AE locked" : "");
+			}
 		}
 	}
-	free(buffer);
+	if (drawer_up) {
+		render_wait(h);
+		pthread_mutex_lock(&h->lock);
+		h->quit = true;
+		pthread_cond_broadcast(&h->cond);
+		pthread_mutex_unlock(&h->lock);
+		pthread_join(drawer, NULL);
+	}
+	free(h);
+	free(buffers[0]);
+	free(buffers[1]);
 	close(device);
 	say("the frames stopped (%llu)", s->frames);
 	return NULL;
@@ -1482,21 +2021,60 @@ stream_begin(CMBaseObjectRef o, bool graph)
 			(void)stream_stop(all_streams[i]);
 		}
 	}
+	/* a worker that a stop did not wait for: let it end first (it still has the kernel's camera open) */
+	for (int i = 0; i < 2; i++) {
+		for (int w = 0; w < 200 && all_streams[i] != NULL && stream_of(all_streams[i])->worker_busy; w++) {
+			usleep(10000);
+		}
+	}
 	s->running = true;
 	s->frames = 0;
+	s->worker_busy = true;
 	say("stream: frames begin (format %d)", s->format_index);
 	if (pthread_create(&s->worker, NULL, worker, o) != 0) {
 		s->running = false;
+		s->worker_busy = false;
 		return ERR_UNSUPPORTED;
 	}
 	s->worker_started = true;
 	return 0;
 }
 
+/*
+ * The stream's own notifications, as H10ISP's stream posts them (CoreMedia's notification center, the stream as the
+ * object): "StreamStarting"/"StreamStarted" and "StreamStopping"/"StreamStopped". BWFigVideoCaptureDevice waits
+ * for StreamStopped (captureStreamWillStopStreaming:, _deviceDidStopStreaming): without it every stop ended in
+ * "Timed out waiting for the capture graph to stop" -- mediaserverd's SIGTRAP and a movie never finished
+ * (2026-11-12).
+ */
+static void
+post(CMBaseObjectRef o, CFStringRef name)
+{
+	static void *(*center)(void);
+	static OSStatus (*post_notification)(void *, CFStringRef, const void *, CFTypeRef, uint32_t);
+	static bool looked;
+
+	if (!looked) {
+		looked = true;
+		center = dlsym(RTLD_DEFAULT, "CMNotificationCenterGetDefaultLocalCenter");
+		post_notification = dlsym(RTLD_DEFAULT, "CMNotificationCenterPostNotification");
+	}
+	if (center != NULL && post_notification != NULL) {
+		(void)post_notification(center(), name, o, NULL, 0);
+	}
+}
+
 static OSStatus
 stream_start(CMBaseObjectRef o)
 {
-	return stream_begin(o, true);
+	OSStatus st;
+
+	post(o, CFSTR("StreamStarting"));
+	st = stream_begin(o, true);
+	if (st == 0) {
+		post(o, CFSTR("StreamStarted"));
+	}
+	return st;
 }
 
 static OSStatus
@@ -1506,6 +2084,16 @@ stream_stop(CMBaseObjectRef o)
 
 	say("stream: stop (%llu frames, %llu pictures given)", (unsigned long long)s->frames,
 	    (unsigned long long)s->out[0].delivered);
+	post(o, CFSTR("StreamStopping"));
+	if (s->flash_ready != 0) {
+		s->flash_ready = 0;
+		notify_post("com.redwood.screenflash.off");
+	}
+	/* The flags first, without the lock: the worker holds it while it gives a frame to the graph, whose handler
+	 * may wait for the graph that is stopping now -- waiting for the lock here was "Timed out waiting for the
+	 * capture graph to stop" and mediaserverd's SIGTRAP (2026-11-12). */
+	s->graph_running = false;
+	s->running = false;
 	pthread_mutex_lock(&s->lock);
 	s->graph_running = false;
 	for (int i = 0; i < OUTPUTS; i++) {
@@ -1514,9 +2102,28 @@ stream_stop(CMBaseObjectRef o)
 	pthread_mutex_unlock(&s->lock);
 	s->running = false;
 	if (s->worker_started) {
-		pthread_join(s->worker, NULL);
+		/*
+		 * At most 300 ms for the worker: it can be inside the graph's frame handler, and that can wait for the
+		 * graph -- which is waiting for this Stop. Joined when it is done in time, else left to end by itself
+		 * (it sees `running' false); the next start waits for it. (The wait for ever was mediaserverd's "Timed
+		 * out waiting for the capture graph to stop", 2026-11-12.)
+		 */
+		uint64_t t0 = mach_absolute_time();
+		int w;
+
+		for (w = 0; w < 30 && s->worker_busy; w++) {
+			usleep(10000);
+		}
+		if (!s->worker_busy) {
+			pthread_join(s->worker, NULL);
+		} else {
+			pthread_detach(s->worker);
+			say("stream: the worker is still in a frame after 300 ms: left to finish by itself");
+		}
 		s->worker_started = false;
+		say("stream: stopped in %.0f ms", (double)(mach_absolute_time() - t0) / 24000.0);
 	}
+	post(o, CFSTR("StreamStopped"));
 	return 0;
 }
 
@@ -1595,7 +2202,7 @@ stream_finalize(CMBaseObjectRef o)
 			CFRelease(s->out[i].config);
 		}
 		if (s->out[i].handler) {
-			CFRelease(s->out[i].handler);
+			_Block_release(s->out[i].handler);
 		}
 	}
 	if (s->formats) {
@@ -1655,8 +2262,14 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera, CFStringRef
 		s->out[i].name = output_names[i];
 	}
 
-	CFDictionaryRef f[2] = { format(camera->formats[0][0], camera->formats[0][1], camera->formats[0][2], false, camera->fov),
-		format(camera->formats[1][0], camera->formats[1][1], camera->formats[1][2], false, camera->fov) };
+	/*
+	 * The video format first (2026-11-12): with the photo format first, Camera.app's video mode stayed on it and
+	 * recorded its 4:3 1504x1128 scaler output, not 1080p. redwood-photo-first (in the tuning directory) puts it
+	 * back. (format_index is only said, never used: the ISP draws whatever the graph's buffers are.)
+	 */
+	int first = access(rw_path("redwood-photo-first", (char[160]){0}, 160), F_OK) == 0 ? 0 : 1;
+	CFDictionaryRef f[2] = { format(camera->formats[first][0], camera->formats[first][1], camera->formats[first][2], false, camera->fov),
+		format(camera->formats[!first][0], camera->formats[!first][1], camera->formats[!first][2], false, camera->fov) };
 
 	s->formats = CFArrayCreate(NULL, (const void **)f, 2, &kCFTypeArrayCallBacks);
 	s->supported = supported(stream_props, sizeof(stream_props) / sizeof(stream_props[0]));

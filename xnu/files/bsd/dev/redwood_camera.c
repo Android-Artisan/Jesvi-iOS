@@ -3256,7 +3256,12 @@ capture_sensor(void)
 #define IDLE_MS                 1000
 #define FRAME_TIMEOUT_MS        1500
 #define EXPOSURE_MARGIN         40
-static bool s20_rotate = true;  /* the S20's front module is mounted turned by 180 degrees (cam_s20_rot=0: as sent) */
+static bool s20_rotate;         /* (no longer used: frames go out as the sensor sends them; camera_device.c has turned = false) */
+static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode instead of the full 3648x2736 */
+/* kern.redwood.camera_turn: 1 = libredwood-media turns the S20 front camera's pictures half round (read at each stream start;
+ * boot-arg cam_turn), so the orientation can be settled on the phone without a new image */
+extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
+extern void redwood_camera_s20_set_full(bool full);
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
 #define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
@@ -3777,11 +3782,16 @@ fake_session(void)
  * /dev/redwood-camera. Everything of the phone is done by redwood_camera_s20.c (the sequence its bounded tests
  * proved); here each finished frame, 10 bits in 16, is packed into a place of the ring as the fake session's are.
  */
-extern bool redwood_camera_s20_stream(bool (*fn)(const volatile uint16_t *, uint32_t, uint32_t), char *out, size_t cap);
+extern bool redwood_camera_s20_stream(bool (*fn)(const volatile uint8_t *, uint32_t, uint32_t, uint32_t), char *out, size_t cap);
 extern void redwood_camera_s20_exposure(uint32_t lines, uint32_t gain, uint32_t frame_lines);
+extern void redwood_camera_s20_focus(uint32_t position);
+extern uint32_t redwood_camera_s20_focus_now(void);
+/* what was asked of the sensor, frame by frame: it takes an exposure at the second frame after (a frame tagged with
+ * the new values at once had AE overshoot and swing, 2026-11-11) */
+static struct { uint32_t lines, gain, frame_lines; } s20_sent[3];
 
 static bool
-s20_frame(const volatile uint16_t *px, uint32_t width, uint32_t height)
+s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t in_stride)
 {
 	uint32_t stride = RAW10_STRIDE(width);
 	int p = -1;
@@ -3798,6 +3808,16 @@ s20_frame(const volatile uint16_t *px, uint32_t width, uint32_t height)
 		ios_now.frame_lines = frame_lines;
 		redwood_camera_s20_exposure(lines, gain, frame_lines);
 	}
+	if (ios_ask.focus_pending) {
+		ios_ask.focus_pending = false;
+		redwood_camera_s20_focus(ios_ask.focus);
+	}
+	/* this frame was taken with what was asked two frames ago */
+	s20_sent[0] = s20_sent[1];
+	s20_sent[1] = s20_sent[2];
+	s20_sent[2].lines = ios_now.lines;
+	s20_sent[2].gain = ios_now.gain;
+	s20_sent[2].frame_lines = ios_now.frame_lines;
 	for (int i = 0; i < RING; i++) {
 		if (place[i].state != PLACE_READING && (p < 0 || place[i].sequence < place[p].sequence)) {
 			p = i;
@@ -3814,38 +3834,23 @@ s20_frame(const volatile uint16_t *px, uint32_t width, uint32_t height)
 	}
 	uint8_t *at = (uint8_t *)(ring + (uint64_t)p * ring_place_bytes);
 
-	/* The module sits rotated by 180 degrees in the phone (the picture came upside down): the frame is written
-	 * turned, last pixel first. Width and height are even, so the 2x2 cell turns too: GR/BG becomes GB/RG (2).
-	 * cam_s20_rot=0 leaves it as the sensor sends it. */
-	for (uint32_t y = 0; y < height; y++) {
-		const volatile uint16_t *in = px + (uint64_t)(s20_rotate ? height - 1 - y : y) * width;
-		uint8_t *out = at + (uint64_t)y * stride;
-
-		for (uint32_t x = 0; x < width; x += 4, out += 5) {
-			uint16_t a, b, c, d;
-
-			if (s20_rotate) {
-				uint32_t r = width - 1 - x;
-
-				a = in[r]; b = in[r - 1]; c = in[r - 2]; d = in[r - 3];
-			} else {
-				a = in[x]; b = in[x + 1]; c = in[x + 2]; d = in[x + 3];
-			}
-
-			out[0] = (uint8_t)(a >> 2);
-			out[1] = (uint8_t)(b >> 2);
-			out[2] = (uint8_t)(c >> 2);
-			out[3] = (uint8_t)(d >> 2);
-			out[4] = (uint8_t)((a & 3) | (b & 3) << 2 | (c & 3) << 4 | (d & 3) << 6);
+	/* The DMA wrote MIPI RAW10 already, lines padded as RAW10_STRIDE pads them: one copy (through the cached
+	 * mapping, whose lines redwood_camera_s20.c had forgotten before this). The picture is the right way up. */
+	if (in_stride == stride) {
+		memcpy(at, (const void *)data, (size_t)stride * height);
+	} else {
+		for (uint32_t y = 0; y < height; y++) {
+			memcpy(at + (uint64_t)y * stride, (const void *)(data + (uint64_t)y * in_stride), MIN(stride, in_stride));
 		}
 	}
 	lck_mtx_lock(&ios_lock);
 	place[p].state = PLACE_READY;
 	place[p].sequence = ++ios_frames_done;
 	place[p].time = mach_absolute_time();
-	place[p].exposure_lines = ios_now.lines;
-	place[p].gain = ios_now.gain;
-	place[p].frame_lines = ios_now.frame_lines;
+	place[p].exposure_lines = s20_sent[0].lines;
+	place[p].gain = s20_sent[0].gain;
+	place[p].frame_lines = s20_sent[0].frame_lines;
+	af_position = redwood_camera_s20_focus_now();
 	lck_mtx_unlock(&ios_lock);
 	wakeup(&ios_frames_done);
 	return more;
@@ -3879,9 +3884,15 @@ s20_session(void)
 	ios_last_read = ios_ms();
 	lck_mtx_unlock(&ios_lock);
 	redwood_camera_s20_exposure(lines, gain, frame_lines);
+	for (int i = 0; i < 3; i++) {
+		s20_sent[i].lines = lines;
+		s20_sent[i].gain = gain;
+		s20_sent[i].frame_lines = frame_lines;
+	}
 	say("camera: the frames for iOS: the S20's front SAK3J1, %ux%u\n", ios_mode->width, ios_mode->height);
 	report[0] = 0;
 	ok = redwood_camera_s20_stream(s20_frame, report, sizeof(report));
+	af_position = REDWOOD_CAMERA_NO_FOCUS;
 	report[400] = 0;
 	say("camera: S20 stream ended (%s): %s\n", ok ? "frames came" : "NO FRAMES", report);
 	lck_mtx_lock(&ios_lock);
@@ -4148,11 +4159,24 @@ ios_select(unsigned index, uint32_t mode_n)
 		{ 1920, 1080, 0, 0, 4, 0, 9, 148500000, 2200, 1125, 30000, RAW10_DT },
 	};
 	static const struct ctab_mode s20_modes[] = {
-		/* SAK3J1 1824x1368 at 30: line length 0x4940, frame length 0x597 (redwood_camera_s20_3j1.h) */
+		/* SAK3J1 full 3648x2736 at 30: line length 0x24a8, frame length 0xb30 (cam_s20_full=1, the default) */
+		{ 3648, 2736, 0, 0, 4, 0, 9, 807720000, 9384, 2864, 30000, RAW10_DT },
+		/* SAK3J1 2x2-binned 1824x1368 at 30: line length 0x4940, frame length 0x597 (cam_s20_full=0) */
 		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
+	/*
+	 * The S20's SAK3J1 (one built-in table, two modes): REDWOOD_CAMERA_SENSOR's mode chooses between them, from
+	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
+	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
+	 */
+	if (s20_real && fake && mode_n <= 1) {
+		s20_full = mode_n == 0;
+		redwood_camera_s20_set_full(s20_full);
+		say("camera: the S20's front sensor in its %s mode from the next session\n", s20_full ? "full 3648x2736" : "binned 1824x1368");
+		mode_n = 0;
+	}
 	select_sensor(index);
 	if (!fake) {
 		find_pins();
@@ -4163,7 +4187,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		}
 		ctab = &fake_head;
 		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
-		ctab_modes = s20_real ? s20_modes : fake_modes;
+		ctab_modes = s20_real ? s20_modes + (s20_full ? 0 : 1) : fake_modes;
 		ctab_tables = (const uint8_t *)fake_blocks;
 		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
 		    fake_modes[0].width, fake_modes[0].height);
@@ -4386,9 +4410,18 @@ redwood_camera_init(void)
 	if (level == 5 && PE_parse_boot_argn("cam_s20", &fake_n, sizeof(fake_n)) && fake_n != 0) {
 		fake = true;
 		s20_real = true;
+		s20_rotate = false;
+		/* 6 = 4 (absolute, both cameras) | 2 (mirror: the line reversed). The raw frame (2026-11-12) has the scene's
+		 * top along the sensor's lines, so reversing each line fixes up and down; the half turn (5) also swapped
+		 * left and right (user: "sides inverted"). 5 since 2026-11-12, user-checked: the preview a mirror, and the
+		 * photographs and videos (which iOS turns for the front camera itself) as others see you. */
+		fake_n = 5;
+		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
+		redwood_camera_s20_turn = (int)fake_n;
 		fake_n = 1;
-		(void)PE_parse_boot_argn("cam_s20_rot", &fake_n, sizeof(fake_n));
-		s20_rotate = fake_n != 0;
+		(void)PE_parse_boot_argn("cam_s20_full", &fake_n, sizeof(fake_n));
+		s20_full = fake_n != 0;
+		redwood_camera_s20_set_full(s20_full);
 	}
 	if (level >= 3) {
 		/*

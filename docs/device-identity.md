@@ -27,9 +27,11 @@ Native USB mux now supplies the iPhone-style Mac discovery and trust path,
 alongside the existing serial and Ethernet functions. The user accepted Trust,
 and the Mac's native pairing, session validation and AFC file-sharing checks
 succeeded. Finder shows Jesvi IOS, model iPhone X and storage. See
-`tools/usb/README.md` for the transport and tests. The device summary loads,
-but Finder's management panel reports Activation Failed. The user chose to
-retain that status; no activation compatibility spoof is enabled.
+`tools/usb/README.md` for the transport and tests. The original management panel reported Activation Failed. The user later
+opted into a Finder-only local compatibility policy; it opens the management
+tabs while the native activation API outside lockdownd stays Unactivated.
+Backup/encryption readiness and media categorization remain separate limits;
+no successful end-to-end backup or media sync is claimed.
 
 The intermittent cold Safari error is deferred at the user's request. Normal
 DNS and HTTPS probes succeeded (DNS ~0.03 s; HTTPS ~0.06–0.09 s), which does

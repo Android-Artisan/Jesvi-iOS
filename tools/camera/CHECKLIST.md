@@ -203,3 +203,106 @@ live kernel before comparing results. Keep new evidence separate from old runs.
   pixels 1..1023; `ssh s20 /var/root/s20-frame > frame.raw; python3 tools/camraw.py frame.raw PREFIX` → real scene
   (ceiling, fan blades). Still to do from the milestone list: scene-change check, repeat across boots, feed real frames
   to the iOS capture bridge / Camera.app, image quality, rear cameras.
+
+## ROADMAP after the first live camera (user's list, 2026-11-11 ~14:00) — continue from here
+
+State: front SAK3J1 live in Camera.app through `cam=5 cam_s20=1` (default in `x1slte.cmdline`), commits 60e706a +
+9027baf on `x1slte`. **User verified: preview shows, photo saves to Photos.** Everything below is open.
+Code map: kernel `xnu-src/.../bsd/dev/redwood_camera_s20.c` (sensor/receiver/DMA + stream loop),
+`redwood_camera.c` (`s20_session`, `/dev/redwood-camera`), `redwood_s2mpb02_torch.c` (camera PMIC + flash LED);
+userland `userland/src/camera_device.c` (capture device in mediaserverd), `camera_isp.c` (CPU ISP), `inject_media.c`.
+
+### 1. Front camera quality ("looks like a 2000s photo")
+- [ ] Confirm orientation/mirroring after the 180-degree turn (kernel 13:56:21) and natural colours (Bayer GB/RG).
+- [ ] Full resolution: now the binned 1824x1368 mode. Add the sensor's full modes from Samsung's setfile
+  (`is-cis-3j1-setA.h`: 3648x2736 4:3, 3968x2232 16:9, 2736x2736) for stills; keep a binned mode for preview.
+- [ ] Colour tuning file for this sensor (log: "no colour tuning ... no colour matrix, no lens shading"): colour
+  matrix, lens shading, black level, noise reduction/sharpening in `camera_isp.c`. Samsung's calibration is in the
+  module EEPROM (read at Samsung's S_INPUT) and `setfile_3j1.bin`.
+- [ ] Exposure limits: analog gain max is 16x now; check flicker (50 Hz banding), long exposure, HDR off.
+- [ ] Front autofocus: the DT lists an actuator for the 3J1 (`af` node, i2c ch 3) — check and drive it.
+
+### 2. Frame rate / smoothness
+- [ ] Preview is ~15 fps: `s20_frame()` packs from the write-combined DMA mapping (slow reads) and misses every other
+  frame. Fix: cached mapping of the DMA buffers (+ cache invalidate per frame) or let WDMA write packed RAW10 directly
+  into the ring (no CPU pack); move packing off the polling loop; use the CSIS/DMA interrupt (GIC SPI 215 is masked).
+- [ ] Request camera DVFS while streaming like Samsung (`acpm` INTCAM 11, CAM 12, INT 1 — only ever raise, never lower).
+- [ ] CPU ISP cost in userland (`camera_isp.c`) at full resolution; consider GPU (Metal) debayer.
+
+### 3. Video
+- [ ] Video recording does not save (user). Find where the recording path stops (mediaserverd / AVAssetWriter / H.264
+  encoder: no hardware encoder on this port — check VideoToolbox software path).
+- [ ] Link the microphone to video (`/dev/redwood-mic` works for Voice Memos; the capture graph needs an audio device
+  for the camera session).
+- [ ] Video modes the S20 hardware has: HD/FHD up to 120 fps (slow-mo; super slow-mo higher), UHD 60, 8K 24 (rear main).
+  Needs the sensors' high-speed/UHD modes, the receiver at those link rates, and an encoder that keeps up.
+
+### 4. Rear cameras (three) + switching by zoom
+- [ ] Rear main S5K2LD (position 0, I2C0, MCLK0, CSIS per DT fragment@20 `is_sensor0`, C-PHY `use_cphy`): retry
+  `cam.s20.id` now that the PMIC base supplies are on (its earlier NACK likely had the same cause); then power
+  sequence (incl. VDDPHY_1.05V_CAM, OIS/AF rails), C-PHY receiver recipe (`__set_phy_cfg_0503_0000_dcphy` mode C),
+  sensor setfile, stream. Careful: the S20 Ultra tree (live-fdt) is NOT this phone; use boot-dtb.0 + dtbo.1.
+- [ ] Rear ultra-wide / second sensor S5KGW2 (position 2, I2C1, MCLK0) and telephoto S5K2LA (position 4, I2C4, MCLK3).
+- [ ] Expose them to iOS as the back cameras (`REDWOOD_CAMERA_SENSOR` switch already exists in the device contract:
+  0 macro, 1 wide, 2 front, 3 ultra-wide) and switch lens by zoom level (0.5x / 1x / 3x) like the Camera app expects.
+- [ ] Autofocus and OIS for the rear main (actuator + OIS MCU; CMU OIS_MCU clocks exist in the register list).
+
+### 5. Flash
+- [ ] Link the rear flash LED (S2MPB02 FLED, already driven as the torch in `redwood_s2mpb02_torch.c`) to the capture
+  path: flash on photo, torch during video, front "screen flash".
+
+### 6. Robustness
+- [ ] Repeated open/close, app switching, lock/unlock, sensor switch; no leaks, rails off when idle
+  (base supplies BUCK1/BB/LDO18 stay on from boot by design, as on Samsung).
+- [ ] Thermal behaviour during long preview/recording; suspend/resume.
+- [ ] Remove or gate the diagnostics (`cam.s20.front.stream` bits) once the driver is final; keep `cam_pmic_base`.
+
+### 2026-11-11 evening: second half of the root cause (cold start)
+- [x] S2MPB02 BUCK1/BUCK2 **voltage** registers (0x0c/0x0e) reset to 0xc0/0x40 (1.6 V / 0.8 V) on a hard reset; Samsung
+  sets 0x90 (1.3 V). The afternoon's success rode on Samsung's values surviving warm restarts. Fixed at boot in
+  `redwood_s2mpb02_torch.c`. Verified on the first boot after a forced power-off (kernel 18:54:31).
+- Lesson: after any Samsung reference boot, do a HARD power cycle before trusting an XNU camera result.
+- Rear cameras will need their own LDO voltage codes (Samsung map: LDO1 0x1e=0x24, LDO3 0x20=0x24, LDO13 0x2a=0x58; XNU
+  cold values 0x18/0x20/0x5c) — take them from a Samsung `CAMERA_PMIC_MAP` with each rear sensor open.
+- Boot hang 18:26: a kernel with a read-only cached DMA mapping + `dc ivac`, flashed together with a root.apfs rebuilt by
+  hand (`mkapfs.py ... redwood=root`); cause not separated. Rules: new kernel features that run at camera open stay OFF at
+  boot (mediaserverd opens the camera during startup); never flash a hand-rebuilt root.apfs together with a kernel change.
+
+## Front camera status 2026-11-12 (session B) — what works, what is next
+
+Works (user verified in Camera.app): live preview at 30 fps from the full 3648x2736 sensor mode, photos save, correct
+orientation with `cam_turn=2` (default from kernel 04:36:50 on; live: `tools/poke 'cam.turn 2'`, then switch cameras or
+reopen the app — it is read at stream start), autofocus (AK7374), no banding (50 Hz anti-flicker), stable exposure.
+
+Open, in priority order:
+- [ ] **Video recording = empty file (0x0, 36 bytes).** Cause found: this iOS image has only Apple's HARDWARE encoders
+  (`/System/Library/VideoEncoders/AppleVideoEncoder.bundle`: "Apple H.264 (HW)", "Apple HEVC (HW)") which need the
+  iPhone's AVE chip; the S20 has none. Needs our own VideoToolbox encoder (software H.264, e.g. OpenH264 BSD-licensed,
+  at 1080p30 on the A76/M5 cores; or a Mali GPU encoder later), registered so VTCompressionSession picks it.
+- [ ] **Video/panorama preview slow:** libredwood-media's CPU ISP renders every frame at the video format's size
+  (3840x2160 for the front camera's "Video-30"). Move debayer/colour/scale to the GPU (Metal works: RedwoodMetal) or
+  give the graph smaller buffers; also pick the binned 1824x1368 sensor mode for video.
+- [ ] **Microphone in video** (after the encoder).
+- [ ] **Photo save is slow** (~0.4 s ISP + HEIC encode on CPU): GPU ISP, threads.
+- [ ] **Front camera reports 7 MP** (iPhone X front format 3088x2320 in camera_device.c `cameras[]`); the sensor is 10 MP.
+  Changing the format must still match an entry of CMCapture's D22 AVCaptureSession.plist.
+- [ ] **Flash** for the front camera = iOS screen flash (FlashMode is "set (not used)" in camera_device.c).
+- [ ] Colour matrix / lens shading tuning for SAK3J1 (still none: "no colour tuning for the ov16a1q"), denoise/sharpen.
+- [ ] The "Back Camera" button shows the front sensor until the rear cameras are brought up.
+
+### Video encoder plan (2026-11-12, session B) — reverse-engineered VideoToolbox encoder interface
+From `/System/Library/VideoEncoders/AppleVideoEncoder.bundle/AppleVideoEncoder` (each slot logs "ENTER AVE_H264<name>"):
+- Factory: `OSStatus create(FourCharCode codec, CFAllocatorRef, CMBaseObjectRef *out)` → `CMDerivedObjectCreate(alloc,
+  &vtable, VTVideoEncoderGetClassID(), out)`; vtable = { 0, &baseClass, &encoderClass }.
+- Base class (version 1): [1] derived storage size, [3] Invalidate, [4] Finalize, [6] CopyProperty(obj,key,alloc,out),
+  [7] SetProperty(obj,key,value).
+- Encoder class (version 3): [1] StartSession(enc, VTEncoderSessionRef, codecType, CMVideoDimensions packed in x3),
+  [2] EncodeFrame(enc, token, CVPixelBuffer, CMTime *pts, CMTime *dur, CFDictionary frameProps, VTEncodeInfoFlags *),
+  [3] CompleteFrames(enc, CMTime until), [4] CopySupportedPropertyDictionary(enc, CFDictionaryRef *), [5]
+  SetProperties(enc, CFDictionary), [7] PrepareToEncodeFrames(enc), [8] BeginPass, [9] EndPass, [17-20] tiles.
+- Registration: `VTRegisterVideoEncoderWithInfo('avc1', infoDict, factory)` (AVE calls it the same way).
+- Output: `VTEncoderSessionEmitEncodedFrame(session, token, status, infoFlags, CMSampleBuffer)`; input format via
+  `VTEncoderSessionSetPixelBufferAttributes`; format description from SPS/PPS
+  (`CMVideoFormatDescriptionCreateFromH264ParameterSets` or `VTEncoderSessionCreateVideoFormatDescription`).
+- Engine: OpenH264 (BSD) built for iOS arm64, NV12 → I420, Annex-B → AVCC. Registered from libredwood-media in
+  mediaserverd. Camera.app must record H.264 (Settings → Camera → Formats → Most Compatible) until there is an HEVC one.

@@ -1700,6 +1700,59 @@ opengl_es(void)
 	gl_function_refused = (void (*)(unsigned))dlsym(library, "redwood_gl_function_refused");
 }
 
+
+/*
+ * Camera.app opens on the front camera in Photo (2026-11-12, the user's wish: the S20's one working camera is
+ * the front one). Camera.app goes back to its defaults -- the back camera, Photo -- once its reset time
+ * (CAMUserPreferenceResetTimeoutDate, a few minutes after it was left) has passed; it reads that as it starts
+ * or comes back (-[CAMUserPreferences readPreferencesWithOverrides:...]). Here, just before, a reset that is
+ * due is done our way: the front camera and Photo written, and the reset time pushed on.
+ */
+static IMP camera_read_prefs_original;
+
+static BOOL
+camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call_active, BOOL *should_reset)
+{
+	CFStringRef app = CFSTR("com.apple.camera");
+	CFDateRef until = CFPreferencesCopyAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), app);
+	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+	if (until == NULL || CFGetTypeID(until) != CFDateGetTypeID() || CFDateGetAbsoluteTime(until) <= now) {
+		int front = 1, photo = 0;
+		CFNumberRef device = CFNumberCreate(NULL, kCFNumberIntType, &front), mode = CFNumberCreate(NULL, kCFNumberIntType, &photo);
+		CFDateRef later = CFDateCreate(NULL, now + 600);
+
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureDevice"), device, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureMode"), mode, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), later, app);
+		CFPreferencesAppSynchronize(app);
+		CFRelease(device);
+		CFRelease(mode);
+		CFRelease(later);
+		say("redwood: Camera: its reset was due: the front camera and Photo instead\n");
+	}
+	if (until != NULL) {
+		CFRelease(until);
+	}
+	return ((BOOL (*)(id, SEL, id, long, BOOL, BOOL *))camera_read_prefs_original)(self, selector, overrides, emulation, call_active,
+	    should_reset);
+}
+
+static void
+camera_front_by_default(void)
+{
+	Class c = objc_getClass("CAMUserPreferences");
+	Method m = c != Nil ? class_getInstanceMethod(c,
+	    sel_registerName("readPreferencesWithOverrides:emulationMode:callActive:shouldResetCaptureConfiguration:")) : NULL;
+
+	if (m == NULL) {
+		say("redwood: Camera: no -[CAMUserPreferences readPreferencesWithOverrides:...]: the camera's defaults left alone\n");
+		return;
+	}
+	camera_read_prefs_original = method_setImplementation(m, (IMP)camera_read_prefs);
+	say("redwood: Camera: opens on the front camera in Photo after its reset time\n");
+}
+
 __attribute__((constructor))
 static void
 redwood_init(void)
@@ -1712,6 +1765,9 @@ redwood_init(void)
 		return;
 	}
 	slide = (uintptr_t)cache - CACHE_BASE;
+	if (strcmp(name, "Camera") == 0) {
+		camera_front_by_default();
+	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;

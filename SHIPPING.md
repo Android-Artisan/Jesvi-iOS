@@ -4,6 +4,78 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
+- Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
+  times on every buffer and zeroed 1.7 GB per buffer, so no sound reached the movie writer and every recording hung
+  (mediaserverd SIGTRAP "Timed out waiting for the capture graph to stop"). Its gap limit is set out of reach
+  (`inject_media.c`). Commits 552fd8a.
+- Orientation: preview a mirror, photos and videos as others see you (`cam_turn=` **5**, kernel default; user-checked).
+- Speed: drawing on its own thread, 48 ISP pieces, no sensor restart on start/flip (preview 22 -> ~28 fps, sensor-bound).
+- Camera.app opens front + Photo after its reset time (libredwood in Camera). Rear camera black for now.
+- Image: generic phone colour matrix (tunable on the phone), clipped highlights stay white, white balance starts where
+  the last stream left it, smoother AE steps (user: "auto exposure is perfect").
+- Tap-to-expose (meters the tapped spot), the exposure slider (ExposureBias, a multiplier with 256 = 1) on the picture
+  at once, AE lock. Front screen flash (SpringBoard white window + full backlight, photo 10 frames into the light; user: "perfect").
+- Encoder: 1.6x iOS's bitrate, OpenH264 low complexity, 6 threads.
+- Kernel: REDWOOD_CAMERA_SENSOR's mode chooses full/binned for the S20 front sensor (stream stays full: binned looked worse).
+- Dev loop: `tools/camera/media-dev.sh` loads libredwood-media from /var/redwood without a reboot.
+- Commits 552fd8a..41db5a2. Tested by the user in Camera.app throughout.
+- Open: Live Photo makes no movie (staging node "no pre-roll", -16958); filters greyed (no Metal in mediaserverd);
+  portrait and slo-mo (no depth, no 120 fps mode); video ~20 fps when recording (CPU ISP + encoder under thermal
+  throttling); two whole-phone freezes while streaming (kernel log just stops; cause unknown).
+
+## 2026-11-12 — video encoding: our own H.264 encoder for VideoToolbox (the S20 has no AVE)
+- `userland/src/h264_encoder.c`: a VideoToolbox encoder (interface reverse-engineered from AppleVideoEncoder, see
+  tools/camera/CHECKLIST.md) over OpenH264 2.7.0 (BSD, `work/third-party/openh264`, `make OS=ios ARCH=arm64`), registered
+  in mediaserverd by libredwood-media (iOS runs compression sessions there; `h264=0` leaves it out). Baseline profile,
+  constant SPS/PPS, 4 slices / 4 threads, key frame every second, ~12 Mbit/s at 1080p30.
+- Front camera's video format 1920x1080 (was 3840x2160).
+- Tested: `vt_enc_test 1920 1080 90` (public VTCompressionSession API on the phone): 90 of 90 frames at 52 frames/s;
+  the stream decodes 90/90 on macOS VideoToolbox with the test pattern intact. Camera.app recording: to be confirmed
+  (set Settings > Camera > Formats > Most Compatible: there is no HEVC encoder).
+
+## 2026-11-12 — front camera orientation default (`cam_turn=2`)
+- User-confirmed orientation (preview and photos): libredwood-media's turn plus a mirror; default from boot now
+  (`cam_turn=` **2**), live via `tools/poke 'cam.turn N'` (read at stream start). Built (kernel 04:36:50), not flashed yet
+  (phone with codex-cellular).
+
+## 2026-11-11 — front camera autofocus, steadier exposure, anti-flicker, orientation
+- Autofocus: the front lens motor (AK7374, ID 0x0e at 0x0c on HSI2C24, gpp8-0 SCL / gpp8-1 SDA, x1slte DT fragment@18) is
+  driven from `redwood_camera_s20.c` (Samsung's is-actuator-ak737x.c sequence: standby, ID, first position 250, active;
+  soft landing on stop). libredwood-media's contrast AF and tap-to-focus move it through REDWOOD_CAMERA_FOCUS.
+- AE: frames are tagged with the exposure asked two frames earlier (when the sensor applies it), so AE no longer
+  overshoots and swings (seen in photo mode); 50 Hz anti-flicker exposure steps (`camera_isp.c`); front camera turned
+  180 degrees in libredwood-media (user: upside down and mirrored without it).
+- Tested (kernel 22:03:35): kernel log "front focus: AK737x (id 0xe) up"; `camera_test raw 60`: 60 of 60 at 3648x2736.
+
+## 2026-11-11 — front camera at full 3648x2736, 30 frames/s, no tearing
+- The stream runs Samsung's `3648x2736_30fps` mode with the FULL MIPI PLL (`cam_s20_full=` **1**; 0 = binned 1824x1368).
+  Double-buffered 12.5 MB frames take two adjacent display-pool slots (`MiniIOSurface.cpp`).
+- Tearing fix: the finished buffer is chosen from the DMA frame-start/frame-end status (a frame start flagged together
+  with a frame end is the next frame's), not just the active slot read after the fact.
+- `kern.redwood.camera_turn` (boot-arg `cam_turn`): bit 0 makes libredwood-media turn the front camera's pictures half
+  round, read at each stream start, to settle orientation without a new image.
+- Tested (kernel 21:53:59): `camera_test raw 60`: 3648x2736, stride 4560, 60 of 60 frames ~33 ms apart; kernel frame
+  copy ~1-5 ms.
+
+## 2026-11-11 — front camera at 30 frames/s
+- WDMA1 writes MIPI RAW10 directly (DMA format 7, lines padded to 16 bytes = the `/dev/redwood-camera` layout), read
+  through a cached mapping (on by default, `cam_dma_cached=0` / `cam.s20.cached 0` to disable): one ~1 ms copy per frame
+  instead of packing 2.5 M pixels from write-combined memory. No turning in the kernel any more; `camera_device.c`
+  front camera `turned = false` (the S20's module is the right way up).
+- Tested (kernel 21:47:05, root.apfs with the rebuilt libredwood-media.dylib): `camera_test raw 90`: 90 of 90 frames,
+  33-35 ms apart; kernel log: frame copy 0.36-1.2 ms.
+
+## 2026-11-11 — camera survives a cold start: S2MPB02 buck voltages set at boot
+- After a hard reset (forced power-off) the camera PMIC has BUCK1 at 1.6 V (reg 0x0c = 0xc0) and BUCK2 at 0.8 V
+  (0x0e = 0x40); Samsung's kernel programs both to 1.3 V (0x90) and those values had survived warm restarts since the
+  last Samsung reference boot, which is the only reason the camera worked. `redwood_s2mpb02_torch.c` now writes
+  0x0c/0x0e = 0x90 and 0x10 = 0x48 (buck-boost 3.5 V) before enabling BUCK1, the buck-boost and LDO18 (`cam_pmic_base`).
+- Tested (kernel 18:54:31, first boot after a forced power-off + Download Mode flash): `cam.pmic 1` reads
+  0b=d8 0c=90 0e=90 0f=da 10=48 2f=ec; `camera_test raw 45`: 45 of 45 frames, 33.9 ms apart.
+- Also in this kernel: `cam.s20.cached [0|1]` (debug port, off at every boot) reads stream frames through a cached
+  mapping; the kernel turns frames 180 degrees (`cam_s20_rot=1` default) to undo the old userland's `turned`.
+
 ## 2026-11-11 — live front camera for iOS (`cam=5 cam_s20=1`)
 - `/dev/redwood-camera` now serves the S20's real front SAK3J1 instead of the chart: `redwood_camera_s20.c` keeps the
   proven sequence running (WDMA1 alternates two buffers over its 32 slots), `redwood_camera.c` `s20_session()` packs each
@@ -12,8 +84,9 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - `x1slte.cmdline`: `cam_fake=1` replaced by `cam_s20=1` (`cam_fake=1` still gives the chart).
 - Tested (kernel 13:56:21): `camera_test raw 45` on the phone: 45 of 45 frames, AE converges (32 ms, 9x indoors), white
   balance R 1.27 B 1.84, Bayer GB/RG after the turn; user saw live frames in Camera.app (before the turn: upside down).
-- Open: about 15 frames/s (packing reads the write-combined DMA mapping), no colour matrix/lens shading file for this
-  sensor, photo save and rear cameras not verified yet.
+- User verified in Camera.app: live preview and **photo saves to Photos**.
+- Open (roadmap in `tools/camera/CHECKLIST.md`): video does not save and has no mic; ~15 frames/s; binned 1824x1368
+  only and no colour tuning (soft, dated look); rear cameras, zoom switching and flash not done.
 
 ## 2026-11-11 — front camera link works: first real sensor frame under XNU
 - **Root cause of "sensor programs, zero CSI packets":** the camera PMIC (S2MPB02) supplies BUCK1 (1.3 V), buck-boost
@@ -31,13 +104,14 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Not yet: live preview in Camera.app (still the synthetic bridge), rear cameras, exposure/colour tuning.
 
 ## Open (known issues)
-- S20 LTE/calls remain unimplemented. Cellular research is isolated on branch
-  `x1slte-cellular`; see `docs/cellular-s20.md`. Cellular Settings UI is installed
-  and user-confirmed (`docs/cellular-ui.md`), with unavailable service/call state.
-  Loader/UEFI source fixes address the
-  discovered memory overlaps; 19 Python tests and 163,840 sanitized allocator
-  comparisons pass, and the loader compiles. Full UEFI image and phone validation
-  remain pending. No modem runtime changes have been installed or phone-tested.
+- S20 LTE/calls remain unimplemented. Cellular is isolated on `x1slte-cellular`;
+  see `docs/cellular-s20.md`. Native Settings UI is installed/user-confirmed.
+  CP memory reservations/live cache policy, SPI BOOT64496-byte transfer with
+  safe shutdown, and9 PCIe UEFI mappings passed on phone. Nov12 live CP-off
+  root-port identity access/cleanup passed without reboot. Endpoint link,
+  remaining modem firmware, SIM/network/packet service and VoLTE are pending.
+- Camera: front only, photos only. Video recording, microphone in video, full resolution, colour tuning, rear
+  cameras, zoom switching and flash are open (`tools/camera/CHECKLIST.md`, section ROADMAP).
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
 - CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.

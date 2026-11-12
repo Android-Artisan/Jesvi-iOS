@@ -116,7 +116,7 @@ def main():
             pages[reg] = int(ops.split('#')[1], 0)
         elif insn.mnemonic in ('ldr', 'add') and '#' in ops:
             parts = [p.strip() for p in ops.replace('[', '').replace(']', '').split(',')]
-            if len(parts) >= 3 and parts[1] in pages:
+            if len(parts) >= 3 and parts[1] in pages and parts[2].startswith('#'):
                 target = pages[parts[1]] + int(parts[2].lstrip('#'), 0)
                 if insn.mnemonic == 'ldr':
                     p = cache.pointer(cache.u64(target))
