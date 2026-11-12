@@ -60,7 +60,7 @@ static int restore_word(uint64_t address,uint32_t value,int verify)
 }
 struct spi_state {
     uint8_t tx[64],rx[64];unsigned tx_length,rx_length,rx_at;
-    uint32_t status,received,mismatches;int io_error,active;
+    uint32_t status,received,mismatches;int io_error,active,internal;
     const uint8_t *expected;size_t length;
 };
 static int fifo_tx(struct spi_state *s)
@@ -94,7 +94,7 @@ static uint8_t spi_read8(void *context,uint32_t offset)
     }
     uint8_t value=s->rx[s->rx_at++];
     if (s->active) {
-        if (s->received>=s->length || value!=s->expected[s->received]) s->mismatches++;
+        if (s->expected && (s->received>=s->length || value!=s->expected[s->received])) s->mismatches++;
         s->received++;
     }
     return value;
@@ -102,7 +102,7 @@ static uint8_t spi_read8(void *context,uint32_t offset)
 static void spi_write32(void *context,uint32_t offset,uint32_t value)
 {
     struct spi_state *s=context;
-    if (offset==S5123_MODE) value|=8; /* INTERNAL loopback. External pads stay inputs. */
+    if (offset==S5123_MODE && s->internal) value|=8;
     if (offset==S5123_CH) {
         if (value==3 && fifo_tx(s)) s->io_error=1;
         if (!value || value==0x20) {s->tx_length=0;s->rx_length=0;s->rx_at=0;}
@@ -122,6 +122,7 @@ static uint64_t now_us(void *context)
     (void)context;struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
     return (uint64_t)ts.tv_sec*1000000+(uint64_t)ts.tv_nsec/1000;
 }
+#ifndef LIVE_SPI_ADAPTER_ONLY
 static int loopback(size_t length)
 {
     const unsigned regs[]={S5123_CH,S5123_MODE,S5123_CS,S5123_IRQ,S5123_PACKET,S5123_SWAP,S5123_FEEDBACK,S5123_USI_CON};
@@ -130,7 +131,7 @@ static int loopback(size_t length)
     struct spi_state state={0};struct s5123_spi_result result={0};
     uint8_t *pattern=malloc(length);if (!pattern) return 1;
     for (size_t i=0;i<length;i++) pattern[i]=(uint8_t)(0x35+17*i);
-    state.expected=pattern;state.length=length;
+    state.expected=pattern;state.length=length;state.internal=1;
     puts("cellular live SPI: read owner/clock/CP-off guards");fflush(stdout);
     if (read_word(0x10700690,&mux) || read_word(0x10701820,&divider) || read_word(0x10721048,&mode) ||
         read_word(0x10730060,&pins) || read_word(0x15c30284,&power) || read_word(0x15c30384,&active) ||
@@ -189,3 +190,4 @@ int main(int argc,char **argv)
     }
     return loopback(length);
 }
+#endif

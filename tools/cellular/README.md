@@ -183,3 +183,26 @@ python3 tools/cellular/live-spi-run.py --bytes 64496
 Generated internal loopback only, CP off/pads input. Exact byte-stream host
 cases and142 I/O faults pass under sanitizers. Physical loopback awaits device
 time and installed SPI8 API. Wrapper refuses missing hooks before upload.
+
+### Nov12 14:52: installed/live milestone supersedes pending notes above
+
+Combined reserved-memory loader and SPI8 kernel installed/verified. CP-off ROOT,
+PHY124-operation restore, internal SPI16 loopback16/64496B and real CP power/
+SPI BOOT64496B all passed LIVE. Real BOOT691328us, input first2/last6, cleanup1.
+Phone never restarted for live tests. Modem acceptance/PCIe endpoint pending.
+
+```sh
+# Explicit private certificate/firmware inputs; requires phone lock + charge:
+python3 tools/cellular/live-modem-run.py \
+  --base out/cellular/live-batch-island-20261112 \
+  --radio /path/to/local/radio.img
+```
+
+Do not repeat merely because it is available. One bounded power/BOOT attempt,
+four-second input observation, verified shutdown; no MAIN/NV/DMA or reboot.
+Wrapper compares running BOOT/kernel segment/loader evidence to completed
+installed certificate before upload. GPIO input DAT reads actual pad, so output
+sequence preloads latch without pad-level check, selects output, then verifies
+level. Host model includes pulled-high input behavior and1486 I/O failures.
+SPI adapter allows external use only through the guarded modem lifecycle;
+standalone live-spi remains generated INTERNAL loopback.

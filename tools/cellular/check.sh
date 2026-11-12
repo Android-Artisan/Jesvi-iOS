@@ -23,3 +23,6 @@ trap 'rm -rf "$CELLULAR_CHECK_DIR"' EXIT
 "${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
     tools/cellular/tests/live_spi_test.c -o "$CELLULAR_CHECK_DIR/live-spi-test"
 "$CELLULAR_CHECK_DIR/live-spi-test"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/live_modem_test.c -o "$CELLULAR_CHECK_DIR/live-modem-test"
+"$CELLULAR_CHECK_DIR/live-modem-test"

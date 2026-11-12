@@ -54,11 +54,11 @@ ideas. Qualcomm QMI/IPA drivers cannot operate Samsung SPI/PCIe/SIPC hardware.
 | --- | --- | --- |
 | Upstream audit + isolated branch | Done | Pinned comparison, no blind merge into other agents' tree |
 | Cellular Settings page | Installed, user-confirmed | Native page; service/calls honestly unavailable |
-| CP memory ownership/cache | Tested on phone | Reserved 3/3, every CP page Normal NC, audit0 before/after iOS |
+| CP memory ownership/cache | Installed: loader reservations3/3, prekernel NormalNC3/3 | XNU shared-RAM cache mapping still needs implementation/proof before DMA |
 | GPIO/clock/pin baseline | Read-only snapshots done | Documented actual state; no unclocked SPI/PCIe access |
 | SPI16 transport | Host model and phone internal loopback pass | Next: bounded CP power/reset, real BOOT transfer and CP acceptance proof |
 | CP power + firmware boot | Powered SPI BOOT64496 bytes and safe shutdown proven; PCIe acceptance pending | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
-| PCIe1 transport | Pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
+| PCIe1 transport | Root access and PHY calibration/restore live pass; endpoint pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
 | SIPC5 + Samsung IPC | Framing parser only | Queues/doorbells/interrupts, flow control and crash recovery |
 | SIM + network registration | Pending | Actual SIM/operator/signal and bounded rejection/reconnect handling |
 | LTE packet session | Pending | Address/gateway/DNS/MTU and bidirectional CPIF/pktproc traffic |
@@ -101,17 +101,34 @@ flowchart LR
   root-port controls. New signed live helper records each phase, uses masked
   writes, restores clock/isolation/PERST, and reports unverified cleanup.
 - Live status is the first device check; the mutating root probe waits for the
-  normal phone lock. Camera currently owns it; a scheduling question is pending.
+  normal phone lock. Cellular currently owns it by explicit user handoff.
 - A timeout or disconnect is not proof of hardware failure; preserve transcript
   and check charge/USB/kernel state before recovery or another attempt.
 - Live debugging does not make an unsafe register safe. Use source-derived
   clock/power/ownership guards; keep CP off until its memory ownership is proven.
-- Current standard boot has not been shown to retain the CP carve-outs. Modem
-  execution/DMA needs the retained-reservation loader; reclaiming memory already
-  used by display/Wi-Fi/kernel is not a live operation. Batch this necessary
-  restart with any byte-PIO/debug hooks needed by the SPI backend.
+- The combined reserved-memory loader and SPI8 kernel are now installed and
+  verified. LIVE loopback and real CP BOOT pass; modem safely off afterward.
+  Before DMA, implement/prove appropriate XNU CP shared-RAM mappings.
 - Notify the user before every restart. No repeated boot for individual knobs.
 
 The live helper does not provide LTE. Remaining proof is unchanged: PCIe endpoint,
 MAIN/APM and modem ONLINE, transport/IPC, SIM/Jio registration, LTE packets, then
 IMS/VoLTE and two-way audio.
+
+## Current execution flow — Nov12 14:52
+
+```mermaid
+flowchart LR
+  A[Installed reserved loader + SPI8 kernel] --> B[Live internal loopback: PASS]
+  B --> C[Live CP power + BOOT 64496B: PASS]
+  C --> D[Next: PCIe L0 + real endpoint]
+  D --> E[Remaining firmware and boot handshake]
+  E --> F[SIPC5 and Samsung IPC]
+  F --> G[SIM + Jio registration]
+  G --> H[LTE packets + native state]
+  H --> I[Separate IMS/VoLTE + audio]
+```
+
+Real live BOOT691328us; wake/PS_HOLD transitions observed, verified shutdown.
+CP currently off; no phone restart needed. SIM remains out until registration
+can actually be tested. The UI currently reports unavailable service honestly.
