@@ -1815,7 +1815,7 @@ worker_body(void *context)
 			buffers[0] = malloc(bytes);
 			buffers[1] = malloc(bytes);
 			buffer = buffers[0];
-			if (h != NULL && buffers[1] != NULL) {
+			if (h != NULL && buffers[1] != NULL && !drawer_up) {
 				pthread_mutex_init(&h->lock, NULL);
 				pthread_cond_init(&h->cond, NULL);
 				h->s = s;
@@ -1836,7 +1836,56 @@ worker_body(void *context)
 			continue;
 		}
 		failures = 0;
+		{
+			/*
+			 * A frame of another size (the kernel went from the rear main to the front or back): its picture did not
+			 * fit this buffer, and drawing it by its own header read past the end -- mediaserverd SIGSEGV (2026-11-12).
+			 * The buffers go, and the next header says how big they must be.
+			 */
+			const struct redwood_camera_frame *fh = (const void *)buffer;
 
+			if (sizeof(head) + (size_t)fh->stride * fh->height != bytes || fh->header_bytes > sizeof(head) + 64) {
+				say("frames of %ux%u now, the buffers were for another size: made again", fh->width, fh->height);
+				if (drawer_up) {
+					render_wait(h);
+				}
+				free(buffers[0 == next_buffer ? 1 : 0]);
+				free(buffers[next_buffer]);
+				buffers[0] = buffers[1] = NULL;
+				buffer = NULL;
+				next_buffer = 0;
+				continue;
+			}
+		}
+
+		/*
+		 * The rear main's black level is not the front's 64: its darkest values were 10-30 (2026-11-12, a raw frame),
+		 * and taking 64 off cut the shadows away channel by channel -- the colours went wrong. redwood-rear-black (the
+		 * tuning directory) says it; 16 until it is measured with the lens covered.
+		 */
+		{
+			struct redwood_camera_frame *fw = (void *)buffer;
+			int black = 64;
+
+			if (fw->width == 2016) {
+				static int rear_black = -1;
+				static uint64_t looked;
+
+				if (rear_black < 0 || ++looked % 150 == 0) {
+					FILE *bf = fopen(rw_path("redwood-rear-black", (char[160]){0}, 160), "r");
+					int v = 16;
+
+					if (bf != NULL) {
+						if (fscanf(bf, "%d", &v) != 1) v = 16;
+						fclose(bf);
+					}
+					rear_black = v;
+				}
+				black = rear_black;
+			}
+			isp_black = black;
+			fw->black = (uint32_t)black;
+		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
 		struct redwood_camera_command c;
@@ -1872,7 +1921,15 @@ worker_body(void *context)
 			/* /var/root/redwood-camera-turn, when there, overrides the kernel's (5 since 2026-11-12: the preview a
 			 * mirror, photographs and videos as others see you -- iOS turns those itself; the user checked all three) */
 			bool from_file = false;
-			FILE *tf = fopen(rw_path("redwood-camera-turn", (char[160]){0}, 160), "r");
+			/* the rear main (its 2016x1512 frames) is mounted the other way round from the front: its own setting,
+			 * redwood-rear-turn, 4 (no turn) unless it says otherwise (2026-11-12, user: upside down with the front's) */
+			bool rear_frames = f->width == 2016;
+			FILE *tf = fopen(rw_path(rear_frames ? "redwood-rear-turn" : "redwood-camera-turn", (char[160]){0}, 160), "r");
+
+			if (tf == NULL && rear_frames) {
+				turn = 4;
+				from_file = true;
+			}
 
 			if (tf != NULL) {
 				from_file = fscanf(tf, "%d", &turn) == 1;

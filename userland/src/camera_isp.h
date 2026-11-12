@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include "redwood_camera.h"
 
+extern int isp_black;   /* the raw frames' black level, subtracted from every value */
+
 struct isp_stats {
 	double          mean[3];        /* R, G, B above black, in 10-bit steps */
 	double          bright;         /* the level of green that 1 % of the cells are above */

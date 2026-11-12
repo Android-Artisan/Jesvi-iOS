@@ -46,6 +46,9 @@ cell_places(uint32_t bayer, int *r, int *b)
 	*b = blue[bayer & 3];
 }
 
+/* the sensor's black level (the camera's pedestal): 64 for the front SAK3J1, lower for the rear S5K2LD (camera_device.c) */
+int isp_black = 64;
+
 /* the four values of the cell at cx of the pair of lines from `top' (above black, 0 and up) */
 static inline void
 cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
@@ -53,10 +56,10 @@ cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
 	const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + stride;
 	unsigned o = (cx & 1) * 2;
 
-	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - 64;
-	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - 64;
-	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - 64;
-	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - 64;
+	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - isp_black;
+	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - isp_black;
+	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - isp_black;
+	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - isp_black;
 	for (int i = 0; i < 4; i++) {
 		v[i] = v[i] < 0 ? 0 : v[i];
 	}
