@@ -4,6 +4,20 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — OpenGL ES games run (Angry Birds Space, Leo's Fortune); screen sleeps on its own (user-verified)
+- **OpenGL ES games draw.** iOS's OpenGL ES runs on Metal and gives Metal its shaders in Apple's private GLIR form,
+  which only Apple's GPU compiler reads: games showed black or died at once. `libredwood-eagl`
+  (`userland/src/eagl_app.m`) replaces EAGLContext in the games named in build.sh `EAGL_APPS` (default
+  `AngryBirdsSpace Leos_fortune`): a Mesa OpenGL ES 3 context on the Mali (panfrost), iOS's gl* functions reach
+  Mesa through the table in TSD slot 30, and each presented frame is copied on the GPU (turned upright) into
+  IOSurfaces the layer shows. Angry Birds Space: 97% -> 14% CPU with the GPU copy. Commit 09b9956.
+  Doc: docs/x1slte-games-gl.md.
+- **Screen sleep by default**: our idle timer (`inject.c`) is now on unless `idle_lock=0`: lock screen dark after
+  10 s untouched (`idle_lock_s=`), unlocked after Settings' Auto-Lock time ("Never" = stays on), not while sound plays.
+- How tested: both games launched from the home screen, played (user: "works flawlessly"); frames grabbed from the
+  game (`eagl-shot`), CPU from `ps`. Leo's Fortune looks stretched: the game itself draws at 1280x960 (4:3) and
+  scales up (an old IPA); not ours.
+
 ## 2026-11-12 — rear camera: video recording saves, frame rate (session A, verified on the phone)
 - **Rear recordings in H.264.** Camera.app asks the back camera for HEVC; the only HEVC encoder here is Apple's
   software one (registered for photographs), too slow for video: rear movies were never finished or ~8 fps.
@@ -133,8 +147,10 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Not yet: live preview in Camera.app (still the synthetic bridge), rear cameras, exposure/colour tuning.
 
 ## Open (known issues)
-- Camera: front only, photos only. Video recording, microphone in video, full resolution, colour tuning, rear
-  cameras, zoom switching and flash are open (`tools/camera/CHECKLIST.md`, section ROADMAP).
+- Camera: rear 12 MP mode off (row-1912 band; binned 2016x1512 used), ultra-wide/tele not brought up
+  (`tools/camera/CHECKLIST.md`, OPEN ITEMS).
+- OpenGL ES games work only when named in build.sh `EAGL_APPS` (executable name); others still use iOS's
+  GL-on-Metal and show black. ES 1 (fixed function) games are not covered. PVRTC textures are not decoded yet.
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
 - CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.

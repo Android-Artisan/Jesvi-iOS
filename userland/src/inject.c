@@ -1481,7 +1481,8 @@ input_thread(__unused void *arg)
  *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
  * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
  * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
- * Boot-arg idle_lock=0 off (default), 1 only an untouched wake (lock_s), 2 also Auto-Lock when in use.
+ * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s), 2 also Auto-Lock when in use (default since
+ * 2026-11-12, the user's wish; the boot line is at its 550-character limit, so the default is here).
  */
 static int
 auto_lock_seconds(void)
@@ -1522,7 +1523,7 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_s = 10, auto_s = 60, mode = 0;
+	int lock_s = 10, auto_s = 60, mode = 2;
 	uint64_t woke_at = 0;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
@@ -1540,7 +1541,7 @@ idle_thread(__unused void *argument)
 		}
 	}
 	if (mode == 0) {
-		return NULL;                    /* off (the default, the user's choice 2026-11-07): iOS's own, broken, idle timer */
+		return NULL;                    /* idle_lock=0: iOS's own, broken, idle timer */
 	}
 	say("redwood: idle timer (idle_lock=%d): %d s after a wake with no touch%s\n", mode, lock_s,
 	    mode >= 2 ? ", Auto-Lock's time once touched" : "");

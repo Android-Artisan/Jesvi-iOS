@@ -3374,6 +3374,40 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		 * specification was declined 80 times over 42 lives of backboardd before the
 		 * vertex layout existed, and that number had to be counted by hand. */
 		RW_AGAIN('E', "PSO", "this render pipeline is refused: %s\n", why);
+		{
+			/* what the AIR that was refused starts with (2026-11-12: Apple's OpenGL ES on Metal hands functions whose
+			 * bitcode is "not LLVM bitcode" -- a wrapper or another container?) */
+			static int said_bytes;
+
+			if (said_bytes++ < 6) {
+				for (int w = 0; w < 2; w++) {
+					NSData *a = w ? fragment_air : vertex_air;
+					const uint8_t *p = a != nil ? [a bytes] : NULL;
+					char hex[100] = "";
+
+					for (NSUInteger k = 0; p != NULL && k < 24 && k < [a length]; k++) {
+						snprintf(hex + strlen(hex), sizeof(hex) - strlen(hex), "%02x", p[k]);
+					}
+					if (a != nil) {
+						/* the whole of it, for reading on the Mac */
+						NSString *path = [NSString stringWithFormat:@"%@redwood-glir-%d-%s.bin", NSTemporaryDirectory(), getpid(),
+						    w ? "fragment" : "vertex"];
+
+						if (![a writeToFile:path atomically:NO]) {
+							path = [NSString stringWithFormat:@"/var/tmp/redwood-glir-%d-%s.bin", getpid(), w ? "fragment" : "vertex"];
+							[a writeToFile:path atomically:NO];
+						}
+						m2m_log('I', "PSO", "refused %s AIR written to %s\n", w ? "fragment" : "vertex", [path UTF8String]);
+					}
+					id fn = w ? fragment : vertex;
+					id lib = fn != nil && [fn respondsToSelector:@selector(library)] ? [fn performSelector:@selector(library)] : nil;
+					m2m_log('E', "PSO", "refused %s AIR: %lu bytes, starts %s; function %s, library %s, type %ld\n",
+					    w ? "fragment" : "vertex", (unsigned long)[a length], hex,
+					    fn != nil ? object_getClassName(fn) : "-", lib != nil ? object_getClassName(lib) : "-",
+					    fn != nil && [fn respondsToSelector:@selector(functionType)] ? (long)[fn functionType] : -1L);
+				}
+			}
+		}
 		return [self fail:error with:[NSString stringWithUTF8String:why]];
 	}
 	/* and what the library made of it, in GALLIUM's bits: for any mask but All, None,
