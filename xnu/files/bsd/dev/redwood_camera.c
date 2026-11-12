@@ -3263,6 +3263,8 @@ static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode inst
 extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
 extern void redwood_camera_s20_set_full(bool full);
 extern void redwood_camera_s20_set_rear(bool rear);
+extern bool redwood_camera_s20_rear_is_warm(void);
+extern void redwood_camera_s20_rear_cool(void);
 extern bool redwood_camera_s20_rear_full(void);
 static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
@@ -4275,6 +4277,17 @@ serve_ios(void)
 	while (!broken) {
 		lck_mtx_lock(&ios_lock);
 		while (!broken && !(ios_open && ios_wanted) && ios_switch_to == 0) {
+			if (s20_real && redwood_camera_s20_rear_is_warm()) {
+				/* the rear main waits warm for 20 s (a fast start), then goes all the way down */
+				struct timespec ts = { 20, 0 };
+
+				if (msleep(&ios_open, &ios_lock, PZERO, "redwood-camera-warm", &ts) == EWOULDBLOCK) {
+					lck_mtx_unlock(&ios_lock);
+					redwood_camera_s20_rear_cool();
+					lck_mtx_lock(&ios_lock);
+				}
+				continue;
+			}
 			(void)msleep(&ios_open, &ios_lock, PZERO, "redwood-camera-idle", NULL);
 		}
 		unsigned to = ios_switch_to;

@@ -286,6 +286,19 @@ cam_s20_af_down(void)
 static uint32_t cam_s20_rear_test_lines = 16384;
 static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
 
+/*
+ * The rear main kept warm between sessions (2026-11-12): its rails, clock and reset stay as they are and the sensor
+ * waits in software standby, so the next start sends only the mode table -- the 7354-record global table over
+ * bit-banged I2C was most of the ~3.1 s every start and flip took. redwood_camera_s20_rear_cool() (the camera
+ * thread, 20 s after the last session) takes it down as a session's end used to. cam_s20_rear_warm=0: never warm.
+ */
+static bool cam_s20_rear_warm;
+static struct {
+	uint8_t p02[3], p03[3];
+	uint32_t reset_con, reset_dat, reset_pud, mclk_con, mclk_dat, mclk_pud, clock[4];
+} cam_s20_rear_cold;
+bool redwood_camera_s20_rear_is_warm(void) { return cam_s20_rear_warm; }
+
 /* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
 typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
 static redwood_s20_frame_fn cam_s20_stream_fn;
@@ -333,7 +346,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char phase[40] = "S2MPB03 bus";
 	char acked[96] = "";
 	bool pmic03_ready = false, sensor_ready = false, clock_ready = false, rails02 = false, rails03 = false;
-	bool ok = false, sensor_ack = false;
+	bool ok = false, sensor_ack = false, warm_start = false, cold_again = false;
 	uint32_t clock_offsets[4] = { CMU_CIS_CLK0_MUX, CMU_CIS_CLK0_DIV, CMU_CIS_CLK0_GATE, CMU_CIS_CLK0_QCH };
 	unsigned i;
 
@@ -362,6 +375,17 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		goto cleanup;
 	}
 	rails02 = true;
+	if (cam_s20_rear_warm) {
+		/* what was there before the rear was first powered: what the real power-down goes back to */
+		memcpy(p02, cam_s20_rear_cold.p02, sizeof(p02));
+		memcpy(p03, cam_s20_rear_cold.p03, sizeof(p03));
+		reset_con = cam_s20_rear_cold.reset_con; reset_dat = cam_s20_rear_cold.reset_dat; reset_pud = cam_s20_rear_cold.reset_pud;
+		mclk_con = cam_s20_rear_cold.mclk_con; mclk_dat = cam_s20_rear_cold.mclk_dat; mclk_pud = cam_s20_rear_cold.mclk_pud;
+		for (i = 0; i < 4; i++) clock[i] = cam_s20_rear_cold.clock[i];
+		warm_start = true;
+		goto warm_bus;
+	}
+cold_start:
 	/* x1slte's per-module power sequence: shared 1.3 V first, reset low, then VDDIO/analog/PHY/core. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	redwood_gpio_func(reset, 0, REDWOOD_GPIO_OUTPUT);
@@ -376,13 +400,20 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    !cam_s20_pmic03_bits(CAM_S2MPB03_LDO2, p03[0], 0x80) ||
 	    !redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO14, 0x80, 0x80)) goto cleanup;
 	cam_s20_wait_ms(2);
+warm_bus:
 	(void)snprintf(phase, sizeof(phase), "sensor I2C pins");
 	sensor_ready = true;
 	sensor_bus.bank = redwood_gpio_bank(PINCTRL_PERIC0_PHYS, 0);
 	/* This bus's saved pin state carries a pull-down, unlike the DT's I2C pin state (no internal pull). */
 	if (!redwood_bbi2c_setup(&sensor_bus, true, out, cap)) goto cleanup;
+	if (warm_start) {
+		/* (clock running, reset high, the sensor in standby: straight to its ID) */
+		clock_ready = true;
+		sensor_ack = true;
+		goto read_id;
+	}
 	/* CIS_CLK0: OSCCLK (26 MHz), divider 1; save and restore the mux, divider, QCH and gate. */
-	for (i = 0; i < 4; i++) clock[i] = cam_s20_rd(cmu, clock_offsets[i]);
+	if (!cold_again) for (i = 0; i < 4; i++) clock[i] = cam_s20_rd(cmu, clock_offsets[i]);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_MUX, clock[0] & ~1U);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_DIV, clock[1] & ~0x1fU);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_QCH, clock[3] | 3U);
@@ -408,6 +439,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		}
 	}
 	if (!sensor_ack) goto cleanup;
+read_id:
 	(void)snprintf(phase, sizeof(phase), "S5K2LD model ID read");
 	{
 		uint8_t a[2] = { 0x00, 0x00 }, b[2] = { 0x00, 0x02 };
@@ -417,12 +449,25 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			ok = redwood_bbi2c_xfer(&sensor_bus, 0x10, b, sizeof(b), rev, sizeof(rev));
 		}
 	}
+	if (warm_start && !(ok && id[0] == 0x20 && id[1] == 0xcd)) {
+		/* the warm sensor does not answer as itself: a real power cycle, from the top */
+		printf("camera: rear: the warm sensor did not answer (id %02x%02x): cold start\n", id[0], id[1]);
+		cam_s20_rear_warm = false;
+		warm_start = false;
+		cold_again = true;
+		ok = false;
+		redwood_bbi2c_restore(&sensor_bus);
+		sensor_ready = false;
+		goto cold_start;
+	}
 	if (ok && stream_test) {
 		/* (Samsung picks Global_A3 for revision 0xA301: is-cis-2ld.c) */
 		uint64_t t0 = mach_absolute_time(), ns;
 
 		(void)snprintf(stream_phase, sizeof(stream_phase), "global A3");
-		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) {
+		if (warm_start) {
+			/* (the global table is in the sensor since its cold start) */
+		} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) {
 			/* the faster bus did not take it: the old speed, again from the top, and for the rest of this boot */
 			if (sensor_bus.half_us >= 2) goto stream_done;
 			cam_s20_rear_slow = true;
@@ -719,6 +764,28 @@ stream_done:
 		    rx_fc_before, rx_fc_after, rx_irq, rx_irq_or, rx_phy_or, rx_phy_and, rx_cmn);
 	}
 cleanup:
+	{
+		uint32_t want = 1;
+
+		(void)PE_parse_boot_argn("cam_s20_rear_warm", &want, sizeof(want));
+		if (want && ok && cam_s20_stream_fn != NULL && cam_s20_stream_frames != 0 && clock_ready && rails02 && rails03) {
+			/* kept warm: the sensor in standby (stream off above), everything else as it is */
+			if (!cam_s20_rear_warm) {
+				memcpy(cam_s20_rear_cold.p02, p02, sizeof(p02));
+				memcpy(cam_s20_rear_cold.p03, p03, sizeof(p03));
+				cam_s20_rear_cold.reset_con = reset_con; cam_s20_rear_cold.reset_dat = reset_dat; cam_s20_rear_cold.reset_pud = reset_pud;
+				cam_s20_rear_cold.mclk_con = mclk_con; cam_s20_rear_cold.mclk_dat = mclk_dat; cam_s20_rear_cold.mclk_pud = mclk_pud;
+				for (i = 0; i < 4; i++) cam_s20_rear_cold.clock[i] = clock[i];
+				cam_s20_rear_warm = true;
+			}
+			if (sensor_ready) redwood_bbi2c_restore(&sensor_bus);
+			if (pmic03_ready) redwood_bbi2c_restore(&cam_pmic03_bus);
+			(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"ok\",\"stream\":\"%s\",\"start\":\"%s\",\"kept_warm\":true}\n",
+			    stream_phase, warm_start ? "warm" : "cold");
+			return;
+		}
+		cam_s20_rear_warm = false;      /* (a session that failed, or a bounded test: all the way down) */
+	}
 	/* Stop clock and hold reset low before taking supplies away. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	if (clock_ready) {
@@ -753,6 +820,44 @@ cleanup:
 	} else {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"error\",\"phase\":\"%s\",\"acked\":\"%s\",\"state_restored\":true}\n", phase, acked);
 	}
+}
+
+/* The warm rear main all the way down, as a session's end used to leave it (the camera thread, when nobody has used
+ * a camera for a while). */
+void
+redwood_camera_s20_rear_cool(void)
+{
+	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
+	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
+	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	const uint8_t *p02 = cam_s20_rear_cold.p02, *p03 = cam_s20_rear_cold.p03;
+	char report[160];
+
+	if (!cam_s20_rear_warm || cmu == NULL) return;
+	cam_s20_rear_warm = false;
+	cam_pmic03_bus.bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM0);
+	cam_pmic03_bus.sda_bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM1);
+	if (!redwood_bbi2c_setup(&cam_pmic03_bus, false, report, sizeof(report))) {
+		printf("camera: rear: cannot reach its supplies to power down (%s)\n", report);
+		return;
+	}
+	(void)redwood_gpio_set(reset, 0, 0);
+	(void)redwood_gpio_set(mclk, 0, 0);
+	redwood_gpio_func(mclk, 0, REDWOOD_GPIO_OUTPUT);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_GATE, cam_s20_rear_cold.clock[2]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_QCH, cam_s20_rear_cold.clock[3]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_DIV, cam_s20_rear_cold.clock[1]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_MUX, cam_s20_rear_cold.clock[0]);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO14, 0x80, p02[2] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO2, p03[0], p03[0] & 0x80);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO1, 0x80, p02[1] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO5, p03[2], p03[2] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO3, p03[1], p03[1] & 0x80);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+	redwood_gpio_restore(reset, 0, cam_s20_rear_cold.reset_con & 0xfU, cam_s20_rear_cold.reset_pud & 0xfU, cam_s20_rear_cold.reset_dat & 1U);
+	redwood_gpio_restore(mclk, 0, cam_s20_rear_cold.mclk_con & 0xfU, cam_s20_rear_cold.mclk_pud & 0xfU, cam_s20_rear_cold.mclk_dat & 1U);
+	redwood_bbi2c_restore(&cam_pmic03_bus);
+	printf("camera: rear: powered down after 20 s without a camera in use\n");
 }
 
 /* Front SAK3J1 candidate. Uses only the x1slte overlay's VT rails, HSI2C1, reset and MCLK1. */
