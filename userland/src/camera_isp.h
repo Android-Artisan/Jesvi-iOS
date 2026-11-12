@@ -74,6 +74,7 @@ struct isp {
 	int             awb_fast;       /* frames left of a quick white balance (a stream's start) */
 	float           digital;        /* more gain, for what AE cannot reach with the sensor's */
 	float           digital_next;   /* the digital gain that goes with the exposure asked for, from its first frame */
+	float           bias;           /* the exposure slider's, on the picture at once (0: none); AE does not see it */
 	float           zoom;           /* the picture is the middle 1/zoom of the sensor each way (1: the whole of it) */
 	bool            turned;         /* the picture turned half round (a sensor mounted the other way up) */
 	bool            mirror;         /* ... and/or mirrored left to right (each line from its end) */

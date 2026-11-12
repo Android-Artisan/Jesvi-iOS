@@ -246,7 +246,7 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 	}
 	/* small steps, a little larger when far off: up to 2.6 times at once showed as jumps */
 	want = pow(ratio, 0.7);
-	limit = ratio > 2 || ratio < 0.5 ? 1.5 : 1.15;
+	limit = ratio > 2 || ratio < 0.5 ? 1.5 : 1.15;     /* (the user: "auto exposure is perfect" with these) */
 	want = want > limit ? limit : want < 1 / limit ? 1 / limit : want;
 	want *= now;
 	if (want <= fast) {
@@ -450,7 +450,8 @@ pipe_init(const struct isp *isp, struct pipe *p)
 
 	p->identity = true;
 	for (int j = 0; j < 3; j++) {
-		p->wb[j] = isp->wb[j] * (isp->trim[j] > 0 ? isp->trim[j] : 1) * isp->digital * (LUT_WHITE / (float)WHITE);
+		p->wb[j] = isp->wb[j] * (isp->trim[j] > 0 ? isp->trim[j] : 1) * isp->digital * (isp->bias > 0 ? isp->bias : 1) *
+		    (LUT_WHITE / (float)WHITE);
 		lo = p->wb[j] < lo ? p->wb[j] : lo;
 	}
 	/*

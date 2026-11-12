@@ -816,8 +816,9 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		}
 		if (n != NULL && CFGetTypeID(n) == CFNumberGetTypeID()) {
 			CFNumberGetValue(n, kCFNumberDoubleType, &v);
-			s->ev_bias = (float)((v - 256) / 256.0);
-			s->ev_bias = s->ev_bias < -3 ? -3 : s->ev_bias > 3 ? 3 : s->ev_bias;
+			/* a multiplier, 256 being 1 (Camera.app's slider: 35 to 2715, about -2.9 to +3.4 stops) */
+			s->ev_bias = v > 0 ? (float)log2(v / 256.0) : 0;
+			s->ev_bias = s->ev_bias < -3.5f ? -3.5f : s->ev_bias > 3.5f ? 3.5f : s->ev_bias;
 		}
 		say_value("stream: exposure:", key, value);
 		return 0;
@@ -1863,9 +1864,8 @@ worker_body(void *context)
 					st.mean[1] = 0.75 * (sum / n) + 0.25 * st.mean[1];
 				}
 			}
-			if (s->ev_bias != 0) {
-				st.mean[1] /= exp2f(s->ev_bias);
-			}
+			/* the sun slider: on the picture at once (Camera.app's own feel), not through AE (a second to follow) */
+			isp.bias = exp2f(s->ev_bias);
 		}
 		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
@@ -1942,10 +1942,13 @@ worker_body(void *context)
 				s->render_ticks = s->read_ticks = s->stats_ticks = 0;
 			}
 		}
-		if (s->frames == 1 || s->frames % 300 == 0) {
+		if (s->frames == 1 || s->frames % 30 == 0) {
 			say("frame %llu: exposure %.1f ms, gain %.1fx, digital %.2fx, green %.0f above black; white balance R %.2f "
 			    "B %.2f, lux index %.0f, about %.0f K", f->sequence, f->exposure_lines * (double)f->line_ns / 1e6,
 			    (double)f->gain / f->gain_unity, isp.digital, st.mean[1], isp.wb[0], isp.wb[2], lux, cct);
+			if (s->ev_bias != 0 || s->ae_locked) {
+				say("exposure bias %+.2f stops%s", s->ev_bias, s->ae_locked ? ", AE locked" : "");
+			}
 		}
 	}
 	if (drawer_up) {
