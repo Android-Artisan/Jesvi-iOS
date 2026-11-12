@@ -1664,6 +1664,17 @@ worker_body(void *context)
 		return NULL;
 	}
 	isp_init(&isp);
+	/*
+	 * The white balance where the last stream left it, and a quick one for the first frames: from gains of 1 every
+	 * start was green for a second or two (the raw frame's green is the strongest; 2026-11-12).
+	 */
+	static float last_wb[3];
+	if (last_wb[0] > 0) {
+		memcpy(isp.wb, last_wb, sizeof(last_wb));
+		isp.awb_fast = 4;
+	} else {
+		isp.awb_fast = 12;
+	}
 	while (s->running && failures < 5) {
 		ssize_t n;
 
@@ -1732,6 +1743,7 @@ worker_body(void *context)
 		uint64_t t_stats = mach_absolute_time();
 		isp_measure(&isp, f, raw, &st);
 		isp_awb(&isp, &st);
+		memcpy(last_wb, isp.wb, sizeof(last_wb));
 		if (s->frames % 15 == 0) {
 			tune_on_phone(&isp, f, raw);
 		}

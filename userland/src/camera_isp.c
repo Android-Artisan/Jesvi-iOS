@@ -391,8 +391,16 @@ isp_awb(struct isp *isp, const struct isp_stats *s)
 	}
 	r = r < 0.5f ? 0.5f : r > 4 ? 4 : r;
 	b = b < 0.5f ? 0.5f : b > 4 ? 4 : b;
-	isp->wb[0] = isp->wb[0] * 0.9f + r * 0.1f;
-	isp->wb[2] = isp->wb[2] * 0.9f + b * 0.1f;
+	{
+		/* quickly for a stream's first frames (from a guess), then slowly */
+		float k = isp->awb_fast > 0 ? 0.45f : 0.1f;
+
+		if (isp->awb_fast > 0) {
+			isp->awb_fast--;
+		}
+		isp->wb[0] = isp->wb[0] * (1 - k) + r * k;
+		isp->wb[2] = isp->wb[2] * (1 - k) + b * k;
+	}
 }
 
 /* the part of the sensor's cells the picture shows: its middle, in the picture's proportions, 1/zoom of it each way */
