@@ -464,6 +464,7 @@ struct stream {
 	volatile bool   running;
 	volatile bool   graph_running;  /* the capture graph has started this stream: frames may be given out */
 	bool            worker_started;
+	volatile bool   worker_busy;    /* the worker thread has not returned yet (it may outlive a stop: stream_stop) */
 	int             torch;
 	int             last_turn;
 	uint64_t        frames, stills_given;
@@ -1318,8 +1319,21 @@ load_tuning(struct isp *isp, uint32_t sensor)
 	}
 }
 
+static void *worker_body(void *context);
+
+/* the worker, and a flag when it is over (stream_stop does not wait for ever for it) */
 static void *
 worker(void *context)
+{
+	struct stream *s = stream_of(context);
+	void *r = worker_body(context);
+
+	s->worker_busy = false;
+	return r;
+}
+
+static void *
+worker_body(void *context)
 {
 	CMBaseObjectRef o = context;
 	struct stream *s = stream_of(o);
@@ -1515,11 +1529,19 @@ stream_begin(CMBaseObjectRef o, bool graph)
 			(void)stream_stop(all_streams[i]);
 		}
 	}
+	/* a worker that a stop did not wait for: let it end first (it still has the kernel's camera open) */
+	for (int i = 0; i < 2; i++) {
+		for (int w = 0; w < 200 && all_streams[i] != NULL && stream_of(all_streams[i])->worker_busy; w++) {
+			usleep(10000);
+		}
+	}
 	s->running = true;
 	s->frames = 0;
+	s->worker_busy = true;
 	say("stream: frames begin (format %d)", s->format_index);
 	if (pthread_create(&s->worker, NULL, worker, o) != 0) {
 		s->running = false;
+		s->worker_busy = false;
 		return ERR_UNSUPPORTED;
 	}
 	s->worker_started = true;
@@ -1552,8 +1574,26 @@ stream_stop(CMBaseObjectRef o)
 	pthread_mutex_unlock(&s->lock);
 	s->running = false;
 	if (s->worker_started) {
-		pthread_join(s->worker, NULL);
+		/*
+		 * At most 300 ms for the worker: it can be inside the graph's frame handler, and that can wait for the
+		 * graph -- which is waiting for this Stop. Joined when it is done in time, else left to end by itself
+		 * (it sees `running' false); the next start waits for it. (The wait for ever was mediaserverd's "Timed
+		 * out waiting for the capture graph to stop", 2026-11-12.)
+		 */
+		uint64_t t0 = mach_absolute_time();
+		int w;
+
+		for (w = 0; w < 30 && s->worker_busy; w++) {
+			usleep(10000);
+		}
+		if (!s->worker_busy) {
+			pthread_join(s->worker, NULL);
+		} else {
+			pthread_detach(s->worker);
+			say("stream: the worker is still in a frame after 300 ms: left to finish by itself");
+		}
 		s->worker_started = false;
+		say("stream: stopped in %.0f ms", (double)(mach_absolute_time() - t0) / 24000.0);
 	}
 	return 0;
 }

@@ -316,8 +316,8 @@ prepare_to_encode_frames(CMBaseObjectRef o)
 }
 
 static OSStatus
-encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, const CMTime *pts, const CMTime *duration,
-    CFDictionaryRef options, uint32_t *info_out)
+encode_frame_inner(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, const CMTime *pts, const CMTime *duration,
+    CFDictionaryRef options, uint32_t *info_out, bool *emitted)
 {
 	struct encoder *e = enc_of(o);
 	SSourcePicture pic;
@@ -364,6 +364,7 @@ encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, 
 		if (info_out) {
 			*info_out |= INFO_DROPPED;
 		}
+		*emitted = true;
 		return session_emit(e->session, token, 0, INFO_DROPPED, NULL);
 	}
 	key = bs.eFrameType == videoFrameTypeIDR;
@@ -457,7 +458,7 @@ encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, 
 	}
 	e->frames++;
 	e->bytes += len;
-	if (e->frames == 1 || e->frames % 300 == 0) {
+	if (e->frames == 1 || e->frames % 30 == 0) {
 		say("frame %llu: %zu bytes%s, %.1f kbit/s so far", e->frames, len, key ? " (key)" : "",
 		    e->frames > 1 ? (double)e->bytes * 8 / ((double)e->frames / (e->fps > 0 ? e->fps : 30)) / 1000 : 0.0);
 	}
@@ -468,15 +469,47 @@ encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, 
 	if (st != 0) {
 		return st;
 	}
+	*emitted = true;
 	st = session_emit(e->session, token, 0, 0, sample);
 	CFRelease(sample);
+	return st;
+}
+
+/*
+ * Every frame asked for is answered, with its picture or with an error: a frame that failed and was only refused
+ * left VideoToolbox waiting for it when the recording stopped ("Timed out waiting for the capture graph to stop",
+ * mediaserverd SIGTRAP, the movie never finished: 2026-11-12).
+ */
+static OSStatus
+encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, const CMTime *pts, const CMTime *duration,
+    CFDictionaryRef options, uint32_t *info_out)
+{
+	struct encoder *e = enc_of(o);
+	bool emitted = false;
+	OSStatus st = encode_frame_inner(o, token, pb, pts, duration, options, info_out, &emitted);
+
+	if (!emitted) {
+		static int told;
+		if (told++ < 10) {
+			say("EncodeFrame failed (%d) for a %#x %zux%zu buffer: answered as dropped", (int)st,
+			    pb ? (unsigned)CVPixelBufferGetPixelFormatType(pb) : 0u, pb ? CVPixelBufferGetWidth(pb) : 0, pb ? CVPixelBufferGetHeight(pb) : 0);
+		}
+		if (info_out) {
+			*info_out |= INFO_DROPPED;
+		}
+		(void)session_emit(e->session, token, st ? st : ERR_ENCODER, INFO_DROPPED, NULL);
+		return 0;
+	}
 	return st;
 }
 
 static OSStatus
 complete_frames(CMBaseObjectRef o, const CMTime *until)
 {
-	(void)o; (void)until;
+	struct encoder *e = enc_of(o);
+
+	(void)until;
+	say("CompleteFrames after %llu frames", e->frames);
 	return 0;                               /* (every frame is given back from EncodeFrame) */
 }
 
@@ -588,6 +621,7 @@ invalidate(CMBaseObjectRef o)
 {
 	struct encoder *e = enc_of(o);
 
+	say("Invalidate after %llu frames", e->frames);
 	pthread_mutex_lock(&e->lock);
 	svc_down(e);
 	pthread_mutex_unlock(&e->lock);
