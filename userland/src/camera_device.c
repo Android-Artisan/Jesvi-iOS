@@ -483,6 +483,8 @@ struct stream {
 	uint64_t        frames, stills_given;
 };
 
+static void flash_light(struct stream *s, bool on);
+
 static struct stream *
 stream_of(CMBaseObjectRef o)
 {
@@ -770,11 +772,11 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		 */
 		pthread_mutex_lock(&s->lock);
 		s->stills_wanted++;
-		if (s->flash_on && s->camera->sensor == 2 && s->flash_ready == 0) {
+		if (s->flash_on && s->flash_ready == 0) {
 			/* the screen lit (SpringBoard, inject_sb.c), and the photograph some frames later, as the exposure
 			 * comes down to the lit face */
 			s->flash_ready = s->frames + 10;
-			notify_post("com.redwood.screenflash.on");
+			flash_light(s, true);
 			say("stream: the screen lit for the photograph (from frame %llu)", (unsigned long long)s->flash_ready);
 		}
 		pthread_mutex_unlock(&s->lock);
@@ -868,6 +870,30 @@ torch_set(struct stream *s, CFTypeRef value)
 		say("the flashlight at %u of 1000 NOT TAKEN (no /dev/redwood-torch)", thousandths);
 	} else {
 		say("the flashlight at %u of 1000", thousandths);
+	}
+}
+
+
+/*
+ * The flash for a photograph: the front camera's is the screen (SpringBoard, inject_sb.c), the rear's the LED beside
+ * it -- the S2MPB02's, which the kernel has as the flashlight (/dev/redwood-torch), at its most (2026-11-12).
+ */
+static void
+flash_light(struct stream *s, bool on)
+{
+	if (s->camera->sensor == 2) {
+		notify_post(on ? "com.redwood.screenflash.on" : "com.redwood.screenflash.off");
+		return;
+	}
+	uint32_t thousandths = on ? 1000 : 0;
+
+	if (s->torch < 0) {
+		s->torch = open("/dev/redwood-torch", O_WRONLY);
+	}
+	if (s->torch < 0 || write(s->torch, &thousandths, sizeof(thousandths)) != (ssize_t)sizeof(thousandths)) {
+		say("the rear flash %s NOT TAKEN (no /dev/redwood-torch)", on ? "on" : "off");
+	} else {
+		say("the rear flash %s", on ? "on" : "off");
 	}
 }
 
@@ -1072,7 +1098,16 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 			}
 		}
 	} else {
-		dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
+		/*
+		 * The rear's pictures below the video encoder's priority: its preview costs twice the front's (cells enlarged
+		 * to the picture), and at 95 C, throttled, at USER_INTERACTIVE it starved VideoToolbox's encoder -- the first
+		 * compressed frame came 18-28 s after a recording began, its Stop never reached the file, and no rear video
+		 * was ever finished (2026-11-12). The front keeps the higher class.
+		 */
+		bool rear_frame = f->width == 2016 || f->width == 4032;
+
+		dispatch_apply_f(job.pieces, dispatch_get_global_queue(rear_frame ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INTERACTIVE, 0),
+		    &job, render_piece);
 	}
 	bool photograph = strcmp(out->name, "StillImage") == 0;
 
@@ -1697,7 +1732,7 @@ give_frame(struct stream *s, const struct isp *isp, const struct redwood_camera_
 			say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
 			if (s->stills_wanted == 0 && s->flash_ready != 0) {
 				s->flash_ready = 0;
-				notify_post("com.redwood.screenflash.off");
+				flash_light(s, false);
 			}
 		}
 	}
@@ -2179,8 +2214,17 @@ worker_body(void *context)
 		struct redwood_camera_command c;
 
 		uint64_t t_stats = mach_absolute_time();
-		isp_measure(&isp, f, raw, &st);
-		isp_awb(&isp, &st);
+		/*
+		 * The rear: stats (exposure, white balance) every other frame. At 95 C, throttled, they took 22-33 ms a frame
+		 * and the rear fell to 15 frames a second (2026-11-12); AE and AWB settle in a quarter second either way.
+		 * The front keeps every frame.
+		 */
+		bool stats_frame = !(f->width == 2016 || f->width == 4032) || (s->frames & 1) == 0;
+
+		if (stats_frame) {
+			isp_measure(&isp, f, raw, &st);
+			isp_awb(&isp, &st);
+		}
 		memcpy(last_wb, isp.wb, sizeof(last_wb));
 		if (s->frames % 15 == 0) {
 			tune_on_phone(&isp, f, raw);
@@ -2305,7 +2349,7 @@ worker_body(void *context)
 			}
 			if (fx_on) goto ae_done;
 		}
-		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
+		if (stats_frame && !s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
 		}
 ae_done:;
@@ -2502,7 +2546,7 @@ stream_stop(CMBaseObjectRef o)
 	post(o, CFSTR("StreamStopping"));
 	if (s->flash_ready != 0) {
 		s->flash_ready = 0;
-		notify_post("com.redwood.screenflash.off");
+		flash_light(s, false);
 	}
 	/* The flags first, without the lock: the worker holds it while it gives a frame to the graph, whose handler
 	 * may wait for the graph that is stopping now -- waiting for the lock here was "Timed out waiting for the
