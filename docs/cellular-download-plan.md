@@ -243,3 +243,19 @@ right after it the CP consumed TOC START and replied in RAW RX:
 CP shut down after, cleanup_verified 1, no restart. Transcript: logs/cellular/a-download-*/ (private).
 Next: MAIN (59 MB, 29054 frames, + CRC), APM, VSS, NV (nv_data.bin from the Mac's EFS backup image),
 FIN START; then the CP should boot its main firmware (complete_normal_boot waits for its init on IPC).
+
+### MILESTONE Nov12 23:45: full firmware download, main firmware running (PHONE_ACTIVE high)
+
+`live-modem --download-all TOC PLAN` (PLAN lines "STAGE FILE OFFSET SIZE CRC", "15" = FIN), files staged
+in /var/root (cell-radio.img = the RADIO backup, cell-nv.bin = nv_data.bin from the Mac's EFS backup):
+  TOC 800 B ACK; MAIN 59502592 B / 29054 frames queued in 1.5 s, SEND ACK, CRC 7c455a85 ACK, DONE ACK;
+  APM 29728 B ACK; VSS 4827808 B ACK; NV 1048576 B ACK; FIN START ACK.
+Then GPIO 6 -> 7 within 500 ms: **PHONE_ACTIVE high and held for 10 s** = the CP's main firmware is up.
+IPC header unchanged (magic still BOOT; RAW TX/RX 1794a8/88, all consumed). CP shut down after
+(cleanup_verified 1), no AP restart.
+
+Next (Samsung's complete_normal_boot and after): wait for the CP's init message (cp2ap msg / MSI at
+f6200000; we have no MSI handler yet -- poll the MSI page/INTR0 status and the FMT RX queue), switch
+the link to IPC (magic MEM_IPC_MAGIC, FMT/RAW queues), then Samsung IPC (SIPC FMT, RIL protocol) for
+SIM status (SIM is out: expect "no SIM"), then radio power / registration, data (RAW channels),
+SMS, calls. Keep the CP off between runs; nothing here needs an AP restart.

@@ -247,6 +247,82 @@ static int udl_step(unsigned stage,enum s5123_udl_op op,const uint8_t *frame,siz
     fflush(stdout);
     return a==S5123_UDL_ACK?0:-1;
 }
+
+/* --download-all PLAN: lines "STAGE FILE OFFSET SIZE CRC" (CRC 0 = no CRC step); "15" = FIN (START only) */
+static const char *download_plan;
+static int raw_send_wait(const uint8_t *frame,uint32_t n,unsigned ms)
+{
+    uint64_t deadline=now_us(NULL)+(uint64_t)ms*1000;
+    for (;;) {
+        int e=raw_send(frame,n);if (e!=-2) return e;
+        if (now_us(NULL)>deadline || stopped) return -2;
+        usleep(500);
+    }
+}
+static int udl_ack(unsigned stage,enum s5123_udl_op op,unsigned ms)
+{
+    uint8_t reply[64];int got=raw_recv(reply,sizeof(reply),ms);
+    if (got<=0) {printf("cellular live DL: stage %u op %u: no reply in %u ms\n",stage,op,ms);fflush(stdout);return -1;}
+    enum s5123_udl_ack a=s5123_udl_response(reply,(size_t)((got+7)&~7),stage,op);
+    if (a!=S5123_UDL_ACK) {
+        printf("cellular live DL: stage %u op %u: reply",stage,op);for (int i=0;i<got && i<16;i++) printf(" %02x",reply[i]);
+        printf(" -> %s\n",a==S5123_UDL_PEER_FAIL?"CP reports FAIL":"unexpected");fflush(stdout);return -1;
+    }
+    return 0;
+}
+static int udl_cmd(unsigned stage,enum s5123_udl_op op,uint32_t crc,unsigned ms)
+{
+    uint8_t frame[64];size_t n=s5123_udl_command(frame,sizeof(frame),stage,op,crc);
+    if (!n || raw_send_wait(frame,(uint32_t)n,ms)) return -1;
+    return udl_ack(stage,op,ms);
+}
+static int udl_image(unsigned stage,const char *path,long offset,uint32_t size)
+{
+    FILE *f=fopen(path,"rb");if (!f || fseek(f,offset,SEEK_SET)) {if (f) fclose(f);return -1;}
+    uint32_t frames=size/S5123_UDL_MSS+(size%S5123_UDL_MSS!=0);uint8_t chunk[S5123_UDL_MSS],frame[S5123_UDL_WIRE_MAX];
+    uint64_t start=now_us(NULL);
+    for (uint32_t i=1;i<=frames;i++) {
+        size_t want=size-(i-1)*S5123_UDL_MSS;if (want>S5123_UDL_MSS) want=S5123_UDL_MSS;
+        if (fread(chunk,1,want,f)!=want) {fclose(f);return -1;}
+        size_t n=s5123_udl_data(frame,sizeof(frame),stage,size,i,chunk,want);
+        if (!n || raw_send_wait(frame,(uint32_t)n,5000)) {
+            printf("cellular live DL: stage %u: frame %u/%u not taken (ring full 5 s or I/O)\n",stage,i,frames);fflush(stdout);fclose(f);return -1;
+        }
+    }
+    fclose(f);
+    printf("cellular live DL: stage %u: %u frames (%u bytes) queued in %llu ms\n",stage,frames,size,
+        (unsigned long long)((now_us(NULL)-start)/1000));fflush(stdout);
+    return udl_ack(stage,S5123_UDL_SEND,30000);
+}
+static int download_stages(void)
+{
+    FILE *p=fopen(download_plan,"r");if (!p) return -1;
+    char line[512];int error=0;
+    while (!error && fgets(line,sizeof(line),p)) {
+        unsigned stage;char path[400];long offset;unsigned long size,crc;
+        if (sscanf(line,"%u",&stage)!=1) continue;
+        if (stage==15) {
+            error=udl_cmd(15,S5123_UDL_START,0,10000);
+            printf("cellular live DL: FIN START %s\n",error?"failed":"ACK: all stages loaded");fflush(stdout);
+            break;
+        }
+        if (sscanf(line,"%u %399s %ld %lu %lx",&stage,path,&offset,&size,&crc)!=5) {error=-1;break;}
+        printf("cellular live DL: stage %u: %lu bytes from %s+%ld%s\n",stage,size,path,offset,crc?" (with CRC)":"");fflush(stdout);
+        error=udl_cmd(stage,S5123_UDL_START,0,5000) || udl_image(stage,path,offset,(uint32_t)size) ||
+            (crc && udl_cmd(stage,S5123_UDL_CRC,(uint32_t)crc,10000)) || udl_cmd(stage,S5123_UDL_DONE,0,10000);
+        printf("cellular live DL: stage %u %s\n",stage,error?"FAILED":"done (START, SEND, DONE acknowledged)");fflush(stdout);
+    }
+    fclose(p);
+    if (!error) {
+        phase("download complete: watch 10 s for the main firmware (PHONE_ACTIVE, IPC magic, FMT/RAW RX)");
+        for (unsigned i=0;i<20;i++) {
+            uint32_t in=0,w[10];inputs(&in);for (unsigned k=0;k<10;k++) ipc_load(k*4,&w[k]);
+            printf("cellular live DL: +%ums GPIO %x IPC",i*500,in);for (unsigned k=0;k<10;k++) printf(" %08x",w[k]);printf("\n");fflush(stdout);
+            usleep(500000);
+        }
+    }
+    return error;
+}
 static int download_run(void)
 {
     char response[8192];
@@ -292,6 +368,7 @@ static int download_run(void)
         if (length==800 && (n=s5123_udl_data(frame,sizeof(frame),1,800,1,toc,800)) && !udl_step(1,S5123_UDL_SEND,frame,n) &&
             (n=s5123_udl_command(frame,sizeof(frame),1,S5123_UDL_DONE,0)) && !udl_step(1,S5123_UDL_DONE,frame,n)) {
             phase("download: TOC stage complete (START, SEND, DONE acknowledged)");error=0;
+            if (download_plan) error=download_stages();
         }
     }
     request("m 0x14ffe004 0xfffb 0x0",response);request("m 0x13800004 0xfffffffb 0x0",response);
@@ -394,9 +471,10 @@ static int read_file(const char *path,uint8_t *data,size_t capacity,size_t *leng
 }
 int main(int argc,char **argv)
 {
-    if ((argc<4 || argc>6) || strcmp(argv[1],"--reserved-base-verified")) return 2;
+    if ((argc<4 || argc>7) || strcmp(argv[1],"--reserved-base-verified")) return 2;
     if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
     if (argc==6) {if (strcmp(argv[4],"--download")) return 2;link_requested=1;download_toc=argv[5];}
+    if (argc==7) {if (strcmp(argv[4],"--download-all")) return 2;link_requested=1;download_toc=argv[5];download_plan=argv[6];}
     uint8_t image[131073],info[25];size_t length,info_length;uint32_t fields[5];
     if (read_file(argv[2],image,sizeof(image),&length) || read_file(argv[3],info,sizeof(info),&info_length) ||
         info_length!=24 || memcmp(info,"S512",4)) return 2;
