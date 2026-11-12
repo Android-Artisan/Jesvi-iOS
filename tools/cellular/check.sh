@@ -17,3 +17,9 @@ trap 'rm -rf "$CELLULAR_CHECK_DIR"' EXIT
 "${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
     tools/cellular/tests/live_pcie_test.c -o "$CELLULAR_CHECK_DIR/live-pcie-test"
 "$CELLULAR_CHECK_DIR/live-pcie-test"
+"${CC:-clang}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/test_spi8_contract.c -o "$CELLULAR_CHECK_DIR/spi8-contract"
+"$CELLULAR_CHECK_DIR/spi8-contract"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/live_spi_test.c -o "$CELLULAR_CHECK_DIR/live-spi-test"
+"$CELLULAR_CHECK_DIR/live-spi-test"

@@ -65,5 +65,26 @@ class FallbackTests(unittest.TestCase):
                 prepare.cp_boot_payload(path)
 
 
+class KernelSegmentTests(unittest.TestCase):
+    def test_fixed_segment_only_and_layout_refusal(self):
+        records = [(name.ljust(16,b'\0'),0,value) for name,value in (
+            (b'kpart',b'recovery\0'),(b'koff',b'2000000\0'),
+            (b'rpart',b'recovery\0'),(b'roff',b'3400000\0'))]
+        kernel=struct.pack('<II',0xfeedfacf,0x0100000c)+bytes(4088)
+        image=bytearray(0x3401000)
+        image[0x2000000:0x2000008]=kernel[:8]
+        image[0x3000000:0x3000004]=b'KEEP'
+        image[0x3400000:0x3400004]=b'ROOT'
+        image[prepare.SLOT:prepare.SLOT+4]=b'XNUP'
+        prepare.replace_kernel(image,kernel,records)
+        self.assertEqual(image[0x2000000:0x2001000],kernel)
+        self.assertEqual(image[0x3000000:0x3000004],b'KEEP')
+        self.assertEqual(image[0x3400000:0x3400004],b'ROOT')
+        self.assertEqual(image[prepare.SLOT:prepare.SLOT+4],b'XNUP')
+        for invalid in (b'bad',bytes(4096),kernel+bytes(0x1000000)):
+            with self.assertRaises(ValueError): prepare.replace_kernel(image,invalid,records)
+        with self.assertRaises(ValueError): prepare.replace_kernel(image,kernel,records[:-1])
+
+
 if __name__ == '__main__':
     unittest.main()

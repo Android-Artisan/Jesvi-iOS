@@ -33,7 +33,7 @@ Validated 2026-11-11:
 - Local S20 RADIO: BOOT/MAIN/APM/VSS/INFO CRCs all pass. NV bytes never read.
 - Existing saved boot: IPC overlaps loader staging by 8 MiB; packet region
   overlaps display pool by 64 KiB. Audit exits 1 as intended.
-- Host tests: **41 Python tests passed** plus **163,840** C allocator boundary
+- Host tests: **42 Python tests passed** plus **163,840** C allocator boundary
   comparisons under ASan/UBSan (`bash tools/cellular/check.sh`). Synthetic
   fixtures contain no vendor bytes.
 - Full ARM64 loader boots on the original UEFI. Opt-in `CELLULAR_RESERVE_CP=1`
@@ -159,3 +159,27 @@ diagnostic.124 ordered operations,105 snapshots;726 PHY failure injections and
 58 ROOT cases pass on host. Combined helper includes Samsung GPL-2.0-only
 sequence, attribution/license supplied. PHY hardware execution pending phone
 slot; root access is not endpoint/link proof. User removed SIM for now.
+
+### Live SPI and combined base (pending installation)
+
+The optional prepare-m0.py --kernel changes only the fixed16MiB AP-kernel segment
+in addition to loader/head; it preserves the current root image and payload args.
+It requires ARM64 Mach-O, the known partition layout and original firmware.
+Explicit per-segment rollback files/hashes are produced.
+
+SPI8 kernel hooks spi8.tx/spi8.rx are small64-byte bounded FIFO operations. The
+normal loader with CELLULAR_RESERVE_CP plus this kernel is the combined live
+base; candidate verified, actual install has NOT run (phone handed to A).
+
+After that base is installed, no reboot is needed for:
+
+```sh
+bash tools/cellular/build-live.sh
+python3 tools/cellular/live-spi-run.py --bytes 16
+# Only after small loopback passes:
+python3 tools/cellular/live-spi-run.py --bytes 64496
+```
+
+Generated internal loopback only, CP off/pads input. Exact byte-stream host
+cases and142 I/O faults pass under sanitizers. Physical loopback awaits device
+time and installed SPI8 API. Wrapper refuses missing hooks before upload.

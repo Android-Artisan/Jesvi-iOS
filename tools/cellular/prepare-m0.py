@@ -117,6 +117,20 @@ def cp_boot_payload(radio):
                             scope='BOOT only; no NV/EFS or subscriber data')
 
 
+def replace_kernel(image, kernel, records):
+    """Replace only the fixed 16-MiB AP-kernel segment, preserving root/logs."""
+    values = {name.rstrip(b'\0'): data.rstrip(b'\0') for name, _, data in records}
+    require(values.get(b'kpart') == b'recovery' and values.get(b'koff') == b'2000000' and
+            values.get(b'rpart') == b'recovery' and values.get(b'roff') == b'3400000',
+            'kernel replacement requires the known recovery kernel/root layout')
+    require(4096 <= len(kernel) <= 0x1000000 and
+            struct.unpack_from('<II', kernel) == (0xfeedfacf, 0x0100000c),
+            'new kernel must be ARM64 Mach-O and fit the 16-MiB staging window')
+    require(len(image) >= 0x3400000 and image[0x2000000:0x2000008] == kernel[:8],
+            'original recovery does not contain the expected ARM64 kernel')
+    image[0x2000000:0x3000000] = kernel.ljust(0x1000000, b'\0')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backup', type=Path, required=True)
@@ -127,6 +141,8 @@ def main():
     parser.add_argument('--cp-boot-radio', type=Path,
                         help='explicit local BOOT-only extraction for a CP BOOT preflight; never NV')
     parser.add_argument('--loader', type=Path, required=True)
+    parser.add_argument('--kernel', type=Path,
+                        help='optional new AP kernel; fixed16-MiB recovery segment only, root/logs preserved')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--avbtool', type=Path, default=RESEARCH / 'tools/bin/avbtool.py')
     parser.add_argument('--key', type=Path, default=RESEARCH / 'tools/dl/avb/testkey_rsa4096.pem')
@@ -166,6 +182,10 @@ def main():
     payload = b'XNUP' + struct.pack('<I', len(body)) + body
     require(len(payload) <= SLOT_SIZE, 'replacement payload too large')
     changed = bytearray(original)
+    if args.kernel:
+        require(args.keep_installed_fd and not args.with_installed_fallback,
+                'AP kernel replacement requires original firmware and a normal loader')
+        replace_kernel(changed, args.kernel.read_bytes(), old_entries)
     changed[FD_OFFSET:FD_OFFSET + FD_SIZE] = fd
     changed[SLOT:SLOT + len(payload)] = payload
     require(entries(changed) == replaced, 'replacement payload did not round-trip')
@@ -190,7 +210,12 @@ def main():
             'unexpected AVB metadata layout')
     changed[:HEAD_SIZE] = signed[:HEAD_SIZE]
     changed[-64:] = signed[-64:]
-    require(changed[HEAD_SIZE:-64] == original[HEAD_SIZE:-64], 'kernel/root/log body changed')
+    if args.kernel:
+        require(changed[HEAD_SIZE:0x2000000] == original[HEAD_SIZE:0x2000000] and
+                changed[0x3000000:-64] == original[0x3000000:-64],
+                'root/log/body outside the AP kernel segment changed')
+    else:
+        require(changed[HEAD_SIZE:-64] == original[HEAD_SIZE:-64], 'kernel/root/log body changed')
     require(changed[2048:FD_OFFSET] == original[2048:FD_OFFSET], 'installed BootShim changed')
     if args.keep_installed_fd:
         require(changed[FD_OFFSET:SLOT] == original[FD_OFFSET:SLOT] and
@@ -203,6 +228,9 @@ def main():
     (output / 'head.bin').write_bytes(changed[:HEAD_SIZE])
     (output / 'rollback-head.bin').write_bytes(original[:HEAD_SIZE])
     (output / 'standalone-boot-head.bin').write_bytes(changed[:boot_size])
+    if args.kernel:
+        (output / 'kernel-segment.bin').write_bytes(changed[0x2000000:0x3000000])
+        (output / 'rollback-kernel-segment.bin').write_bytes(original[0x2000000:0x3000000])
     footer_changed = changed[-64:] != original[-64:]
     if footer_changed:
         (output / 'footer-block.bin').write_bytes(changed[-4096:])
@@ -215,10 +243,15 @@ def main():
                     standalone_boot_sha256=sha(changed[:boot_size]),
                     original_boot_prefix_sha256=sha(original[:boot_size]),
                     footer_changed=footer_changed, footer_block_offset=PART_SIZE - 4096,
-                    kernel_root_log_body_preserved=True, bootshim_preserved=True,
+                    kernel_root_log_body_preserved=not bool(args.kernel), bootshim_preserved=True,
+                    root_body_preserved=True, ap_kernel_changed=bool(args.kernel),
                     payload_arguments_preserved=True, avb_verified=True)
     manifest.update(installed_firmware_preserved=args.keep_installed_fd,
                     installed_loader_fallback=args.with_installed_fallback)
+    if args.kernel:
+        manifest.update(kernel_segment_offset=0x2000000, kernel_segment_size=0x1000000,
+                        kernel_segment_sha256=sha(changed[0x2000000:0x3000000]),
+                        original_kernel_segment_sha256=sha(original[0x2000000:0x3000000]))
     if cp_metadata:
         manifest['cp_boot'] = cp_metadata
     if args.with_installed_fallback:
