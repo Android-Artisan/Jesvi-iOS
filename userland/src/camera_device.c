@@ -1548,10 +1548,41 @@ stream_begin(CMBaseObjectRef o, bool graph)
 	return 0;
 }
 
+/*
+ * The stream's own notifications, as H10ISP's stream posts them (CoreMedia's notification center, the stream as the
+ * object): "StreamStarting"/"StreamStarted" and "StreamStopping"/"StreamStopped". BWFigVideoCaptureDevice waits
+ * for StreamStopped (captureStreamWillStopStreaming:, _deviceDidStopStreaming): without it every stop ended in
+ * "Timed out waiting for the capture graph to stop" -- mediaserverd's SIGTRAP and a movie never finished
+ * (2026-11-12).
+ */
+static void
+post(CMBaseObjectRef o, CFStringRef name)
+{
+	static void *(*center)(void);
+	static OSStatus (*post_notification)(void *, CFStringRef, const void *, CFTypeRef, uint32_t);
+	static bool looked;
+
+	if (!looked) {
+		looked = true;
+		center = dlsym(RTLD_DEFAULT, "CMNotificationCenterGetDefaultLocalCenter");
+		post_notification = dlsym(RTLD_DEFAULT, "CMNotificationCenterPostNotification");
+	}
+	if (center != NULL && post_notification != NULL) {
+		(void)post_notification(center(), name, o, NULL, 0);
+	}
+}
+
 static OSStatus
 stream_start(CMBaseObjectRef o)
 {
-	return stream_begin(o, true);
+	OSStatus st;
+
+	post(o, CFSTR("StreamStarting"));
+	st = stream_begin(o, true);
+	if (st == 0) {
+		post(o, CFSTR("StreamStarted"));
+	}
+	return st;
 }
 
 static OSStatus
@@ -1561,6 +1592,7 @@ stream_stop(CMBaseObjectRef o)
 
 	say("stream: stop (%llu frames, %llu pictures given)", (unsigned long long)s->frames,
 	    (unsigned long long)s->out[0].delivered);
+	post(o, CFSTR("StreamStopping"));
 	/* The flags first, without the lock: the worker holds it while it gives a frame to the graph, whose handler
 	 * may wait for the graph that is stopping now -- waiting for the lock here was "Timed out waiting for the
 	 * capture graph to stop" and mediaserverd's SIGTRAP (2026-11-12). */
@@ -1595,6 +1627,7 @@ stream_stop(CMBaseObjectRef o)
 		s->worker_started = false;
 		say("stream: stopped in %.0f ms", (double)(mach_absolute_time() - t0) / 24000.0);
 	}
+	post(o, CFSTR("StreamStopped"));
 	return 0;
 }
 
