@@ -187,6 +187,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char rx_report[240] = "";
 	volatile uint8_t *rx_csi = NULL, *rx_phy = NULL, *rx_bias = NULL, *rx_cmu = NULL, *rx_pmu = NULL, *rx_sys = NULL;
 	uint32_t rx_csi_saved[12] = { 0 }, rx_phy_saved[3][16] = { { 0 } }, rx_bias_saved[4] = { 0 }, rx_qch = 0, rx_iso = 0, rx_rst = 0;
+	uint32_t rx_bus_mux = 0, rx_bus_div = 0;
+	bool rx_bus_changed = false;
 	uint32_t rx_fc_before = 0, rx_fc_after = 0, rx_irq = 0, rx_irq_or = 0, rx_phy_or = 0, rx_phy_and = ~0U, rx_cmn = 0;
 	static const uint32_t rx_csi_offs[12] = { 0x0004, 0x0008, 0x000c, 0x0010, 0x0018, 0x0040, 0x0044, 0x0050, 0x0054, 0x0600, 0x0690, 0x0704 };
 	static const uint32_t rx_phy_offs[16] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x30, 0x34, 0x40, 0x64, 0x68, 0x00 };
@@ -305,6 +307,22 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			if (!(cam_s20_rd(rx_pmu, 0x1d84) & 1U)) goto stream_done;
 			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS secure access");
 			if (cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2) != 0) goto stream_done;
+			/*
+			 * The CSIS bus clock as Samsung's active capture has it (TOP 104c=1 PLL_SHARED4_DIV2, 1848=0); XNU's is about
+			 * six times slower, enough for the front's 1807 Mbps x 4 but not the rear's ~2 Gpixel/s: CSIS0 ERR_OVER
+			 * (2026-11-12). Only the dedicated CSIS bus branch; put back afterwards.
+			 */
+			{
+				unsigned k;
+
+				rx_bus_mux = cam_s20_rd(cmu, 0x104c);
+				rx_bus_div = cam_s20_rd(cmu, 0x1848);
+				rx_bus_changed = true;
+				cam_s20_wr(cmu, 0x104c, (rx_bus_mux & ~3U) | 1U);
+				for (k = 0; k < 1000 && (cam_s20_rd(cmu, 0x104c) & (1U << 16)); k++) delay_for_interval(1, NSEC_PER_USEC);
+				cam_s20_wr(cmu, 0x1848, rx_bus_div & ~15U);
+				for (k = 0; k < 1000 && (cam_s20_rd(cmu, 0x1848) & (1U << 16)); k++) delay_for_interval(1, NSEC_PER_USEC);
+			}
 			rx_qch = cam_s20_rd(rx_cmu, 0x3060);
 			rx_iso = cam_s20_rd(rx_pmu, 0x0730);
 			rx_rst = cam_s20_rd(rx_sys, 0);
@@ -329,7 +347,9 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			cam_s20_wr(rx_csi, 0x0704, (rx_csi_saved[11] & ~0x1fU) | (0x0fU << 1));    /* trios on */
 			cam_s20_wr(rx_csi, 0x0040, (0x2bU << 2) | (2U << 12));                       /* VC0 RAW10 */
 			cam_s20_wr(rx_csi, 0x0044, (1512U << 16) | 2016U);
-			cam_s20_wr(rx_csi, 0x0600, rx_csi_saved[9] & ~(1U << 31));
+			/* LRTE_CONFIG EPD_EN: the DT's lrte 1 for every S5K2LD mode (Samsung: csi_hw_s_control(CSIS_CTRL_LRTE)) --
+			 * off, CSIS0 passed frame starts and no lines (2026-11-12) */
+			cam_s20_wr(rx_csi, 0x0600, rx_csi_saved[9] | (1U << 31));
 			cam_s20_wr(rx_csi, 0x0690, rx_csi_saved[10] | (1U << 23));
 			cam_s20_wr(rx_csi, 0x000c, 0xfU);
 			cam_s20_wr(rx_csi, 0x0704, cam_s20_rd(rx_csi, 0x0704) | 1U);
@@ -341,6 +361,9 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			rx_cmn = cam_s20_rd(rx_csi, 0x0004);
 		}
 		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
+		/* a fixed indoor exposure for the test: 16384 of the mode's 22564 lines (~24 ms), analog gain 4x (0x20 = 1x) */
+		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0202, 0x4000) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0204, 0x0080))) goto stream_done;
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
 		for (i = 0; i < 4; i++) {
@@ -380,6 +403,14 @@ stream_done:
 		cam_s20_wr(rx_sys, 0, rx_rst);
 		cam_s20_wr(rx_pmu, 0x0730, rx_iso);
 		cam_s20_wr(rx_cmu, 0x3060, rx_qch);
+	}
+	if (rx_bus_changed) {
+		unsigned k;
+
+		cam_s20_wr(cmu, 0x1848, rx_bus_div);
+		for (k = 0; k < 1000 && (cam_s20_rd(cmu, 0x1848) & (1U << 16)); k++) delay_for_interval(1, NSEC_PER_USEC);
+		cam_s20_wr(cmu, 0x104c, rx_bus_mux);
+		for (k = 0; k < 1000 && (cam_s20_rd(cmu, 0x104c) & (1U << 16)); k++) delay_for_interval(1, NSEC_PER_USEC);
 	}
 	if (rx_test) {
 		(void)snprintf(rx_report, sizeof(rx_report), ",\"csis0_frames\":[%u,%u],\"csis0_irq\":\"%#x\",\"csis0_irq_seen\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"cmn\":\"%#x\"",
@@ -727,10 +758,13 @@ redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 static void
 cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
-	const bool optical = n > 0 && v[0] == 1;
-	const bool full_frames = optical && cam_s20_stream_fn != NULL && cam_s20_full;
-	const uint32_t width = optical ? (full_frames ? 3648 : 1824) : 320, height = optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
-	const bool stream = optical && cam_s20_stream_fn != NULL;
+	/* v[0] 2: the rear main (S5K2LD 2016x1512 -> C-PHY -> CSIS0 -> WDMA2), one bounded frame (2026-11-12) */
+	const bool rear = n > 0 && v[0] == 2;
+	const bool optical = n > 0 && (v[0] == 1 || rear);
+	const bool full_frames = optical && !rear && cam_s20_stream_fn != NULL && cam_s20_full;
+	const uint32_t width = rear ? 2016 : optical ? (full_frames ? 3648 : 1824) : 320;
+	const uint32_t height = rear ? 1512 : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
+	const bool stream = optical && !rear && cam_s20_stream_fn != NULL;
 	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
 	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
 	 * /dev/redwood-camera hands out, so a frame is one copy. The bounded tests keep 16-bit pixels (format 6). */
@@ -757,7 +791,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const char *phase = "map";
 	bool saved = false, allocated = false, stopped = true, ended = false;
 	if (!cap) return;
-	if ((n > 0 && v[0] > 1) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
+	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
 	if (cam_s20_dma_quarantined) { phase = "previous DMA did not stop; reboot required"; goto report; }
 	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
 	if (!pmu) goto report;
@@ -792,12 +826,12 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 			phase = "DMA already active"; goto report;
 		}
 	}
-	vc = dma + 0x2000; cmn = dma + 0x2400;
+	vc = dma + (rear ? 0x3000 : 0x2000); cmn = dma + (rear ? 0x3400 : 0x2400);
 	if (cam_s20_rd(cmn, 8)) { phase = "DMA has pending interrupts"; goto report; }
 	if (!redwood_camera_dma_get(total, &phys, &buffer)) { phase = "no free low-memory slot"; goto report; }
 	allocated = true;
 	if (optical) {
-		route = (volatile uint8_t *)ml_io_map(0x17020418, 4);
+		route = (volatile uint8_t *)ml_io_map(rear ? 0x1702041c : 0x17020418, 4);
 		if (!route) { phase = "DMA input mux map"; goto release; }
 		route_saved = cam_s20_rd(route, 0);
 	}
@@ -815,7 +849,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 	for (i = 0; i < 32; i++) addr_save[i] = cam_s20_rd(vc, 0x10 + i * 4);
 	saved = true;
-	if (route) cam_s20_wr(route, 0, 1U); /* x1slte CSIS1 -> WDMA1 */
+	if (route) cam_s20_wr(route, 0, rear ? 0U : 1U); /* x1slte CSIS1 -> WDMA1; the rear: CSIS0 -> WDMA2 (DT mux_reg) */
 	cam_s20_wr(dma, 8, top_save[0] | 2U); /* IP_PROCESSING */
 	cam_s20_wr(cmn, 0x14, cmn_save[2] & ~1U); /* no stale abort request */
 	cam_s20_wr(cmn, 0, cmn_save[0] & ~1U); /* OTF input */
@@ -846,9 +880,15 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	__asm__ volatile("dsb sy" ::: "memory");
 	if (optical) {
 		sensor_started = true;
-		cam_s20_optical_dma = dma;
-		cam_s20_front_stream_probe(&sensor_mode, 1, sensor_report, sizeof(sensor_report));
-		cam_s20_optical_dma = NULL;
+		if (rear) {
+			uint64_t rx = 2;
+
+			cam_s20_identify(&rx, 1, sensor_report, sizeof(sensor_report));
+		} else {
+			cam_s20_optical_dma = dma;
+			cam_s20_front_stream_probe(&sensor_mode, 1, sensor_report, sizeof(sensor_report));
+			cam_s20_optical_dma = NULL;
+		}
 		/* The standalone probe appends a human-readable register line. */
 		char *end = strchr(sensor_report, '\n');
 		if (end) *end = 0;
@@ -2464,7 +2504,7 @@ redwood_exynos_camera_s20_init(void)
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
 	redwood_dbgport_add("cam.s20.id", " [1]: one-shot rear S5K2LD model/revision read (1: then its tables, ~0.5 s of streaming read by its frame counter); rails and pins restored", cam_s20_identify);
 	redwood_dbgport_add("cam.s20.front.id", ": one-shot front SAK3J1 model/revision read; camera rail enable bits and pins are restored", cam_s20_front_identify);
-	redwood_dbgport_add("cam.s20.dma.test", ": [0|1 [sensor-mode]]: bounded DMA capture, 0 hardware pattern, 1 front sensor; refuses busy DMA", cam_s20_dma_pattern);
+	redwood_dbgport_add("cam.s20.dma.test", ": [0|1|2 [sensor-mode]]: bounded DMA capture, 0 hardware pattern, 1 front sensor, 2 rear main (one 2016x1512 frame); refuses busy DMA", cam_s20_dma_pattern);
 	redwood_dbgport_add("cam.s20.csis1", ": read-only CSIS1 and DMA1 version/status/counter snapshot", cam_s20_csis_inventory);
 	redwood_dbgport_add("cam.s20.csis.power", ": bounded CSIS power-domain and clock inventory; no DPHY or sensor access", cam_s20_csis_power_inventory);
 	redwood_dbgport_add("cam.s20.csis.dphy", ": idle read-only DPHY snapshot after enabling CSIS CMU/CSIS1 QCH; no sensor or DPHY writes", cam_s20_csis_dphy_snapshot);
