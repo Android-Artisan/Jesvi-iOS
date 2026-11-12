@@ -10,8 +10,9 @@ this file is the changelog; "Open" lists what a release must mention as known is
   Without the second, BaseBoard counts only subtype 2436 as buttonless and iOS acts like a home-button iPhone.
   `island=` **1** (in x1slte.cmdline). Commits 1b25aa4, 7f188ae.
 - Tested: MobileGestalt ArtworkDeviceSubType 2556, HomeButtonType 2; pill shown, home-bar swipe and touch normal.
-- Switching it off: drop `island=1` AND delete MobileGestalt's cache (systemgroup.com.apple.mobilegestaltcache/
-  Library/Caches/com.apple.MobileGestalt.plist) before the reboot, or iOS keeps answering the old values.
+- Switching it: just the flag (`island=1` on, leave it out for the iPhone X notch). `init` removes MobileGestalt's
+  cache when the flag changed since the last boot, so iOS rebuilds its answers (needs the next root image build).
+  Doc: docs/x1slte-dynamic-island.md.
 
 ## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
 - Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
