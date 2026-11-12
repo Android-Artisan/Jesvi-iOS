@@ -18,7 +18,6 @@
  */
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
-#include <dlfcn.h>
 #include <stdarg.h>
 #include <objc/runtime.h>
 #include <stdio.h>
@@ -137,19 +136,21 @@ hook_by_address(uintptr_t addr, IMP replacement, const char *what)
 	return found;
 }
 
-__attribute__((constructor)) static void
-island_init(void)
+/*
+ * Nothing is touched while the program is still starting: loaded that early (a cold boot), forcing
+ * SpringBoardUIServices in made SpringBoardUI throw "This process should not be linking or loading
+ * SpringBoardUI.framework" and SpringBoard died at every start (2026-11-12). The hooks go in from the
+ * main queue, once SpringBoard runs, and only if SpringBoardUIServices is already there on its own.
+ */
+static void
+island_hook(void)
 {
 	void *anchor;
 	uintptr_t slide;
 
-	if (!read_conf()) {
-		return;
-	}
-	dlopen(SBUIS, RTLD_NOW);
-	anchor = (__bridge void *)objc_getClass("SBUISystemApertureLayoutMetrics");
+	anchor = (__bridge void *)objc_lookUpClass("SBUISystemApertureLayoutMetrics");
 	if (anchor == NULL) {
-		say("island: SpringBoardUIServices not found, left alone");
+		say("island: SpringBoardUIServices not loaded, left alone");
 		return;
 	}
 	slide = (uintptr_t)anchor - (uintptr_t)ADDR_ANCHOR;
@@ -160,4 +161,15 @@ island_init(void)
 	if (want_y >= 0) {
 		orig_top = (CGFloat (*)(id, SEL))hook_by_address(ADDR_TOP + slide, (IMP)island_top, "pill top");
 	}
+}
+
+__attribute__((constructor)) static void
+island_init(void)
+{
+	if (!read_conf()) {
+		return;
+	}
+	dispatch_async(dispatch_get_main_queue(), ^{
+		island_hook();
+	});
 }
