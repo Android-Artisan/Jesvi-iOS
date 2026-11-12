@@ -430,6 +430,14 @@ emit_sample_buffer(id self, SEL selector, CMSampleBufferRef sample_buffer)
 		static uint64_t audio_emits;
 		id node = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("node"));
 
+		if (node != nil && strcmp(object_getClassName(node), "BWIrisStagingNode") == 0) {
+			static uint64_t iris_emits;
+
+			if (iris_emits++ % 30 == 0) {
+				say("redwood: live photo: the staging node emits %llu (pts %.3f)\n", iris_emits,
+				    CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample_buffer)));
+			}
+		}
 		if (node != nil && strcmp(object_getClassName(node), "BWAudioSourceNode") == 0 && audio_emits++ % 100 == 0) {
 			CMTime t = CMSampleBufferGetPresentationTimeStamp(sample_buffer);
 			id conn = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("connection"));
@@ -936,7 +944,64 @@ iris_render(id self, SEL sel, CMSampleBufferRef sb, id input)
 static int
 iris_open(id self, SEL sel, id request)
 {
+	if (request != nil) {
+		static const char *const names[] = { "stillImageCaptureTime", "movieStartTime", "movieEndTime", "movieTrimStartTime",
+			"masterMovieStartTime", "beginTrimMasterPTS" };
+		char line[400];
+		size_t at = 0;
+
+		for (int i = 0; i < 6; i++) {
+			SEL g = sel_registerName(names[i]);
+			CMTime t = class_respondsToSelector(object_getClass(request), g) ? ((CMTime (*)(id, SEL))objc_msgSend)(request, g) :
+			    kCMTimeInvalid;
+
+			at += (size_t)snprintf(line + at, sizeof(line) - at, " %s %s%.3f", names[i], CMTIME_IS_VALID(t) ? "" : "(invalid) ",
+			    CMTIME_IS_VALID(t) ? CMTimeGetSeconds(t) : 0.0);
+		}
+		say("redwood: live photo: request%s\n", line);
+	}
+	{
+		/*
+		 * The staging node's _targetFrameDuration was never set here, and its pre-roll arithmetic with it gave an
+		 * invalid time: -16958, "no pre-roll available", no Live Photo movie although ten seconds were staged
+		 * (2026-11-12). The camera's frame time, as the iPhone's pipeline gives it.
+		 */
+		CMTime d = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("targetFrameDuration"));
+
+		if (!CMTIME_IS_VALID(d)) {
+			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setTargetFrameDuration:"), CMTimeMake(1, 30));
+			say("redwood: live photo: the staging node's frame duration was unset: 1/30 s\n");
+		}
+		/*
+		 * Its movie's begin and end (_beginIrisMovieCaptureTime, _endIrisMovieCaptureTime) were never set either --
+		 * the end is what its pre-roll check goes by (-16958). 1.5 s each side of the photograph, as Live Photos are.
+		 */
+		CMTime begin = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
+		CMTime still = request != nil ? ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime")) :
+		    kCMTimeInvalid;
+
+		if (!CMTIME_IS_VALID(begin) && CMTIME_IS_VALID(still)) {
+			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
+
+			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
+			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setEndIrisMovieCaptureTime:"), CMTimeAdd(still, half));
+			say("redwood: live photo: the movie's begin and end were unset: %.3f to %.3f\n", CMTimeGetSeconds(still) - 1.5,
+			    CMTimeGetSeconds(still) + 1.5);
+		}
+	}
 	int r = ((int (*)(id, SEL, id))iris_open_orig)(self, sel, request);
+	if (r == 0 && request != nil) {
+		/* (and again once open: opening cleared them) */
+		CMTime still = ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime"));
+		CMTime b0 = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
+
+		if (!CMTIME_IS_VALID(b0) && CMTIME_IS_VALID(still)) {
+			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
+
+			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
+			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setEndIrisMovieCaptureTime:"), CMTimeAdd(still, half));
+		}
+	}
 	CMTime begin = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
 	CMTime buffering = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("bufferingTime"));
 
