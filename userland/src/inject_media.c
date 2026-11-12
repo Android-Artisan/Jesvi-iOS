@@ -903,6 +903,99 @@ trace_movie_sink(void)
 	say("redwood: mediaserverd: the movie file sink's buffers are traced\n");
 }
 
+
+/* Live Photo's movie: what the staging node is asked (2026-11-12: the photographs said LIVE, no movie came) */
+static IMP iris_enqueue_orig, iris_open_orig, iris_close_orig, iris_error_orig, iris_drop_orig, iris_render_orig;
+static uint64_t iris_renders[4];
+static double iris_first_pts[4] = { -1, -1, -1, -1 }, iris_last_pts[4];
+
+static int
+iris_enqueue(id self, SEL sel, id request)
+{
+	int r = ((int (*)(id, SEL, id))iris_enqueue_orig)(self, sel, request);
+	say("redwood: live photo: request queued -> %d (%s)\n", r, request ? object_getClassName(request) : "nil");
+	return r;
+}
+
+static void
+iris_render(id self, SEL sel, CMSampleBufferRef sb, id input)
+{
+	CMFormatDescriptionRef fd = sb ? CMSampleBufferGetFormatDescription(sb) : NULL;
+	FourCharCode t = fd ? CMFormatDescriptionGetMediaType(fd) : 0;
+	int k = t == kCMMediaType_Video ? 0 : t == kCMMediaType_Audio ? 1 : t == kCMMediaType_Metadata ? 2 : 3;
+	double pts = sb ? CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb)) : -1;
+
+	if (iris_first_pts[k] < 0) {
+		iris_first_pts[k] = pts;
+	}
+	iris_last_pts[k] = pts;
+	iris_renders[k]++;
+	((void (*)(id, SEL, CMSampleBufferRef, id))iris_render_orig)(self, sel, sb, input);
+}
+
+static int
+iris_open(id self, SEL sel, id request)
+{
+	int r = ((int (*)(id, SEL, id))iris_open_orig)(self, sel, request);
+	CMTime begin = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
+	CMTime buffering = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("bufferingTime"));
+
+	say("redwood: live photo: valve opened -> %d; begin %.3f, buffering %.3f; staged video %llu (%.3f to %.3f), audio %llu "
+	    "(%.3f to %.3f), metadata %llu\n", r, CMTIME_IS_VALID(begin) ? CMTimeGetSeconds(begin) : -1.0,
+	    CMTIME_IS_VALID(buffering) ? CMTimeGetSeconds(buffering) : -1.0, iris_renders[0], iris_first_pts[0], iris_last_pts[0],
+	    iris_renders[1], iris_first_pts[1], iris_last_pts[1], iris_renders[2]);
+	return r;
+}
+
+static void
+iris_close(id self, SEL sel)
+{
+	say("redwood: live photo: valve closed\n");
+	((void (*)(id, SEL))iris_close_orig)(self, sel);
+}
+
+static void
+iris_error(id self, SEL sel, id error, id input)
+{
+	id d = error ? ((id (*)(id, SEL))objc_msgSend)(error, sel_registerName("description")) : nil;
+	say("redwood: live photo: node error %s\n", d ? ((const char *(*)(id, SEL))objc_msgSend)(d, sel_registerName("UTF8String")) : "?");
+	((void (*)(id, SEL, id, id))iris_error_orig)(self, sel, error, input);
+}
+
+static void
+iris_drop(id self, SEL sel, id sample, id input)
+{
+	static int n;
+	if (n++ % 30 == 0) {
+		say("redwood: live photo: dropped sample (%d)\n", n);
+	}
+	((void (*)(id, SEL, id, id))iris_drop_orig)(self, sel, sample, input);
+}
+
+static void
+hook_one(const char *cls, const char *sel, IMP repl, IMP *orig)
+{
+	Class c = objc_getClass(cls);
+	Method m = c ? class_getInstanceMethod(c, sel_registerName(sel)) : NULL;
+
+	if (m != NULL) {
+		IMP before = method_getImplementation(m);
+		IMP own = class_replaceMethod(c, sel_registerName(sel), repl, method_getTypeEncoding(m));
+		*orig = own ? own : before;
+	}
+}
+
+static void
+trace_live_photo(void)
+{
+	hook_one("BWIrisStagingNode", "enqueueIrisRequest:", (IMP)iris_enqueue, &iris_enqueue_orig);
+	hook_one("BWIrisStagingNode", "renderSampleBuffer:forInput:", (IMP)iris_render, &iris_render_orig);
+	hook_one("BWIrisStagingNode", "openValveWithIrisRequest:", (IMP)iris_open, &iris_open_orig);
+	hook_one("BWIrisStagingNode", "closeValve", (IMP)iris_close, &iris_close_orig);
+	hook_one("BWIrisStagingNode", "handleNodeError:forInput:", (IMP)iris_error, &iris_error_orig);
+	hook_one("BWIrisStagingNode", "handleDroppedSample:forInput:", (IMP)iris_drop, &iris_drop_orig);
+}
+
 static void
 trace_graph_stop(void)
 {
@@ -918,6 +1011,7 @@ trace_graph_stop(void)
 	done = true;
 	finish_audio_stop();
 	trace_movie_sink();
+	trace_live_photo();
 	Method m = class_getInstanceMethod(out, sel_registerName("markEndOfLiveOutput"));
 	if (m != NULL) {
 		original_mark_end = method_setImplementation(m, (IMP)mark_end_trace);

@@ -379,6 +379,8 @@ format(int sensor_width, int sensor_height, int max_fps, bool binned, double fov
 	put(f, "SensorWidth", number_i(sensor_width));
 	put(f, "SensorHeight", number_i(sensor_height));
 	put(f, "ISOBase", number_f(32));
+	/* Live Photo: the movie around the photograph (BWIrisStagingNode) is only made for a format that says so */
+	put(f, "IrisSupported", CFRetain(kCFBooleanTrue));
 	put(f, "DefaultAEMaxGain", number_f(64));
 
 	/*
