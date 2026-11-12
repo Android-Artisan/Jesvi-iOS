@@ -4,6 +4,21 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
+- RedwoodIsland tweak (`userland/src/island_tweak.m`, SpringBoard): pill top gap 5 pt instead of Apple's 11.33,
+  so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
+  Installed with `userland/island-install.sh`. Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
+
+## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
+- iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the
+  iPhone 14 Pro subtype (`artwork-device-subtype` 2556) and, as a 14 Pro's tree does, `/buttons home-button-type` 2.
+  Without the second, BaseBoard counts only subtype 2436 as buttonless and iOS acts like a home-button iPhone.
+  `island=` **1** (in x1slte.cmdline). Commits 1b25aa4, 7f188ae.
+- Tested: MobileGestalt ArtworkDeviceSubType 2556, HomeButtonType 2; pill shown, home-bar swipe and touch normal.
+- Switching it: just the flag (`island=1` on, leave it out for the iPhone X notch). `init` removes MobileGestalt's
+  cache when the flag changed since the last boot, so iOS rebuilds its answers (needs the next root image build).
+  Doc: docs/x1slte-dynamic-island.md.
+
 ## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
 - Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
   times on every buffer and zeroed 1.7 GB per buffer, so no sound reached the movie writer and every recording hung

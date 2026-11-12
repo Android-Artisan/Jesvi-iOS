@@ -1061,6 +1061,35 @@ mount_data_volume(void)
 	return 1;
 }
 
+/*
+ * island=1 (xnuloader/loader.c) changes what the device tree says about the screen and the home button, and
+ * MobileGestalt keeps its answers in a cache it does not rebuild when the tree changes: switched one way or
+ * the other, iOS would go on with the old answers (a 14 Pro with a home button, or no island). So when the
+ * flag differs from the last boot's, the cache goes, and MobileGestalt makes a new one from the tree.
+ */
+#define MG_CACHE "/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist"
+#define ISLAND_MARK "/private/var/db/redwood-island"
+
+static void
+island_cache_sync(void)
+{
+	const char *arg = boot_arg("island");
+	char now = arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', last[4];
+	int fd;
+
+	if (read_whole(ISLAND_MARK, last, sizeof(last)) == 1 && last[0] == now) {
+		return;
+	}
+	if (unlink(MG_CACHE) == 0) {
+		printf("  island=%c (changed): MobileGestalt's cache removed, rebuilt from the device tree\n", now);
+	}
+	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		write(fd, &now, 1);
+		close(fd);
+	}
+}
+
 static void
 mount_writable(void)
 {
@@ -1079,6 +1108,9 @@ mount_writable(void)
 			printf("  mount: %s\n", strerror(errno));
 		}
 		check(ok, "mount a memory filesystem on /private/var");
+	}
+	if (ok) {
+		island_cache_sync();
 	}
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
