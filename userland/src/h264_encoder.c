@@ -21,6 +21,7 @@
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
 #include <dlfcn.h>
+#include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -486,7 +487,24 @@ encode_frame(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRef pb, 
 {
 	struct encoder *e = enc_of(o);
 	bool emitted = false;
+	uint64_t t0 = mach_absolute_time();
 	OSStatus st = encode_frame_inner(o, token, pb, pts, duration, options, info_out, &emitted);
+	/* the recorder's pace: how often EncodeFrame comes, and how long it takes (every 30 calls) */
+	static uint64_t calls, busy, first;
+	uint64_t t1 = mach_absolute_time();
+
+	if (calls == 0 || first == 0) {
+		first = t0;
+	}
+	calls++;
+	busy += t1 - t0;
+	if (calls % 30 == 0) {
+		say("EncodeFrame: %llu calls (%llu frames out), %.1f calls a second, %.1f ms each, pts %.3f s",
+		    calls, e->frames, (double)30 * 24000000.0 / (double)(t1 - first), (double)busy / 24000.0 / 30,
+		    pts && pts->timescale ? (double)pts->value / pts->timescale : -1.0);
+		busy = 0;
+		first = t1;
+	}
 
 	if (!emitted) {
 		static int told;

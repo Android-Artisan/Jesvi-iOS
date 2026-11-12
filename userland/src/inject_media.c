@@ -37,6 +37,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
+#include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -47,6 +48,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -266,6 +268,8 @@ video_stabilization_type(id self, SEL selector)
  * path: AVAudioRecorder and Voice Memos record through it, and nothing here touches it.)
  */
 #define ERROR_NO_SUCH_THING     1852797029      /* 'nope' */
+static void audio_watch_start(id o);
+extern void objc_release(id object);
 
 static IMP original_audio_source_start;
 
@@ -275,6 +279,27 @@ audio_source_start(id self, SEL selector, id *error)
 	BOOL started = ((BOOL (*)(id, SEL, id *))original_audio_source_start)(self, selector, error);
 	id made = error != NULL ? *error : NULL;
 	static bool said;
+
+	say("redwood: audio source: start -> %d (error %ld)\n", (int)started,
+	    made != NULL ? ((long (*)(id, SEL))objc_msgSend)(made, sel_registerName("code")) : 0L);
+	/*
+	 * The node fills a gap in the microphone's times with silence when the I/O's host time jumps past the one
+	 * it expected by more than _ioprocTimeStampDeltaLimit. Here the times of the HAL plug-in's device (sample
+	 * time from its start, host time the system's) made it see a gap of 430 million frames on every buffer: it
+	 * zeroed 1.7 GB for each, never passed one sound buffer on, the recording's movie writer waited for sound
+	 * for ever, no video was ever finished (2026-11-12). No gap is filled: the limit is out of reach.
+	 */
+	{
+		Ivar v = class_getInstanceVariable(object_getClass(self), "_ioprocTimeStampDeltaLimit");
+
+		if (v != NULL) {
+			CMTime *limit = (CMTime *)((uint8_t *)self + ivar_getOffset(v));
+
+			say("redwood: audio source: gap limit %.3f s -> none\n", CMTIME_IS_VALID(*limit) ? CMTimeGetSeconds(*limit) : -1.0);
+			*limit = CMTimeMake(INT64_MAX / 2, 1);
+		}
+	}
+	audio_watch_start(self);
 
 	if (started || made == NULL || ((long (*)(id, SEL))objc_msgSend)(made, sel_registerName("code")) != ERROR_NO_SUCH_THING) {
 		return started;
@@ -386,6 +411,7 @@ time_photo_encoder(id output, CMSampleBufferRef sample_buffer)
  * preview black for a second each time. A NULL is not passed on.
  */
 static IMP original_emit_sample_buffer;
+static const char *node_of(id port);
 
 static void
 emit_sample_buffer(id self, SEL selector, CMSampleBufferRef sample_buffer)
@@ -400,6 +426,21 @@ emit_sample_buffer(id self, SEL selector, CMSampleBufferRef sample_buffer)
 		return;
 	}
 	time_photo_encoder(self, sample_buffer);
+	{
+		static uint64_t audio_emits;
+		id node = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("node"));
+
+		if (node != nil && strcmp(object_getClassName(node), "BWAudioSourceNode") == 0 && audio_emits++ % 100 == 0) {
+			CMTime t = CMSampleBufferGetPresentationTimeStamp(sample_buffer);
+			id conn = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("connection"));
+			id fmt = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("liveFormat"));
+			id to = conn != nil ? ((id (*)(id, SEL))objc_msgSend)(conn, sel_registerName("input")) : nil;
+
+			say("redwood: audio source: emit %llu: pts %.3f, %ld samples, live format %s, to %s\n", audio_emits - 1,
+			    CMTimeGetSeconds(t), (long)CMSampleBufferGetNumSamples(sample_buffer), fmt != nil ? "yes" : "NO",
+			    to != nil ? node_of(to) : "nothing");
+		}
+	}
 	((void (*)(id, SEL, CMSampleBufferRef))original_emit_sample_buffer)(self, selector, sample_buffer);
 }
 
@@ -604,12 +645,321 @@ keep_metal_from_the_capture_stack(void)
 	    ask(array, sel_registerName("count")), create() != NULL ? "A DEVICE STILL" : "nil");
 }
 
+
+/* ---- tracing a graph's stop: which node is told its input's data ended (2026-11-12) ----------------
+ * BWGraph's stop waits 10 s for every sink node to be idle, idle meaning each of its inputs was told
+ * "end of data" (didReachEndOfDataForInput:), which comes down the graph from the sources' outputs
+ * (-[BWNodeOutput markEndOfLiveOutput]). A video recording's stop never got there ("Timed out waiting
+ * for the capture graph to stop"). Every class that has its own didReachEndOfDataForInput: is traced,
+ * and every markEndOfLiveOutput: the node that is missing from the log is the one that waits.
+ */
+#define EOD_MAX 96
+static Class eod_class[EOD_MAX];
+static IMP eod_original[EOD_MAX];
+static int eod_count;
+static IMP original_mark_end;
+static __thread Class eod_at;           /* the class whose implementation runs now (for [super ...]) */
+static __thread id eod_self;
+
+static const char *
+node_of(id port)
+{
+	id node = port != nil ? ((id (*)(id, SEL))objc_msgSend)(port, sel_registerName("node")) : nil;
+
+	return node != nil ? object_getClassName(node) : "-";
+}
+
+static void
+eod_trace(id self, SEL selector, id input)
+{
+	Class c = (eod_self == self && eod_at != Nil) ? class_getSuperclass(eod_at) : object_getClass(self);
+	Class saved_at = eod_at;
+	id saved_self = eod_self, connection, from;
+	int i = -1;
+
+	for (; c != Nil && i < 0; c = i < 0 ? class_getSuperclass(c) : c) {
+		for (int k = 0; k < eod_count; k++) {
+			if (eod_class[k] == c) {
+				i = k;
+				break;
+			}
+		}
+		if (i >= 0) {
+			break;
+		}
+	}
+	if (i < 0) {
+		return;
+	}
+	if (saved_self != self) {
+		connection = input != nil ? ((id (*)(id, SEL))objc_msgSend)(input, sel_registerName("connection")) : nil;
+		from = connection != nil ? ((id (*)(id, SEL))objc_msgSend)(connection, sel_registerName("output")) : nil;
+		say("redwood: stop: end of data to %s %p (from %s)\n", object_getClassName(self), (void *)self, node_of(from));
+	}
+	eod_at = eod_class[i];
+	eod_self = self;
+	((void (*)(id, SEL, id))eod_original[i])(self, selector, input);
+	eod_at = saved_at;
+	eod_self = saved_self;
+}
+
+static id marked[64];
+static unsigned marked_next;
+
+static bool
+was_marked(id output)
+{
+	for (unsigned i = 0; i < 64; i++) {
+		if (marked[i] == output) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void
+mark_end_trace(id self, SEL selector)
+{
+	say("redwood: stop: %s %p marks its output's end\n", node_of(self), (void *)self);
+	marked[marked_next++ % 64] = self;
+	((void (*)(id, SEL))original_mark_end)(self, selector);
+}
+
+
+
+/* The audio source's own counters, once a second while it runs: does the audio unit call it at all? */
+static id audio_watched;
+static dispatch_source_t audio_timer;
+
+static long long
+ivar_ll(id o, const char *name, int size)
+{
+	Ivar v = class_getInstanceVariable(object_getClass(o), name);
+
+	if (v == NULL) {
+		return -999;
+	}
+	const char *base = (const char *)o + ivar_getOffset(v);
+	return size == 1 ? *(const uint8_t *)base : size == 4 ? *(const int32_t *)base : *(const int64_t *)base;
+}
+
+static void
+audio_watch_tick(void *context)
+{
+	id o = context;
+
+	say("redwood: audio source: renders %lld, silence frames %lld, started %lld, interrupted %lld, eod sent %lld, "
+	    "silence filling off %lld, unit %#llx (subtype %#llx), device %lld, pull %lld\n",
+	    ivar_ll(o, "_auRenderCount", 8), ivar_ll(o, "_silenceFramesGeneratedSinceLastAURenderProc", 8),
+	    ivar_ll(o, "_streamStarted", 1), ivar_ll(o, "_streamInterrupted", 1), ivar_ll(o, "_endOfDataMarkerSent", 1),
+	    ivar_ll(o, "_silenceFramesFillingDisabled", 1), ivar_ll(o, "_audioUnit", 8), ivar_ll(o, "_auSubType", 4),
+	    ivar_ll(o, "_audioDeviceID", 4), ivar_ll(o, "_pullDuration", 4));
+	{
+		CMSimpleQueueRef q[3] = { (CMSimpleQueueRef)ivar_ll(o, "_renderProcErrorQueue", 8),
+			(CMSimpleQueueRef)ivar_ll(o, "_activeBuffersQueue", 8), (CMSimpleQueueRef)ivar_ll(o, "_inactiveBuffersQueue", 8) };
+		int32_t n[3];
+
+		for (int i = 0; i < 3; i++) {
+			n[i] = (uintptr_t)q[i] > 0x1000 ? CMSimpleQueueGetCount(q[i]) : -1;
+		}
+		const void *head = n[0] > 0 ? CMSimpleQueueGetHead(q[0]) : NULL;
+		say("redwood: audio source: queues: errors %d (head %ld), active %d, inactive %d\n", n[0], (long)(intptr_t)head, n[1], n[2]);
+		const uint8_t *b = n[1] > 0 ? CMSimpleQueueGetHead(q[1]) : NULL;
+		if (b != NULL) {
+			const CMTime *pts = (const CMTime *)(b + 0x18);
+			say("redwood: audio source: oldest buffer: frames %u, gap %u, capacity %u, pts %lld/%d; next expected host %llu, "
+			    "prev frames %lld\n", *(const uint32_t *)(b + 0x14), *(const uint32_t *)(b + 0x38), *(const uint32_t *)(b + 0x10),
+			    pts->value, pts->timescale, (unsigned long long)ivar_ll(o, "_nextExpectedHostTime", 8), ivar_ll(o, "_prevNumFrames", 4));
+		}
+	}
+}
+
+static void
+audio_watch_stop(void)
+{
+	if (audio_timer != NULL) {
+		dispatch_source_cancel(audio_timer);
+		audio_timer = NULL;
+	}
+	if (audio_watched != nil) {
+		audio_watch_tick(audio_watched);
+		objc_release(audio_watched);
+		audio_watched = nil;
+	}
+}
+
+static void
+audio_watch_start(id o)
+{
+	audio_watch_stop();
+	audio_watched = objc_retain(o);
+	audio_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+	dispatch_set_context(audio_timer, o);
+	dispatch_source_set_event_handler_f(audio_timer, audio_watch_tick);
+	dispatch_source_set_timer(audio_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 10);
+	dispatch_resume(audio_timer);
+}
+
+/*
+ * The audio source's stop, finished: -[BWAudioSourceNode stop:] stops the microphone but never marks its
+ * outputs' end (the trace above: every other source did, it never), so every node behind it -- Live Photo's
+ * BWIrisStagingNode, a recording's movie file sink -- waited for its sound to end, BWGraph's stop waited
+ * 10 s for them and mediaserverd died of "Timed out waiting for the capture graph to stop": no video was
+ * ever finished (2026-11-12). Half a second after the stop, an output still live is marked here.
+ */
+static IMP original_audio_stop;
+
+extern id objc_retain(id object);
+
+static void
+audio_stop_finish(void *context)
+{
+	id self = context;
+	id outputs = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("outputs"));
+	unsigned long n = outputs != nil ? ((unsigned long (*)(id, SEL))objc_msgSend)(outputs, sel_registerName("count")) : 0;
+
+	for (unsigned long i = 0; i < n; i++) {
+		id output = ((id (*)(id, SEL, unsigned long))objc_msgSend)(outputs, sel_registerName("objectAtIndex:"), i);
+
+		if (!was_marked(output)) {
+			say("redwood: stop: the audio source's output %lu was not ended: ended here\n", i);
+			((void (*)(id, SEL))objc_msgSend)(output, sel_registerName("markEndOfLiveOutput"));
+		}
+	}
+	objc_release(self);
+}
+
+static BOOL
+audio_source_stop(id self, SEL selector, id *error)
+{
+	BOOL r = ((BOOL (*)(id, SEL, id *))original_audio_stop)(self, selector, error);
+
+	say("redwood: stop: the audio source stopped (%d)\n", (int)r);
+	audio_watch_stop();
+	objc_retain(self);
+	audio_stop_finish(self);        /* at once: half a second later the graph could be gone (SIGSEGV, 2026-11-12) */
+	return r;
+}
+
+static void
+finish_audio_stop(void)
+{
+	Class c = objc_getClass("BWAudioSourceNode");
+	SEL sel = sel_registerName("stop:");
+	Method m = c != Nil ? class_getInstanceMethod(c, sel) : NULL;
+	IMP before;
+
+	if (m == NULL) {
+		say("redwood: mediaserverd: no -[BWAudioSourceNode stop:]\n");
+		return;
+	}
+	before = method_getImplementation(m);
+	IMP own = class_replaceMethod(c, sel, (IMP)audio_source_stop, method_getTypeEncoding(m));
+	original_audio_stop = own != NULL ? own : before;
+	say("redwood: mediaserverd: -[BWAudioSourceNode stop:] finished here (its outputs' end)\n");
+}
+
+
+/*
+ * What reaches a recording's movie file sink, per kind of input (sound, picture, metadata): the first buffers,
+ * then every 30th, with their times. The movie's writer interleaves them by time; one kind missing or with times
+ * far from the others' leaves it waiting with the rest unwritten (2026-11-12: the file stopped at 2.6 MB).
+ */
+static IMP original_movie_render;
+
+static void
+movie_render(id self, SEL selector, CMSampleBufferRef sb, id input)
+{
+	static uint64_t count[4];
+	CMFormatDescriptionRef fd = sb != NULL ? CMSampleBufferGetFormatDescription(sb) : NULL;
+	FourCharCode type = fd != NULL ? CMFormatDescriptionGetMediaType(fd) : 0;
+	int k = type == kCMMediaType_Audio ? 0 : type == kCMMediaType_Video ? 1 : type == kCMMediaType_Metadata ? 2 : 3;
+
+	if (count[k] < 3 || count[k] % 30 == 0) {
+		CMTime t = sb != NULL ? CMSampleBufferGetPresentationTimeStamp(sb) : kCMTimeInvalid;
+		CMTime d = sb != NULL ? CMSampleBufferGetDuration(sb) : kCMTimeInvalid;
+
+		say("redwood: movie: %c%c%c%c buffer %llu: pts %.3f s (dur %.4f), %ld samples, input %p\n", type >> 24, type >> 16 & 255,
+		    type >> 8 & 255, type & 255, count[k], CMTIME_IS_VALID(t) ? CMTimeGetSeconds(t) : -1.0,
+		    CMTIME_IS_VALID(d) ? CMTimeGetSeconds(d) : -1.0, sb != NULL ? (long)CMSampleBufferGetNumSamples(sb) : -1L, (void *)input);
+	}
+	count[k]++;
+	((void (*)(id, SEL, CMSampleBufferRef, id))original_movie_render)(self, selector, sb, input);
+}
+
+static void
+trace_movie_sink(void)
+{
+	Class c = objc_getClass("BWQuickTimeMovieFileSinkNode");
+	SEL sel = sel_registerName("renderSampleBuffer:forInput:");
+	Method m = c != Nil ? class_getInstanceMethod(c, sel) : NULL;
+
+	if (m == NULL) {
+		return;
+	}
+	IMP before = method_getImplementation(m);
+	IMP own = class_replaceMethod(c, sel, (IMP)movie_render, method_getTypeEncoding(m));
+	original_movie_render = own != NULL ? own : before;
+	say("redwood: mediaserverd: the movie file sink's buffers are traced\n");
+}
+
+static void
+trace_graph_stop(void)
+{
+	static bool done;
+	unsigned int n = 0;
+	Class *all;
+	SEL eod = sel_registerName("didReachEndOfDataForInput:");
+	Class out = objc_getClass("BWNodeOutput"), node = objc_getClass("BWNode");
+
+	if (done || out == Nil || node == Nil) {
+		return;
+	}
+	done = true;
+	finish_audio_stop();
+	trace_movie_sink();
+	Method m = class_getInstanceMethod(out, sel_registerName("markEndOfLiveOutput"));
+	if (m != NULL) {
+		original_mark_end = method_setImplementation(m, (IMP)mark_end_trace);
+	}
+	all = objc_copyClassList(&n);
+	for (unsigned int i = 0; all != NULL && i < n && eod_count < EOD_MAX; i++) {
+		unsigned int mc = 0;
+		Method *ms;
+		bool is_node = false;
+
+		for (Class c = all[i]; c != Nil; c = class_getSuperclass(c)) {
+			if (c == node) {
+				is_node = true;
+				break;
+			}
+		}
+		if (!is_node || (ms = class_copyMethodList(all[i], &mc)) == NULL) {
+			continue;
+		}
+		for (unsigned int k = 0; k < mc; k++) {
+			if (method_getName(ms[k]) == eod) {
+				eod_class[eod_count] = all[i];
+				eod_original[eod_count] = method_setImplementation(ms[k], (IMP)eod_trace);
+				eod_count++;
+			}
+		}
+		free(ms);
+	}
+	free(all);
+	say("redwood: mediaserverd: a graph's stop is traced (%d node classes, markEndOfLiveOutput %s)\n", eod_count,
+	    original_mark_end ? "too" : "not found");
+}
+
 static void
 image_added(__unused const struct mach_header *header, __unused intptr_t image_slide)
 {
 	/* before anything of the image that was just added runs, and this is the only place in this
 	 * library that is told about a new image at all */
 	keep_metal_from_the_capture_stack();
+	if (objc_getClass("BWGraph") != Nil && objc_getClass("BWQuickTimeMovieFileSinkNode") != Nil) {
+		trace_graph_stop();
+	}
 	for (size_t i = 0; i < sizeof(replacements) / sizeof(replacements[0]); i++) {
 		struct replacement *r = &replacements[i];
 		Class cls;
@@ -646,6 +996,31 @@ redwood_media_init(void)
 
 	if (name == NULL || strcmp(name, "mediaserverd") != 0) {
 		return;
+	}
+	/*
+	 * A development copy: /var/redwood/libredwood-media-dev.dylib, when it is there, is loaded instead of this
+	 * one (which then does nothing), so the camera's code changes with `killall mediaserverd' and no reboot.
+	 * (Made with -install_name /var/redwood/libredwood-media-dev.dylib and ldid -S; deleted, this one is back.)
+	 */
+	{
+		static const char dev[] = "/var/redwood/libredwood-media-dev.dylib";
+		Dl_info me;
+
+		/* (the development copy itself is built with -DREDWOOD_DEV: dyld names it /private/var/..., 2026-11-12) */
+#ifndef REDWOOD_DEV
+		if (dladdr((const void *)redwood_media_init, &me) != 0 && me.dli_fname != NULL && strstr(me.dli_fname, dev) == NULL &&
+		    access(dev, R_OK) == 0) {
+#else
+		(void)me;
+		if (false) {
+#endif
+			void *h = dlopen(dev, RTLD_NOW | RTLD_GLOBAL);
+
+			say("redwood: mediaserverd: the development copy %s: %s\n", dev, h != NULL ? "loaded instead" : dlerror());
+			if (h != NULL) {
+				return;
+			}
+		}
 	}
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
 	/* The S20 has no AVE (the iPhone's video encoder): our software H.264 encoder (src/h264_encoder.c) is

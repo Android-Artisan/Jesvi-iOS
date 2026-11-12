@@ -435,7 +435,8 @@ static const struct camera {
 	int             formats[2][3];  /* sensor width, height, frames a second of "Photo" and of a video format */
 } cameras[2] = {
 	{ 1, "Back Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:0", false, 4.0, 1.8, 1.22, 65.0,
-	  { { 4032, 3024, 30 }, { 4224, 2376, 60 } } },        /* "Photo", "Video-60" */
+	  { { 4032, 3024, 30 }, { 1920, 1080, 30 } } },        /* "Photo", "Video-30": 1080p, as the front (4224x2376 at 60 was
+	                                                         * never picked for video: no recording began, 2026-11-12) */
 	/* (turned: true on the Galaxy S20 too: its front SAK3J1's frames came upside down and mirrored with false, 2026-11-11;
 	 * kern.redwood.camera_turn bit 0 flips it once more, live) */
 	{ 2, "Front Camera", "com.apple.avfoundation.avcapturedevice.built-in_video:1", true, 2.87, 2.2, 1.0, 70.0,
@@ -980,7 +981,6 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	CVPixelBufferRef pb = output_buffer(out);
 	uint32_t pf, width, height;
 
-	(void)s;
 	if (pb == NULL) {
 		return;
 	}
@@ -1001,7 +1001,27 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	struct render_job job = { isp, f, raw, pb, pf, width, height, 8, strcmp(out->name, "StillImage") == 0 && pf != PF_BGRA };
 	uint64_t began = mach_absolute_time();
 
-	dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
+	/*
+	 * The Back Camera is black for now (2026-11-12, the user: only the front is being tested, and both showing the
+	 * same sensor made it unclear which is which). `touch /var/root/redwood-rear-live' gives it pictures again.
+	 */
+	if (s->camera->sensor == 1 && access("/var/root/redwood-rear-live", F_OK) != 0) {
+		if (pf == PF_BGRA) {
+			for (uint32_t r = 0; r < height; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddress(pb) + r * CVPixelBufferGetBytesPerRow(pb), 0, (size_t)width * 4);
+			}
+		} else {
+			for (uint32_t r = 0; r < height; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 0) + r * CVPixelBufferGetBytesPerRowOfPlane(pb, 0),
+				    pf == PF_420V ? 16 : 0, width);
+			}
+			for (uint32_t r = 0; r < height / 2; r++) {
+				memset((uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, 1) + r * CVPixelBufferGetBytesPerRowOfPlane(pb, 1), 128, width);
+			}
+		}
+	} else {
+		dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
+	}
 	if (job.still) {
 		static mach_timebase_info_data_t tb;
 
@@ -1486,6 +1506,22 @@ worker_body(void *context)
 		pthread_mutex_unlock(&s->lock);
 		if (metadata != NULL) {
 			CFRelease(metadata);
+		}
+		if (s->graph_running && s->frames % 30 == 0) {
+			/* every second the graph has the frames: what each output took (given / no buffer in its pool) */
+			char line[400];
+			size_t at = 0;
+
+			for (int i = 0; i < OUTPUTS && at < sizeof(line) - 80; i++) {
+				struct output *out = &s->out[i];
+
+				if (out->handler != NULL) {
+					at += (size_t)snprintf(line + at, sizeof(line) - at, " %s %llu/%llu%s", out->name,
+					    (unsigned long long)out->delivered, (unsigned long long)out->refused, out->enabled ? "" : " (off)");
+				}
+			}
+			line[at] = 0;
+			say("frame %llu (format %d): given/refused:%s", s->frames, s->format_index, line);
 		}
 		if (s->frames == 1 || s->frames % 300 == 0) {
 			say("frame %llu: exposure %.1f ms, gain %.1fx, digital %.2fx, green %.0f above black; white balance R %.2f "

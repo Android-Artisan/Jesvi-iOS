@@ -364,6 +364,15 @@ extern bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
 extern void redwood_camera_dma_put(void);
 extern void *redwood_camera_dma_cached(void);
 extern int redwood_camera_cached_enable;
+extern void ustacks_now(const char *name);
+/* where every thread of mediaserverd is, into the kernel's log (osfmk/arm64/user_exception_trace.c) */
+static void
+cam_ustacks_media_cmd(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+{
+	ustacks_now("mediaserverd");
+	(void)snprintf(out, cap, "ustacks: mediaserverd's threads go to the kernel log\n");
+}
+
 extern int redwood_camera_s20_turn;
 static void
 cam_s20_turn_cmd(const uint64_t *v, unsigned n, char *out, size_t cap)
@@ -2300,6 +2309,7 @@ redwood_exynos_camera_s20_init(void)
 	redwood_dbgport_add("cam.s20.csis.rails", ": read-only S2MPS22 LDO5S/LDO6S state required by Exynos990 CSIS PHY", cam_s20_csis_rails);
 	redwood_dbgport_add("cam.s20.csis.dphy.config", ": bounded Exynos990 PHY 0x0503.0000 setup/readback/restore after rail check; no sensor streaming", cam_s20_csis_dphy_config_probe);
 	redwood_dbgport_add("cam.s20.front.mode", ": apply Samsung SAK3J1 global and 1824x1368/30 non-PDAF setfiles, verify registers, power down", cam_s20_front_set_mode);
+	redwood_dbgport_add("ustacks.media", ": every mediaserverd thread's stack into the kernel log", cam_ustacks_media_cmd);
 	redwood_dbgport_add("cam.turn", " [N]: front camera orientation for libredwood-media (bit 0 turn 180, bit 1 mirror), from the next camera start", cam_s20_turn_cmd);
 	redwood_dbgport_add("cam.s20.cached", " [0|1]: read stream frames through a cached mapping (faster); off at every boot", cam_s20_cached_cmd);
 	redwood_dbgport_add("cam.s20.front.stream", ": bounded SAK3J1 to CSIS1 frame-counter test, 500 ms, no DMA; restores sensor/receiver state", cam_s20_front_stream_probe);
