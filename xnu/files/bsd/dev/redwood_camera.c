@@ -4166,6 +4166,17 @@ ios_select(unsigned index, uint32_t mode_n)
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
+	/*
+	 * The S20's SAK3J1 (one built-in table, two modes): REDWOOD_CAMERA_SENSOR's mode chooses between them, from
+	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
+	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
+	 */
+	if (s20_real && fake && mode_n <= 1) {
+		s20_full = mode_n == 0;
+		redwood_camera_s20_set_full(s20_full);
+		say("camera: the S20's front sensor in its %s mode from the next session\n", s20_full ? "full 3648x2736" : "binned 1824x1368");
+		mode_n = 0;
+	}
 	select_sensor(index);
 	if (!fake) {
 		find_pins();

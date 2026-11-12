@@ -464,6 +464,8 @@ struct stream {
 	bool            af_now;         /* a focus asked for (AutoFocusNow and the like): a search at the next frame */
 	bool            af_locked;      /* LockAFNow: no search but one asked for */
 	float           af_window[4];   /* AFWindowParams: where to focus, as fractions of the frame (x0, y0, x1, y1) */
+	float           ev_bias;        /* ExposureBias, in stops (Camera.app's sun slider) */
+	bool            ae_locked;      /* LockAENow until UnlockAENow */
 	struct output   out[OUTPUTS];
 	pthread_mutex_t lock;
 	pthread_t       worker;
@@ -804,6 +806,27 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		}
 		return 0;
 	}
+	if (key_is(key, "ExposureBias")) {
+		/* a number, or { ExposureBiasValue, ExposureBiasCommandID }: 1/256 stop steps around 256? said, to learn */
+		double v = 0;
+		CFTypeRef n = value;
+
+		if (value != NULL && CFGetTypeID(value) == CFDictionaryGetTypeID()) {
+			n = CFDictionaryGetValue(value, CFSTR("ExposureBiasValue"));
+		}
+		if (n != NULL && CFGetTypeID(n) == CFNumberGetTypeID()) {
+			CFNumberGetValue(n, kCFNumberDoubleType, &v);
+			s->ev_bias = (float)((v - 256) / 256.0);
+			s->ev_bias = s->ev_bias < -3 ? -3 : s->ev_bias > 3 ? 3 : s->ev_bias;
+		}
+		say_value("stream: exposure:", key, value);
+		return 0;
+	}
+	if (key_is(key, "LockAENow") || key_is(key, "UnlockAENow")) {
+		s->ae_locked = key_is(key, "LockAENow");
+		say_value("stream: exposure:", key, value);
+		return 0;
+	}
 	say_once("stream: set (not used)", key, value);
 	return 0;
 }
@@ -1003,7 +1026,13 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	}
 	CVPixelBufferLockBaseAddress(pb, 0);
 
-	struct render_job job = { isp, f, raw, pb, pf, width, height, 48, strcmp(out->name, "StillImage") == 0 && pf != PF_BGRA };
+	/* (a binned frame's pixels are each worth one of the picture's: demosaiced, not taken a 2x2 cell a pixel) */
+	static int demosaic_binned = -1;
+	if (demosaic_binned < 0) {
+		demosaic_binned = access(rw_path("redwood-binned-demosaic", (char[160]){0}, 160), F_OK) == 0;
+	}
+	struct render_job job = { isp, f, raw, pb, pf, width, height, 48,
+		(strcmp(out->name, "StillImage") == 0 || (f->width < 2000 && demosaic_binned)) && pf != PF_BGRA };
 	uint64_t began = mach_absolute_time();
 
 	/*
@@ -1027,10 +1056,12 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	} else {
 		dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
 	}
-	if (!job.still) {
+	bool photograph = strcmp(out->name, "StillImage") == 0;
+
+	if (!photograph) {
 		s->render_ticks += mach_absolute_time() - began;
 	}
-	if (job.still) {
+	if (photograph) {
 		static mach_timebase_info_data_t tb;
 
 		if (tb.denom == 0) {
@@ -1539,6 +1570,7 @@ tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8
 	}
 }
 
+static int one_sensor = -1;             /* the S20 (kern.redwood.camera_turn there): one sensor for both cameras */
 static void *worker_body(void *context);
 
 /* the worker, and a flag when it is over (stream_stop does not wait for ever for it) */
@@ -1651,7 +1683,7 @@ worker_body(void *context)
 	int next_buffer = 0;
 	struct render_handoff *h = calloc(1, sizeof(*h));
 	pthread_t drawer;
-	bool drawer_up = false;
+	bool drawer_up = false, asked_binned = false;
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
 	float lux = -1, cct = -1;
@@ -1693,7 +1725,6 @@ worker_body(void *context)
 			 * far, so the kernel's sensor is taken as it is -- the switch restarted the sensor (about 0.7 s) at
 			 * every camera start and every flip (2026-11-12). The back camera's pictures are black anyway.
 			 */
-			static int one_sensor = -1;
 			if (one_sensor < 0) {
 				int t;
 				size_t tl = sizeof(t);
@@ -1708,6 +1739,21 @@ worker_body(void *context)
 					say("the kernel's frames are camera %u's: to %u, the %s", head.sensor, s->camera->sensor, s->camera->name);
 					(void)write(device, &c, sizeof(c));
 				}
+				continue;
+			}
+			/*
+			 * The S20: the binned 1824x1368 mode for the stream (a quarter of the full mode's 12 MB a frame: with
+			 * every frame demosaiced on the CPU the phone sat at 95 C, throttled, the preview at 17 frames a
+			 * second; 2026-11-12). redwood-full-stream in the tuning directory keeps the full mode.
+			 */
+			/* (the user, 2026-11-12: binned looked much worse and stuttered: the full mode, unless redwood-binned-stream) */
+			bool want_binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
+			if (one_sensor > 0 && !asked_binned && (head.width > 2000) == want_binned) {
+				struct redwood_camera_command mc = { .command = REDWOOD_CAMERA_SENSOR, .a = head.sensor, .b = want_binned ? 1 : 0 };
+
+				asked_binned = true;
+				say("the %s mode asked for (the frames were %ux%u)", want_binned ? "binned" : "full", head.width, head.height);
+				(void)write(device, &mc, sizeof(mc));
 				continue;
 			}
 			bytes = sizeof(head) + (size_t)head.stride * head.height;
@@ -1786,7 +1832,42 @@ worker_body(void *context)
 				}
 			}
 		}
-		if (isp_ae(&isp, f, &st, &c)) {
+		{
+			/*
+			 * Where Camera.app was tapped (the focus window) counts most for the exposure, as on an iPhone; the
+			 * sun slider (ExposureBias) moves the target. Both through the green mean that AE goes by.
+			 */
+			bool tapped = !(s->af_window[0] == 0.3f && s->af_window[1] == 0.3f && s->af_window[2] == 0.7f &&
+			    s->af_window[3] == 0.7f);
+			uint32_t cw = f->width / 2, chh = f->height / 2, n = 0;
+			double sum = 0;
+
+			if (tapped) {
+				uint32_t x0 = (uint32_t)(s->af_window[0] * cw), x1 = (uint32_t)(s->af_window[2] * cw);
+				uint32_t y0 = (uint32_t)(s->af_window[1] * chh), y1 = (uint32_t)(s->af_window[3] * chh);
+				int r_at = (int)(f->bayer & 3), b_at = 3 - (int)(f->bayer & 3);   /* (as camera_isp.c's cell_places) */
+				for (uint32_t cy = y0; cy < y1 && cy < chh; cy += 6) {
+					for (uint32_t cx = x0; cx < x1 && cx < cw; cx += 6) {
+						const uint8_t *g0 = raw + (size_t)cy * 2 * f->stride + (size_t)(cx >> 1) * 5;
+						unsigned o = (cx & 1) * 2;
+						int v[4] = { (g0[o] << 2) - 64, (g0[o + 1] << 2) - 64, (g0[f->stride + o] << 2) - 64,
+							(g0[f->stride + o + 1] << 2) - 64 };
+
+						for (int j = 0; j < 4; j++) {
+							sum += j != r_at && j != b_at ? (v[j] > 0 ? v[j] : 0) / 2.0 : 0;
+						}
+						n++;
+					}
+				}
+				if (n > 16) {
+					st.mean[1] = 0.75 * (sum / n) + 0.25 * st.mean[1];
+				}
+			}
+			if (s->ev_bias != 0) {
+				st.mean[1] /= exp2f(s->ev_bias);
+			}
+		}
+		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
 		}
 		if (s->af_now) {
@@ -2150,8 +2231,14 @@ stream_create(CFAllocatorRef allocator, const struct camera *camera, CFStringRef
 		s->out[i].name = output_names[i];
 	}
 
-	CFDictionaryRef f[2] = { format(camera->formats[0][0], camera->formats[0][1], camera->formats[0][2], false, camera->fov),
-		format(camera->formats[1][0], camera->formats[1][1], camera->formats[1][2], false, camera->fov) };
+	/*
+	 * The video format first (2026-11-12): with the photo format first, Camera.app's video mode stayed on it and
+	 * recorded its 4:3 1504x1128 scaler output, not 1080p. redwood-photo-first (in the tuning directory) puts it
+	 * back. (format_index is only said, never used: the ISP draws whatever the graph's buffers are.)
+	 */
+	int first = access(rw_path("redwood-photo-first", (char[160]){0}, 160), F_OK) == 0 ? 0 : 1;
+	CFDictionaryRef f[2] = { format(camera->formats[first][0], camera->formats[first][1], camera->formats[first][2], false, camera->fov),
+		format(camera->formats[!first][0], camera->formats[!first][1], camera->formats[!first][2], false, camera->fov) };
 
 	s->formats = CFArrayCreate(NULL, (const void **)f, 2, &kCFTypeArrayCallBacks);
 	s->supported = supported(stream_props, sizeof(stream_props) / sizeof(stream_props[0]));
