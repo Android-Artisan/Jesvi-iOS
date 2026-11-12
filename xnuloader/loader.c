@@ -3703,6 +3703,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
+	/* A machine-readable handoff for the opt-in IPC backend. Recheck actual
+	 * firmware ownership/cache state after all preceding allocations. */
+	report_cellular_memory();
+	if (cellular_memory_ready) {
+		dt_prop_u64(&w, "cellular-memory-version", 1);
+		dt_prop_u64(&w, "cellular-ipc-base", 0xf0000000ULL);
+		dt_prop_u64(&w, "cellular-ipc-size", 0x800000ULL);
+	}
+
 	reserve_wifi_dma();
 	if (wifi_dma_size != 0) {
 		dt_prop_u64(&w, "wifi-dma-base", wifi_dma_base);

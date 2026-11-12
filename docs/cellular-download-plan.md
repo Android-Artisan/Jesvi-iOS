@@ -117,3 +117,34 @@ Source investigation: stock-g980f contains an encrypted972MiB archive left from
 an earlier download; it has not been validated as complete or usable. No cbd/RIL
 binary found in the extracted vendor firmware inventory. Do not treat that
 archive as a recovered working loader or execute guessed legacy S7 commands.
+
+## XNU cache audit and loader handoff — Nov12
+
+Built, host-tested, not installed. New root debug command `cp.memory` requires
+three exact 64-bit `/chosen` values from the loader: memory-version1, IPC base
+F0000000 and size800000. The loader emits these only after rechecking actual
+CP reservation/cache state. The audit checks the kernel physical aperture,
+then translates each of2048 existing direct-map pages via AT S1E1R/PAR_EL1.
+It reports NormalNC44, other cache types, faults, wrong PA and prior generic
+debug aliases. It never reads/writes IPC contents, creates mappings, grants
+DMA access or powers the modem. Missing certificate refuses access.
+
+`ml_io_map_wcomb` is unsuitable for the whole8MiB IPC: it allocates from the
+shared8MiB io_submap with KMA_NOFAIL. Use the existing Wi-Fi driver's approach,
+`ml_io_map_unmappable(..., VM_WIMG_WCOMB)`, which uses kernel_map instead.
+The XNU MAIR entry is44 (Normal outer/inner noncacheable). Before doing so,
+resolve any incompatible existing alias; the audit is evidence, not permission
+to ignore cached aliases. No hardware IPC backend is claimed yet.
+
+Samsung s5100_poweron_pcie grants per-region access with
+exynos_set_dev_stage2_ap("hsi2",0,base,size,ATTR_RW), excluding MSI. Its helper
+uses HVC0xc6000100 and packs `(vid<<16)|instance_index`; own boot DT and Samsung
+DTS identify HSI2 as25. Existing Wi-Fi uses HVC0xc6000101/HSI1 index24/VID1,
+so those arguments must not be copied. No cellular HVC or DMA grant issued.
+
+Validation: isolated kernel relink and loader build pass. All42 Python tests
+and C sanitizer suites pass, including all2048 audit-address cases and cache/
+fault/certificate rejection. Build logs in research-root build/
+cellular-memory-build-final.log/.exit (0), loader log in private out/cellular/
+live/memory-loader-build.txt. Current phone remains on the previous proven
+SPI8/reservation base; this audit awaits a batched notified restart.

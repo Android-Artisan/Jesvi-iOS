@@ -227,6 +227,7 @@ bsd/sys/redwood_apfs_check.h
 bsd/sys/redwood_audio.h
 bsd/sys/redwood_bbi2c.h
 bsd/sys/redwood_camera.h
+bsd/sys/redwood_cp_memory.h
 bsd/sys/redwood_dbgport.h
 bsd/sys/redwood_exynos_spi.h
 bsd/sys/redwood_input.h

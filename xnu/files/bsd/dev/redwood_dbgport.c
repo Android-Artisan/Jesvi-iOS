@@ -19,6 +19,9 @@
 #include <sys/systm.h>
 #include <kern/locks.h>
 #include <sys/redwood_spi8_debug.h>
+#include <sys/redwood_cp_memory.h>
+#include <pexpert/device_tree.h>
+#include <machine/machine_routines.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
@@ -65,6 +68,49 @@ pmap_pa(uint64_t pa)
 	maps[nmaps].page = page;
 	return maps[nmaps++].va + (pa - page);
 }
+
+#ifdef GENERIC_GIC_V2_IRQ
+/* Audit the existing direct-map alias first. No RAM read/write, new mapping,
+ * HVC, CP power or DMA operation. A cached alias requires resolution before
+ * a NormalNC mapping is allowed. The debug mutex serializes commands. */
+static void
+cp_memory_audit(void)
+{
+    DTEntry chosen;void *property;unsigned length;uint64_t values[3];
+    const char *names[]={"cellular-memory-version","cellular-ipc-base","cellular-ipc-size"};
+    if (SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess) goto missing;
+    for (unsigned i=0;i<3;i++) {
+        if (SecureDTGetProperty(chosen,names[i],&property,&length)!=kSuccess || length!=8) goto missing;
+        memcpy(&values[i],property,8);
+    }
+    if (!cp_memory_certificate(values[0],values[1],values[2])) goto missing;
+    /* phystokv panics for a PA outside the kernel's physical aperture. */
+    extern unsigned long gPhysBase,real_phys_size;
+    if (CP_IPC_BASE<gPhysBase || CP_IPC_BASE-gPhysBase>real_phys_size ||
+        CP_IPC_SIZE>real_phys_size-(CP_IPC_BASE-gPhysBase)) {
+        snprintf(out_buf,sizeof(out_buf),"cp.memory: IPC outside physical aperture; no translation attempted\n");return;
+    }
+    unsigned nc=0,cached_or_device=0,fault=0,wrong_pa=0,debug_alias=0;
+    for (unsigned i=0;i<nmaps;i++)
+        if (maps[i].page>=CP_IPC_BASE && maps[i].page<CP_IPC_BASE+CP_IPC_SIZE) debug_alias++;
+    for (uint64_t pa=CP_IPC_BASE;pa<CP_IPC_BASE+CP_IPC_SIZE;pa+=0x1000) {
+        vm_offset_t va=ml_static_ptovirt((vm_offset_t)pa);uint64_t par,saved;
+        boolean_t interrupts=ml_set_interrupts_enabled(FALSE);
+        __asm__ volatile("mrs %0, par_el1\n\tat s1e1r, %2\n\tisb\n\tmrs %1, par_el1\n\tmsr par_el1, %0\n\tisb"
+            : "=&r"(saved),"=&r"(par) : "r"(va) : "memory");
+        ml_set_interrupts_enabled(interrupts);
+        if (par&1) fault++;
+        else if (!cp_memory_par_matches(par,pa)) wrong_pa++;
+        else if (cp_memory_par_nc(par,pa)) nc++;
+        else cached_or_device++;
+    }
+    snprintf(out_buf,sizeof(out_buf),"cp.memory: certificate1 pages2048 nc%u other_cache%u unmapped%u wrong_pa%u debug_alias%u; audit only, no DMA\n",
+        nc,cached_or_device,fault,wrong_pa,debug_alias);
+    return;
+missing:
+    snprintf(out_buf,sizeof(out_buf),"cp.memory: missing/invalid loader reservation certificate; no access\n");
+}
+#endif
 
 static uint64_t
 smc(uint64_t f, uint64_t a1, uint64_t a2, uint64_t *x2out)
@@ -172,6 +218,7 @@ run(const char *line)
 
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
     if (strcmp(cmd,"spi8.tx")==0) {
         const char *payload=line;while (*payload==' ') payload++;
         payload+=7;while (*payload==' ') payload++;

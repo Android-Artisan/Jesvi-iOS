@@ -1,3 +1,10 @@
+## 2026-11-12 — cellular IPC memory audit (built, not deployed)
+- Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
+- Root `cp.memory` audits existing XNU translations and cache attributes without
+  reading IPC contents or enabling DMA. Refuses absent certificate/outside aperture.
+- Kernel and loader builds pass;42 Python tests and all C ASan/UBSan checks pass.
+- Hardware validation pending a batched restart. No new phone restart or service claim.
+
 # x1slte (iOS 16.5 on the Galaxy S20, SM-G980F) — shipping log
 
 Local branch `x1slte` only (not pushed). One entry per **verified** change: what it does, the commit(s), the boot
