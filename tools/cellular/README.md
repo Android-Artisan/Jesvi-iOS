@@ -152,3 +152,10 @@ retry a timeout without inspecting transcript and current phone state.
 Current checkpoint: builds/signature valid,41 Python tests and sanitizer models
 pass, including58 live-helper fault injections. Hardware execution pending.
 See cellular-flow.md for the updated batched-restart strategy.
+
+Nov12 live ROOT probe now passed: host identitya5a5144d and verified cleanup,
+no restart. `live-run.py --phy-test` is the new CP-off PHY calibration/restore
+diagnostic.124 ordered operations,105 snapshots;726 PHY failure injections and
+58 ROOT cases pass on host. Combined helper includes Samsung GPL-2.0-only
+sequence, attribution/license supplied. PHY hardware execution pending phone
+slot; root access is not endpoint/link proof. User removed SIM for now.

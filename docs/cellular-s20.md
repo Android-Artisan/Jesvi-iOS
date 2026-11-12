@@ -801,3 +801,32 @@ have Samsung source; no MCP install/configuration, provider setup, target binary
 execution or credential changes were made. Shipped cbd/RIL analysis can use the
 native-artifact workflow if a source gap requires it; current firmware inventory
 did not locate those vendor executables/libraries.
+
+### Live ROOT access proven; SIM removed — Nov12 11:55
+
+User gave full phone turn after camera work and said SIM is absent. Normal
+latest camera kernel remained running. Status helper read16 prerequisite words
+successfully; then `live-run.py --root-id` passed: ROOT identitya5a5144d at
+13800000, command/status00100000, ELBI link0064d400, access_pass1 and
+cleanup_verified1. No reboot/flash. This is host/root-port identity, NOT the
+modem endpoint at a configured PCIe window. Live revised access now proven.
+Evidence logs/cellular/live-probe-20261112-115526-042043 (result/transcript).
+
+Merged current local x1slte through62d4ace into cellular (merge79aab91), preserving
+latest rear/front camera, Finder and userland changes. SHIPPING conflict kept
+both areas, updated cellular evidence. Fresh double-read current backup
+out/cellular/live-baseline-20261112-1158 passes AVB and BOOT/recovery pairing.
+Any later island/other flash makes this backup historical; re-capture before
+future flash.
+
+Live PHY extension prepared:124 ordered operations (110 EVT1 calibration plus
+reset/powerdown/PCS),105 unique saved registers, CP off, no LTSSM/ATU/DMA writes.
+`--phy-test` snapshots, applies then restores register values, restores root
+clock/isolation/PERST. Host model passes726 before/after-effect fault injections
+for PHY plus58 for ROOT, including ownership refusal/permanent cleanup failure;
+ARM64 build/signature pass. Samsung source attribution/license preserved.
+
+Hardware PHY run did NOT start: at12:02 the user handed phone to A for island=1
+reboot. Wrapper refused before upload/control writes on lock mismatch. No
+PHY execution/PLL lock or endpoint link claim. Resume live status/PHY after
+that phone slot releases; no reboot needed for this diagnostic.

@@ -22,6 +22,7 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--status', action='store_true')
     mode.add_argument('--root-id', action='store_true')
+    mode.add_argument('--phy-test', action='store_true')
     args = parser.parse_args()
     owner = RESEARCH / 'build/phone.lock/owner'
 
@@ -33,7 +34,8 @@ def main():
     binary = ROOT / 'out/cellular/live/live-pcie'
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     subprocess.run(['codesign', '--verify', '--strict', str(binary)], check=True)
-    if args.root_id:
+    mutating = args.root_id or args.phy_test
+    if mutating:
         subprocess.run([sys.executable, str(Path(__file__).with_name('battery-gate.py')),
                         '--require-ready'], check=True)
     lock()
@@ -46,13 +48,14 @@ def main():
     lock()
     subprocess.run(ssh + ['chmod 700 ' + shlex.quote(target)], check=True, timeout=10)
     lock()
-    result = dict(mode='root-id' if args.root_id else 'status', binary_sha256=digest,
+    selected_mode = 'phy-test' if args.phy_test else 'root-id' if args.root_id else 'status'
+    result = dict(mode=selected_mode, binary_sha256=digest,
                   reboot_requested=False, flash_requested=False, status='started')
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print('Live diagnostic started; no restart/flash. Evidence:', out, flush=True)
     try:
         response = subprocess.run(ssh + ['exec ' + shlex.quote(target) +
-                                        (' --root-id' if args.root_id else ' --status')],
+                                        ' --' + selected_mode],
                                   capture_output=True, timeout=45)
     except subprocess.TimeoutExpired as error:
         (out / 'transcript.txt').write_bytes((error.stdout or b'') + (error.stderr or b''))
@@ -63,7 +66,7 @@ def main():
     transcript = response.stdout + response.stderr
     (out / 'transcript.txt').write_bytes(transcript)
     print(transcript.decode(errors='replace'), end='', flush=True)
-    confirmed = not args.root_id or b'cleanup_verified 1' in transcript
+    confirmed = not mutating or b'cleanup_verified 1' in transcript
     result.update(exit_code=response.returncode, cleanup_confirmed=confirmed,
                   status='complete' if response.returncode == 0 and confirmed else 'failed; inspect transcript')
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')

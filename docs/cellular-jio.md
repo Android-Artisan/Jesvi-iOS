@@ -1,3 +1,12 @@
+# Current SIM state — Nov12
+
+User has removed the SIM for now. Continue modem boot/PCIe diagnostics without
+SIM. Jio India LTE/VoLTE remains the later target; no SIM detection or network
+registration claim is possible in this state. Ask for reinsertion only when
+SIM/network testing is ready.
+
+Earlier carrier investigation below:
+
 # Target carrier: Jio India, LTE and VoLTE
 
 User confirmed on 2026-11-11 that a physical Jio SIM is now inserted in the S20.

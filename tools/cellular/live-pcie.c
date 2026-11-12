@@ -1,4 +1,6 @@
-/* MIT. Live, bounded S20 PCIe diagnostics through the existing root debug port.
+/* SPDX-License-Identifier: GPL-2.0-only
+ * Live S20 PCIe diagnostics. Original diagnostic code is MIT; the combined
+ * helper includes Samsung's GPL-2.0-only PHY sequence (s5123-phy-evt1.h).
  * Default: prerequisite reads only. --root-id: CP off, temporary PERST/isolation/
  * PHY input-clock changes, ROOT config reads, then verified cleanup. No link,
  * ATU, firmware, endpoint, DMA or shared HSI2/UFS clock writes.
@@ -16,9 +18,11 @@
 int sysctlbyname(const char *,void *,size_t *,void *,size_t);
 #endif
 #include <unistd.h>
+#include "s5123-phy-evt1.h"
 
 static volatile sig_atomic_t interrupted;
 static int cleaning;
+static int phy_requested;
 static void on_signal(int signal_number) { (void)signal_number;interrupted=1; }
 static int request(const char *command,char response[8192])
 {
@@ -40,7 +44,10 @@ static int mask_word(uint64_t address,uint32_t and_mask,uint32_t or_mask)
 {
     /* Single kernel-side RMW, protected by dbgport mutex. */
     char command[128],response[8192];unsigned long long got;unsigned old,next,readback;int consumed=0;
-    if (address!=0x13c30000 && address!=0x13c30004 && address!=0x15860720 && address!=0x13d500d8) return -1;
+    int allowed=address==0x13c30000 || address==0x13c30004 || address==0x15860720 || address==0x13d500d8;
+    for (unsigned i=0;i<sizeof(s5123_phy_evt1_ops)/sizeof(s5123_phy_evt1_ops[0]);i++)
+        if (s5123_phy_evt1_ops[i].address==address) allowed=1;
+    if (!allowed) return -1;
     snprintf(command,sizeof(command),"m 0x%llx 0x%x 0x%x",(unsigned long long)address,and_mask,or_mask);
     if (request(command,response) || sscanf(response,"%llx: %x -> %x, reads %x %n",
         &got,&old,&next,&readback,&consumed)!=4 || got!=address || response[consumed] ||
@@ -53,6 +60,50 @@ static int restore_word(uint64_t address,uint32_t and_mask,uint32_t or_mask)
     for (unsigned attempt=0;attempt<3;attempt++)
         if (!mask_word(address,and_mask,or_mask)) return 0;
     return -1;
+}
+static int phy_exercise(void)
+{
+    struct {uint64_t address;uint32_t value;int touched;} saved[128]={0};
+    unsigned count=0;int error=1,safe=1;
+    const unsigned operations=sizeof(s5123_phy_evt1_ops)/sizeof(s5123_phy_evt1_ops[0]);
+    for (unsigned i=0;i<operations;i++) {
+        uint64_t address=s5123_phy_evt1_ops[i].address;unsigned j;
+        for (j=0;j<count;j++) if (saved[j].address==address) break;
+        if (j==count) {
+            if (count==128) return 1;
+            saved[count++].address=address;
+        }
+    }
+    /* Clear all-powerdown before other PHY reads, matching Samsung poweron.
+     * Keep its original value for last-in-cleanup restoration. */
+    phase("PHY snapshot powerdown control");
+    if (read_word(saved[0].address,&saved[0].value)) return 1;
+    saved[0].touched=1;
+    if (mask_word(saved[0].address,0,s5123_phy_evt1_ops[0].value)) goto restore;
+    for (unsigned i=1;i<count;i++) {
+        printf("cellular live: PHY snapshot %llx\n",(unsigned long long)saved[i].address);fflush(stdout);
+        if (read_word(saved[i].address,&saved[i].value)) goto restore;
+    }
+    for (unsigned i=1;i<operations;i++) {
+        const struct s5123_phy_op *op=&s5123_phy_evt1_ops[i];
+        unsigned j=0;while (j<count && saved[j].address!=op->address) j++;
+        if (j==count) goto restore;
+        saved[j].touched=1;
+        printf("cellular live: PHY step %u write %llx=%x delay_us=%u\n",i,
+            (unsigned long long)op->address,op->value,op->delay_us);fflush(stdout);
+        if (mask_word(op->address,0,op->value) || (op->delay_us && usleep(op->delay_us))) goto restore;
+    }
+    error=0;
+restore:;
+    int was_cleaning=cleaning;cleaning=1;
+    phase("PHY restore saved registers, powerdown control last");
+    for (unsigned i=count;i>0;i--) if (saved[i-1].touched) {
+        printf("cellular live: PHY restore %llx\n",(unsigned long long)saved[i-1].address);fflush(stdout);
+        if (restore_word(saved[i-1].address,0,saved[i-1].value)) safe=0;
+    }
+    cleaning=was_cleaning;
+    printf("cellular live: PHY sequence_pass %d restore_verified %d operations %u\n",!error,safe,operations);fflush(stdout);
+    return safe?error:2;
 }
 static int root_id(void)
 {
@@ -88,6 +139,11 @@ static int root_id(void)
     if (read_word(0x13800000,&id)) goto cleanup;
     printf("cellular live: ROOT identity %08x (not modem endpoint)\n",id);fflush(stdout);
     if (!id || id==0xffffffffu) goto cleanup;
+    if (phy_requested) {
+        int result=phy_exercise();
+        if (result==2) safe=0;
+        if (result) goto cleanup;
+    }
     phase("before ROOT command/status read13800004");
     if (read_word(0x13800004,&value)) goto cleanup;
     printf("cellular live: ROOT command/status %08x\n",value);fflush(stdout);
@@ -128,5 +184,6 @@ int main(int argc,char **argv)
     signal(SIGINT,on_signal);signal(SIGTERM,on_signal);signal(SIGHUP,on_signal);
     if (argc==1 || (argc==2 && !strcmp(argv[1],"--status"))) return status();
     if (argc==2 && !strcmp(argv[1],"--root-id")) return root_id();
-    fprintf(stderr,"usage: live-pcie [--status | --root-id]\n");return 2;
+    if (argc==2 && !strcmp(argv[1],"--phy-test")) {phy_requested=1;return root_id();}
+    fprintf(stderr,"usage: live-pcie [--status | --root-id | --phy-test]\n");return 2;
 }
