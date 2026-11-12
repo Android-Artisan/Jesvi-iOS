@@ -61,7 +61,7 @@ and island-install.sh are that withdrawn version.)
 
 The Clock timer shows in the island (user-verified 2026-11-12, after a cold boot). The first one after a boot
 can take a while to appear (the Live Activity services are still starting), so give it a moment before
-calling it broken. The stopwatch is not an island activity on iOS 16 (only from iOS 17).
+calling it broken. The stopwatch shows too (user-verified).
 Live log on the phone: `ssh s20 /var/jb/usr/bin/oslog` (Procursus `oslog`, installed 2026-11-12).
 
 ## Checking it
