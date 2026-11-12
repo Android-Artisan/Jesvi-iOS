@@ -4402,8 +4402,9 @@ redwood_camera_init(void)
 		s20_rotate = false;
 		/* 6 = 4 (absolute, both cameras) | 2 (mirror: the line reversed). The raw frame (2026-11-12) has the scene's
 		 * top along the sensor's lines, so reversing each line fixes up and down; the half turn (5) also swapped
-		 * left and right (user: "sides inverted"). */
-		fake_n = 6;
+		 * left and right (user: "sides inverted"). 5 since 2026-11-12, user-checked: the preview a mirror, and the
+		 * photographs and videos (which iOS turns for the front camera itself) as others see you. */
+		fake_n = 5;
 		(void)PE_parse_boot_argn("cam_turn", &fake_n, sizeof(fake_n));
 		redwood_camera_s20_turn = (int)fake_n;
 		fake_n = 1;

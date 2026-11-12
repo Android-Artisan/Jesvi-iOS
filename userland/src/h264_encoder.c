@@ -32,6 +32,9 @@
 #include <unistd.h>
 #include "wels/codec_api.h"
 
+static char video_flip;
+static void read_video_flip(void);
+
 typedef struct OpaqueCMBaseObject *CMBaseObjectRef;
 typedef const void *CMBaseClassID;
 typedef void *VTEncoderSessionRef;
@@ -180,12 +183,13 @@ svc_up(struct encoder *e)
 	p.fMaxFrameRate = e->fps;
 	p.bEnableFrameSkip = false;                     /* (the camera's frames: all of them, at the bitrate's cost) */
 	p.uiIntraPeriod = (unsigned int)e->key_interval;
-	p.iMultipleThreadIdc = 4;                       /* four of the eight cores; slices let them share a frame */
+	p.iMultipleThreadIdc = 6;                       /* six of the eight cores; slices let them share a frame */
+	p.iComplexityMode = LOW_COMPLEXITY;             /* the camera's pace first (40 ms a frame at MEDIUM beside the ISP) */
 	p.iSpatialLayerNum = 1;
 	p.iTemporalLayerNum = 1;
 	p.bEnableDenoise = false;
-	p.bEnableBackgroundDetection = true;
-	p.bEnableAdaptiveQuant = true;
+	p.bEnableBackgroundDetection = false;          /* (both cost time a frame; the bitrate is ample) */
+	p.bEnableAdaptiveQuant = false;
 	p.bEnableLongTermReference = false;
 	p.eSpsPpsIdStrategy = CONSTANT_ID;            /* one SPS/PPS for the whole file: a movie has one format description */
 	p.bEnableSceneChangeDetect = false;            /* key frames on the schedule only */
@@ -198,7 +202,7 @@ svc_up(struct encoder *e)
 	p.sSpatialLayers[0].uiProfileIdc = PRO_BASELINE;
 	p.sSpatialLayers[0].uiLevelIdc = e->width * e->height > 1920 * 1088 ? LEVEL_5_1 : LEVEL_4_1;
 	p.sSpatialLayers[0].sSliceArgument.uiSliceMode = SM_FIXEDSLCNUM_SLICE;
-	p.sSpatialLayers[0].sSliceArgument.uiSliceNum = 4;
+	p.sSpatialLayers[0].sSliceArgument.uiSliceNum = 6;
 	if ((*e->svc)->InitializeExt(e->svc, &p) != 0) {
 		say("OpenH264 refused %dx%d at %.1f frames a second, %d bit/s", e->width, e->height, e->fps, e->bitrate);
 		WelsDestroySVCEncoder(e->svc);
@@ -300,7 +304,8 @@ start_session(CMBaseObjectRef o, VTEncoderSessionRef session, uint64_t dims, CFD
 	OSStatus st = session_set_pixel_attributes ? session_set_pixel_attributes(session, attrs) : 0;
 
 	CFRelease(attrs); CFRelease(empty); CFRelease(nh); CFRelease(nw); CFRelease(list); CFRelease(f1); CFRelease(f0);
-	say("StartSession: %dx%d (pixel buffer attributes: %d)", w, h, (int)st);
+	read_video_flip();
+	say("StartSession: %dx%d (pixel buffer attributes: %d), flip %c", w, h, (int)st, video_flip);
 	return 0;
 }
 
@@ -314,6 +319,56 @@ prepare_to_encode_frames(CMBaseObjectRef o)
 	ok = svc_up(e);
 	pthread_mutex_unlock(&e->lock);
 	return ok ? 0 : ERR_ENCODER;
+}
+
+
+/*
+ * The front camera's videos came out mirrored left to right while its preview and photographs were right
+ * (2026-11-12): the movie is turned for portrait by its matrix, so left/right on the screen is up/down in the
+ * buffer -- the rows are put the other way round here, for the movie only. /var/root/redwood-video-flip may say
+ * otherwise: "v" (rows, the default), "h" (columns) or "0" (none); read at each session's start.
+ */
+
+static void
+read_video_flip(void)
+{
+	FILE *f = fopen("/var/root/redwood-video-flip", "r");
+	int c;
+
+	video_flip = '0';               /* (none: with cam_turn 7 the movie comes out right, as iOS turns it) */
+	if (f != NULL) {
+		c = fgetc(f);
+		if (c == 'v' || c == 'h' || c == '0') {
+			video_flip = (char)c;
+		}
+		fclose(f);
+	}
+}
+
+static void
+flip_plane(uint8_t *p, int w, int h, char how)
+{
+	if (how == 'v') {
+		uint8_t tmp[4096];
+
+		for (int r = 0; r < h / 2 && w <= (int)sizeof(tmp); r++) {
+			uint8_t *a = p + (size_t)r * w, *b = p + (size_t)(h - 1 - r) * w;
+
+			memcpy(tmp, a, (size_t)w);
+			memcpy(a, b, (size_t)w);
+			memcpy(b, tmp, (size_t)w);
+		}
+	} else if (how == 'h') {
+		for (int r = 0; r < h; r++) {
+			uint8_t *a = p + (size_t)r * w, *b = a + w - 1;
+
+			for (; a < b; a++, b--) {
+				uint8_t t = *a;
+				*a = *b;
+				*b = t;
+			}
+		}
+	}
 }
 
 static OSStatus
@@ -344,6 +399,11 @@ encode_frame_inner(CMBaseObjectRef o, VTEncoderFrameToken token, CVPixelBufferRe
 		if (v == kCFBooleanTrue) {
 			(*e->svc)->ForceIntraFrame(e->svc, true);
 		}
+	}
+	if (video_flip != '0') {
+		flip_plane(e->i420, e->width, e->height, video_flip);
+		flip_plane(e->i420 + (size_t)e->width * e->height, e->width / 2, e->height / 2, video_flip);
+		flip_plane(e->i420 + (size_t)e->width * e->height * 5 / 4, e->width / 2, e->height / 2, video_flip);
 	}
 	memset(&pic, 0, sizeof(pic));
 	pic.iColorFormat = videoFormatI420;

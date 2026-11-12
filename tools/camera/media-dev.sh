@@ -11,5 +11,5 @@ OH=/Users/jesvi/ios-port-research/work/third-party/openh264
   -framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -o obj/libredwood-media-dev.dylib \
   src/inject_media.c src/camera_device.c src/camera_isp.c src/h264_encoder.c $OH/libopenh264.a
 $HOME/ios-port-research/tools/bin/ldid -S obj/libredwood-media-dev.dylib
-ssh s20 'cat > /var/redwood/libredwood-media-dev.dylib.new && mv /var/redwood/libredwood-media-dev.dylib.new /var/redwood/libredwood-media-dev.dylib && killall mediaserverd' < obj/libredwood-media-dev.dylib
+ssh s20 'cat > /var/redwood/libredwood-media-dev.dylib.new && mv /var/redwood/libredwood-media-dev.dylib.new /var/redwood/libredwood-media-dev.dylib && (killall Camera 2>/dev/null; sleep 2; killall mediaserverd)' < obj/libredwood-media-dev.dylib
 echo "loaded (mediaserverd restarted)"

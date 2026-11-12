@@ -455,6 +455,7 @@ struct stream {
 	double          min_fps, max_fps;
 	float           zoom;           /* ZoomFactor: the picture is the middle 1/zoom of the sensor each way */
 	const struct camera *camera;
+	uint64_t        render_ticks;   /* the moving pictures' ISP time since the last per-second line */
 	CFStringRef     port;
 	bool            af_now;         /* a focus asked for (AutoFocusNow and the like): a search at the next frame */
 	bool            af_locked;      /* LockAFNow: no search but one asked for */
@@ -1022,6 +1023,9 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	} else {
 		dispatch_apply_f(job.pieces, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &job, render_piece);
 	}
+	if (!job.still) {
+		s->render_ticks += mach_absolute_time() - began;
+	}
 	if (job.still) {
 		static mach_timebase_info_data_t tb;
 
@@ -1441,7 +1445,16 @@ worker_body(void *context)
 			/* bit 2 set: the kernel says, for every camera (the S20's frames all come from one sensor so far):
 			 * bit 0 turn half round, bit 1 mirror. The raw frame (2026-11-12, phone upright) has the scene's top at
 			 * the sensor's right; iOS turns portrait pictures 90 degrees clockwise, so they need the half turn: 5. */
-			if (sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0 && (turn & 4)) {
+			/* /var/root/redwood-camera-turn, when there, overrides the kernel's (5 since 2026-11-12: the preview a
+			 * mirror, photographs and videos as others see you -- iOS turns those itself; the user checked all three) */
+			bool from_file = false;
+			FILE *tf = fopen("/var/root/redwood-camera-turn", "r");
+
+			if (tf != NULL) {
+				from_file = fscanf(tf, "%d", &turn) == 1;
+				fclose(tf);
+			}
+			if ((from_file || sysctlbyname("kern.redwood.camera_turn", &turn, &len, NULL, 0) == 0) && (turn & 4)) {
 				isp.turned = (turn & 1) != 0;
 				isp.mirror = (turn & 2) != 0;
 				if (turn != s->last_turn) {
@@ -1521,7 +1534,16 @@ worker_body(void *context)
 				}
 			}
 			line[at] = 0;
-			say("frame %llu (format %d): given/refused:%s", s->frames, s->format_index, line);
+			{
+				static uint64_t t_last;
+				uint64_t t_now = mach_absolute_time();
+				double fps = t_last ? 30.0 * 24000000.0 / (double)(t_now - t_last) : 0;
+
+				t_last = t_now;
+				say("frame %llu (format %d): %.1f fps, render %.1f ms a frame; given/refused:%s", s->frames, s->format_index,
+				    fps, s->render_ticks / 24000.0 / 30, line);
+				s->render_ticks = 0;
+			}
 		}
 		if (s->frames == 1 || s->frames % 300 == 0) {
 			say("frame %llu: exposure %.1f ms, gain %.1fx, digital %.2fx, green %.0f above black; white balance R %.2f "
