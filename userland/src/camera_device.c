@@ -2025,6 +2025,12 @@ worker_body(void *context)
 					rear_bayer = v;
 				}
 				if (rear_bayer >= 0 && rear_bayer <= 3) fb->bayer = (uint8_t)rear_bayer;   /* (only when the file says so) */
+			}
+		}
+		{
+			struct redwood_camera_frame *fb = (void *)buffer;
+
+			if (fb->width == 2016 || fb->width == 4032)
 				/* redwood-raw-dump in the tuning directory: this frame as it came (header + RAW10), once, as redwood-raw.bin */
 				{
 					char flag[160];
@@ -2041,7 +2047,6 @@ worker_body(void *context)
 						}
 					}
 				}
-			}
 		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
@@ -2134,6 +2139,20 @@ worker_body(void *context)
 			}
 			/* the sun slider: on the picture at once (Camera.app's own feel), not through AE (a second to follow) */
 			isp.bias = exp2f(s->ev_bias);
+		}
+		/*
+		 * The longest frame auto-exposure may stretch to: what the app's minimum frame rate allows (Camera.app's Video
+		 * asks for 30: a dim room is then more gain at 30 a second, not 20 a second of 50 ms exposures -- the rear's
+		 * video lagged that way, 2026-11-12), and never more than twice the mode's frame as before.
+		 */
+		if (f->frame_lines_min > 0 && f->line_ns > 0) {
+			double mode_fps = 1e9 / ((double)f->frame_lines_min * f->line_ns);
+			/* (Camera.app asks 15 in every mode: held at the mode's rate, as Samsung's camera does, unless an app asks 10 or less) */
+			double floor_fps = s->min_fps > 1 && s->min_fps <= 10 ? s->min_fps : mode_fps;
+			double k = mode_fps / floor_fps;
+
+			k = k < 1 ? 1 : k > 2 ? 2 : k;
+			isp.max_frame_lines = (uint32_t)(f->frame_lines_min * k);
 		}
 		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
