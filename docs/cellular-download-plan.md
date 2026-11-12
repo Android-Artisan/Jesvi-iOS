@@ -90,3 +90,30 @@ copied or commands executed from it. The [S5123 code skeleton](https://github.co
 is a possible navigation aid, not a working loader. A Samsung S5123 module
 manual surfaced at FCC report5137238 but fetch returned403; its full contents
 have not been reviewed, so no implementation depends on the search excerpt.
+
+## Priority clarification and queue core — Nov12 continuation
+
+User priority: 4G data, SMS and ordinary calls. Deliver data first and test SMS
+as soon as modem control is available. Ordinary Jio LTE calls still require
+IMS/VoLTE internally; hiding the VoLTE label does not remove that dependency.
+SMS routing also needs carrier verification; do not assume an IMS-free route.
+[Jio's LTE explanation](https://www.jio.com/help/faq/mobile/services/high-speed-internet/what-is-4g-lte-service-provided-by-jio/)
+identifies VoLTE as its voice transport. Progress25–35% is a rough engineering
+estimate for the full requested outcome, not measured completion or a deadline.
+
+New s5123-ring.h provides bounded single-owner producer/consumer operations,
+board RAW queue geometry, index/range validation, split wrapping copies and
+explicit acquire-load/release-publish callbacks. A failed publish returns
+COMMIT_UNKNOWN and must be resynchronized, never blindly retransmitted. Partial
+copy failure leaves the published index unchanged. No hardware mapping, protocol
+payload, DMA enable or modem command is included. Backend still pending.
+
+Host ASan/UBSan test passed7680 independently enumerated position/length/direction
+cases, wrap/full/empty behavior, partial-copy failures, uncertain publication,
+malformed peer indices and overflow/metadata-overlap guards. Integrated into
+check.sh. This is host proof only; no new phone operation/restart.
+
+Source investigation: stock-g980f contains an encrypted972MiB archive left from
+an earlier download; it has not been validated as complete or usable. No cbd/RIL
+binary found in the extracted vendor firmware inventory. Do not treat that
+archive as a recovered working loader or execute guessed legacy S7 commands.

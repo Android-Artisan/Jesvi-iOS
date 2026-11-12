@@ -29,3 +29,6 @@ trap 'rm -rf "$CELLULAR_CHECK_DIR"' EXIT
 "${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
     tools/cellular/tests/live_link_test.c -o "$CELLULAR_CHECK_DIR/live-link-test"
 "$CELLULAR_CHECK_DIR/live-link-test"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/ring_test.c -o "$CELLULAR_CHECK_DIR/ring-test"
+"$CELLULAR_CHECK_DIR/ring-test"
