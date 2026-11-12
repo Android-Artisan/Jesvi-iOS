@@ -1916,8 +1916,18 @@ worker_body(void *context)
 				 * Gb stay near 64 -- the shadows went purple and the picture green when one level was taken off all.
 				 */
 				static const float gains[4] = { 1, 4, 8, 16 };
-				static const float level[4][4] = { { 63.5f, 56.4f, 48.2f, 30.4f }, { 62.7f, 62.6f, 63.7f, 64.5f },
-					{ 65.3f, 65.2f, 67.4f, 70.2f }, { 64.1f, 63.7f, 64.0f, 63.9f } };
+				/*
+				 * Measured face-down in a dark room (2026-11-12, cam.s20.dma.test 2 g*100000+lines): the S5K2LD's black
+				 * depends on the gain AND on the exposure -- an exposure inside the frame (8000-20000 lines) sits far
+				 * lower than a very short one or one that stretches the frame (2 or 33000 lines). Sites Gr, R, B, Gb.
+				 * (16x inside the frame from a fingertip-covered run.)
+				 */
+				static const float inside[4][4] = { { 57.9f, 40.3f, 28.1f, 18.1f }, { 59.4f, 44.7f, 39.0f, 30.0f },
+					{ 56.0f, 39.0f, 30.4f, 25.0f }, { 59.2f, 44.1f, 36.8f, 30.0f } };
+				static const float outside[4][4] = { { 63.5f, 56.2f, 48.2f, 29.6f }, { 62.6f, 61.4f, 61.7f, 64.0f },
+					{ 65.2f, 64.1f, 65.0f, 69.7f }, { 64.0f, 62.9f, 62.5f, 63.5f } };
+				bool stretched = fw->frame_lines_min != 0 && fw->exposure_lines + fw->margin > fw->frame_lines_min;
+				const float (*level)[4] = fw->exposure_lines < 64 || stretched ? outside : inside;
 				float g = (float)fw->gain / fw->gain_unity;
 				int seg = g <= 4 ? 0 : g <= 8 ? 1 : 2;
 				float t = (g - gains[seg]) / (gains[seg + 1] - gains[seg]);

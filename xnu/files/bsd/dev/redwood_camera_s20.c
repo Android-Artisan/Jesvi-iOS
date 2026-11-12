@@ -461,8 +461,12 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
 		/* a fixed indoor exposure for the test: 16384 of the mode's 22564 lines (~24 ms), analog gain 4x (0x20 = 1x) */
 		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
-		    !cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)cam_s20_rear_test_lines) ||
-		    !cam_3j1_write16(&sensor_bus, 0x0204, cam_s20_rear_test_lines == 3 ? 0x0080 : cam_s20_rear_test_lines == 4 ? 0x0100 :
+		    /* (lines + 100000 * g: gain code g -- 1 1x, 4 4x, 8 8x, 16 16x -- with that exposure, for dark frames) */
+		    !cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)((cam_s20_rear_test_lines % 100000) + 64 > 22564 ?
+		    (cam_s20_rear_test_lines % 100000) + 64 : 22564)) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)(cam_s20_rear_test_lines % 100000)) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0204, cam_s20_rear_test_lines >= 100000 ? (uint16_t)(0x20 * (cam_s20_rear_test_lines / 100000)) :
+		    cam_s20_rear_test_lines == 3 ? 0x0080 : cam_s20_rear_test_lines == 4 ? 0x0100 :
 		    cam_s20_rear_test_lines == 5 ? 0x0200 : cam_s20_rear_test_lines < 16 ? 0x0020 : 0x0080))) goto stream_done;
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
@@ -894,7 +898,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	bool saved = false, allocated = false, stopped = true, ended = false;
 	if (!cap) return;
 	if (rear) {
-		cam_s20_rear_test_lines = n > 1 && v[1] > 0 && v[1] < 60000 ? (uint32_t)v[1] : 16384;
+		cam_s20_rear_test_lines = n > 1 && v[1] > 0 && v[1] < 2000000 ? (uint32_t)v[1] : 16384;
 		sensor_mode = 2;
 	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
