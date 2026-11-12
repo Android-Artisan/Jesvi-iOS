@@ -45,7 +45,7 @@ queue once SpringBoard runs, only with `island=1`.
 | Setting | Default | Apple |
 | --- | --- | --- |
 | top gap `y` | **5 pt** (pill covers the top of the S20 hole; user-checked 2026-11-12) | 11.33 |
-| width `w` | Apple's | 125.33 (~81 = "iPhone 18 Pro" -35%) |
+| width `w` | **81 pt** ("iPhone 18 Pro" look, user-chosen; in the conf now, built-in from the next boot image) | 125.33 |
 | height `h` | Apple's | 36.67 |
 
 Override in `/var/jb/etc/redwood-island.conf` (e.g. `y=5 w=81`; `off` = Apple's pill), then respring.
@@ -56,6 +56,11 @@ Not as a /var/jb tweak: any library from /var/jb loaded into SpringBoard fails t
 SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking or loading
 SpringBoardUI.framework" and SpringBoard crash-loops (timing-dependent). (userland/src/island_tweak.m
 and island-install.sh are that withdrawn version.)
+
+## Known issue
+
+With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
+checked at Apple's width. Likely the trailing label is laid out against the narrower sensor region.
 
 ## Live Activities
 

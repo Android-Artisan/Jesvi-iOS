@@ -5,6 +5,7 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
+- Pill width 81 pt ("iPhone 18 Pro" look, user-chosen). Known issue: charging banner cuts the "100" of "100%".
 - In libredwood-sb (`userland/src/island_sb.h`, with `island=1`): pill top gap 5 pt instead of Apple's 11.33,
   so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
   Cold boot verified: no SpringBoard aborts, hook in. (As a /var/jb tweak it crash-looped SpringBoard: doc.)
