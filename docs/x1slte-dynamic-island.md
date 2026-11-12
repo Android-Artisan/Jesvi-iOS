@@ -35,6 +35,24 @@ keeps the last boot's flag in `/var/db/redwood-island` and removes that cache wh
 MobileGestalt rebuilds it from the new tree. (This needs a root image built with that `init`; with an
 older one, delete the cache by hand before the reboot.)
 
+## Pill position and size (RedwoodIsland tweak)
+
+iOS 16.5 hard-codes the pill in SpringBoardUIServices (14 Pro numbers): size 125.33 x 36.67 pt and top gap
+11.33 pt (`-[SBUISystemApertureLayoutMetrics _minimumScreenEdgeInset]`). `RedwoodIsland.dylib`
+(`userland/src/island_tweak.m`), loaded into SpringBoard by our tweak loader from
+`/var/jb/Library/MobileSubstrate/DynamicLibraries`, replaces those two methods.
+
+| Setting | Default | Apple |
+| --- | --- | --- |
+| top gap `y` | **5 pt** (pill covers the top of the S20 hole; user-checked 2026-11-12) | 11.33 |
+| width `w` | Apple's | 125.33 (~81 = "iPhone 18 Pro" -35%) |
+| height `h` | Apple's | 36.67 |
+
+Override in `/var/jb/etc/redwood-island.conf` (one line, e.g. `y=5 w=81`; `off` = Apple's pill), then
+respring; no reboot. Install/update: `CLAUDE_SESSION=NAME userland/island-install.sh ["y=5 w=81"]`
+(phone lock holder only). Log: `/var/mobile/Library/Logs/redwood-island.log`.
+1 pt on the S20 panel ~ 0.18 mm (iOS 1125x2436 stretched to 1440x3200).
+
 ## Checking it
 
 ```

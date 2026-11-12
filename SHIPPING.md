@@ -4,6 +4,11 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
+- RedwoodIsland tweak (`userland/src/island_tweak.m`, SpringBoard): pill top gap 5 pt instead of Apple's 11.33,
+  so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
+  Installed with `userland/island-install.sh`. Commit NEXT. Doc: docs/x1slte-dynamic-island.md.
+
 ## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
 - iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the
   iPhone 14 Pro subtype (`artwork-device-subtype` 2556) and, as a 14 Pro's tree does, `/buttons home-button-type` 2.
