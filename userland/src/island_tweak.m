@@ -35,6 +35,7 @@
 #define DEFAULT_Y       5.0
 
 static double want_w = -1, want_h = -1, want_y = DEFAULT_Y;
+static int want_probe;
 static CGSize (*orig_size)(id, SEL);
 static CGFloat (*orig_top)(id, SEL);
 
@@ -91,6 +92,8 @@ read_conf(void)
 	for (char *p = strtok(buf, " \t\r\n"); p; p = strtok(NULL, " \t\r\n")) {
 		if (strcmp(p, "off") == 0) {
 			return 0;
+		} else if (strcmp(p, "probe") == 0) {
+			want_probe = 1;     /* diagnostics: list SpringBoard's island classes into the log */
 		} else if (strncmp(p, "w=", 2) == 0) {
 			want_w = atof(p + 2);
 		} else if (strncmp(p, "h=", 2) == 0) {
@@ -163,6 +166,38 @@ island_hook(void)
 	}
 }
 
+
+/* "probe" in the conf: the island's classes in SpringBoard and their state-ish methods, into the log. */
+static void
+island_probe(void)
+{
+	unsigned n = 0;
+	const char **names = objc_copyClassNamesForImage([[[NSBundle mainBundle] executablePath] UTF8String], &n);
+
+	for (unsigned i = 0; names && i < n; i++) {
+		if (strstr(names[i], "SystemAperture") == NULL && strstr(names[i], "Jindo") == NULL &&
+		    strstr(names[i], "Activit") == NULL) {
+			continue;
+		}
+		Class cls = objc_getClass(names[i]);
+		unsigned nm = 0;
+		Method *ms = class_copyMethodList(cls, &nm);
+		char line[3000] = "";
+		size_t len = 0;
+
+		for (unsigned j = 0; j < nm && len < sizeof(line) - 80; j++) {
+			const char *sel = sel_getName(method_getName(ms[j]));
+			if (strcasestr(sel, "dump") || strcasestr(sel, "state") || strcasestr(sel, "element") ||
+			    strcasestr(sel, "shared") || strcasestr(sel, "enabled") || strcasestr(sel, "activit")) {
+				len += (size_t)snprintf(line + len, sizeof(line) - len, " %s", sel);
+			}
+		}
+		free(ms);
+		say("probe: %s:%s", names[i], line);
+	}
+	free(names);
+}
+
 __attribute__((constructor)) static void
 island_init(void)
 {
@@ -171,5 +206,10 @@ island_init(void)
 	}
 	dispatch_async(dispatch_get_main_queue(), ^{
 		island_hook();
+		if (want_probe) {
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+				island_probe();
+			});
+		}
 	});
 }

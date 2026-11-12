@@ -37,6 +37,12 @@ older one, delete the cache by hand before the reboot.)
 
 ## Pill position and size (RedwoodIsland tweak)
 
+**Do not install as a /var/jb tweak (2026-11-12):** any library from /var/jb loaded into SpringBoard fails
+the kernel's `map_with_linking_np` "not code signed" check and costs SpringBoard its CS_VALID flag; when
+that happens before SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking or
+loading SpringBoardUI.framework" and SpringBoard crash-loops (Apple logo). It depends on timing, so it
+sometimes works. The hooks have to move into libredwood-sb (src/inject_sb.c, loaded from /redwood/lib).
+
 iOS 16.5 hard-codes the pill in SpringBoardUIServices (14 Pro numbers): size 125.33 x 36.67 pt and top gap
 11.33 pt (`-[SBUISystemApertureLayoutMetrics _minimumScreenEdgeInset]`). `RedwoodIsland.dylib`
 (`userland/src/island_tweak.m`), loaded into SpringBoard by our tweak loader from

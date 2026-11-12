@@ -7,7 +7,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
 ## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
 - RedwoodIsland tweak (`userland/src/island_tweak.m`, SpringBoard): pill top gap 5 pt instead of Apple's 11.33,
   so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
-  Installed with `userland/island-install.sh`. Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
+  **Withdrawn:** as a /var/jb tweak it can crash-loop SpringBoard (see the doc); to move into libredwood-sb. Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
 
 ## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
 - iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the
