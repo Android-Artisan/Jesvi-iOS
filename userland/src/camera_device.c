@@ -51,6 +51,9 @@
 #include <unistd.h>
 #include "camera_isp.h"
 
+static const char *tuning_dir(void);
+static const char *rw_path(const char *leaf, char *buf, size_t size);
+
 void redwood_camera_say(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 void
@@ -1007,7 +1010,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	 * The Back Camera is black for now (2026-11-12, the user: only the front is being tested, and both showing the
 	 * same sensor made it unclear which is which). `touch /var/root/redwood-rear-live' gives it pictures again.
 	 */
-	if (s->camera->sensor == 1 && access("/var/root/redwood-rear-live", F_OK) != 0) {
+	if (s->camera->sensor == 1 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
 		if (pf == PF_BGRA) {
 			for (uint32_t r = 0; r < height; r++) {
 				memset((uint8_t *)CVPixelBufferGetBaseAddress(pb) + r * CVPixelBufferGetBytesPerRow(pb), 0, (size_t)width * 4);
@@ -1333,7 +1336,11 @@ load_tuning(struct isp *isp, uint32_t sensor)
 	if (sensor >= sizeof(names) / sizeof(names[0])) {
 		return;
 	}
-	snprintf(path, sizeof(path), "/redwood/fw/camera-%s.isp", names[sensor]);
+	/* the phone's own (made on it, see tune_on_phone()) before the image's */
+	snprintf(path, sizeof(path), "%s/camera-%s.isp", tuning_dir(), names[sensor]);
+	if (access(path, R_OK) != 0) {
+		snprintf(path, sizeof(path), "/redwood/fw/camera-%s.isp", names[sensor]);
+	}
 	if (isp_load_tuning(isp, path)) {
 		say("the %s's colour tuning from %s: %u colour matrices' lights, %u lens shadings'", names[sensor], path,
 		    isp->tuning->ccm.lights, isp->tuning->lsc.lights);
@@ -1341,6 +1348,194 @@ load_tuning(struct isp *isp, uint32_t sensor)
 		say("no colour tuning for the %s (%s): no colour matrix, no lens shading", names[sensor], path);
 		isp_set_ccm(isp, (const float[9]){ 1, 0, 0, 0, 1, 0, 0, 0, 1 });
 		isp->lsc.on = false;
+	}
+}
+
+
+/*
+ * Colour tuning made on the phone (2026-11-12; the S20's front SAK3J1 had none: no colour matrix, no lens shading).
+ *   touch /var/root/redwood-lsc-capture   the next frame is a flat field (a white sheet over the lens, evenly
+ *                                         lit): the lens shading is measured from it
+ *   /var/root/redwood-ccm                 the colour matrix, nine numbers row by row (camera RGB, white balanced,
+ *                                         to linear sRGB; each row summing to 1); a generic phone sensor's if absent
+ *   touch /var/root/redwood-tuning-reload the matrix file read again (the lens shading kept)
+ * Both are written into /var/root/camera-<sensor>.isp (RWCISP02, as tools/camtuning.py makes them), which
+ * load_tuning() takes before the image's.
+ */
+
+/* a directory mediaserverd's sandbox lets it read and write (its /var/root is closed to it) */
+static const char *
+tuning_dir(void)
+{
+	static const char *dir;
+	static const char *const dirs[] = { "/var/mobile/Library/Caches/com.apple.mediaserverd", "/var/mobile/Library/Caches",
+		"/var/tmp", "/tmp", "/var/mobile/Media", "/var/root" };
+
+	if (dir != NULL) {
+		return dir;
+	}
+	for (int i = 0; i < 6; i++) {
+		char t[160];
+		FILE *x;
+
+		snprintf(t, sizeof(t), "%s/redwood-write-test", dirs[i]);
+		x = fopen(t, "w");
+		say("tuning: %s: %s", dirs[i], x ? "writable" : strerror(errno));
+		if (x != NULL) {
+			fclose(x);
+			unlink(t);
+			dir = dirs[i];
+			return dir;
+		}
+	}
+	dir = "/var/root";
+	return dir;
+}
+
+
+static const char *
+rw_path(const char *leaf, char *buf, size_t size)
+{
+	snprintf(buf, size, "%s/%s", tuning_dir(), leaf);
+	return buf;
+}
+
+#define LSC_GRID (LSC_W * LSC_H)
+static float phone_lsc[3][LSC_H][LSC_W];
+static bool phone_lsc_have;
+
+static void
+read_ccm(float m[9])
+{
+	static const float generic[9] = { 1.72f, -0.56f, -0.16f, -0.28f, 1.58f, -0.30f, 0.02f, -0.66f, 1.64f };
+	FILE *fp = fopen(rw_path("redwood-ccm", (char[160]){0}, 160), "r");
+	int n = 0;
+
+	memcpy(m, generic, sizeof(generic));
+	if (fp != NULL) {
+		float v[9];
+
+		for (n = 0; n < 9 && fscanf(fp, " %f ,", &v[n]) == 1; n++) {
+		}
+		fclose(fp);
+		if (n == 9) {
+			memcpy(m, v, sizeof(v));
+		}
+	}
+}
+
+static bool
+write_tuning(const char *name, const float ccm[9])
+{
+	char path[96];
+	FILE *fp;
+	uint32_t one = 1, zero = 0;
+	float range[2] = { -1e9f, 1e9f };
+
+	snprintf(path, sizeof(path), "%s/camera-%s.isp", tuning_dir(), name);
+	if ((fp = fopen(path, "wb")) == NULL) {
+		static const char *const dirs[] = { "/var/tmp", "/tmp", "/var/mobile/Library/Caches", "/var/mobile/Media" };
+
+		say("tuning: %s: %s", path, strerror(errno));
+		for (int i = 0; i < 4; i++) {
+			char t[128];
+			FILE *x;
+
+			snprintf(t, sizeof(t), "%s/redwood-write-test", dirs[i]);
+			x = fopen(t, "w");
+			say("tuning: can write %s: %s", dirs[i], x ? "yes" : strerror(errno));
+			if (x) {
+				fclose(x);
+				unlink(t);
+			}
+		}
+		return false;
+	}
+	fwrite("RWCISP02", 1, 8, fp);
+	/* the matrix: one light range, one temperature range */
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(ccm, 4, 9, fp);
+	/* the lens shading: R, Gr, Gb, B (G twice), or none (gains of 1) */
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	fwrite(&one, 4, 1, fp);
+	fwrite(range, 4, 2, fp);
+	for (int c = 0; c < 4; c++) {
+		int k = c == 0 ? 0 : c == 3 ? 2 : 1;
+
+		for (int gy = 0; gy < LSC_H; gy++) {
+			for (int gx = 0; gx < LSC_W; gx++) {
+				float g = phone_lsc_have ? phone_lsc[k][gy][gx] : 1.0f;
+
+				fwrite(&g, 4, 1, fp);
+			}
+		}
+	}
+	fwrite(&zero, 4, 1, fp);        /* no reference lights */
+	fclose(fp);
+	return true;
+}
+
+static void
+tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw)
+{
+	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k4h7" };
+	const char *name = f->sensor < 4 ? names[f->sensor] : NULL;
+	char cap_p[160], rel_p[160];
+	bool capture = access(rw_path("redwood-lsc-capture", cap_p, sizeof(cap_p)), F_OK) == 0,
+	    reload = access(rw_path("redwood-tuning-reload", rel_p, sizeof(rel_p)), F_OK) == 0;
+	float ccm[9];
+
+	if (isp->trim[1] == 0 && access(rw_path("redwood-ccm", (char[160]){0}, 160), R_OK) == 0) {
+		reload = true;          /* (a new stream: the matrix and the trim taken again) */
+	}
+	if (name == NULL || (!capture && !reload)) {
+		return;
+	}
+	unlink(cap_p);
+	unlink(rel_p);
+	if (!phone_lsc_have && isp->tuning != NULL && isp->tuning->lsc.lights > 0) {
+		/* (the lens shading of the file already there, kept when only the matrix changes) */
+		memcpy(phone_lsc, isp->lsc.gain, sizeof(phone_lsc));
+		phone_lsc_have = true;
+	}
+	if (capture) {
+		struct isp tmp = *isp;
+		float darkest = 0;
+
+		if (!isp_lsc_from_flat(&tmp, f, raw, &darkest)) {
+			say("tuning: that frame is no flat field (too dark, or clipped): nothing measured");
+			return;
+		}
+		memcpy(phone_lsc, tmp.lsc.gain, sizeof(phone_lsc));
+		phone_lsc_have = true;
+		say("tuning: the lens shading measured (the corners at %.0f %% of the centre)", darkest * 100);
+	}
+	read_ccm(ccm);
+	{
+		/* redwood-wb-trim: "R B", the white balance's red and blue made that much stronger (a cast the
+		 * grey-world estimate leaves: green, 2026-11-12) */
+		FILE *tf = fopen(rw_path("redwood-wb-trim", (char[160]){0}, 160), "r");
+		float tr = 1, tb = 1;
+
+		if (tf != NULL) {
+			if (fscanf(tf, "%f %f", &tr, &tb) != 2) {
+				tr = tb = 1;
+			}
+			fclose(tf);
+		}
+		isp->trim[0] = tr;
+		isp->trim[1] = 1;
+		isp->trim[2] = tb;
+		say("tuning: white balance trim R %.3f B %.3f", tr, tb);
+	}
+	if (write_tuning(name, ccm)) {
+		load_tuning(isp, f->sensor);
+		say("tuning: camera-%s.isp written; matrix %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f", name, ccm[0],
+		    ccm[1], ccm[2], ccm[3], ccm[4], ccm[5], ccm[6], ccm[7], ccm[8]);
 	}
 }
 
@@ -1537,6 +1732,9 @@ worker_body(void *context)
 		uint64_t t_stats = mach_absolute_time();
 		isp_measure(&isp, f, raw, &st);
 		isp_awb(&isp, &st);
+		if (s->frames % 15 == 0) {
+			tune_on_phone(&isp, f, raw);
+		}
 		if (f->sensor != tuned_for) {
 			tuned_for = f->sensor;
 			load_tuning(&isp, f->sensor);
@@ -1561,7 +1759,7 @@ worker_body(void *context)
 			/* /var/root/redwood-camera-turn, when there, overrides the kernel's (5 since 2026-11-12: the preview a
 			 * mirror, photographs and videos as others see you -- iOS turns those itself; the user checked all three) */
 			bool from_file = false;
-			FILE *tf = fopen("/var/root/redwood-camera-turn", "r");
+			FILE *tf = fopen(rw_path("redwood-camera-turn", (char[160]){0}, 160), "r");
 
 			if (tf != NULL) {
 				from_file = fscanf(tf, "%d", &turn) == 1;

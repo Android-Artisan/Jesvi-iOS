@@ -23,6 +23,7 @@ isp_init(struct isp *isp)
 	memset(isp, 0, sizeof(*isp));
 	isp->wb[0] = isp->wb[1] = isp->wb[2] = 1;
 	isp->digital = 1;
+	isp->digital_next = 1;
 	isp->zoom = 1;
 	for (int i = 0; i < 3; i++) {
 		isp->ccm[i][i] = 1;
@@ -217,9 +218,7 @@ isp_measure(const struct isp *isp, const struct redwood_camera_frame *f, const u
 bool
 isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_stats *s, struct redwood_camera_command *c)
 {
-	double now = (double)f->exposure_lines * f->gain / f->gain_unity * isp->digital, ratio, want;
-	double target = 0.15 * WHITE, mean = s->mean[1] * isp->digital > 0.5 ? s->mean[1] * isp->digital : 0.5;
-	double bright = s->bright * isp->digital;
+	double now, ratio, want, target, mean, bright, limit;
 	uint32_t fast = f->frame_lines_min - f->margin, longest = isp->max_frame_lines ? isp->max_frame_lines : 2 * f->frame_lines_min;
 	uint32_t lines, gain, frame_lines = 0;
 	double digital = 1;
@@ -227,6 +226,15 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 	if (isp->asked && (f->exposure_lines != isp->asked_lines || f->gain != isp->asked_gain)) {
 		return false;                   /* (the last change not in the frames yet) */
 	}
+	/*
+	 * The digital gain changes with the frame that has the sensor's new exposure, not when it is asked for (two
+	 * frames earlier): the picture stepped twice for every change (2026-11-12, "exposure goes in steps").
+	 */
+	isp->digital = isp->digital_next;
+	now = (double)f->exposure_lines * f->gain / f->gain_unity * isp->digital;
+	target = 0.15 * WHITE;
+	mean = s->mean[1] * isp->digital > 0.5 ? s->mean[1] * isp->digital : 0.5;
+	bright = s->bright * isp->digital;
 	/* (the measured levels are the sensor's: digital gain is applied to the picture only) */
 	ratio = target / mean;
 	if (bright * ratio > 0.9 * WHITE && bright > 0) {
@@ -236,7 +244,11 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 	if (ratio > 0.94 && ratio < 1.06) {
 		return false;
 	}
-	want = now * pow(ratio, 0.7);
+	/* small steps, a little larger when far off: up to 2.6 times at once showed as jumps */
+	want = pow(ratio, 0.7);
+	limit = ratio > 2 || ratio < 0.5 ? 1.5 : 1.15;
+	want = want > limit ? limit : want < 1 / limit ? 1 / limit : want;
+	want *= now;
 	if (want <= fast) {
 		lines = want < 4 ? 4 : (uint32_t)want;
 		gain = f->gain_unity;
@@ -286,7 +298,7 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 			gain = f->gain_unity;
 		}
 	}
-	isp->digital = (float)digital;
+	isp->digital_next = (float)digital;
 	isp->asked_lines = lines;
 	isp->asked_gain = gain;
 	isp->asked_frame_lines = frame_lines;
@@ -417,17 +429,31 @@ isp_set_ccm(struct isp *isp, const float m[9])
  * (per 10-bit step above black): out[c] = sum over j of m[c][j] * value[j] (each value lens-shaded).
  */
 struct pipe {
-	float           m[3][3];
+	float           wb[3];          /* white balance, digital gain and the curve's scale, per channel */
+	float           sat;            /* where the sensor clipped, after those: no channel above it */
+	float           m[3][3];        /* the colour matrix */
 	bool            identity;
 };
 
 static void
 pipe_init(const struct isp *isp, struct pipe *p)
 {
+	float lo = 1e9f;
+
 	p->identity = true;
+	for (int j = 0; j < 3; j++) {
+		p->wb[j] = isp->wb[j] * (isp->trim[j] > 0 ? isp->trim[j] : 1) * isp->digital * (LUT_WHITE / (float)WHITE);
+		lo = p->wb[j] < lo ? p->wb[j] : lo;
+	}
+	/*
+	 * Highlights white, not purple (2026-11-12): where the sensor clipped, green stops first and the white
+	 * balance's larger red and blue gains carry those past it -- magenta. Every channel stops where the
+	 * channel with the smallest gain clipped, so a clipped pixel stays neutral.
+	 */
+	p->sat = (WHITE - 8) * lo;
 	for (int c = 0; c < 3; c++) {
 		for (int j = 0; j < 3; j++) {
-			p->m[c][j] = isp->ccm[c][j] * isp->wb[j] * isp->digital * (LUT_WHITE / (float)WHITE);
+			p->m[c][j] = isp->ccm[c][j];
 			p->identity = p->identity && (c == j ? isp->ccm[c][j] == 1 : isp->ccm[c][j] == 0);
 		}
 	}
@@ -444,10 +470,16 @@ curve(const struct isp *isp, float v)
 static inline void
 pixel(const struct isp *isp, const struct pipe *p, float r, float g, float b, uint8_t *rgb)
 {
+	r *= p->wb[0];
+	g *= p->wb[1];
+	b *= p->wb[2];
+	r = r > p->sat ? p->sat : r;
+	g = g > p->sat ? p->sat : g;
+	b = b > p->sat ? p->sat : b;
 	if (p->identity) {
-		rgb[0] = curve(isp, r * p->m[0][0]);
-		rgb[1] = curve(isp, g * p->m[1][1]);
-		rgb[2] = curve(isp, b * p->m[2][2]);
+		rgb[0] = curve(isp, r);
+		rgb[1] = curve(isp, g);
+		rgb[2] = curve(isp, b);
 		return;
 	}
 	rgb[0] = curve(isp, p->m[0][0] * r + p->m[0][1] * g + p->m[0][2] * b);

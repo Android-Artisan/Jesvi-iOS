@@ -70,7 +70,9 @@ struct isp_tuning {
 
 struct isp {
 	float           wb[3];          /* the white balance's gains, green 1 */
+	float           trim[3];        /* a fixed correction of the white balance (0: none), per channel */
 	float           digital;        /* more gain, for what AE cannot reach with the sensor's */
+	float           digital_next;   /* the digital gain that goes with the exposure asked for, from its first frame */
 	float           zoom;           /* the picture is the middle 1/zoom of the sensor each way (1: the whole of it) */
 	bool            turned;         /* the picture turned half round (a sensor mounted the other way up) */
 	bool            mirror;         /* ... and/or mirrored left to right (each line from its end) */
