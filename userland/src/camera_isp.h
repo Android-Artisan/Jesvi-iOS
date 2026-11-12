@@ -15,6 +15,7 @@
 #include "redwood_camera.h"
 
 extern int isp_black;   /* the raw frames' black level, subtracted from every value */
+extern int isp_black4[4];       /* ... per site of the 2x2 cell: the rear's differ, and move with the gain */
 
 struct isp_stats {
 	double          mean[3];        /* R, G, B above black, in 10-bit steps */

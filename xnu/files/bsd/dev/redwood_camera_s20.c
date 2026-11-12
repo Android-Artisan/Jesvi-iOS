@@ -258,6 +258,10 @@ cam_s20_af_down(void)
 	cam_s20_af_pos = 0xffffffffU;
 }
 
+/* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
+ * the sensor's black level per site (2026-11-12) */
+static uint32_t cam_s20_rear_test_lines = 16384;
+
 /* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
 typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
 static redwood_s20_frame_fn cam_s20_stream_fn;
@@ -456,8 +460,10 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		}
 		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
 		/* a fixed indoor exposure for the test: 16384 of the mode's 22564 lines (~24 ms), analog gain 4x (0x20 = 1x) */
-		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0202, 0x4000) ||
-		    !cam_3j1_write16(&sensor_bus, 0x0204, 0x0080))) goto stream_done;
+		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)cam_s20_rear_test_lines) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0204, cam_s20_rear_test_lines == 3 ? 0x0080 : cam_s20_rear_test_lines == 4 ? 0x0100 :
+		    cam_s20_rear_test_lines == 5 ? 0x0200 : cam_s20_rear_test_lines < 16 ? 0x0020 : 0x0080))) goto stream_done;
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
 		if (rx_saved && cam_s20_stream_fn != NULL && cam_s20_optical_dma != NULL) {
@@ -887,6 +893,10 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const char *phase = "map";
 	bool saved = false, allocated = false, stopped = true, ended = false;
 	if (!cap) return;
+	if (rear) {
+		cam_s20_rear_test_lines = n > 1 && v[1] > 0 && v[1] < 60000 ? (uint32_t)v[1] : 16384;
+		sensor_mode = 2;
+	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
 	if (cam_s20_dma_quarantined) { phase = "previous DMA did not stop; reboot required"; goto report; }
 	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);

@@ -48,6 +48,7 @@ cell_places(uint32_t bayer, int *r, int *b)
 
 /* the sensor's black level (the camera's pedestal): 64 for the front SAK3J1, lower for the rear S5K2LD (camera_device.c) */
 int isp_black = 64;
+int isp_black4[4] = { 64, 64, 64, 64 };     /* per site of the 2x2 cell (row 0 x0, x1, row 1 x0, x1) */
 
 /* the four values of the cell at cx of the pair of lines from `top' (above black, 0 and up) */
 static inline void
@@ -56,10 +57,10 @@ cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
 	const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + stride;
 	unsigned o = (cx & 1) * 2;
 
-	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - isp_black;
-	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - isp_black;
-	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - isp_black;
-	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - isp_black;
+	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - isp_black4[0];
+	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - isp_black4[1];
+	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - isp_black4[2];
+	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - isp_black4[3];
 	for (int i = 0; i < 4; i++) {
 		v[i] = v[i] < 0 ? 0 : v[i];
 	}
@@ -764,7 +765,7 @@ unpack_line(const struct redwood_camera_frame *f, const uint8_t *raw, int y, int
 		const uint8_t *g = line + (x >> 2) * 5;
 
 		for (int i = 0; i < 4 && x + i < f->width; i++) {
-			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - (int)f->black;
+			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - isp_black4[(y & 1) * 2 + ((x + i) & 1)];
 
 			out[x + i] = v < 0 ? 0 : v;
 		}

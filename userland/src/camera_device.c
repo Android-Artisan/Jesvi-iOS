@@ -1882,10 +1882,10 @@ worker_body(void *context)
 
 				if (rear_black < 0 || ++looked % 150 == 0) {
 					FILE *bf = fopen(rw_path("redwood-rear-black", (char[160]){0}, 160), "r");
-					int v = 16;
+					int v = 64;
 
 					if (bf != NULL) {
-						if (fscanf(bf, "%d", &v) != 1) v = 16;
+						if (fscanf(bf, "%d", &v) != 1) v = 64;
 						fclose(bf);
 					}
 					rear_black = v;
@@ -1894,6 +1894,27 @@ worker_body(void *context)
 			}
 			isp_black = black;
 			fw->black = (uint32_t)black;
+			for (int k = 0; k < 4; k++) {
+				isp_black4[k] = black;
+			}
+			if (fw->width == 2016 && fw->gain_unity > 0) {
+				/*
+				 * The S5K2LD's black level per site against the analog gain, measured on dark frames (2 lines of
+				 * exposure, cam.s20.dma.test 2 N, 2026-11-12): Gr sinks from 63.5 at 1x to 30.4 at 16x while R, B and
+				 * Gb stay near 64 -- the shadows went purple and the picture green when one level was taken off all.
+				 */
+				static const float gains[4] = { 1, 4, 8, 16 };
+				static const float level[4][4] = { { 63.5f, 56.4f, 48.2f, 30.4f }, { 62.7f, 62.6f, 63.7f, 64.5f },
+					{ 65.3f, 65.2f, 67.4f, 70.2f }, { 64.1f, 63.7f, 64.0f, 63.9f } };
+				float g = (float)fw->gain / fw->gain_unity;
+				int seg = g <= 4 ? 0 : g <= 8 ? 1 : 2;
+				float t = (g - gains[seg]) / (gains[seg + 1] - gains[seg]);
+
+				t = t < 0 ? 0 : t > 1 ? 1 : t;
+				for (int k = 0; k < 4; k++) {
+					isp_black4[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
+				}
+			}
 		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
