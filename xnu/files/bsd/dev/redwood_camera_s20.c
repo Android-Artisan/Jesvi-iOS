@@ -195,7 +195,7 @@ redwood_camera_s20_rear_full(void)
 	if (full < 0) {
 		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
 		 * odd rows in 3 of 4 (laid out for Samsung's ISP: dual-pixel/PDAF), a green-red-blue checkerboard here */
-		uint32_t v = 0;   /* OFF: even with Samsung's retention sequence the 4032x3024 RAW10 is lit in 8 of 16 pixels per 4x4 (receiver: PD data interleaved?), 2026-11-12 */
+		uint32_t v = 1;   /* ON (2026-11-12): the full mode with the sensor's HDR off (0x021E); 0 = the binned 2016x1512 */
 
 		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
 		full = v != 0;
@@ -433,21 +433,28 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		(void)snprintf(stream_phase, sizeof(stream_phase), "mode %ux%u", cam_s20_rear_w, cam_s20_rear_h);
 		if (rear_full_now) {
 			/*
-			 * The full 4032x3024 the way Samsung's S20 driver runs it (is-cis-2ld.c, retention path): the full mode's
-			 * settings into the sensor's SRAM (setA full_retention, at 0x2001:BD00), retention armed (0x3000:0484,
-			 * 0x010E), a stream on/off with MIPI blocked, then the mode switch load_sram (it points 0x2000:0E1C at that
-			 * block, low noise off, 0x0118, the MIPI rate, frame length 0x2F80, MIPI on). The stand-alone 4032x3024
-			 * table gave a frame lit in half its pixels -- the dual-pixel layout -- through this receiver (2026-11-12).
+			 * The full 4032x3024 (setA A0). Its table turns the sensor's own HDR on (0x021E = 0x0100; the binned table
+			 * leaves 0): long and short exposures interleaved pixel by pixel for Samsung's ISP to merge -- through
+			 * ours one green was black, the other doubled, red and blue in alternating blocks (2026-11-12). Off
+			 * after the table: one exposure, a plain Bayer picture. (Samsung's retention sequence, tried the same
+			 * day with the same result, is kept: cam_s20_rear_ret=1.)
 			 */
-			if (!cam_3j1_apply(&sensor_bus, redwood_2ld_full_retention, REDWOOD_2LD_FULL_RETENTION_WORDS) ||
-			    !cam_3j1_write16(&sensor_bus, 0x6028, 0x3000) || !cam_3j1_write16(&sensor_bus, 0x602A, 0x0484) ||
-			    !cam_3j1_write16(&sensor_bus, 0x6F12, 0x0100) || !cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
-			    !cam_3j1_write16(&sensor_bus, 0x010E, 0x0100) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0000) ||
-			    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100) || !cam_3j1_write8(&sensor_bus, 0x0100, 0x00)) goto stream_done;
-			cam_s20_wait_ms(10);
-			if (!cam_3j1_write8(&sensor_bus, 0x0100, 0x00) ||
-			    !cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps_load_sram, REDWOOD_2LD_4032X3024_30FPS_LOAD_SRAM_WORDS))
+			uint32_t ret = 0;
+
+			(void)PE_parse_boot_argn("cam_s20_rear_ret", &ret, sizeof(ret));
+			if (ret) {
+				if (!cam_3j1_apply(&sensor_bus, redwood_2ld_full_retention, REDWOOD_2LD_FULL_RETENTION_WORDS) ||
+				    !cam_3j1_write16(&sensor_bus, 0x6028, 0x3000) || !cam_3j1_write16(&sensor_bus, 0x602A, 0x0484) ||
+				    !cam_3j1_write16(&sensor_bus, 0x6F12, 0x0100) || !cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
+				    !cam_3j1_write16(&sensor_bus, 0x010E, 0x0100) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0000) ||
+				    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100) || !cam_3j1_write8(&sensor_bus, 0x0100, 0x00)) goto stream_done;
+				cam_s20_wait_ms(10);
+				if (!cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps_load_sram,
+				    REDWOOD_2LD_4032X3024_30FPS_LOAD_SRAM_WORDS)) goto stream_done;
+			} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps, REDWOOD_2LD_4032X3024_30FPS_WORDS)) {
 				goto stream_done;
+			}
+			if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x021E, 0x0000)) goto stream_done;
 		} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
 		/*
 		 * What Samsung's sensor_2ld_cis_mode_change() writes after every mode table and we did not (2026-11-12): auto
@@ -462,6 +469,22 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			(void)PE_parse_boot_argn("cam_s20_rear_plain", &plain, sizeof(plain));
 			if (plain && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write8(&sensor_bus, 0x0E0B, 0x00) ||
 			    !cam_3j1_write16(&sensor_bus, 0x0B30, 0x0100))) goto stream_done;
+		}
+		{
+			/* what the sensor holds now: its mode's key registers read back (2026-11-12: "everything at register level") */
+			static const uint16_t regs[] = { 0x0340, 0x0342, 0x034C, 0x034E, 0x0900, 0x021E, 0x0B30, 0x0B80, 0x0E0B, 0x0310 };
+			char line[200] = "";
+			size_t at = 0;
+
+			(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
+			for (unsigned r = 0; r < sizeof(regs) / sizeof(regs[0]); r++) {
+				uint8_t a[2] = { (uint8_t)(regs[r] >> 8), (uint8_t)regs[r] }, v[2] = { 0, 0 };
+				bool okr = redwood_bbi2c_xfer(&sensor_bus, 0x10, a, 2, v, regs[r] == 0x0E0B ? 1 : 2);
+
+				at += (size_t)snprintf(line + at, sizeof(line) - at, " %04X=%s%02X%02X", regs[r], okr ? "" : "?",
+				    v[0], regs[r] == 0x0E0B ? 0 : v[1]);
+			}
+			printf("camera: rear %ux%u registers:%s\n", cam_s20_rear_w, cam_s20_rear_h, line);
 		}
 		if (rx_test) {
 			unsigned k, t;

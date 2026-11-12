@@ -3318,7 +3318,8 @@ exposure_limits(uint32_t *lines, uint32_t *gain, uint32_t *frame_lines)
 	uint32_t shortest = ios_mode->frame_length;
 
 	*gain = *gain < GAIN_UNITY ? GAIN_UNITY : *gain > GAIN_MAX ? GAIN_MAX : *gain;
-	*lines = *lines < 4 ? 4 : *lines > FRAME_LINES_MAX - EXPOSURE_MARGIN ? FRAME_LINES_MAX - EXPOSURE_MARGIN : *lines;
+	/* (16 lines at the least on the S20: Samsung's S5K2LD minimum coarse integration, is-cis-2ld.h) */
+	*lines = *lines < (s20_real ? 16u : 4u) ? (s20_real ? 16u : 4u) : *lines > FRAME_LINES_MAX - EXPOSURE_MARGIN ? FRAME_LINES_MAX - EXPOSURE_MARGIN : *lines;
 	if (*frame_lines == 0) {
 		*frame_lines = *lines + EXPOSURE_MARGIN > shortest ? *lines + EXPOSURE_MARGIN : shortest;
 	}
