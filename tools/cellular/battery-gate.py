@@ -20,11 +20,13 @@ def decode(text):
     if type(capacity) is not int or type(maximum) is not int or not 0 <= capacity <= maximum or maximum <= 0:
         raise ValueError('invalid battery capacity')
     percent = capacity * 100 / maximum
-    ready = (percent >= 10 and values['Voltage'] >= 3700 and values['Amperage'] > 0
-             and values['IsCharging'] is True and values['ExternalConnected'] is True)
+    power_ready = ((values['Amperage'] > 0 and values['IsCharging'] is True) or
+                   (percent >= 90 and values['Amperage'] >= 0))
+    ready = (percent >= 10 and values['Voltage'] >= 3700 and power_ready
+             and values['ExternalConnected'] is True)
     return dict(percent=percent, millivolts=values['Voltage'], milliamps=values['Amperage'],
                 charging=values['IsCharging'], external_power=values['ExternalConnected'], ready=ready,
-                requirement='at least10%,3700mV,external power and positive charging current')
+                requirement='at least10%,3700mV,external power; charging or near-full with nonnegative current')
 
 
 def main():

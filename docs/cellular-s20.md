@@ -770,3 +770,34 @@ pinned pcie-exynos9830-rc-cal.c (SHA256
 9d0c3a2442f79cb63a7b36e6d8d8c711a9fbdae1a787cbddfdfaf7f7cf3e8805), retaining
 repeats/lane offsets and attribution. This subsection alone is not a boot
 sequence.40 host Python tests plus existing sanitizer models now pass.
+
+### Live-first direction and helper — Nov12
+
+User asked to avoid wasted reboots and notify before restarts. Previous charge
+dispatcher had exited BEFORE flashing when B took the phone lock. Current live
+inventory:96%,4222mV,external power,0mA/noncharging near full; kernel provides
+generic debug r/w/m/sr/sw but no cellular/PCIe commands, no IOPCIDevice entries.
+Metadata snapshots: logs/cellular/live-inventory-20261112-100650. This inventory
+is not a PCIe MMIO test. Battery gate now accepts near-full noncharging state.
+
+New live-pcie helper uses the existing sysctl. Default --status reads only known
+prerequisites. --root-id requires CP off/unowned pins and enabled clocks; temporarily
+asserts PERST low, bypasses PHY isolation, selects input clock28, reads ROOT
+identity/status, then restores original clock/isolation/pin ownership. No link,
+ATU, endpoint, firmware, shared-clock or DMA writes. Phase output is flushed
+before I/O; live-run.py saves transcript/result, checks phone lock and charge,
+and never flashes/reboots. Timeout is unknown remote state: do not retry blindly.
+
+Build/signature verification pass. Host model:58 single failures before/after
+I/O effects, ownership refusal and permanent cleanup failure; sanitizer models
+and41 Python tests pass. Live hardware run remains pending phone handoff from B.
+Host model success is not proof of controller access.
+
+REA reference reviewed: git/morluto__rea at
+a01674377f1f2a0fed467035fddc25e90e74d75a, skill
+.agents/skills/reverse-engineer-anything/SKILL.md. Its routing says to use normal
+source tools for complete source-repository analysis. Our current PCIe questions
+have Samsung source; no MCP install/configuration, provider setup, target binary
+execution or credential changes were made. Shipped cbd/RIL analysis can use the
+native-artifact workflow if a source gap requires it; current firmware inventory
+did not locate those vendor executables/libraries.

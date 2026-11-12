@@ -33,7 +33,7 @@ Validated 2026-11-11:
 - Local S20 RADIO: BOOT/MAIN/APM/VSS/INFO CRCs all pass. NV bytes never read.
 - Existing saved boot: IPC overlaps loader staging by 8 MiB; packet region
   overlaps display pool by 64 KiB. Audit exits 1 as intended.
-- Host tests: **40 Python tests passed** plus **163,840** C allocator boundary
+- Host tests: **41 Python tests passed** plus **163,840** C allocator boundary
   comparisons under ASan/UBSan (`bash tools/cellular/check.sh`). Synthetic
   fixtures contain no vendor bytes.
 - Full ARM64 loader boots on the original UEFI. Opt-in `CELLULAR_RESERVE_CP=1`
@@ -132,3 +132,23 @@ unbounded expressions and out-of-window/unaligned offsets are refused. This is
 only the calibration subsection, not an executable initializer: common reset/
 PCS/controller stages remain separate. Repeated writes must not be deduplicated.
 Source attribution/license are retained in the output.
+
+### Live debugging (preferred; notify user before any restart)
+
+```sh
+bash tools/cellular/build-live.sh
+python3 tools/cellular/live-run.py --status
+# Separate, mutating CP-off root-port diagnostic after status/ownership review:
+python3 tools/cellular/live-run.py --root-id
+```
+
+Both device commands require the cellular phone lock. The wrapper uploads one
+signed helper, saves per-phase output under ignored logs/cellular, and removes
+it after confirmed completion. It has no reboot or flash path. --root-id checks
+charge, uses only four fixed write addresses, and restores saved settings.
+Signals request cleanup; a kernel MMIO stall can still prevent cleanup. Never
+retry a timeout without inspecting transcript and current phone state.
+
+Current checkpoint: builds/signature valid,41 Python tests and sanitizer models
+pass, including58 live-helper fault injections. Hardware execution pending.
+See cellular-flow.md for the updated batched-restart strategy.

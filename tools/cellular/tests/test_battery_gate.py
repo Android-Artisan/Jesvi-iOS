@@ -29,3 +29,8 @@ class BatteryGateTests(unittest.TestCase):
     def test_missing_or_duplicate_refused(self):
         for sample in ('', SAMPLE + '"Voltage" = 3900\n'):
             with self.assertRaises(ValueError): module.decode(sample)
+
+    def test_near_full_charge_can_idle_without_being_rejected(self):
+        full = SAMPLE.replace('Capacity" = 10\n', 'Capacity" = 96\n').replace('711','0').replace('IsCharging" = Yes','IsCharging" = No')
+        self.assertTrue(module.decode(full)['ready'])
+        self.assertFalse(module.decode(full.replace('= 96\n','= 20\n'))['ready'])

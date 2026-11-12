@@ -80,3 +80,38 @@ Other agents' kernel source/build trees remain untouched.
 
 Detailed pins, source revisions, commands, evidence and acceptance checklist:
 [cellular-s20.md](cellular-s20.md).
+
+## Live-first workflow (user direction, Nov12)
+
+```mermaid
+flowchart LR
+  A[Current iOS: battery, logs, debug commands] --> B[Live prerequisite snapshot]
+  B --> C[One CP-off PCIe root-port probe]
+  C --> D[Save phase and verified cleanup]
+  D --> E[Fix and rerun live where supported]
+  E --> F[Batch required kernel/loader changes]
+  F --> G[Notify user before one restart]
+  G --> H[Retain CP memory and add bounded SPI hooks]
+  H --> I[Iterate modem/link/IPC from live tools]
+```
+
+- No queued auto-reboot. Previous charge dispatcher exited before flashing on
+  phone lock handoff; do not restart it automatically.
+- Existing generic debug sysctl is sufficient for bounded status and CP-off
+  root-port controls. New signed live helper records each phase, uses masked
+  writes, restores clock/isolation/PERST, and reports unverified cleanup.
+- Live status is the first device check; the mutating root probe waits for the
+  normal phone lock. Camera currently owns it; a scheduling question is pending.
+- A timeout or disconnect is not proof of hardware failure; preserve transcript
+  and check charge/USB/kernel state before recovery or another attempt.
+- Live debugging does not make an unsafe register safe. Use source-derived
+  clock/power/ownership guards; keep CP off until its memory ownership is proven.
+- Current standard boot has not been shown to retain the CP carve-outs. Modem
+  execution/DMA needs the retained-reservation loader; reclaiming memory already
+  used by display/Wi-Fi/kernel is not a live operation. Batch this necessary
+  restart with any byte-PIO/debug hooks needed by the SPI backend.
+- Notify the user before every restart. No repeated boot for individual knobs.
+
+The live helper does not provide LTE. Remaining proof is unchanged: PCIe endpoint,
+MAIN/APM and modem ONLINE, transport/IPC, SIM/Jio registration, LTE packets, then
+IMS/VoLTE and two-way audio.
