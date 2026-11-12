@@ -4,6 +4,15 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
+- iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the
+  iPhone 14 Pro subtype (`artwork-device-subtype` 2556) and, as a 14 Pro's tree does, `/buttons home-button-type` 2.
+  Without the second, BaseBoard counts only subtype 2436 as buttonless and iOS acts like a home-button iPhone.
+  `island=` **1** (in x1slte.cmdline). Commits 1b25aa4, 7f188ae.
+- Tested: MobileGestalt ArtworkDeviceSubType 2556, HomeButtonType 2; pill shown, home-bar swipe and touch normal.
+- Switching it off: drop `island=1` AND delete MobileGestalt's cache (systemgroup.com.apple.mobilegestaltcache/
+  Library/Caches/com.apple.MobileGestalt.plist) before the reboot, or iOS keeps answering the old values.
+
 ## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
 - Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
   times on every buffer and zeroed 1.7 GB per buffer, so no sound reached the movie writer and every recording hung
