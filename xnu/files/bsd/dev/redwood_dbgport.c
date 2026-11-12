@@ -104,6 +104,39 @@ cp_memory_translation(vm_offset_t va)
     return par;
 }
 
+
+/* cp.s2mpu: Samsung's hypervisor lets the modem's PCIe block (HSI2, S2MPU instance 25, VID 0) read and
+ * write the two CP shared-memory regions, as s5100_poweron_pcie() does with exynos_set_dev_stage2_ap(
+ * "hsi2", 0, base, size, ATTR_RW) for every CP shmem region but MSI. Only with the loader's certificate;
+ * only these fixed regions; the hypervisor's return per region is reported. */
+#define CP_HVC_SET_S2MPU 0xc6000100ULL
+#define CP_S2MPU_HSI2    ((0ULL << 16) | 25ULL)
+#define CP_S2MPU_RW      3ULL
+static uint64_t
+cp_hvc5(uint64_t function,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4)
+{
+    register uint64_t x0 __asm__("x0")=function;
+    register uint64_t x1 __asm__("x1")=a1;
+    register uint64_t x2 __asm__("x2")=a2;
+    register uint64_t x3 __asm__("x3")=a3;
+    register uint64_t x4 __asm__("x4")=a4;
+    __asm__ volatile("dsb sy\n\thvc #0\n\tdsb sy" : "+r"(x0),"+r"(x1),"+r"(x2),"+r"(x3),"+r"(x4) : :
+        "x5","x6","x7","x8","x9","x10","x11","x12","x13","x14","x15","x16","x17","memory");
+    return x0;
+}
+static void
+cp_s2mpu_grant(void)
+{
+    static const uint64_t regions[][2]={{0xf0000000ULL,0x800000ULL},{0xd0000000ULL,0x4000000ULL}};
+    uint64_t ret[2];
+    if (!cp_memory_certified()) {
+        snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: missing/invalid loader reservation certificate; nothing granted\n");return;
+    }
+    for (unsigned i=0;i<2;i++) ret[i]=cp_hvc5(CP_HVC_SET_S2MPU,CP_S2MPU_HSI2,regions[i][0],regions[i][1],CP_S2MPU_RW);
+    snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: HSI2 RW f0000000+800000 ret %#llx, d0000000+4000000 ret %#llx\n",
+        (unsigned long long)ret[0],(unsigned long long)ret[1]);
+}
+
 /* Audit the existing direct-map alias first. No RAM read/write, new mapping,
  * HVC, CP power or DMA operation. A cached alias requires resolution before
  * a NormalNC mapping is allowed. The debug mutex serializes commands. */
@@ -242,6 +275,7 @@ run(const char *line)
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
     if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
+    if (strcmp(cmd,"cp.s2mpu")==0 && n==0) {cp_s2mpu_grant();return;}
     if (strcmp(cmd,"spi8.tx")==0) {
         const char *payload=line;while (*payload==' ') payload++;
         payload+=7;while (*payload==' ') payload++;

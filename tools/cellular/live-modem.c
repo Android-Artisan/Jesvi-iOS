@@ -147,6 +147,142 @@ static int inputs(uint32_t *value)
     if (read_word(0x15c30384,&active) || read_word(0x15c303c4,&wake) || read_word(0x15c303e4,&hold)) return -1;
     *value=(active&1)|((wake&1)<<1)|((hold&1)<<2);return 0;
 }
+
+/* ---- firmware download (A, 2026-11-12): legacy RAW queues in the reserved IPC memory, Samsung's
+ * link_start_normal_boot + xmit_to_legacy_link + cbd's SIPC UDL. Only with --download TOC. ---- */
+#include <sys/sysctl.h>
+#include "../../xnu/files/bsd/sys/redwood_cp_ipc.h"
+#include "s5123-udl.h"
+static const char *download_toc;
+static int ipc_mapped;
+#define RAW_TX_HEAD 0x18u
+#define RAW_TX_TAIL 0x1cu
+#define RAW_RX_HEAD 0x20u
+#define RAW_RX_TAIL 0x24u
+#define RAW_TX_BUF  0x3000u
+#define RAW_TX_SIZE 0x1fd000u
+#define RAW_RX_BUF  0x200000u
+#define RAW_RX_SIZE 0x200000u
+static int ipc_op(unsigned op,uint32_t offset,const void *in,uint32_t length,void *out)
+{
+    struct cp_ipc_request q={.version=CP_IPC_API,.op=op,.offset=offset,.length=length};
+    struct cp_ipc_reply r={0};size_t size=sizeof(r),qs=CP_IPC_HEADER;
+    if ((op==CP_IPC_WRITE || op==CP_IPC_STORE32) && in) {memcpy(q.data,in,length);qs+=length;}
+    if (op<=CP_IPC_UNMAP) q.length=0;
+    if (sysctlbyname("kern.redwood.cp_ipc",&r,&size,&q,qs)) return -1;
+    if (out && (op==CP_IPC_READ || op==CP_IPC_LOAD32)) memcpy(out,r.data,length);
+    return 0;
+}
+static int ipc_load(uint32_t off,uint32_t *v) {return ipc_op(CP_IPC_LOAD32,off,NULL,4,v);}
+static int ipc_store(uint32_t off,uint32_t v) {return ipc_op(CP_IPC_STORE32,off,&v,4,NULL);}
+static int ipc_write(uint32_t off,const uint8_t *d,uint32_t n)
+{
+    while (n) {uint32_t c=n>CP_IPC_CHUNK?CP_IPC_CHUNK:n;if (ipc_op(CP_IPC_WRITE,off,d,c,NULL)) return -1;off+=c;d+=c;n-=c;}
+    return 0;
+}
+static int ipc_read(uint32_t off,uint8_t *d,uint32_t n)
+{
+    while (n) {uint32_t c=n>CP_IPC_CHUNK?CP_IPC_CHUNK:n;if (ipc_op(CP_IPC_READ,off,NULL,c,d)) return -1;off+=c;d+=c;n-=c;}
+    return 0;
+}
+/* init_legacy_link + link_start_normal_boot: indices zero, access 1, magic BOOT */
+static int ipc_boot_init(void)
+{
+    if (ipc_op(CP_IPC_MAP,0,NULL,0,NULL)) {fprintf(stderr,"cellular live DL: IPC map refused\n");return -1;}
+    ipc_mapped=1;
+    for (uint32_t o=0;o<0x28;o+=4) if (ipc_store(o,0)) return -1;
+    if (ipc_store(4,1) || ipc_store(0,0x424f4f54u)) return -1;
+    uint32_t m=0,a=0;if (ipc_load(0,&m) || ipc_load(4,&a) || m!=0x424f4f54u || a!=1) return -1;
+    phase("IPC: queues zeroed, access 1, magic BOOT");return 0;
+}
+static int raw_send(const uint8_t *frame,uint32_t n)
+{
+    uint32_t in,out;
+    if (ipc_load(RAW_TX_HEAD,&in) || ipc_load(RAW_TX_TAIL,&out) || in>=RAW_TX_SIZE || out>=RAW_TX_SIZE) return -1;
+    uint32_t space=(out>in?out-in:RAW_TX_SIZE-in+out)-1;if (space<n) return -2;
+    uint32_t first=RAW_TX_SIZE-in<n?RAW_TX_SIZE-in:n;
+    if (ipc_write(RAW_TX_BUF+in,frame,first) || (n>first && ipc_write(RAW_TX_BUF,frame+first,n-first))) return -1;
+    __sync_synchronize();
+    return ipc_store(RAW_TX_HEAD,(in+n)%RAW_TX_SIZE);
+}
+/* one SIPC5 frame from RAW RX, waiting up to ms; returns length (0 = nothing) */
+static int raw_recv(uint8_t *buf,uint32_t cap,unsigned ms)
+{
+    uint64_t deadline=now_us(NULL)+(uint64_t)ms*1000;      /* (usleep(2000) sleeps far longer here: a clock, not a count) */
+    for (;;) {
+        if (now_us(NULL)>deadline || stopped) return 0;
+        uint32_t in,out;
+        if (ipc_load(RAW_RX_HEAD,&in) || ipc_load(RAW_RX_TAIL,&out) || in>=RAW_RX_SIZE || out>=RAW_RX_SIZE) return -1;
+        if (in!=out) {
+            uint8_t h[4];if (ipc_read(RAW_RX_BUF+out,h,4)) return -1;
+            uint32_t len=h[2]|(h[3]<<8),total=(len+7)&~7u;
+            if (len<4 || total>cap) {fprintf(stderr,"cellular live DL: RX head %x tail %x bad frame %02x %02x len %u\n",in,out,h[0],h[1],len);return -1;}
+            uint32_t first=RAW_RX_SIZE-out<total?RAW_RX_SIZE-out:total;
+            if (ipc_read(RAW_RX_BUF+out,buf,first) || (total>first && ipc_read(RAW_RX_BUF,buf+first,total-first))) return -1;
+            if (ipc_store(RAW_RX_TAIL,(out+total)%RAW_RX_SIZE)) return -1;
+            return (int)len;
+        }
+        usleep(2000);
+    }
+    return 0;
+}
+static int udl_step(unsigned stage,enum s5123_udl_op op,const uint8_t *frame,size_t n)
+{
+    uint8_t reply[64];
+    int e=raw_send(frame,(uint32_t)n);
+    if (e) {printf("cellular live DL: stage %u op %u: send error %d\n",stage,op,e);fflush(stdout);return -1;}
+    int got=raw_recv(reply,sizeof(reply),stage==1 && op==S5123_UDL_START?10000:3000);
+    {
+        uint32_t w[10];for (unsigned i=0;i<10;i++) ipc_load(i*4,&w[i]);
+        printf("cellular live DL: IPC header after:");for (unsigned i=0;i<10;i++) printf(" %08x",w[i]);printf("\n");fflush(stdout);
+    }
+    uint32_t th=0,tt=0,rh=0,rt=0;ipc_load(RAW_TX_HEAD,&th);ipc_load(RAW_TX_TAIL,&tt);ipc_load(RAW_RX_HEAD,&rh);ipc_load(RAW_RX_TAIL,&rt);
+    printf("cellular live DL: stage %u op %u: reply %d bytes; TX head %x tail %x (tail moves = CP consumed); RX head %x tail %x\n",
+        stage,op,got,th,tt,rh,rt);
+    if (got>0) {printf("cellular live DL: reply");for (int i=0;i<got && i<16;i++) printf(" %02x",reply[i]);printf("\n");}
+    fflush(stdout);
+    if (got<=0) return -1;
+    enum s5123_udl_ack a=s5123_udl_response(reply,(size_t)((got+7)&~7),stage,op);
+    printf("cellular live DL: stage %u op %u: %s\n",stage,op,a==S5123_UDL_ACK?"ACK":a==S5123_UDL_PEER_FAIL?"CP reports FAIL":"unexpected reply");
+    fflush(stdout);
+    return a==S5123_UDL_ACK?0:-1;
+}
+static int download_run(void)
+{
+    char response[8192];
+    phase("download: S2MPU grant (HSI2) for the CP shared memory");
+    if (request("cp.s2mpu",response)) return -1;
+    printf("cellular live DL: %s",response);fflush(stdout);
+    if (!strstr(response,"ret 0, d0000000+4000000 ret 0") && !strstr(response,"ret 0x0, d0000000+4000000 ret 0x0")) {
+        fprintf(stderr,"cellular live DL: hypervisor refused a grant; no DMA enable\n");return -1;
+    }
+    phase("download: root port + endpoint memory/bus master on (CP may now read/write its shared memory)");
+    if (request("m 0x13800004 0xfffffff9 0x6",response)) return -1;
+    printf("cellular live DL: root %s",response);
+    /* s51xx_pcie_probe: BAR0 = the board's pci_db_addr (DT 0x14d60000), then memory + bus master */
+    if (request("w 0x14ffe010 0x14d60000",response)) return -1;
+    printf("cellular live DL: endpoint BAR0 %s",response);
+    if (request("m 0x14ffe004 0xfff9 0x6",response)) return -1;
+    printf("cellular live DL: endpoint %s",response);fflush(stdout);
+    usleep(200000);
+    {
+        uint32_t w[10];for (unsigned i=0;i<10;i++) ipc_load(i*4,&w[i]);
+        printf("cellular live DL: IPC header before:");for (unsigned i=0;i<10;i++) printf(" %08x",w[i]);printf("\n");fflush(stdout);
+    }
+    uint8_t frame[S5123_UDL_WIRE_MAX];size_t n;int error=-1;
+    n=s5123_udl_command(frame,sizeof(frame),1,S5123_UDL_START,0);
+    if (n && !udl_step(1,S5123_UDL_START,frame,n)) {
+        uint8_t toc[800];size_t length=0;FILE *f=fopen(download_toc,"rb");
+        if (f) {length=fread(toc,1,sizeof(toc),f);fclose(f);}
+        if (length==800 && (n=s5123_udl_data(frame,sizeof(frame),1,800,1,toc,800)) && !udl_step(1,S5123_UDL_SEND,frame,n) &&
+            (n=s5123_udl_command(frame,sizeof(frame),1,S5123_UDL_DONE,0)) && !udl_step(1,S5123_UDL_DONE,frame,n)) {
+            phase("download: TOC stage complete (START, SEND, DONE acknowledged)");error=0;
+        }
+    }
+    request("m 0x14ffe004 0xfffb 0x0",response);request("m 0x13800004 0xfffffffb 0x0",response);
+    phase("download: bus master off again on both ends");
+    return error;
+}
 static int send_boot(void *context,const uint8_t *data,size_t length,uint32_t *completed)
 {
     struct modem *m=context;struct s5123_spi_result result={0};
@@ -157,6 +293,7 @@ static int send_boot(void *context,const uint8_t *data,size_t length,uint32_t *c
     printf("cellular live BOOT: PIO error %d io_error %d completed %u received %u packets %u elapsed_us %llu\n",
         error,m->spi.io_error,*completed,m->spi.received,result.packets,(unsigned long long)(now_us(NULL)-start));fflush(stdout);
     if (error || m->spi.io_error || *completed!=length) return -1;
+    if (download_toc && ipc_boot_init()) return -1;
     phase("observe CP input transitions for 4000ms; levels do not prove acceptance");
     uint32_t first,previous,changed=0,rising=0;
     if (inputs(&first)) return -1;previous=first;
@@ -174,6 +311,10 @@ static int send_boot(void *context,const uint8_t *data,size_t length,uint32_t *c
         printf("cellular live BOOT: PCIe error %d link_state %08x endpoint %08x command %08x (endpoint proof requires L0 and valid ID)\n",
             link_error,m->link.link_status,m->link.endpoint_id,m->link.endpoint_command);fflush(stdout);
         if (link_error) return -1;
+        if (download_toc) {
+            int dl=download_run();
+            printf("cellular live DL: result %d\n",dl);fflush(stdout);
+        }
     }
     return 0;
 }
@@ -191,6 +332,7 @@ static int park(void *context)
 static int restore(void *context)
 {
     struct modem *m=context;cleanup=1;int error=0;phase("restore SPI/clock/pad/AP ownership");
+    if (ipc_mapped) {ipc_op(CP_IPC_UNMAP,0,NULL,0,NULL);ipc_mapped=0;}
     if (link_requested && s5123_link_restore(&m->link)) error=1;
     if (m->controller_saved) {
         if (restore_word(0x10960000,0,1)) error=1;
@@ -237,8 +379,9 @@ static int read_file(const char *path,uint8_t *data,size_t capacity,size_t *leng
 }
 int main(int argc,char **argv)
 {
-    if ((argc!=4 && argc!=5) || strcmp(argv[1],"--reserved-base-verified")) return 2;
+    if ((argc<4 || argc>6) || strcmp(argv[1],"--reserved-base-verified")) return 2;
     if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
+    if (argc==6) {if (strcmp(argv[4],"--download")) return 2;link_requested=1;download_toc=argv[5];}
     uint8_t image[131073],info[25];size_t length,info_length;uint32_t fields[5];
     if (read_file(argv[2],image,sizeof(image),&length) || read_file(argv[3],info,sizeof(info),&info_length) ||
         info_length!=24 || memcmp(info,"S512",4)) return 2;

@@ -200,3 +200,33 @@ cp.memory command is expected to report outside physical aperture without
 calling phystokv. Future mapping should require certificate, disjoint kernel
 aperture, no generic-debug alias, then validate every new NormalNC translation.
 This narrows the alias issue; it is not yet a mapped IPC/backend proof.
+
+## Live firmware download, first attempts — Nov12 23:15-23:35 (session A, codex-cellular out of usage)
+
+Installed (two notified restarts, root/camera/GPU untouched): the reserving loader again (the 21:21 loader
+had been built without CELLULAR_RESERVE_CP: "reserved 3/3, normal-nc 3/3" back) and a kernel with
+`kern.redwood.poke "cp.s2mpu"`: HVC 0xc6000100, (VID0<<16)|HSI2 index 25, RW, for f0000000+800000 and
+d0000000+4000000 (not the MSI page f6200000), as s5100_poweron_pcie. Only with the loader certificate.
+
+`live-ipc --map-check` PASS (2048 Normal-NC pages, unmapped). `live-ipc --dump/--unmap` added.
+`live-modem --reserved-base-verified BOOT INFO --download TOC` (tools/cellular/live-modem.c): after SPI
+BOOT, init_legacy_link + BOOT magic (424f4f54, access 1, indices 0); after L0: cp.s2mpu, root and EP
+command MSE|BME, EP BAR0 = pci_db_addr 0x14d60000 (reads 14d00004: 64-bit BAR), then TOC START
+(fc d7 08 00 00 91 00 00) into RAW TX, head 0->8, poll RAW RX; bus master off again at the end.
+
+Results, twice, CP shut down after (second time by hand, see below):
+- SPI BOOT 64496 B OK, GPIO first 2 last 6 (WAKE high from the start, PS_HOLD rises; PHONE_ACTIVE never).
+- PCIe L0, endpoint a5a5144d; **hypervisor grants both regions: ret 0**; BME on both ends verified.
+- **CP never consumed**: RAW TX tail stays 0, RX head 0, nothing written anywhere in the header (dump).
+- The second run "hung": the RX wait counted usleep(2000) iterations, which sleep far longer on this
+  kernel -- fixed to a clock deadline. The process was killed; reset+power were set low by hand
+  (m 0x15c30124/0x15c30284 bit0 = 0), IPC unmapped with --unmap, then a plain restart reset PCIe/SPI.
+
+Not yet done that Samsung does before the UDL loop (next hypotheses, cheapest first, all live):
+1. EP MSI (cap 0x50/0x54/0x58) pointed at the RC's MSI target; CP may wait for it before polling.
+2. RC setup from dw_pcie_setup_rc: bus numbers (0x18), RC outbound MEM ATU for the BAR window, so the
+   AP->CP doorbell (s51xx_pcie_send_doorbell_int, int_pcie_link_ack) can be written; Samsung sends one
+   on every power-on after the first registration.
+3. Wait for CP2AP_WAKEUP edge after the magic (check_cp_status) before link; WAKE is high from the
+   first sample, so it may be a pull-up, not the CP.
+4. Read the S5123 BOOT image's strings/handshake (private analysis) for what it waits for.
