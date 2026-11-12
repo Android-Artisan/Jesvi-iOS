@@ -1456,6 +1456,9 @@ control_center_fades(const char *arguments)
 	method_setImplementation(add, (IMP)add_animation_cc);
 }
 
+/* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
+#include "island_sb.h"
+
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
  * it: without a prefix (or without ElleKit in it) the file is not there and this does nothing.
@@ -1533,6 +1536,7 @@ redwood_springboard_init(void)
 	 * this one opens it, the way a jailbreak's own hook does.
 	 */
 	mps_unsupported_returns_nil();
+	island_start();
 	load_tweaks();
 	/*
 	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output

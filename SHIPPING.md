@@ -5,9 +5,12 @@ args that control it (default in **bold**), and how it was tested on the phone. 
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
 ## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
-- RedwoodIsland tweak (`userland/src/island_tweak.m`, SpringBoard): pill top gap 5 pt instead of Apple's 11.33,
+- Pill width 81 pt ("iPhone 18 Pro" look, user-chosen). Known issue: charging banner cuts the "100" of "100%".
+- In libredwood-sb (`userland/src/island_sb.h`, with `island=1`): pill top gap 5 pt instead of Apple's 11.33,
   so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
-  Installed with `userland/island-install.sh`. Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
+  Cold boot verified: no SpringBoard aborts, hook in. (As a /var/jb tweak it crash-looped SpringBoard: doc.)
+  Live Activities: Clock timer and stopwatch show in the island (user-verified; the first one after boot can be slow).
+  Same boot image: `init` clears MobileGestalt's cache when `island=` changes (verified: marker written). Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
 
 ## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
 - iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the

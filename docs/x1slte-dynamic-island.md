@@ -35,23 +35,39 @@ keeps the last boot's flag in `/var/db/redwood-island` and removes that cache wh
 MobileGestalt rebuilds it from the new tree. (This needs a root image built with that `init`; with an
 older one, delete the cache by hand before the reboot.)
 
-## Pill position and size (RedwoodIsland tweak)
+## Pill position and size (in libredwood-sb)
 
 iOS 16.5 hard-codes the pill in SpringBoardUIServices (14 Pro numbers): size 125.33 x 36.67 pt and top gap
-11.33 pt (`-[SBUISystemApertureLayoutMetrics _minimumScreenEdgeInset]`). `RedwoodIsland.dylib`
-(`userland/src/island_tweak.m`), loaded into SpringBoard by our tweak loader from
-`/var/jb/Library/MobileSubstrate/DynamicLibraries`, replaces those two methods.
+11.33 pt (`-[SBUISystemApertureLayoutMetrics _minimumScreenEdgeInset]`). `userland/src/island_sb.h`,
+part of libredwood-sb (SpringBoard's library on the boot image), replaces those two methods from the main
+queue once SpringBoard runs, only with `island=1`.
 
 | Setting | Default | Apple |
 | --- | --- | --- |
 | top gap `y` | **5 pt** (pill covers the top of the S20 hole; user-checked 2026-11-12) | 11.33 |
-| width `w` | Apple's | 125.33 (~81 = "iPhone 18 Pro" -35%) |
+| width `w` | **81 pt** ("iPhone 18 Pro" look, user-chosen; in the conf now, built-in from the next boot image) | 125.33 |
 | height `h` | Apple's | 36.67 |
 
-Override in `/var/jb/etc/redwood-island.conf` (one line, e.g. `y=5 w=81`; `off` = Apple's pill), then
-respring; no reboot. Install/update: `CLAUDE_SESSION=NAME userland/island-install.sh ["y=5 w=81"]`
-(phone lock holder only). Log: `/var/mobile/Library/Logs/redwood-island.log`.
-1 pt on the S20 panel ~ 0.18 mm (iOS 1125x2436 stretched to 1440x3200).
+Override in `/var/jb/etc/redwood-island.conf` (e.g. `y=5 w=81`; `off` = Apple's pill), then respring.
+Log: `/var/mobile/Library/Logs/redwood-island.log`. 1 pt on the S20 panel ~ 0.18 mm.
+
+Not as a /var/jb tweak: any library from /var/jb loaded into SpringBoard fails the kernel's
+`map_with_linking_np` code-signature check and costs SpringBoard its CS_VALID; if that lands before
+SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking or loading
+SpringBoardUI.framework" and SpringBoard crash-loops (timing-dependent). (userland/src/island_tweak.m
+and island-install.sh are that withdrawn version.)
+
+## Known issue
+
+With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
+checked at Apple's width. Likely the trailing label is laid out against the narrower sensor region.
+
+## Live Activities
+
+The Clock timer shows in the island (user-verified 2026-11-12, after a cold boot). The first one after a boot
+can take a while to appear (the Live Activity services are still starting), so give it a moment before
+calling it broken. The stopwatch shows too (user-verified).
+Live log on the phone: `ssh s20 /var/jb/usr/bin/oslog` (Procursus `oslog`, installed 2026-11-12).
 
 ## Checking it
 
