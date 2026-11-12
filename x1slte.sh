@@ -65,7 +65,12 @@ cmd_kernel() {
 		trap '"$HOME/ios-port-research/tools/team.sh" unlock "'"$who"'" build >/dev/null' EXIT
 	fi
 	touch out/.kernel-start
-	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k > out/kernel-build.log 2>&1 || true
+	local build_rc=0
+	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k build > out/kernel-build.log 2>&1 || build_rc=$?
+	if [ "$build_rc" -ne 0 ]; then
+		tail -n 35 out/kernel-build.log >&2
+		die "kernel build failed (exit $build_rc); refusing stale kernel artifact"
+	fi
 	if grep -E '^[^ ]*\.(c|cpp|s|h):[0-9]+:[0-9]+: (fatal error|error|warning):' out/kernel-build.log; then
 		die "compiler errors/warnings above (full log: out/kernel-build.log)"
 	fi

@@ -18,6 +18,7 @@
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <kern/locks.h>
+#include <sys/redwood_spi8_debug.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
@@ -121,6 +122,46 @@ parse(const char *s, char *cmd, size_t cmdlen, uint64_t *v, unsigned max)
 	return n;
 }
 
+#ifdef GENERIC_GIC_V2_IRQ
+/* Fixed SPI16 byte FIFO bursts, no DMA. Complete input validation before I/O.
+ * The caller holds dbgport_mtx; TX requires channels off and enough FIFO room.
+ * RX reads exactly the requested bytes from the same FIFO address.
+ */
+static void
+spi8_command(int transmit,const char *hex,uint64_t requested)
+{
+    uint8_t data[64];
+    unsigned count=transmit?spi8_decode(hex,data):(requested>=1&&requested<=64?(unsigned)requested:0);
+    if (!count) {snprintf(out_buf,sizeof(out_buf),"spi8: invalid byte count/hex\n");return;}
+    volatile uint32_t *usi=(volatile uint32_t *)pmap_pa(0x10721048);
+    volatile uint32_t *gate0=(volatile uint32_t *)pmap_pa(0x107020fc);
+    volatile uint32_t *gate1=(volatile uint32_t *)pmap_pa(0x1070208c);
+    if (!usi || !gate0 || !gate1 || *usi!=2 || !(*gate0&(1u<<21)) || !(*gate1&(1u<<21))) {
+        snprintf(out_buf,sizeof(out_buf),"spi8: USI/clock guard refused\n");return;
+    }
+    volatile uint8_t *base=pmap_pa(0x10960000);
+    if (!base) {snprintf(out_buf,sizeof(out_buf),"spi8: unmappable\n");return;}
+    uint32_t mode=*(volatile uint32_t *)(base+8),channel=*(volatile uint32_t *)base;
+    uint32_t status=*(volatile uint32_t *)(base+0x14);
+    if (!spi8_fifo_ready(*usi,mode,channel,status,count,transmit)) {
+        snprintf(out_buf,sizeof(out_buf),"spi8: FIFO/mode/channel guard refused\n");return;
+    }
+    if (transmit) {
+        for (unsigned i=0;i<count;i++) *(volatile uint8_t *)(base+0x18)=data[i];
+        __asm__ volatile ("dsb sy" ::: "memory");
+        snprintf(out_buf,sizeof(out_buf),"spi8.tx: wrote %u\n",count);
+    } else {
+        size_t offset=0;
+        for (unsigned i=0;i<count;i++) {
+            uint8_t value=*(volatile uint8_t *)(base+0x1c);
+            offset+=(size_t)snprintf(out_buf+offset,sizeof(out_buf)-offset,"%02x",value);
+        }
+        __asm__ volatile ("dsb sy" ::: "memory");
+        snprintf(out_buf+offset,sizeof(out_buf)-offset,"\n");
+    }
+}
+#endif
+
 static void
 run(const char *line)
 {
@@ -130,6 +171,14 @@ run(const char *line)
 	size_t cap = sizeof(out_buf), o = 0;
 
 	out_buf[0] = 0;
+#ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"spi8.tx")==0) {
+        const char *payload=line;while (*payload==' ') payload++;
+        payload+=7;while (*payload==' ') payload++;
+        spi8_command(1,payload,0);return;
+    }
+    if (strcmp(cmd,"spi8.rx")==0) {spi8_command(0,"",n==1?v[0]:0);return;}
+#endif
 	if (strcmp(cmd, "r") == 0 && n >= 1) {
 		unsigned cnt = n >= 2 ? (unsigned)v[1] : 1;
 
