@@ -19,6 +19,7 @@
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
 #include "redwood_camera_s20_3j1.h"
+#include "redwood_camera_s20_2ld.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
@@ -128,9 +129,18 @@ cam_s20_smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
  * (LDO2/3/5) and S2MPB02 (BUCK2/LDO1/LDO14). Only enable bits are changed; all originals are
  * restored even after a NACK or failed readback. No sensor configuration register is written.
  */
+static bool cam_3j1_write16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t value);
+static bool cam_3j1_read8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t *value);
+static bool cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count);
+
 static void
-cam_s20_identify(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
+cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
+	/* v[0] 1: after the ID, Samsung's global A3 table, the 2016x1512 30 fps mode, stream on for ~0.5 s with the
+	 * sensor's own frame counter read (no receiver involved), stream off -- does the rear sensor stream at all */
+	bool stream_test = n > 0 && v[0] == 1;
+	uint8_t fc[4] = { 0 };
+	char stream_phase[48] = "";
 	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 4 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
@@ -221,6 +231,27 @@ cam_s20_identify(__unused const uint64_t *v, __unused unsigned n, char *out, siz
 			ok = redwood_bbi2c_xfer(&sensor_bus, 0x10, b, sizeof(b), rev, sizeof(rev));
 		}
 	}
+	if (ok && stream_test) {
+		/* (Samsung picks Global_A3 for revision 0xA301: is-cis-2ld.c) */
+		uint64_t t0 = mach_absolute_time(), ns;
+
+		(void)snprintf(stream_phase, sizeof(stream_phase), "global A3");
+		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
+		(void)snprintf(stream_phase, sizeof(stream_phase), "mode 2016x1512");
+		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
+		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
+		for (i = 0; i < 4; i++) {
+			cam_s20_wait_ms(i == 0 ? 50 : 150);
+			(void)cam_3j1_read8(&sensor_bus, 0x0005, &fc[i]);
+		}
+		(void)cam_3j1_write16(&sensor_bus, 0x0100, 0x0000);
+		cam_s20_wait_ms(40);
+		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+		(void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
+	}
+stream_done:
 cleanup:
 	/* Stop clock and hold reset low before taking supplies away. */
 	(void)redwood_gpio_set(reset, 0, 0);
@@ -251,8 +282,8 @@ cleanup:
 	redwood_gpio_restore(mclk, 0, mclk_con & mask_mclk, mclk_pud & mask_mclk, mclk_dat & 1U);
 	if (pmic03_ready) redwood_bbi2c_restore(&cam_pmic03_bus);
 	if (ok) {
-		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"ok\",\"model_id\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"state_restored\":true}\n",
-		    id[0], id[1], rev[0], rev[1]);
+		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"ok\",\"model_id\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"stream\":\"%s\",\"frame_count\":[%u,%u,%u,%u],\"state_restored\":true}\n",
+		    id[0], id[1], rev[0], rev[1], stream_test ? stream_phase : "not asked", fc[0], fc[1], fc[2], fc[3]);
 	} else {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"error\",\"phase\":\"%s\",\"acked\":\"%s\",\"state_restored\":true}\n", phase, acked);
 	}
@@ -2298,7 +2329,7 @@ redwood_exynos_camera_s20_init(void)
 	/* printf is not included in the phone's HTTP /log stream. Return snapshots
 	 * over the existing root-only kern.redwood.poke interface instead. */
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
-	redwood_dbgport_add("cam.s20.id", ": one-shot rear S5K2LD model/revision read; camera rail enable bits and pins are restored", cam_s20_identify);
+	redwood_dbgport_add("cam.s20.id", " [1]: one-shot rear S5K2LD model/revision read (1: then its tables, ~0.5 s of streaming read by its frame counter); rails and pins restored", cam_s20_identify);
 	redwood_dbgport_add("cam.s20.front.id", ": one-shot front SAK3J1 model/revision read; camera rail enable bits and pins are restored", cam_s20_front_identify);
 	redwood_dbgport_add("cam.s20.dma.test", ": [0|1 [sensor-mode]]: bounded DMA capture, 0 hardware pattern, 1 front sensor; refuses busy DMA", cam_s20_dma_pattern);
 	redwood_dbgport_add("cam.s20.csis1", ": read-only CSIS1 and DMA1 version/status/counter snapshot", cam_s20_csis_inventory);
