@@ -279,7 +279,7 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 
 		if (g > (double)f->gain_max / f->gain_unity) {
 			digital = g / ((double)f->gain_max / f->gain_unity);
-			digital = digital > 4 ? 4 : digital;
+			digital = digital > 2 ? 2 : digital;   /* (2x at the most: beyond it a dark room was only coloured noise, 2026-11-12) */
 			g = (double)f->gain_max / f->gain_unity;
 		}
 		gain = (uint32_t)(g * f->gain_unity);
@@ -300,7 +300,7 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 
 			if (g > gmax) {
 				digital *= g / gmax;
-				digital = digital > 4 ? 4 : digital;
+				digital = digital > 2 ? 2 : digital;   /* (2x at the most: beyond it a dark room was only coloured noise, 2026-11-12) */
 				g = gmax;
 			}
 			gain = (uint32_t)g;
