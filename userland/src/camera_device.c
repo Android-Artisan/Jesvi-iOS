@@ -1727,7 +1727,8 @@ worker_body(void *context)
 	int next_buffer = 0;
 	struct render_handoff *h = calloc(1, sizeof(*h));
 	pthread_t drawer;
-	bool drawer_up = false, asked_binned = false;
+	bool drawer_up = false, asked_binned = false, asked_sensor = false;
+	unsigned skipped_other = 0;
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
 	float lux = -1, cct = -1;
@@ -1799,10 +1800,22 @@ worker_body(void *context)
 					struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
 						.b = want_rear ? 2 : 0 };
 
-					asked_binned = true;
-					say("the kernel's frames are the %s's: the %s's asked for", rear_frames ? "rear main" : "front sensor",
-					    want_rear ? "rear main" : "front sensor");
-					(void)write(device, &rc, sizeof(rc));
+					/*
+					 * Asked ONCE, and then the other sensor's frames are passed over until this one's come: the
+					 * switch takes the kernel's next session, and the header right after the request was still
+					 * the old sensor's. Taken as this camera's, it sized the buffers for 3648x2736, every rear
+					 * frame (2016x1512) was then a short read, and five of those ended the stream with no picture
+					 * ("failed to switch", 2026-11-12).
+					 */
+					if (!asked_sensor) {
+						asked_sensor = true;
+						say("the kernel's frames are the %s's: the %s's asked for", rear_frames ? "rear main" : "front sensor",
+						    want_rear ? "rear main" : "front sensor");
+						(void)write(device, &rc, sizeof(rc));
+					} else if (++skipped_other % 30 == 1) {
+						say("still the %s's frames (%u passed over): waiting for the %s", rear_frames ? "rear main" : "front sensor",
+						    skipped_other, want_rear ? "rear main" : "front sensor");
+					}
 					continue;
 				}
 			}
@@ -1852,6 +1865,23 @@ worker_body(void *context)
 			if (n < 0 && errno == EIO) {
 				say("the kernel's camera has had a fault: no more frames");
 				break;
+			}
+			if (n > (ssize_t)sizeof(head)) {
+				/* a whole frame of another size (the sensor changed under us): not a failure; the buffers go and
+				 * the next header says the size (as for the frames of another size below) */
+				const struct redwood_camera_frame *fh = (const void *)buffer;
+
+				say("a frame of %zd bytes (%ux%u) where %zu were expected: the buffers are made again", n,
+				    fh->width, fh->height, bytes);
+				if (drawer_up) {
+					render_wait(h);
+				}
+				free(buffers[0]);
+				free(buffers[1]);
+				buffers[0] = buffers[1] = NULL;
+				buffer = NULL;
+				next_buffer = 0;
+				continue;
 			}
 			failures += n < 0 && errno == EAGAIN ? 0 : 1;
 			continue;
