@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include "redwood_camera.h"
 
+struct isp;
+void isp_set_tone(struct isp *isp, float contrast);
 extern int isp_black;   /* the raw frames' black level, subtracted from every value */
 extern int isp_black4[4];       /* ... per site of the 2x2 cell: the rear's differ, and move with the gain */
 

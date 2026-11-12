@@ -28,10 +28,22 @@ isp_init(struct isp *isp)
 	for (int i = 0; i < 3; i++) {
 		isp->ccm[i][i] = 1;
 	}
+	isp_set_tone(isp, 0);
+}
+
+/*
+ * The tone curve: sRGB's, then an S of `contrast' (0 none, 1 smoothstep) -- the iPhone's and Samsung's pictures have
+ * more contrast than the plain sRGB curve, which looked flat and washed out (user, 2026-11-12: "gamma messed up").
+ */
+void
+isp_set_tone(struct isp *isp, float contrast)
+{
 	for (int i = 0; i < 4096; i++) {
 		double v = i >= LUT_WHITE ? 1 : (double)i / LUT_WHITE;
 
 		v = v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1 / 2.4) - 0.055;
+		v = v + contrast * (v * v * (3 - 2 * v) - v);
+		v = v < 0 ? 0 : v > 1 ? 1 : v;
 		isp->gamma[i] = (uint8_t)(v * 255 + 0.5);
 	}
 }

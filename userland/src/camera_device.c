@@ -1740,6 +1740,18 @@ worker_body(void *context)
 		return NULL;
 	}
 	isp_init(&isp);
+	{
+		/* the tone curve's contrast (redwood-contrast in the tuning directory, 0 to 1; 0.35 if absent) */
+		FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");
+		float contrast = 0.35f;
+
+		if (cf != NULL) {
+			if (fscanf(cf, "%f", &contrast) != 1) contrast = 0.35f;
+			fclose(cf);
+		}
+		isp_set_tone(&isp, contrast);
+		say("tone: contrast %.2f", contrast);
+	}
 	/*
 	 * The white balance where the last stream left it, and a quick one for the first frames: from gains of 1 every
 	 * start was green for a second or two (the raw frame's green is the strongest; 2026-11-12).
