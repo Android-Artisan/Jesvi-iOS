@@ -131,6 +131,7 @@ cam_s20_smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
  */
 static bool cam_3j1_write16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t value);
 static bool cam_3j1_read8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t *value);
+static bool cam_3j1_write8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t value);
 static bool cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count);
 static uint64_t cam_s20_smc4(uint64_t fn, uint64_t a, uint64_t b, uint64_t c);
 
@@ -175,6 +176,16 @@ cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
 	delay_for_interval(200, NSEC_PER_USEC);
 }
 
+/* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
+typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
+static redwood_s20_frame_fn cam_s20_stream_fn;
+static const volatile uint8_t *cam_s20_stream_buf[2];
+static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
+static volatile bool cam_s20_exp_pending;
+static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
+static bool cam_s20_stream_cached;
+static volatile uint8_t *cam_s20_optical_dma;
+
 static void
 cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -194,7 +205,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	static const uint32_t rx_phy_offs[16] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x30, 0x34, 0x40, 0x64, 0x68, 0x00 };
 	uint8_t fc[4] = { 0 };
 	char stream_phase[48] = "";
-	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 4 };
+	/* half_us 2 (~120 kHz): the 7354-write global table took ~4.5 s at 4; the S5K2LD takes fast-mode I2C */
+	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
 	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
@@ -366,6 +378,61 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		    !cam_3j1_write16(&sensor_bus, 0x0204, 0x0080))) goto stream_done;
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
+		if (rx_saved && cam_s20_stream_fn != NULL && cam_s20_optical_dma != NULL) {
+			/*
+			 * The rear main streaming to /dev/redwood-camera: the front's loop (cam_s20_front_stream_probe) on WDMA2.
+			 * Frame end -> the finished slot (even buffer 0, odd buffer 1) -> cam_s20_stream_fn; exposure asked for
+			 * is written in an SMIA group hold between frames.
+			 */
+			volatile uint8_t *s_cmn = cam_s20_optical_dma + 0x3400, *s_vc = cam_s20_optical_dma + 0x3000;
+			uint32_t idle = 0;
+
+			for (;;) {
+				uint32_t st = cam_s20_rd(s_cmn, 8);
+
+				if ((st & (1U << 4)) && !(st & (1U << 8))) {
+					cam_s20_wr(s_cmn, 8, 1U << 4);
+					st &= ~(1U << 4);
+				}
+				if (st & (1U << 8)) {
+					uint32_t p0 = (cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU, st2 = cam_s20_rd(s_cmn, 8), ptr;
+					bool more;
+
+					if (st & (1U << 4)) ptr = (p0 + 31U) & 0x1fU;
+					else if (!(st2 & (1U << 4))) ptr = p0;
+					else ptr = (((cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU) + 31U) & 0x1fU;
+					cam_s20_wr(s_cmn, 8, (st | st2) & 0x01111110U);
+					if (st & 0x01101000U) cam_s20_stream_errors++;
+					if (cam_s20_stream_cached) {
+						vm_offset_t line = (vm_offset_t)cam_s20_stream_buf[ptr & 1] & ~(vm_offset_t)63;
+						vm_offset_t end = (vm_offset_t)cam_s20_stream_buf[ptr & 1] + cam_s20_stream_bytes;
+
+						for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
+						__asm__ volatile ("dsb sy" ::: "memory");
+					}
+					more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 2016, 1512, ((2016 * 10 / 8) + 15) & ~15U);
+					cam_s20_stream_frames++;
+					idle = 0;
+					if (cam_s20_exp_pending) {
+						uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
+
+						cam_s20_exp_pending = false;
+						(void)cam_3j1_write8(&sensor_bus, 0x0104, 1);
+						if (ef) (void)cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)ef);
+						(void)cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)el);
+						(void)cam_3j1_write16(&sensor_bus, 0x0204, (uint16_t)eg);
+						(void)cam_3j1_write8(&sensor_bus, 0x0104, 0);
+					}
+					if (!more) break;
+				} else {
+					if (++idle > 2000) break;
+					cam_s20_wait_ms(1);
+				}
+			}
+			/* memory output off before the sensor goes down */
+			cam_s20_wr(cam_s20_optical_dma, 0x3000, 0);
+			cam_s20_wr(cam_s20_optical_dma, 0x3414, 1);
+		} else
 		for (i = 0; i < 4; i++) {
 			unsigned w;
 
@@ -584,7 +651,6 @@ cam_s20_cached_cmd(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    redwood_camera_cached_enable ? "cached" : "write-combined");
 }
 static bool cam_s20_dma_quarantined;
-static volatile uint8_t *cam_s20_optical_dma;
 static void cam_s20_front_stream_probe(const uint64_t *, unsigned, char *, size_t);
 static LCK_GRP_DECLARE(cam_frame_group, "s20_camera_frame");
 static LCK_MTX_DECLARE(cam_frame_lock, &cam_frame_group);
@@ -639,18 +705,14 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
  * (its 32 frame-pointer slots, even/odd) and every finished frame is handed to the callback until it returns false.
  */
 /* data: one frame of MIPI RAW10 (four pixels in five bytes), `stride' bytes from one line to the next */
-typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
-static redwood_s20_frame_fn cam_s20_stream_fn;
-static const volatile uint8_t *cam_s20_stream_buf[2];
-static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
-static volatile bool cam_s20_exp_pending;
-static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
-static bool cam_s20_stream_cached;
 /* the stream's sensor mode: full 3648x2736 (Samsung's 3648x2736_30fps, FULL MIPI PLL) or the 2x2-binned 1824x1368 */
 static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
 void redwood_camera_s20_set_full(bool full) { cam_s20_full = full; }
+/* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
+static bool cam_s20_rear;
+void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
 
 /*
  * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
@@ -746,7 +808,7 @@ static void cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t
 bool
 redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 {
-	uint64_t args[2] = { 1, 14 };
+	uint64_t args[2] = { cam_s20_rear ? 2 : 1, 14 };
 	if (fn == NULL || cam_s20_stream_fn != NULL) return false;
 	cam_s20_stream_frames = cam_s20_stream_errors = 0;
 	cam_s20_stream_fn = fn;
@@ -764,7 +826,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const bool full_frames = optical && !rear && cam_s20_stream_fn != NULL && cam_s20_full;
 	const uint32_t width = rear ? 2016 : optical ? (full_frames ? 3648 : 1824) : 320;
 	const uint32_t height = rear ? 1512 : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
-	const bool stream = optical && !rear && cam_s20_stream_fn != NULL;
+	const bool stream = optical && cam_s20_stream_fn != NULL;
 	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
 	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
 	 * /dev/redwood-camera hands out, so a frame is one copy. The bounded tests keep 16-bit pixels (format 6). */
@@ -883,7 +945,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		if (rear) {
 			uint64_t rx = 2;
 
+			cam_s20_optical_dma = dma;
 			cam_s20_identify(&rx, 1, sensor_report, sizeof(sensor_report));
+			cam_s20_optical_dma = NULL;
 		} else {
 			cam_s20_optical_dma = dma;
 			cam_s20_front_stream_probe(&sensor_mode, 1, sensor_report, sizeof(sensor_report));

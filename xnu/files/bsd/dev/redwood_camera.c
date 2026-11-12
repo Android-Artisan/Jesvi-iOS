@@ -3262,6 +3262,8 @@ static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode inst
  * boot-arg cam_turn), so the orientation can be settled on the phone without a new image */
 extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
 extern void redwood_camera_s20_set_full(bool full);
+extern void redwood_camera_s20_set_rear(bool rear);
+static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
 #define GAIN_MAX                (s20_real ? 0x200 : hw->gain_max)
@@ -4163,6 +4165,8 @@ ios_select(unsigned index, uint32_t mode_n)
 		{ 3648, 2736, 0, 0, 4, 0, 9, 807720000, 9384, 2864, 30000, RAW10_DT },
 		/* SAK3J1 2x2-binned 1824x1368 at 30: line length 0x4940, frame length 0x597 (cam_s20_full=0) */
 		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
+		/* the rear main S5K2LD 2016x1512 at 30 (Samsung setA): line length 0x08e0, frame length 0x5824; C-PHY 3 trios */
+		{ 2016, 1512, 0, 0, 4, 0, 9, 1537927680, 2272, 22564, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
@@ -4171,10 +4175,16 @@ ios_select(unsigned index, uint32_t mode_n)
 	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
 	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
 	 */
-	if (s20_real && fake && mode_n <= 1) {
-		s20_full = mode_n == 0;
-		redwood_camera_s20_set_full(s20_full);
-		say("camera: the S20's front sensor in its %s mode from the next session\n", s20_full ? "full 3648x2736" : "binned 1824x1368");
+	if (s20_real && fake && mode_n <= 2) {
+		/* mode 2: the rear main (S5K2LD) instead of the front, asked for by libredwood-media's Back Camera */
+		s20_rear_now = mode_n == 2;
+		if (!s20_rear_now) {
+			s20_full = mode_n == 0;
+			redwood_camera_s20_set_full(s20_full);
+		}
+		redwood_camera_s20_set_rear(s20_rear_now);
+		say("camera: the S20's %s from the next session\n", s20_rear_now ? "rear main S5K2LD 2016x1512" :
+		    s20_full ? "front sensor, full 3648x2736" : "front sensor, binned 1824x1368");
 		mode_n = 0;
 	}
 	select_sensor(index);
@@ -4187,7 +4197,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		}
 		ctab = &fake_head;
 		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
-		ctab_modes = s20_real ? s20_modes + (s20_full ? 0 : 1) : fake_modes;
+		ctab_modes = s20_real ? s20_modes + (s20_rear_now ? 2 : s20_full ? 0 : 1) : fake_modes;
 		ctab_tables = (const uint8_t *)fake_blocks;
 		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
 		    fake_modes[0].width, fake_modes[0].height);

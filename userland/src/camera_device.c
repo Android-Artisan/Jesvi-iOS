@@ -1057,7 +1057,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	 * The Back Camera is black for now (2026-11-12, the user: only the front is being tested, and both showing the
 	 * same sensor made it unclear which is which). `touch /var/root/redwood-rear-live' gives it pictures again.
 	 */
-	if (s->camera->sensor == 1 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
+	if (s->camera->sensor == 1 && f->width != 2016 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
 		if (pf == PF_BGRA) {
 			for (uint32_t r = 0; r < height; r++) {
 				memset((uint8_t *)CVPixelBufferGetBaseAddress(pb) + r * CVPixelBufferGetBytesPerRow(pb), 0, (size_t)width * 4);
@@ -1764,6 +1764,26 @@ worker_body(void *context)
 				int t;
 				size_t tl = sizeof(t);
 				one_sensor = sysctlbyname("kern.redwood.camera_turn", &t, &tl, NULL, 0) == 0;
+			}
+			/*
+			 * The S20 with its rear main up (2026-11-12, kernel REDWOOD_CAMERA_SENSOR mode 2): the Back Camera's frames
+			 * are the S5K2LD's 2016x1512, the Front Camera's the SAK3J1's (3648 or 1824 wide). A stream whose frames are
+			 * the other camera's asks the kernel once (its sensor restarts: ~5 s for the rear's tables so far).
+			 * redwood-rear-off in the tuning directory keeps the old way (both cameras the front sensor).
+			 */
+			if (one_sensor > 0 && !asked_binned && access(rw_path("redwood-rear-off", (char[160]){0}, 160), F_OK) != 0) {
+				bool rear_frames = head.width == 2016, want_rear = s->camera->sensor == 1;
+
+				if (rear_frames != want_rear) {
+					struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
+						.b = want_rear ? 2 : 0 };
+
+					asked_binned = true;
+					say("the kernel's frames are the %s's: the %s's asked for", rear_frames ? "rear main" : "front sensor",
+					    want_rear ? "rear main" : "front sensor");
+					(void)write(device, &rc, sizeof(rc));
+					continue;
+				}
 			}
 			if (head.sensor != s->camera->sensor && !one_sensor) {
 				/* another camera's frames (the kernel's last sensor): changed, and the next ones are this one's */
