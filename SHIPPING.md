@@ -4,6 +4,26 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
+- Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
+  times on every buffer and zeroed 1.7 GB per buffer, so no sound reached the movie writer and every recording hung
+  (mediaserverd SIGTRAP "Timed out waiting for the capture graph to stop"). Its gap limit is set out of reach
+  (`inject_media.c`). Commits 552fd8a.
+- Orientation: preview a mirror, photos and videos as others see you (`cam_turn=` **5**, kernel default; user-checked).
+- Speed: drawing on its own thread, 48 ISP pieces, no sensor restart on start/flip (preview 22 -> ~28 fps, sensor-bound).
+- Camera.app opens front + Photo after its reset time (libredwood in Camera). Rear camera black for now.
+- Image: generic phone colour matrix (tunable on the phone), clipped highlights stay white, white balance starts where
+  the last stream left it, smoother AE steps (user: "auto exposure is perfect").
+- Tap-to-expose (meters the tapped spot), the exposure slider (ExposureBias, a multiplier with 256 = 1) on the picture
+  at once, AE lock. Front screen flash (SpringBoard white window + full backlight, photo 10 frames into the light; user: "perfect").
+- Encoder: 1.6x iOS's bitrate, OpenH264 low complexity, 6 threads.
+- Kernel: REDWOOD_CAMERA_SENSOR's mode chooses full/binned for the S20 front sensor (stream stays full: binned looked worse).
+- Dev loop: `tools/camera/media-dev.sh` loads libredwood-media from /var/redwood without a reboot.
+- Commits 552fd8a..41db5a2. Tested by the user in Camera.app throughout.
+- Open: Live Photo makes no movie (staging node "no pre-roll", -16958); filters greyed (no Metal in mediaserverd);
+  portrait and slo-mo (no depth, no 120 fps mode); video ~20 fps when recording (CPU ISP + encoder under thermal
+  throttling); two whole-phone freezes while streaming (kernel log just stops; cause unknown).
+
 ## 2026-11-12 — video encoding: our own H.264 encoder for VideoToolbox (the S20 has no AVE)
 - `userland/src/h264_encoder.c`: a VideoToolbox encoder (interface reverse-engineered from AppleVideoEncoder, see
   tools/camera/CHECKLIST.md) over OpenH264 2.7.0 (BSD, `work/third-party/openh264`, `make OS=ios ARCH=arm64`), registered
