@@ -306,3 +306,27 @@ From `/System/Library/VideoEncoders/AppleVideoEncoder.bundle/AppleVideoEncoder` 
   (`CMVideoFormatDescriptionCreateFromH264ParameterSets` or `VTEncoderSessionCreateVideoFormatDescription`).
 - Engine: OpenH264 (BSD) built for iOS arm64, NV12 → I420, Annex-B → AVCC. Registered from libredwood-media in
   mediaserverd. Camera.app must record H.264 (Settings → Camera → Formats → Most Compatible) until there is an HEVC one.
+
+## OPEN ITEMS — camera wrap-up 2026-11-12 (session A); details in tools/camera/REAR-CAMERA.md
+Done and verified today: front camera (B); rear streams in Camera.app; front/rear switching reliable; rear warm start
+(0.35 s flips, B); rear flash LED (B); rear video recording saves (H.264, A/V in sync, ~20 fps, 7c3b2ee); in root.apfs.
+
+- [ ] **Rear dark scenes: colours / black level.** S5K2LD black is not 64: sinks with gain (to ~17-39 at 12-16x), differs
+      per Bayer site, drifts left-right, depends on exposure. Binned mode uses B's per-gain tables (camera_device.c).
+      Leads: Samsung LN modes (0x0B30 0x0101 LN2 at mode change, never tested alone), 0x0A7A/0x0A7C, sensor BLC 0x0B04 +
+      a pedestal register, a per-column dark map (phone face down; redwood-fixed-exposure + redwood-raw-dump tools).
+- [ ] **Rear lens shading** (vignetting, green corners): files are flat 1.0. White paper over the lens, then
+      `touch /var/mobile/Library/Caches/com.apple.mediaserverd/redwood-lsc-capture`.
+- [ ] **Occasional rear frame glitches:** likely race — the reader thread writes isp_black4 / isp_black4_low / isp_band*
+      for frame n+1 while the draw thread renders frame n (camera_device.c ~1989-2173 vs render_wait ~2342). Copy them
+      into the render handoff (h) with isp.
+- [ ] **Heat:** 91-96 C with the camera on (CPU ISP + OpenH264) → throttling, rear ~20 fps (28 cool). Options: cheaper
+      rear preview path (cells 1008x756 enlarged to 1504x1128 is the slow "magnified" path), smaller encode size.
+- [ ] **12 MP rear (cam_s20_rear_full=1, off):** plain Bayer after 0x021E=0 (sensor HDR off), but a black band from row
+      1912 and a 32-row structure; two watchdog resets during 12 MP raw dumps. Leads: Samsung's retention sequence
+      (cam_s20_rear_ret=1), LN2, 0x0702/0x0704 shifters, stream-off 0x6028/0x602A/0x010E sequence (agent audit, sessions/A.md).
+- [ ] **Rear start from cold ~3 s** (Global_A3 over bit-banged I2C); warm flips are fast. Leads: HSI2C controller driver,
+      half_us 1 alone (never tested alone), Samsung retention.
+- [ ] Metadata/format mismatches found by audit (minor): transfer tag BT.709 vs sRGB curve applied, no ChromaLocation,
+      ISO ignores digital gain, advertised format sizes (camera_device.c ~402, 443-449) differ from real frames.
+- [ ] Not started: ultra-wide (S5KGW2), tele (S5K2LA), Live Photo movie (both cameras), CSIS0 ERR_WRONG_CFG (VC1 PD rows).
