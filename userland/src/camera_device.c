@@ -2099,6 +2099,58 @@ worker_body(void *context)
 					}
 					band &= ~1;
 				}
+				if (dark_n == 0 && access(rw_path("redwood-rear-fixed-black", (char[160]){0}, 160), F_OK) != 0) {
+					/*
+					 * No table: the black measured in this very frame. The S5K2LD's black in its 12 MP mode is not 64:
+					 * it sinks with gain (37-59 at 4-8x, measured 2026-11-12), so taking 64 off took the picture away --
+					 * "green 2 above black", the gain at 8x, white balance at its limits: night vision. Per site, above
+					 * and below the band line, the 0.3rd percentile of a sparse sample (every 8th row pair and column
+					 * pair), never above 64: in a bright scene the darkest pixels are above black and 64 stays.
+					 */
+					static uint32_t hist[2][4][1024];
+					const uint8_t *raw0 = buffer + fd->header_bytes;
+
+					memset(hist, 0, sizeof(hist));
+					for (uint32_t y = 0; y + 1 < fd->height; y += 16) {
+						for (int dy = 0; dy < 2; dy++) {
+							const uint8_t *line = raw0 + (size_t)(y + dy) * fd->stride;
+							int bnd = (int)(y + dy) >= band ? 1 : 0;
+
+							for (uint32_t x = 0; x + 4 <= fd->width; x += 32) {
+								const uint8_t *g = line + (x >> 2) * 5;
+
+								for (int i = 0; i < 2; i++) {
+									int v = g[i] << 2 | (g[4] >> (i * 2) & 3);
+
+									hist[bnd][dy * 2 + i][v]++;
+								}
+							}
+						}
+					}
+					for (int bnd = 0; bnd < 2; bnd++) {
+						for (int k = 0; k < 4; k++) {
+							uint32_t total = 0, acc = 0;
+							int v = 0;
+
+							for (int i = 0; i < 1024; i++) total += hist[bnd][k][i];
+							for (v = 0; v < 1023 && acc + hist[bnd][k][v] < total * 3 / 1000 + 1; v++) acc += hist[bnd][k][v];
+							v = v > 64 ? 64 : v;
+							if (bnd == 0) isp_black4[k] = v; else isp_black4_low[k] = v;
+						}
+					}
+					for (int k = 0; k < 2; k++) {
+						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
+
+						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
+						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
+					}
+					isp_band_row = band;
+					if (++dark_looked % 60 == 1) {
+						say("rear black measured: above %d %d %d %d, below %d %d %d %d", isp_black4[0], isp_black4[1],
+						    isp_black4[2], isp_black4[3], isp_black4_low[0], isp_black4_low[1], isp_black4_low[2],
+						    isp_black4_low[3]);
+					}
+				}
 				if (dark_n > 0) {
 					float g = (float)fd->gain / fd->gain_unity;
 					int a = 0;
