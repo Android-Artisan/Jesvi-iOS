@@ -1464,10 +1464,19 @@ static float phone_lsc[3][LSC_H][LSC_W];
 static bool phone_lsc_have;
 
 static void
-read_ccm(float m[9])
+read_ccm(float m[9], const char *name)
 {
 	static const float generic[9] = { 1.72f, -0.56f, -0.16f, -0.28f, 1.58f, -0.30f, 0.02f, -0.66f, 1.64f };
-	FILE *fp = fopen(rw_path("redwood-ccm", (char[160]){0}, 160), "r");
+	/* the sensor's own (redwood-ccm-<sensor>: the front SAK3J1 and the rear S5K2LD see colours differently -- the
+	 * front's matrix made the rear green, 2026-11-12), else the shared redwood-ccm */
+	char own[96];
+	FILE *fp;
+
+	snprintf(own, sizeof(own), "redwood-ccm-%s", name);
+	fp = fopen(rw_path(own, (char[160]){0}, 160), "r");
+	if (fp == NULL) {
+		fp = fopen(rw_path("redwood-ccm", (char[160]){0}, 160), "r");
+	}
 	int n = 0;
 
 	memcpy(m, generic, sizeof(generic));
@@ -1573,7 +1582,7 @@ tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8
 		phone_lsc_have = true;
 		say("tuning: the lens shading measured (the corners at %.0f %% of the centre)", darkest * 100);
 	}
-	read_ccm(ccm);
+	read_ccm(ccm, name);
 	{
 		/* redwood-wb-trim: "R B", the white balance's red and blue made that much stronger (a cast the
 		 * grey-world estimate leaves: green, 2026-11-12) */
