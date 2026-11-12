@@ -264,6 +264,21 @@ static int download_run(void)
     printf("cellular live DL: endpoint BAR0 %s",response);
     if (request("m 0x14ffe004 0xfff9 0x6",response)) return -1;
     printf("cellular live DL: endpoint %s",response);fflush(stdout);
+    /* exynos_pcie_rc_msi_init for EP_SAMSUNG_MODEM: RC MSI target = shm MSI base (f6200000), INTR0 0xf1;
+     * then the endpoint's MSI capability (0x50) to the same address, enabled (pci_enable_msi) */
+    {
+        uint32_t msi=0;
+        if (request("w 0x13800820 0xf6200000",response) || request("w 0x13800824 0x0",response) ||
+            request("w 0x13800828 0xf1",response)) return -1;
+        if (!read_word(0x14ffe050,&msi)) {
+            printf("cellular live DL: EP MSI control %08x (%s-bit)\n",msi,(msi&(1u<<23))?"64":"32");
+            request("w 0x14ffe054 0xf6200000",response);
+            if (msi&(1u<<23)) {request("w 0x14ffe058 0x0",response);request("w 0x14ffe05c 0x0",response);}
+            else request("w 0x14ffe058 0x0",response);
+            request("m 0x14ffe050 0xff8effff 0x10000",response);   /* enable, one vector */
+            read_word(0x14ffe050,&msi);printf("cellular live DL: EP MSI control now %08x\n",msi);fflush(stdout);
+        }
+    }
     usleep(200000);
     {
         uint32_t w[10];for (unsigned i=0;i<10;i++) ipc_load(i*4,&w[i]);

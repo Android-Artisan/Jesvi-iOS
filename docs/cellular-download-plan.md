@@ -230,3 +230,16 @@ Not yet done that Samsung does before the UDL loop (next hypotheses, cheapest fi
 3. Wait for CP2AP_WAKEUP edge after the magic (check_cp_status) before link; WAKE is high from the
    first sample, so it may be a pull-up, not the CP.
 4. Read the S5123 BOOT image's strings/handshake (private analysis) for what it waits for.
+
+### MILESTONE Nov12 23:40: the CP answers -- TOC stage acknowledged
+
+The missing step was MSI, as Samsung's exynos_pcie_rc_msi_init does for EP_SAMSUNG_MODEM: RC DBI
+0x13800820/824 = f6200000/0 (the shm MSI page), 0x828 (INTR0 enable) = 0xf1, and the endpoint's MSI
+capability (0x50: control 000a7005, 32-bit) address 0x54 = f6200000, data 0, enable bit16. With that,
+right after it the CP consumed TOC START and replied in RAW RX:
+  START  fc d7 08 00 00 91 00 00 -> fc d7 08 00 00 a1 00 00 ACK
+  SEND   800 B TOC, one frame    -> ...01 a1 ACK  (TX head/tail 340)
+  DONE                           -> ...0d a1 ACK  (TX 348, RX 18)
+CP shut down after, cleanup_verified 1, no restart. Transcript: logs/cellular/a-download-*/ (private).
+Next: MAIN (59 MB, 29054 frames, + CRC), APM, VSS, NV (nv_data.bin from the Mac's EFS backup image),
+FIN START; then the CP should boot its main firmware (complete_normal_boot waits for its init on IPC).
