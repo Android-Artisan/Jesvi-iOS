@@ -3263,6 +3263,7 @@ static bool s20_full = true;   /* cam_s20_full=0: the binned 1824x1368 mode inst
 extern int redwood_camera_s20_turn;   /* (redwood_camera_s20.c: the sysctl lives there) */
 extern void redwood_camera_s20_set_full(bool full);
 extern void redwood_camera_s20_set_rear(bool rear);
+extern bool redwood_camera_s20_rear_full(void);
 static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
@@ -4167,6 +4168,8 @@ ios_select(unsigned index, uint32_t mode_n)
 		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
 		/* the rear main S5K2LD 2016x1512 at 30 (Samsung setA): line length 0x08e0, frame length 0x5824; C-PHY 3 trios */
 		{ 2016, 1512, 0, 0, 4, 0, 9, 1537927680, 2272, 22564, 30000, RAW10_DT },
+		/* the rear main's full 4032x3024 at 30 (setA A0, what the stock camera uses): line length 0x1090, frame 0x2f80 */
+		{ 4032, 3024, 0, 0, 4, 0, 9, 1537927680, 4240, 12160, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
@@ -4183,7 +4186,7 @@ ios_select(unsigned index, uint32_t mode_n)
 			redwood_camera_s20_set_full(s20_full);
 		}
 		redwood_camera_s20_set_rear(s20_rear_now);
-		say("camera: the S20's %s from the next session\n", s20_rear_now ? "rear main S5K2LD 2016x1512" :
+		say("camera: the S20's %s from the next session\n", s20_rear_now ? (redwood_camera_s20_rear_full() ? "rear main S5K2LD 4032x3024" : "rear main S5K2LD 2016x1512") :
 		    s20_full ? "front sensor, full 3648x2736" : "front sensor, binned 1824x1368");
 		mode_n = 0;
 	}
@@ -4197,7 +4200,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		}
 		ctab = &fake_head;
 		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
-		ctab_modes = s20_real ? s20_modes + (s20_rear_now ? 2 : s20_full ? 0 : 1) : fake_modes;
+		ctab_modes = s20_real ? s20_modes + (s20_rear_now ? (redwood_camera_s20_rear_full() ? 3 : 2) : s20_full ? 0 : 1) : fake_modes;
 		ctab_tables = (const uint8_t *)fake_blocks;
 		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
 		    fake_modes[0].width, fake_modes[0].height);

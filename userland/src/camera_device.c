@@ -1057,7 +1057,7 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	 * The Back Camera is black for now (2026-11-12, the user: only the front is being tested, and both showing the
 	 * same sensor made it unclear which is which). `touch /var/root/redwood-rear-live' gives it pictures again.
 	 */
-	if (s->camera->sensor == 1 && f->width != 2016 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
+	if (s->camera->sensor == 1 && f->width != 2016 && f->width != 4032 && access(rw_path("redwood-rear-live", (char[160]){0}, 160), F_OK) != 0) {
 		if (pf == PF_BGRA) {
 			for (uint32_t r = 0; r < height; r++) {
 				memset((uint8_t *)CVPixelBufferGetBaseAddress(pb) + r * CVPixelBufferGetBytesPerRow(pb), 0, (size_t)width * 4);
@@ -1462,6 +1462,13 @@ rw_path(const char *leaf, char *buf, size_t size)
 #define LSC_GRID (LSC_W * LSC_H)
 static float phone_lsc[3][LSC_H][LSC_W];
 static bool phone_lsc_have;
+/*
+ * Whose lens shading phone_lsc is. It was one map for every sensor: once the FRONT lens was measured (white paper),
+ * the rear's tuning file was written with the front's shading too -- byte for byte the same 3.5 KB (2026-11-12), a
+ * fixed colour and brightness gradient over every rear picture that dark scenes made plain. A map now belongs to
+ * the sensor it was measured on, and another sensor's file gets gains of 1 until its own lens is measured.
+ */
+static int phone_lsc_owner = -1;
 
 static void
 read_ccm(float m[9], const char *name)
@@ -1562,6 +1569,10 @@ tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8
 	}
 	if (name == NULL || (!capture && !reload)) {
 		return;
+	}
+	if (phone_lsc_owner != (int)f->sensor) {
+		phone_lsc_have = false;
+		phone_lsc_owner = (int)f->sensor;
 	}
 	unlink(cap_p);
 	unlink(rel_p);
@@ -1740,6 +1751,27 @@ worker_body(void *context)
 		say("no %s (%s): no frames", REDWOOD_CAMERA_DEVICE, strerror(errno));
 		return NULL;
 	}
+	/*
+	 * The S20: say which sensor this camera is BEFORE the first read. The kernel takes a sensor change between
+	 * sessions at once, and the first read starts a session with whatever sensor was last -- so opening the
+	 * Front Camera after the Back one started the rear (its ~3 s of tables) only to stop it again for the
+	 * front (2026-11-12). Asked here, the first session is already this camera's; the header check below
+	 * stays as the safety net.
+	 */
+	if (one_sensor < 0) {
+		int t;
+		size_t tl = sizeof(t);
+		one_sensor = sysctlbyname("kern.redwood.camera_turn", &t, &tl, NULL, 0) == 0;
+	}
+	if (one_sensor > 0 && access(rw_path("redwood-rear-off", (char[160]){0}, 160), F_OK) != 0) {
+		bool want_rear = s->camera->sensor == 1;
+		bool binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
+		struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
+			.b = want_rear ? 2 : binned ? 1 : 0 };
+
+		(void)write(device, &rc, sizeof(rc));
+		say("the %s asked for before the first frame", want_rear ? "rear main" : "front sensor");
+	}
 	isp_init(&isp);
 	{
 		/* the tone curve's contrast (redwood-contrast in the tuning directory, 0 to 1; 0.35 if absent) */
@@ -1794,7 +1826,7 @@ worker_body(void *context)
 			 * redwood-rear-off in the tuning directory keeps the old way (both cameras the front sensor).
 			 */
 			if (one_sensor > 0 && !asked_binned && access(rw_path("redwood-rear-off", (char[160]){0}, 160), F_OK) != 0) {
-				bool rear_frames = head.width == 2016, want_rear = s->camera->sensor == 1;
+				bool rear_frames = head.width == 2016 || head.width == 4032, want_rear = s->camera->sensor == 1;
 
 				if (rear_frames != want_rear) {
 					struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
@@ -2005,7 +2037,7 @@ worker_body(void *context)
 			bool from_file = false;
 			/* the rear main (its 2016x1512 frames) is mounted the other way round from the front: its own setting,
 			 * redwood-rear-turn, 4 (no turn) unless it says otherwise (2026-11-12, user: upside down with the front's) */
-			bool rear_frames = f->width == 2016;
+			bool rear_frames = f->width == 2016 || f->width == 4032;   /* (4032x3024: the full mode, 2026-11-12) */
 			FILE *tf = fopen(rw_path(rear_frames ? "redwood-rear-turn" : "redwood-camera-turn", (char[160]){0}, 160), "r");
 
 			if (tf == NULL && rear_frames) {

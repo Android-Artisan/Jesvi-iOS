@@ -180,6 +180,26 @@ cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
 /* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
 static bool cam_s20_rear;
 void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
+/*
+ * The rear main in its full 4032x3024 mode (Samsung's setA A0: what the stock camera shows and shoots, 2964 Msps
+ * like the binned mode, 12160 lines of 4240 clocks at 30 fps), not the 2x2-binned 2016x1512 (A10, a speed mode).
+ * Binned, the picture was 1008x756 colour cells blown up to the 1504x1128 preview: soft, and every frame went
+ * through libredwood-media's slow "magnified" path (11-21 fps, 2026-11-12). cam_s20_rear_full=0: the binned mode.
+ */
+bool
+redwood_camera_s20_rear_full(void)
+{
+	static int full = -1;
+
+	if (full < 0) {
+		uint32_t v = 1;
+
+		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
+		full = v != 0;
+	}
+	return full != 0;
+}
+
 
 /*
  * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
@@ -261,6 +281,7 @@ cam_s20_af_down(void)
 /* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
  * the sensor's black level per site (2026-11-12) */
 static uint32_t cam_s20_rear_test_lines = 16384;
+static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
 
 /* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
 typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
@@ -281,6 +302,9 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	/* v[0] 2: also the receiver -- csi0 C-PHY and CSIS0 set up (Samsung's sequence), CSIS0's frame counter and
 	 * status read while the sensor streams; every PHY/CSIS/CMU/PMU register written is put back */
 	bool rx_test = n > 0 && v[0] == 2, rx_saved = false;
+	/* the iOS stream (cam_s20_stream_fn) in the full mode; the bounded tests keep the binned one they were measured in */
+	const bool rear_full_now = cam_s20_stream_fn != NULL && redwood_camera_s20_rear_full();
+	const uint32_t cam_s20_rear_w = rear_full_now ? 4032U : 2016U, cam_s20_rear_h = rear_full_now ? 3024U : 1512U;
 	char rx_report[240] = "";
 	volatile uint8_t *rx_csi = NULL, *rx_phy = NULL, *rx_bias = NULL, *rx_cmu = NULL, *rx_pmu = NULL, *rx_sys = NULL;
 	uint32_t rx_csi_saved[12] = { 0 }, rx_phy_saved[3][16] = { { 0 } }, rx_bias_saved[4] = { 0 }, rx_qch = 0, rx_iso = 0, rx_rst = 0;
@@ -291,7 +315,9 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	static const uint32_t rx_phy_offs[16] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x30, 0x34, 0x40, 0x64, 0x68, 0x00 };
 	uint8_t fc[4] = { 0 };
 	char stream_phase[48] = "";
-	/* half_us 2 (~120 kHz): the 7354-write global table took ~4.5 s at 4; the S5K2LD takes fast-mode I2C */
+	/* half_us 1 (2026-11-12; was 2, and 4 before): the 7354-record global table is ~180 000 bits, and the rear
+	 * still took ~3 s from a flip to its first frame at 2. The S5K2LD takes fast-mode I2C (400 kHz); the pin
+	 * writes themselves keep a half period well above the 0.6 us fast mode wants. cam_s20_rear_i2c=N sets it. */
 	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
@@ -309,6 +335,12 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	unsigned i;
 
 	if (cap == 0) return;
+	{
+		uint32_t half = 0;
+
+		if (PE_parse_boot_argn("cam_s20_rear_i2c", &half, sizeof(half)) && half > 0 && half <= 8) sensor_bus.half_us = half;
+		if (cam_s20_rear_slow && sensor_bus.half_us < 2) sensor_bus.half_us = 2;
+	}
 	if (cmu == NULL) {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"error\",\"phase\":\"CMU map\"}\n");
 		return;
@@ -387,9 +419,32 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		uint64_t t0 = mach_absolute_time(), ns;
 
 		(void)snprintf(stream_phase, sizeof(stream_phase), "global A3");
-		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
-		(void)snprintf(stream_phase, sizeof(stream_phase), "mode 2016x1512");
-		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) {
+			/* the faster bus did not take it: the old speed, again from the top, and for the rest of this boot */
+			if (sensor_bus.half_us >= 2) goto stream_done;
+			cam_s20_rear_slow = true;
+			sensor_bus.half_us = 2;
+			printf("camera: rear: the global table failed at the fast bus speed; again at half_us 2 (kept)\n");
+			if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
+		}
+		(void)snprintf(stream_phase, sizeof(stream_phase), "mode %ux%u", cam_s20_rear_w, cam_s20_rear_h);
+		if (rear_full_now ?
+		    !cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps, REDWOOD_2LD_4032X3024_30FPS_WORDS) :
+		    !cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		/*
+		 * What Samsung's sensor_2ld_cis_mode_change() writes after every mode table and we did not (2026-11-12): auto
+		 * exposure bracketing off (0x0E0B = 0: left on, the sensor may alternate long and short exposures) and the low-
+		 * noise mode explicitly off (0x0B30 = 0x0100, "LN OFF"; the mode table leaves 0x0000). The rear's black level
+		 * wandered with gain AND exposure and its dark colours shifted as the exposure changed; these are the sensor's
+		 * own settings for a plain single-exposure stream. cam_s20_rear_plain=0 leaves them out.
+		 */
+		{
+			uint32_t plain = 0;   /* OFF: on 2026-11-12 it gave a frame of noise (with half_us 1) */
+
+			(void)PE_parse_boot_argn("cam_s20_rear_plain", &plain, sizeof(plain));
+			if (plain && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write8(&sensor_bus, 0x0E0B, 0x00) ||
+			    !cam_3j1_write16(&sensor_bus, 0x0B30, 0x0100))) goto stream_done;
+		}
 		if (rx_test) {
 			unsigned k, t;
 
@@ -444,7 +499,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			cam_s20_wr(rx_csi, 0x0008, rx_csi_saved[1] | (1U << 4));
 			cam_s20_wr(rx_csi, 0x0704, (rx_csi_saved[11] & ~0x1fU) | (0x0fU << 1));    /* trios on */
 			cam_s20_wr(rx_csi, 0x0040, (0x2bU << 2) | (2U << 12));                       /* VC0 RAW10 */
-			cam_s20_wr(rx_csi, 0x0044, (1512U << 16) | 2016U);
+			cam_s20_wr(rx_csi, 0x0044, (cam_s20_rear_h << 16) | cam_s20_rear_w);
 			/* LRTE_CONFIG EPD_EN: the DT's lrte 1 for every S5K2LD mode (Samsung: csi_hw_s_control(CSIS_CTRL_LRTE)) --
 			 * off, CSIS0 passed frame starts and no lines (2026-11-12) */
 			cam_s20_wr(rx_csi, 0x0600, rx_csi_saved[9] | (1U << 31));
@@ -504,7 +559,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 						for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
 						__asm__ volatile ("dsb sy" ::: "memory");
 					}
-					more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], 2016, 1512, ((2016 * 10 / 8) + 15) & ~15U);
+					more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], cam_s20_rear_w, cam_s20_rear_h,
+					    ((cam_s20_rear_w * 10 / 8) + 15) & ~15U);
 					cam_s20_stream_frames++;
 					if (cam_s20_stream_frames % 30 == 1) {
 						/* what the sensor really has: coarse integration, analog gain, frame length */
@@ -868,8 +924,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const bool rear = n > 0 && v[0] == 2;
 	const bool optical = n > 0 && (v[0] == 1 || rear);
 	const bool full_frames = optical && !rear && cam_s20_stream_fn != NULL && cam_s20_full;
-	const uint32_t width = rear ? 2016 : optical ? (full_frames ? 3648 : 1824) : 320;
-	const uint32_t height = rear ? 1512 : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
+	const bool rear_full = rear && cam_s20_stream_fn != NULL && redwood_camera_s20_rear_full();
+	const uint32_t width = rear ? (rear_full ? 4032 : 2016) : optical ? (full_frames ? 3648 : 1824) : 320;
+	const uint32_t height = rear ? (rear_full ? 3024 : 1512) : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
 	const bool stream = optical && cam_s20_stream_fn != NULL;
 	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
 	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
