@@ -41,7 +41,8 @@ History: sessions/B.md, sessions/A.md, SHIPPING.md; branches `x1slte` = `camera-
 6. **Occasional frame glitches** reported by the user on the rear; nothing in the logs (no DMA errors, no refused
    buffers). Suspects: black tables changing between frames while the draw thread renders (race found by A's review:
    isp_black4 globals are written by the reader thread), slot choice at frame end.
-7. **Rear video recording and rear flash LED**: not verified / not wired. Recording should work like the front's
+7. **Rear video recording: FIXED 2026-11-12 (session A, 7c3b2ee)**: rear movies were HEVC through Apple's slow software
+   encoder; now H.264 (inject_media.c movie_video_settings): complete files, A/V in sync, ~20 fps. Older note: Recording should work like the front's
    (same encoder); the LED is the S2MPB02 FLED already driven as the torch (`redwood_s2mpb02_torch.c`, /dev/redwood-torch):
    fire it around StillImageCaptureNow when FlashMode is ForceFlashOn and the camera is the rear (front uses the screen).
 8. CSIS0 reports ERR_WRONG_CFG (VC1 PDAF rows / embedded data not configured); harmless so far.

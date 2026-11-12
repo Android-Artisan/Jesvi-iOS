@@ -4,6 +4,17 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+## 2026-11-12 — rear camera: video recording saves, frame rate (session A, verified on the phone)
+- **Rear recordings in H.264.** Camera.app asks the back camera for HEVC; the only HEVC encoder here is Apple's
+  software one (registered for photographs), too slow for video: rear movies were never finished or ~8 fps.
+  `inject_media.c` answers `-[FigCaptureMovieFileRecordingSettings videoSettings]` hvc1 as avc1 (OpenH264, as the
+  front). Verified: complete files, video and audio in sync, 20.7 fps (IMG_0169, IMG_0170). Commit 7c3b2ee.
+- **Rear stats every other frame**, rear render below the encoder's priority (`camera_device.c`): the phone
+  throttles at 91-96 C; rear preview ~20 fps hot, ~28 fps cool.
+- Also in 7c3b2ee: front/rear switch waits for the asked sensor; sensor asked for before the first frame; lens
+  shading per sensor; rear 12 MP black measured per frame. 12 MP rear (cam_s20_rear_full=1) stays off: row-1912 band.
+- How tested: Camera.app Video on the rear; files checked for moov, codec, durations, frame count.
+
 ## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
 - Pill width 81 pt ("iPhone 18 Pro" look, user-chosen). Known issue: charging banner cuts the "100" of "100%".
 - In libredwood-sb (`userland/src/island_sb.h`, with `island=1`): pill top gap 5 pt instead of Apple's 11.33,
