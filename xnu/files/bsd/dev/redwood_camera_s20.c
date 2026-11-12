@@ -195,7 +195,7 @@ redwood_camera_s20_rear_full(void)
 	if (full < 0) {
 		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
 		 * odd rows in 3 of 4 (laid out for Samsung's ISP: dual-pixel/PDAF), a green-red-blue checkerboard here */
-		uint32_t v = 1;   /* ON (2026-11-12): the full mode with the sensor's HDR off (0x021E); 0 = the binned 2016x1512 */
+		uint32_t v = 0;   /* OFF (2026-11-12, user: binned was better): 12 MP has a sensor black band at row 1912 and a 32-row structure; 1 = 12 MP */
 
 		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
 		full = v != 0;
