@@ -20,6 +20,7 @@
 #include <sys/systm.h>
 #include "redwood_camera_s20_3j1.h"
 #include "redwood_camera_s20_2ld.h"
+#include "redwood_camera_s20_2ld_ret.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
@@ -194,7 +195,7 @@ redwood_camera_s20_rear_full(void)
 	if (full < 0) {
 		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
 		 * odd rows in 3 of 4 (laid out for Samsung's ISP: dual-pixel/PDAF), a green-red-blue checkerboard here */
-		uint32_t v = 0;
+		uint32_t v = 0;   /* OFF: even with Samsung's retention sequence the 4032x3024 RAW10 is lit in 8 of 16 pixels per 4x4 (receiver: PD data interleaved?), 2026-11-12 */
 
 		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
 		full = v != 0;
@@ -430,9 +431,24 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
 		}
 		(void)snprintf(stream_phase, sizeof(stream_phase), "mode %ux%u", cam_s20_rear_w, cam_s20_rear_h);
-		if (rear_full_now ?
-		    !cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps, REDWOOD_2LD_4032X3024_30FPS_WORDS) :
-		    !cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		if (rear_full_now) {
+			/*
+			 * The full 4032x3024 the way Samsung's S20 driver runs it (is-cis-2ld.c, retention path): the full mode's
+			 * settings into the sensor's SRAM (setA full_retention, at 0x2001:BD00), retention armed (0x3000:0484,
+			 * 0x010E), a stream on/off with MIPI blocked, then the mode switch load_sram (it points 0x2000:0E1C at that
+			 * block, low noise off, 0x0118, the MIPI rate, frame length 0x2F80, MIPI on). The stand-alone 4032x3024
+			 * table gave a frame lit in half its pixels -- the dual-pixel layout -- through this receiver (2026-11-12).
+			 */
+			if (!cam_3j1_apply(&sensor_bus, redwood_2ld_full_retention, REDWOOD_2LD_FULL_RETENTION_WORDS) ||
+			    !cam_3j1_write16(&sensor_bus, 0x6028, 0x3000) || !cam_3j1_write16(&sensor_bus, 0x602A, 0x0484) ||
+			    !cam_3j1_write16(&sensor_bus, 0x6F12, 0x0100) || !cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
+			    !cam_3j1_write16(&sensor_bus, 0x010E, 0x0100) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0000) ||
+			    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100) || !cam_3j1_write8(&sensor_bus, 0x0100, 0x00)) goto stream_done;
+			cam_s20_wait_ms(10);
+			if (!cam_3j1_write8(&sensor_bus, 0x0100, 0x00) ||
+			    !cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps_load_sram, REDWOOD_2LD_4032X3024_30FPS_LOAD_SRAM_WORDS))
+				goto stream_done;
+		} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
 		/*
 		 * What Samsung's sensor_2ld_cis_mode_change() writes after every mode table and we did not (2026-11-12): auto
 		 * exposure bracketing off (0x0E0B = 0: left on, the sensor may alternate long and short exposures) and the low-

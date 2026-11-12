@@ -2016,15 +2016,15 @@ worker_body(void *context)
 
 				if (rear_bayer < 0 || ++looked_b % 60 == 0) {
 					FILE *bf = fopen(rw_path("redwood-rear-bayer", (char[160]){0}, 160), "r");
-					int v = REAR_FULL_BAYER;
+					int v = 9;      /* (none: the frame's own order) */
 
 					if (bf != NULL) {
-						if (fscanf(bf, "%d", &v) != 1 || v < 0 || v > 3) v = REAR_FULL_BAYER;
+						if (fscanf(bf, "%d", &v) != 1 || v < 0 || v > 3) v = 9;
 						fclose(bf);
 					}
 					rear_bayer = v;
 				}
-				fb->bayer = (uint8_t)rear_bayer;
+				if (rear_bayer >= 0 && rear_bayer <= 3) fb->bayer = (uint8_t)rear_bayer;   /* (only when the file says so) */
 				/* redwood-raw-dump in the tuning directory: this frame as it came (header + RAW10), once, as redwood-raw.bin */
 				{
 					char flag[160];
