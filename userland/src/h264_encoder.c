@@ -657,7 +657,9 @@ set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 	}
 	pthread_mutex_lock(&e->lock);
 	if (k_bitrate && CFEqual(key, k_bitrate) && number_of(value, &v) && v > 0) {
-		e->bitrate = (int32_t)v;
+		/* 1.6 times what is asked: the rate is meant for the iPhone's encoder (High profile, CABAC); this one is
+		 * baseline CAVLC at low complexity and looked soft at 13 Mbit/s (user, 2026-11-12) */
+		e->bitrate = (int32_t)(v * 1.6);
 	} else if (k_expected_rate && CFEqual(key, k_expected_rate) && number_of(value, &v) && v > 0) {
 		e->fps = (float)v;
 	} else if (k_max_key_interval && CFEqual(key, k_max_key_interval) && number_of(value, &v) && v > 0) {
