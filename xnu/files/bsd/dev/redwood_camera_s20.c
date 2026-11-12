@@ -192,7 +192,9 @@ redwood_camera_s20_rear_full(void)
 	static int full = -1;
 
 	if (full < 0) {
-		uint32_t v = 1;
+		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
+		 * odd rows in 3 of 4 (laid out for Samsung's ISP: dual-pixel/PDAF), a green-red-blue checkerboard here */
+		uint32_t v = 0;
 
 		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
 		full = v != 0;

@@ -1469,6 +1469,7 @@ static bool phone_lsc_have;
  * the sensor it was measured on, and another sensor's file gets gains of 1 until its own lens is measured.
  */
 static int phone_lsc_owner = -1;
+#define REAR_FULL_BAYER 0      /* the rear main's 4032x3024 frames (see redwood-rear-bayer) */
 
 static void
 read_ccm(float m[9], const char *name)
@@ -1997,6 +1998,48 @@ worker_body(void *context)
 				t = t < 0 ? 0 : t > 1 ? 1 : t;
 				for (int k = 0; k < 4; k++) {
 					isp_black4[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
+				}
+			}
+		}
+		{
+			/*
+			 * The rear main's full 4032x3024 mode starts its readout on another colour of the filter than the
+			 * binned mode the kernel's descriptor (GRBG) was right for: the picture went green with a visible
+			 * pixel grid, white balance red 0.76 (2026-11-12). The order for those frames: redwood-rear-bayer in
+			 * the tuning directory (camraw.py's codes: 0 RGGB, 1 GRBG, 2 GBRG, 3 BGGR), else REAR_FULL_BAYER.
+			 */
+			struct redwood_camera_frame *fb = (void *)buffer;
+
+			if (fb->width == 4032) {
+				static int rear_bayer = -1;
+				static uint64_t looked_b;
+
+				if (rear_bayer < 0 || ++looked_b % 60 == 0) {
+					FILE *bf = fopen(rw_path("redwood-rear-bayer", (char[160]){0}, 160), "r");
+					int v = REAR_FULL_BAYER;
+
+					if (bf != NULL) {
+						if (fscanf(bf, "%d", &v) != 1 || v < 0 || v > 3) v = REAR_FULL_BAYER;
+						fclose(bf);
+					}
+					rear_bayer = v;
+				}
+				fb->bayer = (uint8_t)rear_bayer;
+				/* redwood-raw-dump in the tuning directory: this frame as it came (header + RAW10), once, as redwood-raw.bin */
+				{
+					char flag[160];
+
+					if (access(rw_path("redwood-raw-dump", flag, sizeof(flag)), F_OK) == 0) {
+						FILE *rf = fopen(rw_path("redwood-raw.bin", (char[160]){0}, 160), "w");
+
+						unlink(flag);
+						if (rf != NULL) {
+							fwrite(buffer, 1, bytes, rf);
+							fclose(rf);
+							say("raw frame written (%zu bytes, %ux%u, stride %u, header %u)", bytes, fb->width, fb->height,
+							    fb->stride, fb->header_bytes);
+						}
+					}
 				}
 			}
 		}
