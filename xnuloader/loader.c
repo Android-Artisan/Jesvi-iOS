@@ -3699,6 +3699,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	dt_end(&w);
 
+	/*
+	 * With island=1 (the 14 Pro's subtype, see dt_identity), what a 14 Pro's tree says and the iPhone X's does
+	 * not: no home button. MobileGestalt's HomeButtonType is /buttons "home-button-type" (2 = none), and
+	 * BaseBoard's -[BSPlatform homeButtonType] calls a phone with no answer buttonless only when its subtype
+	 * is 2436; at 2556 iOS would take the S20 for a home-button iPhone (no home-bar swipe, "press home").
+	 */
+	if (island) {
+		dt_begin(&w, "buttons");
+		dt_prop_u32(&w, "home-button-type", 2);
+		dt_end(&w);
+	}
+
 	/* IOKit publishes its NVRAM object on this node; without it IOKit asserts. */
 	dt_begin(&w, "options");
 	dt_end(&w);
