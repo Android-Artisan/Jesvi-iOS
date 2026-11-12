@@ -132,13 +132,64 @@ cam_s20_smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
 static bool cam_3j1_write16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t value);
 static bool cam_3j1_read8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t *value);
 static bool cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count);
+static uint64_t cam_s20_smc4(uint64_t fn, uint64_t a, uint64_t b, uint64_t c);
+
+#define CSIS0_PHYS                0x17030000U
+#define CSIS0_DCPHY_PHYS          0x170d1300U
+
+/*
+ * The rear main's receiver (2026-11-12): Samsung's __set_phy_cfg_0503_0000_dcphy() C-PHY branch for the csi0 combo
+ * PHY, 3 trios, settle 7 (its 7nm C-PHY table at 2964 Msps; the same table's D-PHY 1807 Mbps value, 9, is what the
+ * front runs on). No clock lane in C-PHY.
+ */
+static void
+cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
+{
+	unsigned i;
+
+	for (i = 0; i < 3; i++) cam_s20_wr(phy, 0x0100 + i * 0x100, 0);
+	delay_for_interval(200, NSEC_PER_USEC);
+	cam_s20_wr(bias, 0x0000, 0x10);
+	cam_s20_wr(bias, 0x0004, 0x110);
+	cam_s20_wr(bias, 0x0008, 0x3223);
+	cam_s20_wr(bias, 0x0010, 0x40);
+	for (i = 0; i < 3; i++) {
+		uint32_t b = 0x0100 + i * 0x100;
+
+		cam_s20_wr(phy, b + 0x04, 0x1450);
+		cam_s20_wr(phy, b + 0x08, 0x9);
+		cam_s20_wr(phy, b + 0x0c, 0x82c8);
+		cam_s20_wr(phy, b + 0x10, 0x1);
+		cam_s20_wr(phy, b + 0x14, 0x8680);
+		cam_s20_wr(phy, b + 0x18, 0x4000);
+		cam_s20_wr(phy, b + 0x1c, 0x200);
+		cam_s20_wr(phy, b + 0x20, 0x638);
+		cam_s20_wr(phy, b + 0x24, 0x40);
+		cam_s20_wr(phy, b + 0x30, (cam_s20_rd(phy, b + 0x30) & ~0x1ffU) | 7U);  /* settle 7, settle_clk_sel 0 */
+		cam_s20_wr(phy, b + 0x34, 0x32);
+		cam_s20_wr(phy, b + 0x40, cam_s20_rd(phy, b + 0x40) & ~1U);
+		cam_s20_wr(phy, b + 0x64, 0x1503);
+		cam_s20_wr(phy, b + 0x68, 0x33);
+		cam_s20_wr(phy, b, 1);
+	}
+	delay_for_interval(200, NSEC_PER_USEC);
+}
 
 static void
 cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
 	/* v[0] 1: after the ID, Samsung's global A3 table, the 2016x1512 30 fps mode, stream on for ~0.5 s with the
 	 * sensor's own frame counter read (no receiver involved), stream off -- does the rear sensor stream at all */
-	bool stream_test = n > 0 && v[0] == 1;
+	bool stream_test = n > 0 && (v[0] == 1 || v[0] == 2);
+	/* v[0] 2: also the receiver -- csi0 C-PHY and CSIS0 set up (Samsung's sequence), CSIS0's frame counter and
+	 * status read while the sensor streams; every PHY/CSIS/CMU/PMU register written is put back */
+	bool rx_test = n > 0 && v[0] == 2, rx_saved = false;
+	char rx_report[240] = "";
+	volatile uint8_t *rx_csi = NULL, *rx_phy = NULL, *rx_bias = NULL, *rx_cmu = NULL, *rx_pmu = NULL, *rx_sys = NULL;
+	uint32_t rx_csi_saved[12] = { 0 }, rx_phy_saved[3][16] = { { 0 } }, rx_bias_saved[4] = { 0 }, rx_qch = 0, rx_iso = 0, rx_rst = 0;
+	uint32_t rx_fc_before = 0, rx_fc_after = 0, rx_irq = 0, rx_irq_or = 0, rx_phy_or = 0, rx_phy_and = ~0U, rx_cmn = 0;
+	static const uint32_t rx_csi_offs[12] = { 0x0004, 0x0008, 0x000c, 0x0010, 0x0018, 0x0040, 0x0044, 0x0050, 0x0054, 0x0600, 0x0690, 0x0704 };
+	static const uint32_t rx_phy_offs[16] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x30, 0x34, 0x40, 0x64, 0x68, 0x00 };
 	uint8_t fc[4] = { 0 };
 	char stream_phase[48] = "";
 	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 4 };
@@ -239,12 +290,77 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
 		(void)snprintf(stream_phase, sizeof(stream_phase), "mode 2016x1512");
 		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		if (rx_test) {
+			unsigned k, t;
+
+			(void)snprintf(stream_phase, sizeof(stream_phase), "receiver map");
+			rx_pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+			rx_cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+			rx_csi = (volatile uint8_t *)ml_io_map(CSIS0_PHYS, 0x1000);
+			rx_phy = (volatile uint8_t *)ml_io_map(CSIS0_DCPHY_PHYS, 0x500);
+			rx_bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+			rx_sys = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+			if (rx_pmu == NULL || rx_cmu == NULL || rx_csi == NULL || rx_phy == NULL || rx_bias == NULL || rx_sys == NULL) goto stream_done;
+			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS domain off");
+			if (!(cam_s20_rd(rx_pmu, 0x1d84) & 1U)) goto stream_done;
+			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS secure access");
+			if (cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2) != 0) goto stream_done;
+			rx_qch = cam_s20_rd(rx_cmu, 0x3060);
+			rx_iso = cam_s20_rd(rx_pmu, 0x0730);
+			rx_rst = cam_s20_rd(rx_sys, 0);
+			cam_s20_wr(rx_cmu, 0x3060, (rx_qch & ~7U) | 1U);         /* CSIS0's Q-channel: clock on */
+			if (!(rx_iso & 1U)) cam_s20_wr(rx_pmu, 0x0730, rx_iso | 1U);
+			for (k = 0; k < 12; k++) rx_csi_saved[k] = cam_s20_rd(rx_csi, rx_csi_offs[k]);
+			for (k = 0; k < 3; k++) for (t = 0; t < 15; t++) rx_phy_saved[k][t] = cam_s20_rd(rx_phy, 0x100 + k * 0x100 + rx_phy_offs[t]);
+			for (k = 0; k < 4; k++) rx_bias_saved[k] = cam_s20_rd(rx_bias, k == 3 ? 0x10 : k * 4);
+			rx_saved = true;
+			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS0 reset");
+			cam_s20_wr(rx_csi, 0x0004, rx_csi_saved[0] | (1U << 1));
+			for (k = 0; k < 10 && (cam_s20_rd(rx_csi, 0x0004) & (1U << 1)); k++) delay_for_interval(10, NSEC_PER_USEC);
+			if (cam_s20_rd(rx_csi, 0x0004) & (1U << 1)) goto stream_done;
+			/* csi0 PHY held in reset (ISPPRE sysreg bit 0: the DT's dcphy csi0 reset) while it is set up */
+			cam_s20_wr(rx_sys, 0, rx_rst & ~1U);
+			cam_s20_cphy_2ld_config(rx_phy, rx_bias);
+			cam_s20_wr(rx_sys, 0, rx_rst | 1U);
+			/* CMN_CTRL: PHY_SEL (bit 21) C-PHY, lane number 2 (3 trios), interleave 3 (DT mode4), no deskew */
+			cam_s20_wr(rx_csi, 0x0004, (rx_csi_saved[0] & ~((7U << 13) | (3U << 10) | (3U << 8) | 3U)) | (1U << 21) |
+			    (3U << 10) | (2U << 8));
+			cam_s20_wr(rx_csi, 0x0008, rx_csi_saved[1] | (1U << 4));
+			cam_s20_wr(rx_csi, 0x0704, (rx_csi_saved[11] & ~0x1fU) | (0x0fU << 1));    /* trios on */
+			cam_s20_wr(rx_csi, 0x0040, (0x2bU << 2) | (2U << 12));                       /* VC0 RAW10 */
+			cam_s20_wr(rx_csi, 0x0044, (1512U << 16) | 2016U);
+			cam_s20_wr(rx_csi, 0x0600, rx_csi_saved[9] & ~(1U << 31));
+			cam_s20_wr(rx_csi, 0x0690, rx_csi_saved[10] | (1U << 23));
+			cam_s20_wr(rx_csi, 0x000c, 0xfU);
+			cam_s20_wr(rx_csi, 0x0704, cam_s20_rd(rx_csi, 0x0704) | 1U);
+			cam_s20_wr(rx_csi, 0x0010, 0x00fff07fU);
+			cam_s20_wr(rx_csi, 0x0018, 0x0000007fU);
+			cam_s20_wr(rx_csi, 0x0004, cam_s20_rd(rx_csi, 0x0004) | 1U);
+			cam_s20_wait_ms(2);
+			rx_fc_before = cam_s20_rd(rx_csi, 0x0500);
+			rx_cmn = cam_s20_rd(rx_csi, 0x0004);
+		}
 		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
 		for (i = 0; i < 4; i++) {
-			cam_s20_wait_ms(i == 0 ? 50 : 150);
+			unsigned w;
+
+			for (w = 0; w < (i == 0 ? 50U : 150U); w++) {
+				cam_s20_wait_ms(1);
+				if (rx_saved) {
+					uint32_t st = cam_s20_rd(rx_csi, 0x0700);
+
+					rx_phy_or |= st;
+					rx_phy_and &= st;
+					rx_irq_or |= cam_s20_rd(rx_csi, 0x0014);
+				}
+			}
 			(void)cam_3j1_read8(&sensor_bus, 0x0005, &fc[i]);
+		}
+		if (rx_saved) {
+			rx_fc_after = cam_s20_rd(rx_csi, 0x0500);
+			rx_irq = cam_s20_rd(rx_csi, 0x0014);
 		}
 		(void)cam_3j1_write16(&sensor_bus, 0x0100, 0x0000);
 		cam_s20_wait_ms(40);
@@ -252,6 +368,23 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		(void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
 	}
 stream_done:
+	if (rx_saved) {
+		unsigned k, t;
+
+		cam_s20_wr(rx_csi, 0x0004, cam_s20_rd(rx_csi, 0x0004) & ~1U);
+		for (k = 12; k > 0; k--) cam_s20_wr(rx_csi, rx_csi_offs[k - 1], rx_csi_saved[k - 1]);
+		for (k = 0; k < 3; k++) cam_s20_wr(rx_phy, 0x100 + k * 0x100, 0);
+		for (k = 0; k < 3; k++) for (t = 14; t > 0; t--) cam_s20_wr(rx_phy, 0x100 + k * 0x100 + rx_phy_offs[t], rx_phy_saved[k][t]);
+		for (k = 0; k < 3; k++) cam_s20_wr(rx_phy, 0x100 + k * 0x100, rx_phy_saved[k][0]);
+		for (k = 0; k < 4; k++) cam_s20_wr(rx_bias, k == 3 ? 0x10 : k * 4, rx_bias_saved[k]);
+		cam_s20_wr(rx_sys, 0, rx_rst);
+		cam_s20_wr(rx_pmu, 0x0730, rx_iso);
+		cam_s20_wr(rx_cmu, 0x3060, rx_qch);
+	}
+	if (rx_test) {
+		(void)snprintf(rx_report, sizeof(rx_report), ",\"csis0_frames\":[%u,%u],\"csis0_irq\":\"%#x\",\"csis0_irq_seen\":\"%#x\",\"phy_status_or\":\"%#x\",\"phy_status_and\":\"%#x\",\"cmn\":\"%#x\"",
+		    rx_fc_before, rx_fc_after, rx_irq, rx_irq_or, rx_phy_or, rx_phy_and, rx_cmn);
+	}
 cleanup:
 	/* Stop clock and hold reset low before taking supplies away. */
 	(void)redwood_gpio_set(reset, 0, 0);
@@ -282,8 +415,8 @@ cleanup:
 	redwood_gpio_restore(mclk, 0, mclk_con & mask_mclk, mclk_pud & mask_mclk, mclk_dat & 1U);
 	if (pmic03_ready) redwood_bbi2c_restore(&cam_pmic03_bus);
 	if (ok) {
-		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"ok\",\"model_id\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"stream\":\"%s\",\"frame_count\":[%u,%u,%u,%u],\"state_restored\":true}\n",
-		    id[0], id[1], rev[0], rev[1], stream_test ? stream_phase : "not asked", fc[0], fc[1], fc[2], fc[3]);
+		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"ok\",\"model_id\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"stream\":\"%s\",\"frame_count\":[%u,%u,%u,%u]%s,\"state_restored\":true}\n",
+		    id[0], id[1], rev[0], rev[1], stream_test ? stream_phase : "not asked", fc[0], fc[1], fc[2], fc[3], rx_report);
 	} else {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"error\",\"phase\":\"%s\",\"acked\":\"%s\",\"state_restored\":true}\n", phase, acked);
 	}
