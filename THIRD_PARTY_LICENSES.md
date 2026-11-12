@@ -46,3 +46,9 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 
 If a component's origin is uncertain, it is marked **to verify** above and must be treated as not
 yet cleared for redistribution until confirmed with its owner.
+
+S20 live modem link helper: tools/cellular/s5123-live-link.h adapts Samsung
+Electronics (2019) pcie-exynos-rc.c IA/link sequence and DesignWare root setup
+from the same pinned Linux source as s5123-phy-evt1.h, GPL-2.0-only. See
+tools/cellular/LICENSE.GPL-2.0. Combined live-modem binary is GPL-2.0-only;
+original standalone SPI/lifecycle portions retain MIT source license.

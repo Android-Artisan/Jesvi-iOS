@@ -1,10 +1,10 @@
 # Cellular approach: Pixel versus our Galaxy S20
 
-Status: 2026-11-11. Our S20 has no working LTE/calls yet. Memory protection
-and read-only hardware baselines are tested. SPI PIO passes the host model
-and a generated16-byte INTERNAL LOOPBACK on the real controller. No firmware
-has been sent to the modem. User has inserted a Jio India SIM; target LTE/VoLTE
-requirements are recorded in [cellular-jio.md](cellular-jio.md).
+Status: 2026-11-12 15:08. Live BOOT64496B, PCIe L0 and distinct Type0 modem
+endpoint are proven; verified shutdown leaves CP off and iOS running. Reserved
+loader/SPI8 kernel installed. LTE/calls remain unavailable. Next: download
+queues/remaining firmware, IPC and precise memory/cache/DMA backend. SIM is
+currently OUT; target later is Jio India LTE/VoLTE ([requirements](cellular-jio.md)).
 
 ## Architecture
 
@@ -57,8 +57,8 @@ ideas. Qualcomm QMI/IPA drivers cannot operate Samsung SPI/PCIe/SIPC hardware.
 | CP memory ownership/cache | Installed: loader reservations3/3, prekernel NormalNC3/3 | XNU shared-RAM cache mapping still needs implementation/proof before DMA |
 | GPIO/clock/pin baseline | Read-only snapshots done | Documented actual state; no unclocked SPI/PCIe access |
 | SPI16 transport | Host model and phone internal loopback pass | Next: bounded CP power/reset, real BOOT transfer and CP acceptance proof |
-| CP power + firmware boot | Powered SPI BOOT64496 bytes and safe shutdown proven; PCIe acceptance pending | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
-| PCIe1 transport | Root access and PHY calibration/restore live pass; endpoint pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
+| CP power + firmware boot | Live SPI BOOT + PCIe Type0 endpoint and shutdown proven; MAIN pending | Bounded sequence, cleanup, CP-side handshake, not just bytes transmitted |
+| PCIe1 transport | Live L0 and distinct Type0 modem endpoint proven; DMA/download pending | Link/enumeration, DMA isolation, remaining firmware, completion handshake |
 | SIPC5 + Samsung IPC | Framing parser only | Queues/doorbells/interrupts, flow control and crash recovery |
 | SIM + network registration | Pending | Actual SIM/operator/signal and bounded rejection/reconnect handling |
 | LTE packet session | Pending | Address/gateway/DNS/MTU and bidirectional CPIF/pktproc traffic |
@@ -121,8 +121,8 @@ IMS/VoLTE and two-way audio.
 flowchart LR
   A[Installed reserved loader + SPI8 kernel] --> B[Live internal loopback: PASS]
   B --> C[Live CP power + BOOT 64496B: PASS]
-  C --> D[Next: PCIe L0 + real endpoint]
-  D --> E[Remaining firmware and boot handshake]
+  C --> D[Live PCIe L0 + Type0 endpoint: PASS]
+  D --> E[Next: download queues + remaining firmware handshake]
   E --> F[SIPC5 and Samsung IPC]
   F --> G[SIM + Jio registration]
   G --> H[LTE packets + native state]
@@ -132,3 +132,7 @@ flowchart LR
 Real live BOOT691328us; wake/PS_HOLD transitions observed, verified shutdown.
 CP currently off; no phone restart needed. SIM remains out until registration
 can actually be tested. The UI currently reports unavailable service honestly.
+
+Nov12 15:08: live endpoint proof PASS; ROOT Type1/command00100000 versus EP
+Type0/IDa5a5144d. EP BME106 cleared102, no DMA enable. Cleanup1, CP off, iOS
+running. No restart for these iterations. Next: [download backend plan](cellular-download-plan.md).

@@ -3,6 +3,11 @@
 Branch `x1slte-cellular`; status and resumable checklist:
 [docs/cellular-s20.md](../../docs/cellular-s20.md).
 
+Latest Nov12 15:08: live BOOT + PCIe L0 + actual Type0 modem endpoint PASS,
+verified CPoff cleanup. Combined reserved loader/SPI8 kernel installed. LTE/voice
+pending; see [download backend plan](../../docs/cellular-download-plan.md).
+Older pending-install notes below are historical. SIM OUT.
+
 Firmware/memory checks run offline. The separate UI installer contacts the
 phone only when its caller already owns the normal phone lock; it never flashes
 or reboots. See [Cellular UI](../../docs/cellular-ui.md) for installation status.
@@ -206,3 +211,17 @@ sequence preloads latch without pad-level check, selects output, then verifies
 level. Host model includes pulled-high input behavior and1486 I/O failures.
 SPI adapter allows external use only through the guarded modem lifecycle;
 standalone live-spi remains generated INTERNAL loopback.
+
+### Live PCIe endpoint confirmation — Nov12 15:08
+
+--link now passed on hardware: L0, root Type1 with BMEoff, separate Type0
+endpointa5a5144d, EP BME cleared only, cleanup1. CP powered off afterward.
+One bounded training poll; no blind native10 retries. No DMA/MAIN/IRQ enable.
+Do not rerun it merely to reproduce the milestone; next is the queue backend.
+
+s5123-live-link.h preserves Samsung PHY/IA/link ordering and active pinctrl,
+saves before writes, parks LTSSM/PERST/IA before CPoff, then restores reverse
+snapshots. Root BMEoff/Type1 guards, actual EP Type0 proof; sole EP write is
+COMMAND low16 with BMEclear and statushigh0. No arbitrary config/endpoint writes.
+Combined helper GPL2; see NOTICE/license. Host combined model2612 fault cases
+plus clear-only/alias/root-BME/stuckBME/timeout scenarios pass under sanitizers.

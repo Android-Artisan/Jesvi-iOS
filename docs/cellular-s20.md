@@ -1,23 +1,26 @@
 # Galaxy S20 cellular: implementation log and checklist
 
-**Latest hardware status, 2026-11-11 ~11:49:** memory bring-up now passes on
-our ORIGINAL working UEFI: all three CP ranges reserved, every CP page verified
-Normal Non-cacheable, iOS boot and kernel-return checks pass, memory audit exits
-0. This uses opt-in boot-service reservations, avoiding the failed native FD.
-Read-only GPIO/clock/pin baselines are complete. Original BOOT was restored after
-each bounded test; phone is back on its original images and released. No CP
-power/reset/firmware/DMA/NV action has occurred. Later SPI internal-loopback
-results are recorded below; no modem BOOT was sent. LTE/calls remain unavailable.
+**Latest hardware status, 2026-11-12 15:08:** real modem BOOT and PCIe
+endpoint now work in bounded LIVE tests. BOOT64496B transferred, link reached
+L0, distinct ROOT Type1 versus modem Type0 endpointa5a5144d confirmed. Endpoint
+bus mastering cleared, shutdown verified; iOS remains running. No restart for
+live iterations. Latest reserved-memory loader + SPI8 kernel are installed,
+preserving latest camera/island/root changes. Earlier “not installed/no BOOT”
+entries below are historical.
 
-Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
-contains the upstream comparison, firmware/framing tools, memory audit, compiled
-loader changes, matching UEFI source, and a built Settings UI. It does not enable
-a modem or publish invented registration state. UI deployment status is tracked
-separately in [cellular-ui.md](cellular-ui.md).
+**LTE and calls still do not work yet.** Remaining firmware/download queues,
+XNU NormalNC shared-memory backend and precise DMA permissions, Samsung IPC,
+SIM registration, packet path and IMS/voice/audio remain. SIM is currently OUT;
+later target Jio India. See [next backend checklist](cellular-download-plan.md)
+and [approach/flow](cellular-flow.md). Cellular Settings is installed and
+user-confirmed, reporting unavailable service honestly.
 
-Latest UI checkpoint: corrected `PSUIPrefsListController` hook is installed;
-the user confirmed the Cellular page on the phone. No modem/loader/UEFI runtime
-change was deployed with it.
+Phone held codex-cellular by explicit user handoff. CP is OFF with reset/power
+held LOW; no pending reboot, flash job or automatic retry. Full42 Python and
+C sanitizer suite pass, including2612 combined-link I/O fault cases plus
+BME/header/timeout checks. Most recent evidence:
+logs/cellular/live-modem-20261112-150813-567721. Root `sessions/codex-cellular.md`
+contains the resumable handoff. No partition writes for these live tests.
 
 ## Isolation and ownership
 
@@ -922,3 +925,60 @@ Next: one bounded Gen1 PCIe link/endpoint attempt while BOOT is running, with
 PERST/PHY/root configuration and full cleanup. No SIM needed at this stage.
 Do not count host/root identity as CP endpoint or interpret pulled-up signals
 as registration. No LTE/voice/IMS claim.
+
+### Bounded live PCIe endpoint extension — Nov12 15:00 (hardware pending)
+
+live-modem-run.py --link extends the same guarded BOOT lifecycle. After input
+observation, raises AP_WAKE and waits5ms, asserts PERST, applies PCIe2 active
+pinctrl (GPF3-0 function2/pull3/drive3; GPF3-1 output/drive3; 4-bit PUD/DRV
+fields from bank_type_6), bypasses PMU isolation and selects inputclock28.
+Applies124 EVT1 PHY operations and38 exact IA CDR writes from pinned Samsung
+source. IA initially disabled required. Sets source soft reset/PCS/PHY release,
+EQ off, Gen1 target/x2 lanes, bus0->1, auxiliary26MHz/L1 timing, PERSThigh20ms,
+manual L1/QCH/NAK then50ms and LTSSM. One200x1ms L0 poll, no native10 retries.
+
+If L0 only, configures outbound iATU0 CFG0 for bus1/device0/function0 through
+CPU14ffe000; reads actual endpoint ID/command. No endpoint writes, root or EP
+busmaster enable, inboundATU, interrupt enable, DMA, broad HSI2/UFS changes,
+MAIN/NV or shared RAM. Refuses invalid endpoint IDs or EP busmaster already set.
+This deliberately limited diagnostic omits full PCI enumeration/BAR/service;
+link/config failure does not prove a failed modem.
+
+Cleanup disables LTSSM, PERSTlow and IA engine before CP reset/poweroff; then
+restores reverse snapshots while CP off, PHY powerdown before isolation, original
+pins last. Snapshots both PERST CON/DAT before any writes: injected failure
+exposed that otherwise cleanup itself could change a register lacking a snapshot.
+Host combined-lifecycle model2602 before/after-effect I/O faults passes with
+CP-off verification, all saved PCIe/PHY/IA/pinctrl restored, L0timeout, EP BME
+refusal and GPIO/BT preservation. Hardware is not yet proven for this extension.
+Source-derived table/code GPL2 attribution supplied. Phase/address emitted before
+new MMIO reads; timeout is unknown state and must not be blindly retried.
+
+### LIVE PCIe modem endpoint confirmed — Nov12 15:08
+
+Successful evidence: logs/cellular/live-modem-20261112-150813-567721,
+visible build/cellular-live-link-v4.log/.exit0. No phone restart/flash.
+
+- BOOT64496B transferred again; all GPIO/pad guards pass.
+- L0 link0343d911 (low6bits11), one bounded training attempt, Gen1 target/x2.
+- ROOT command00100000, header00010000: Type1 bridge, BME off.
+- Bus1 endpoint IDa5a5144d, header00000000: Type0 endpoint, distinct from root.
+  Class/revision00000001 is a boot-stage value, not a network driver class.
+- Endpoint initial command00100106 had BME already set; diagnostic now clears
+  ONLY BME using a low16 command write with high16 status0 (no W1C echo), verifies
+  command00100102. Never enables BME. Does not restore BME before CP shutdown.
+- Result error0,phase6,completed64496,cleanup_verified1. CP OFF/reset+powerLOW,
+  original controller/clocks/PHY/IA/pinctrl ownership restored, iOS running.
+  Endpoint discovery proves this link stage; full modem firmware/ONLINE pending.
+
+Two earlier setup attempts stopped before LTSSM on strict readback of exitL1
+13d203bc. Source writes11; hardware reads01. Keep exact Samsung write and verify
+modebit0; bit4 does not read back set. Host model now reproduces it. First L0 run
+v3 stopped after observing EP BME; cleanup1. v4 adds root Type1/BMEoff guard,
+endpoint Type0 validation and BME-clear-only handling. Combined model2612 I/O
+faults plus explicit BME-clear before/after failures, root BME refusal, endpoint
+alias refusal, stuckBME and L0timeout pass. Full42 Python+all C sanitizer suite
+passes. No MAIN, NV, DMA queue initialization or internet/call test performed.
+
+Next source-traced download path: see cellular-download-plan.md. Avoid additional
+power/reboot loops until the queue/firmware handshake has a concrete backend.

@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base', type=Path, required=True, help='private successfully installed live base')
     parser.add_argument('--radio', type=Path, required=True, help='local read-only RADIO backup; extracts BOOT only')
+    parser.add_argument('--link', action='store_true', help='after BOOT, one bounded Gen1 PCIe endpoint attempt')
     args = parser.parse_args()
     base = args.base.resolve()
     if not base.is_relative_to((ROOT / 'out/cellular').resolve()):
@@ -91,11 +92,12 @@ def main():
                             's20:' + remote], check=True, timeout=30)
     read('chmod 700 ' + shlex.quote(target))
     read('chmod 600 ' + shlex.quote(target + '.boot') + ' ' + shlex.quote(target + '.info'))
-    result = dict(mode='BOOT-only; shutdown after observation', binary_sha256=digest,
+    result = dict(mode='BOOT+PCIe endpoint attempt; shutdown' if args.link else 'BOOT-only; shutdown after observation', binary_sha256=digest,
                   boot_metadata=metadata, installed_boot_sha256=certificate['boot_sha256'],
                   reboot_requested=False, status='started; CP power may be requested')
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-    command = 'exec ' + shlex.join([target, '--reserved-base-verified', target + '.boot', target + '.info'])
+    command = 'exec ' + shlex.join([target, '--reserved-base-verified', target + '.boot', target + '.info'] +
+                                        (['--link'] if args.link else []))
     lock()
     print('One live modem BOOT attempt; no reboot. Evidence:', out, flush=True)
     try:
@@ -111,8 +113,10 @@ def main():
     print(transcript.decode(errors='replace'), end='', flush=True)
     safe = b'cleanup_verified 1;' in transcript
     passed = response.returncode == 0 and safe
+    if args.link:
+        passed = passed and b'PCIe error 0 ' in transcript
     result.update(exit_code=response.returncode, cleanup_confirmed=safe,
-                  status='transport complete; modem acceptance unproven' if passed else 'failed; inspect transcript')
+                  status=('PCIe endpoint observed; remaining firmware pending' if args.link else 'transport complete; modem acceptance unproven') if passed else 'failed; inspect transcript')
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     if safe:
         read('rm -f ' + shlex.join([target, target + '.boot', target + '.info']))

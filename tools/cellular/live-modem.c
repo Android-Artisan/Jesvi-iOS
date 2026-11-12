@@ -4,6 +4,9 @@
 #define LIVE_SPI_ADAPTER_ONLY 1
 #include "live-spi.c"
 #include "s5123-boot.h"
+#include "s5123-live-link.h"
+static int link_requested;
+static int link_delay(uint32_t);
 
 static const struct {uint64_t base;unsigned pin;} outputs[]={
     {0x15c30120,0},{0x15c30280,0},{0x15c30320,0},{0x107300c0,3},{0x10730060,6}
@@ -12,22 +15,46 @@ static const unsigned controller_regs[]={S5123_CH,S5123_MODE,S5123_CS,S5123_IRQ,
     S5123_PACKET,S5123_SWAP,S5123_FEEDBACK,S5123_USI_CON};
 struct modem {
     struct spi_state spi;
+    struct s5123_link link;
     uint32_t con[5],dat[5],changed[5];
     uint32_t mux,divider,mode,pins,pulls,pad_dat,saved[8];
     int clock_changed,mode_changed,controller_saved,pads_changed;
 };
 static void phase(const char *s) {printf("cellular live BOOT: %s\n",s);fflush(stdout);}
+static int link_read(uint64_t address,uint32_t *value)
+{
+    printf("cellular live BOOT: PCIe before read %llx\n",(unsigned long long)address);fflush(stdout);
+    return read_word(address,value);
+}
 static int masked_write(uint64_t address,uint32_t mask,uint32_t value,int verify)
 {
-    int allowed=address==0x10730068;
+    if (link_requested && address==0x14ffe004) {
+        /* The sole endpoint write is COMMAND with BME clear. Never echo W1C
+         * status bits or enable bus mastering; no arbitrary config writes. */
+        if (mask!=0xffff || (value&~0xffffu) || (value&4)) return -1;
+        char command[128],response[8192];unsigned long long got;unsigned old,next,back;int used=0;
+        snprintf(command,sizeof(command),"w 0x14ffe004 0x%x",value);
+        if (request(command,response) || sscanf(response,"%llx: %x -> %x, reads %x %n",
+            &got,&old,&next,&back,&used)!=4 || response[used] || got!=address || next!=value ||
+            (back&0xffff)!=value) return -1;
+        return 0;
+    }
+    int allowed=address==0x10730068 || (link_requested && s5123_link_allowed(address));
     for (unsigned i=0;i<5;i++)
         if (address==outputs[i].base || address==outputs[i].base+4) allowed=1;
     if (!allowed || (value&~mask)) return -1;
     char command[128],response[8192];unsigned long long got;unsigned old,next,back;int used=0;
     snprintf(command,sizeof(command),"m 0x%llx 0x%x 0x%x",(unsigned long long)address,~mask,value);
-    return request(command,response) || sscanf(response,"%llx: %x -> %x, reads %x %n",
+    if (request(command,response) || sscanf(response,"%llx: %x -> %x, reads %x %n",
         &got,&old,&next,&back,&used)!=4 || response[used] || got!=address ||
-        next!=((old&~mask)|value) || (verify && (back&mask)!=value) ? -1:0;
+        next!=((old&~mask)|value)) {
+        fprintf(stderr,"cellular live BOOT: masked I/O/parse failure %llx\n",(unsigned long long)address);return -1;
+    }
+    if (verify && (back&mask)!=value) {
+        fprintf(stderr,"cellular live BOOT: readback mismatch %llx mask %08x old %08x requested %08x read %08x\n",
+            (unsigned long long)address,mask,old,next,back);return -1;
+    }
+    return 0;
 }
 static int masked(uint64_t address,uint32_t mask,uint32_t value)
 {
@@ -54,6 +81,10 @@ static int ready(void *context)
         unsigned function=(m->con[i]>>(4*outputs[i].pin))&15;
         /* Critical controls may already be held output-low by a prior clean attempt. */
         if (function && !(i<2 && function==1 && !(m->dat[i]&(1u<<outputs[i].pin)))) return 0;
+    }
+    if (link_requested) {
+        m->link.io=(struct s5123_link_io){link_read,masked_write,link_delay,phase};
+        if (s5123_link_guard(&m->link)) return 0;
     }
     return 1;
 }
@@ -100,6 +131,7 @@ static int delay(void *context,uint32_t us)
     }
     return 0;
 }
+static int link_delay(uint32_t us) {return delay(NULL,us);}
 static int route(void *context)
 {
     struct modem *m=context;uint32_t con,dat;
@@ -133,13 +165,24 @@ static int send_boot(void *context,const uint8_t *data,size_t length,uint32_t *c
         changed|=previous^current;rising|=~previous&current;previous=current;
     }
     printf("cellular live BOOT: GPIO first %x last %x changed %x rising %x (PHONE_ACTIVE,WAKE,PS_HOLD)\n",
-        first,previous,changed,rising);fflush(stdout);return 0;
+        first,previous,changed,rising);fflush(stdout);
+    if (link_requested) {
+        if (output(context,S5123_AP_WAKE,1) || delay(context,5000)) return -1;
+        int link_error=s5123_link_begin(&m->link);
+        printf("cellular live BOOT: PCIe root command %08x header %08x endpoint class %08x header %08x\n",
+            m->link.root_command,m->link.root_header,m->link.endpoint_class,m->link.endpoint_header);fflush(stdout);
+        printf("cellular live BOOT: PCIe error %d link_state %08x endpoint %08x command %08x (endpoint proof requires L0 and valid ID)\n",
+            link_error,m->link.link_status,m->link.endpoint_id,m->link.endpoint_command);fflush(stdout);
+        if (link_error) return -1;
+    }
+    return 0;
 }
 static int park(void *context)
 {
     struct modem *m=context;cleanup=1;phase("park SPI, then hold reset and power low");
     if (!m->controller_saved) return 0;
     int error=0;
+    if (link_requested && s5123_link_park(&m->link)) error=1;
     if (restore_word(0x10960000,0,1)) error=1;
     if (restore_word(0x10960020,0,1)) error=1;
     if (restore_word(0x1096000c,1,1)) error=1;
@@ -148,6 +191,7 @@ static int park(void *context)
 static int restore(void *context)
 {
     struct modem *m=context;cleanup=1;int error=0;phase("restore SPI/clock/pad/AP ownership");
+    if (link_requested && s5123_link_restore(&m->link)) error=1;
     if (m->controller_saved) {
         if (restore_word(0x10960000,0,1)) error=1;
         if (restore_word(0x10960020,0,1)) error=1;
@@ -193,7 +237,8 @@ static int read_file(const char *path,uint8_t *data,size_t capacity,size_t *leng
 }
 int main(int argc,char **argv)
 {
-    if (argc!=4 || strcmp(argv[1],"--reserved-base-verified")) return 2;
+    if ((argc!=4 && argc!=5) || strcmp(argv[1],"--reserved-base-verified")) return 2;
+    if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
     uint8_t image[131073],info[25];size_t length,info_length;uint32_t fields[5];
     if (read_file(argv[2],image,sizeof(image),&length) || read_file(argv[3],info,sizeof(info),&info_length) ||
         info_length!=24 || memcmp(info,"S512",4)) return 2;
