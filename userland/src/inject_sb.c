@@ -1182,6 +1182,63 @@ web_views(id view, int depth)
 	}
 }
 
+
+/*
+ * The front camera's flash (2026-11-12): the iPhone's camera driver lights the screen itself for a front
+ * photograph with the flash on (H10ISPDisplayStrobe); ours (libredwood-media's camera_device.c) asks for it
+ * here. com.redwood.screenflash.on: a white window over everything and the backlight at its most;
+ * com.redwood.screenflash.off (or 3 s later at the latest): both as they were.
+ */
+typedef struct { double x, y, w, h; } sb_rect;
+static id flash_window;
+static double flash_brightness = -1;
+static unsigned flash_serial;
+
+static void
+screen_flash(bool on)
+{
+	id screen = SEND(id, objc_getClass("UIScreen"), "mainScreen");
+
+	if (on) {
+		if (flash_window == nil) {
+			id application = SEND(id, objc_getClass("UIApplication"), "sharedApplication");
+			id key = application ? SEND(id, application, "keyWindow") : nil;
+			id scene = key && class_respondsToSelector(object_getClass(key), sel_registerName("windowScene")) ? SEND(id, key, "windowScene") : nil;
+			id w = SEND(id, objc_getClass("UIWindow"), "alloc");
+			sb_rect bounds = ((sb_rect (*)(id, SEL))objc_msgSend)(screen, sel_registerName("bounds"));
+
+			w = scene ? SEND1(id, w, "initWithWindowScene:", id, scene) : SEND(id, w, "init");
+			((void (*)(id, SEL, sb_rect))objc_msgSend)(w, sel_registerName("setFrame:"), bounds);
+			SEND1(void, w, "setBackgroundColor:", id, SEND(id, objc_getClass("UIColor"), "whiteColor"));
+			((void (*)(id, SEL, double))objc_msgSend)(w, sel_registerName("setWindowLevel:"), 1e7);
+			SEND1(void, w, "setUserInteractionEnabled:", BOOL, NO);
+			flash_window = w;
+		}
+		if (flash_brightness < 0) {
+			flash_brightness = ((double (*)(id, SEL))objc_msgSend)(screen, sel_registerName("brightness"));
+		}
+		((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), 1.0);
+		SEND1(void, flash_window, "setHidden:", BOOL, NO);
+		unsigned serial = ++flash_serial;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			if (serial == flash_serial) {
+				screen_flash(false);
+			}
+		});
+		say("redwood: screen flash on\n");
+	} else {
+		if (flash_window != nil) {
+			SEND1(void, flash_window, "setHidden:", BOOL, YES);
+		}
+		if (flash_brightness >= 0) {
+			((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), flash_brightness);
+			flash_brightness = -1;
+		}
+		flash_serial++;
+		say("redwood: screen flash off\n");
+	}
+}
+
 static void
 layers(void)
 {
@@ -1596,6 +1653,12 @@ redwood_springboard_init(void)
 	});
 	notify_register_dispatch("com.redwood.open", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		open_page();
+	});
+	notify_register_dispatch("com.redwood.screenflash.on", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(true);
+	});
+	notify_register_dispatch("com.redwood.screenflash.off", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(false);
 	});
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that

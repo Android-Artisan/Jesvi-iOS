@@ -43,6 +43,7 @@
 #include <fcntl.h>
 #include <mach/mach_time.h>
 #include <math.h>
+#include <notify.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -454,6 +455,8 @@ struct stream {
 	CFDictionaryRef metadata;       /* the last frame's (frame_metadata()), for a buffer that has none of its own */
 	pthread_mutex_t metadata_lock;  /* (not `lock': AddAttachmentsToSampleBuffer may come while a frame is given out) */
 	unsigned        stills_wanted;  /* photographs asked for by StillImageCaptureNow, not yet given */
+	bool            flash_on;       /* FlashMode ForceFlashOn: the front camera's photographs with the screen lit */
+	uint64_t        flash_ready;    /* the frame from which a lit photograph may be taken (0: no flash going) */
 	int             format_index;
 	double          min_fps, max_fps;
 	float           zoom;           /* ZoomFactor: the picture is the middle 1/zoom of the sensor each way */
@@ -765,8 +768,15 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		 */
 		pthread_mutex_lock(&s->lock);
 		s->stills_wanted++;
+		if (s->flash_on && s->camera->sensor == 2 && s->flash_ready == 0) {
+			/* the screen lit (SpringBoard, inject_sb.c), and the photograph some frames later, as the exposure
+			 * comes down to the lit face */
+			s->flash_ready = s->frames + 10;
+			notify_post("com.redwood.screenflash.on");
+			say("stream: the screen lit for the photograph (from frame %llu)", (unsigned long long)s->flash_ready);
+		}
 		pthread_mutex_unlock(&s->lock);
-		say_once("stream: a photograph asked for", key, value);
+		say_value("stream: a photograph asked for", key, value);
 		return 0;
 	}
 	if (key_is(key, "VideoOutputsColorInfo")) {
@@ -826,6 +836,11 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 	if (key_is(key, "LockAENow") || key_is(key, "UnlockAENow")) {
 		s->ae_locked = key_is(key, "LockAENow");
 		say_value("stream: exposure:", key, value);
+		return 0;
+	}
+	if (key_is(key, "FlashMode")) {
+		s->flash_on = value != NULL && CFGetTypeID(value) == CFStringGetTypeID() && CFEqual(value, CFSTR("ForceFlashOn"));
+		say_value("stream: flash:", key, value);
 		return 0;
 	}
 	say_once("stream: set (not used)", key, value);
@@ -1621,10 +1636,17 @@ give_frame(struct stream *s, const struct isp *isp, const struct redwood_camera_
 		if (still && s->stills_wanted == 0) {
 			continue;
 		}
+		if (still && s->flash_ready != 0 && s->frames < s->flash_ready) {
+			continue;               /* (the screen's light not in the exposure yet) */
+		}
 		deliver(s, out, isp, f, raw, metadata);
 		if (still) {
 			s->stills_wanted--;
 			say("the photograph is given (%llu so far)", (unsigned long long)++s->stills_given);
+			if (s->stills_wanted == 0 && s->flash_ready != 0) {
+				s->flash_ready = 0;
+				notify_post("com.redwood.screenflash.off");
+			}
 		}
 	}
 	pthread_mutex_unlock(&s->lock);
@@ -2061,6 +2083,10 @@ stream_stop(CMBaseObjectRef o)
 	say("stream: stop (%llu frames, %llu pictures given)", (unsigned long long)s->frames,
 	    (unsigned long long)s->out[0].delivered);
 	post(o, CFSTR("StreamStopping"));
+	if (s->flash_ready != 0) {
+		s->flash_ready = 0;
+		notify_post("com.redwood.screenflash.off");
+	}
 	/* The flags first, without the lock: the worker holds it while it gives a frame to the graph, whose handler
 	 * may wait for the graph that is stopping now -- waiting for the lock here was "Timed out waiting for the
 	 * capture graph to stop" and mediaserverd's SIGTRAP (2026-11-12). */
