@@ -3830,6 +3830,14 @@ s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_
 	if (p >= 0) {
 		place[p].state = PLACE_WRITING;
 	}
+	/*
+	 * The first frames of a session count from now: the rear main takes ~3 s to start (its tables), longer than
+	 * IDLE_MS, so its first frame found "nobody reads" and the session ended at once, to start again 3 s later
+	 * (2026-11-12: rear opened twice, flips failed).
+	 */
+	if (ios_frames_done < 3) {
+		ios_last_read = ios_ms();
+	}
 	more = ios_open && ios_switch_to == 0 && ios_ms() - ios_last_read <= IDLE_MS;
 	lck_mtx_unlock(&ios_lock);
 	if (p < 0) {

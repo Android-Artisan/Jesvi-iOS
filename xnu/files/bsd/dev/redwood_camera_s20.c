@@ -653,9 +653,20 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 				}
 			}
 			cam_s20_af_down();
-			/* memory output off before the sensor goes down */
-			cam_s20_wr(cam_s20_optical_dma, 0x3000, 0);
-			cam_s20_wr(cam_s20_optical_dma, 0x3414, 1);
+			/*
+			 * Memory output off while the sensor still sends: the frame being written ends (up to 80 ms), then the
+			 * abort is asked and waited for (its acknowledgement, status bit 16). Asked with the sensor already going
+			 * down, the write never ended: "previous DMA did not stop; reboot required", no camera until a reboot
+			 * (2026-11-12, the user's failed switch).
+			 */
+			{
+				unsigned k;
+
+				cam_s20_wr(s_vc, 0, 0);
+				for (k = 0; k < 80 && (cam_s20_rd(s_vc, 0x90) & 1U); k++) cam_s20_wait_ms(1);
+				cam_s20_wr(s_cmn, 0x14, cam_s20_rd(s_cmn, 0x14) | 1U);
+				for (k = 0; k < 100 && !(cam_s20_rd(s_cmn, 8) & (1U << 16)); k++) cam_s20_wait_ms(1);
+			}
 		} else
 		for (i = 0; i < 4; i++) {
 			unsigned w;
@@ -1013,7 +1024,6 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		sensor_mode = 2;
 	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
-	if (cam_s20_dma_quarantined) { phase = "previous DMA did not stop; reboot required"; goto report; }
 	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
 	if (!pmu) goto report;
 	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { phase = "CSIS domain off"; goto report; }
@@ -1032,6 +1042,15 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (!mmu1) mmu1 = (volatile uint8_t *)ml_io_map(0x17140000, 0x100);
 	if (!dma) dma = (volatile uint8_t *)ml_io_map(0x170c0000, 0x5000);
 	if (!mmu0 || !mmu1 || !dma) goto report;
+	if (cam_s20_dma_quarantined) {
+		/* a stop that was not acknowledged in time may have ended since: looked at again instead of refusing until a reboot */
+		bool busy = ((cam_s20_rd(dma, 0x2090) | cam_s20_rd(dma, 0x3090)) & 1U) != 0;
+
+		if (busy) { phase = "previous DMA did not stop; reboot required"; goto report; }
+		cam_s20_dma_quarantined = false;
+		redwood_camera_dma_put();
+		printf("camera: the DMA that had not stopped is idle now: used again\n");
+	}
 	mmu_ver[0] = cam_s20_rd(mmu0, 0x34); mmu_ver[1] = cam_s20_rd(mmu1, 0x34);
 	mmu_ctrl[0] = cam_s20_rd(mmu0, 0); mmu_ctrl[1] = cam_s20_rd(mmu1, 0);
 	/* This path understands v7.x pass-through only. Never replace live tables. */
