@@ -61,6 +61,14 @@ cell_places(uint32_t bayer, int *r, int *b)
 /* the sensor's black level (the camera's pedestal): 64 for the front SAK3J1, lower for the rear S5K2LD (camera_device.c) */
 int isp_black = 64;
 int isp_black4[4] = { 64, 64, 64, 64 };     /* per site of the 2x2 cell (row 0 x0, x1, row 1 x0, x1) */
+/*
+ * A second black for the lower band of the frame (the rear S5K2LD's 12 MP mode: rows from ~1914 down have a lower
+ * black than the rows above, a hard line in every dark picture, 2026-11-12). isp_band[k] is the lower band of the
+ * frame buffer k as a byte range of the raw data; isp_band_row the first row of it (0: no band).
+ */
+int isp_black4_low[4] = { 64, 64, 64, 64 };
+const uint8_t *isp_band[2][2];
+int isp_band_row;
 
 /* the four values of the cell at cx of the pair of lines from `top' (above black, 0 and up) */
 static inline void
@@ -68,11 +76,13 @@ cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
 {
 	const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + stride;
 	unsigned o = (cx & 1) * 2;
+	const int *bl = isp_band_row > 0 && ((top >= isp_band[0][0] && top < isp_band[0][1]) ||
+	    (top >= isp_band[1][0] && top < isp_band[1][1])) ? isp_black4_low : isp_black4;
 
-	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - isp_black4[0];
-	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - isp_black4[1];
-	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - isp_black4[2];
-	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - isp_black4[3];
+	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - bl[0];
+	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - bl[1];
+	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - bl[2];
+	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - bl[3];
 	for (int i = 0; i < 4; i++) {
 		v[i] = v[i] < 0 ? 0 : v[i];
 	}
@@ -772,12 +782,13 @@ unpack_line(const struct redwood_camera_frame *f, const uint8_t *raw, int y, int
 {
 	y = y < 0 ? 0 : y >= (int)f->height ? (int)f->height - 1 : y;
 	const uint8_t *line = raw + (size_t)y * f->stride;
+	const int *bl = isp_band_row > 0 && y >= isp_band_row && f->width == 4032 ? isp_black4_low : isp_black4;
 
 	for (uint32_t x = 0; x + 3 < f->width + 3 && x < f->width; x += 4) {
 		const uint8_t *g = line + (x >> 2) * 5;
 
 		for (int i = 0; i < 4 && x + i < f->width; i++) {
-			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - isp_black4[(y & 1) * 2 + ((x + i) & 1)];
+			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - bl[(y & 1) * 2 + ((x + i) & 1)];
 
 			out[x + i] = v < 0 ? 0 : v;
 		}

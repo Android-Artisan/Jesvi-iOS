@@ -1079,6 +1079,25 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 	if (!photograph) {
 		s->render_ticks += mach_absolute_time() - began;
 	}
+	/* redwood-still-dump in the tuning directory: the photo's luma plane as this ISP made it (before iOS's own stages),
+	 * once, as redwood-still.y (width x height bytes, rows packed) */
+	if (photograph && pf != PF_BGRA) {
+		char flag[160];
+
+		if (access(rw_path("redwood-still-dump", flag, sizeof(flag)), F_OK) == 0) {
+			FILE *yf = fopen(rw_path("redwood-still.y", (char[160]){0}, 160), "w");
+
+			unlink(flag);
+			if (yf != NULL) {
+				const uint8_t *yp = CVPixelBufferGetBaseAddressOfPlane(pb, 0);
+				size_t ys = CVPixelBufferGetBytesPerRowOfPlane(pb, 0);
+
+				for (uint32_t r = 0; r < height; r++) fwrite(yp + r * ys, 1, width, yf);
+				fclose(yf);
+				say("still luma written (%ux%u)", width, height);
+			}
+		}
+	}
 	if (photograph) {
 		static mach_timebase_info_data_t tb;
 
@@ -1951,7 +1970,7 @@ worker_body(void *context)
 			struct redwood_camera_frame *fw = (void *)buffer;
 			int black = 64;
 
-			if (fw->width == 2016) {
+			if (fw->width == 2016 || fw->width == 4032) {
 				static int rear_black = -1;
 				static uint64_t looked;
 
@@ -2047,6 +2066,61 @@ worker_body(void *context)
 						}
 					}
 				}
+		}
+		{
+			/*
+			 * The rear's 12 MP frames: two blacks, above and below the band line (row ~1914, measured 2026-11-12: below it
+			 * the black is lower, a hard line in every dark picture). Both by the analog gain, from redwood-rear-dark in
+			 * the tuning directory: lines "gain  Gr R B Gb (above)  Gr R B Gb (below)", in rising gain (the dark
+			 * calibration writes it); without it 64 everywhere. redwood-rear-band: the line's row.
+			 */
+			struct redwood_camera_frame *fd = (void *)buffer;
+
+			isp_band_row = 0;
+			if (fd->width == 4032 && fd->gain_unity > 0) {
+				static float dark[12][9];
+				static int dark_n = -1, band = 1914;
+				static uint64_t dark_looked;
+
+				if (dark_n < 0 || ++dark_looked % 150 == 0) {
+					FILE *df = fopen(rw_path("redwood-rear-dark", (char[160]){0}, 160), "r");
+					FILE *bf = fopen(rw_path("redwood-rear-band", (char[160]){0}, 160), "r");
+
+					dark_n = 0;
+					while (df != NULL && dark_n < 12 && fscanf(df, "%f %f %f %f %f %f %f %f %f", &dark[dark_n][0],
+					    &dark[dark_n][1], &dark[dark_n][2], &dark[dark_n][3], &dark[dark_n][4], &dark[dark_n][5],
+					    &dark[dark_n][6], &dark[dark_n][7], &dark[dark_n][8]) == 9) {
+						dark_n++;
+					}
+					if (df != NULL) fclose(df);
+					if (bf != NULL) {
+						if (fscanf(bf, "%d", &band) != 1) band = 1914;
+						fclose(bf);
+					}
+					band &= ~1;
+				}
+				if (dark_n > 0) {
+					float g = (float)fd->gain / fd->gain_unity;
+					int a = 0;
+
+					while (a + 1 < dark_n && dark[a + 1][0] <= g) a++;
+					int b = a + 1 < dark_n ? a + 1 : a;
+					float t = b == a || dark[b][0] <= dark[a][0] ? 0 : (g - dark[a][0]) / (dark[b][0] - dark[a][0]);
+
+					t = t < 0 ? 0 : t > 1 ? 1 : t;
+					for (int k = 0; k < 4; k++) {
+						isp_black4[k] = (int)(dark[a][1 + k] + t * (dark[b][1 + k] - dark[a][1 + k]) + 0.5f);
+						isp_black4_low[k] = (int)(dark[a][5 + k] + t * (dark[b][5 + k] - dark[a][5 + k]) + 0.5f);
+					}
+					for (int k = 0; k < 2; k++) {
+						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
+
+						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
+						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
+					}
+					isp_band_row = band;
+				}
+			}
 		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
@@ -2154,9 +2228,35 @@ worker_body(void *context)
 			k = k < 1 ? 1 : k > 2 ? 2 : k;
 			isp.max_frame_lines = (uint32_t)(f->frame_lines_min * k);
 		}
+		/* redwood-fixed-exposure in the tuning directory: "lines gain" (gain in the sensor's code, 32 = 1x) held, no AE --
+		 * for the dark calibration */
+		{
+			static uint32_t fx_lines, fx_gain;
+			static uint64_t fx_looked;
+			static bool fx_on;
+
+			if (++fx_looked % 15 == 1) {
+				FILE *xf = fopen(rw_path("redwood-fixed-exposure", (char[160]){0}, 160), "r");
+				uint32_t l = 0, g = 0;
+
+				fx_on = xf != NULL && fscanf(xf, "%u %u", &l, &g) == 2 && l > 0 && g > 0;
+				if (xf != NULL) fclose(xf);
+				if (fx_on && (l != fx_lines || g != fx_gain)) {
+					struct redwood_camera_command xc = { .command = REDWOOD_CAMERA_EXPOSURE, .a = l, .b = g, .c = 0 };
+
+					fx_lines = l;
+					fx_gain = g;
+					(void)write(device, &xc, sizeof(xc));
+					say("fixed exposure: %u lines, gain %u", l, g);
+				}
+				if (!fx_on) fx_lines = fx_gain = 0;
+			}
+			if (fx_on) goto ae_done;
+		}
 		if (!s->ae_locked && isp_ae(&isp, f, &st, &c)) {
 			(void)write(device, &c, sizeof(c));
 		}
+ae_done:;
 		if (s->af_now) {
 			s->af_now = false;
 			/* (whatever it was doing: at once, from the next frame) */

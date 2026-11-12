@@ -471,18 +471,31 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			    !cam_3j1_write16(&sensor_bus, 0x0B30, 0x0100))) goto stream_done;
 		}
 		{
+			/*
+			 * The sensor's own black-level correction ON (SMIA++ 0x0B04). Samsung's tables write 0x0B04 = 0x0001 as one
+			 * 16-bit word, so 0x0B04 (black level correction) gets 0 and 0x0B05 (mapped defects) 1: their ISP clamps
+			 * the black from the optical-black lines itself. Ours does not, and the black wandered from 22 to 65 with
+			 * gain and exposure -- the green/purple shadows (2026-11-12). cam_s20_rear_blc=0 leaves it as the table has it.
+			 */
+			uint32_t blc = 0;   /* OFF (2026-11-12): on, it clamps at 0 and the 12 MP mode's lower band (rows >= ~1914, a lower
+			                     * black) is cut off below zero -- shadow detail lost; the band is corrected in libredwood-media */
+
+			(void)PE_parse_boot_argn("cam_s20_rear_blc", &blc, sizeof(blc));
+			if (blc && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write8(&sensor_bus, 0x0B04, 0x01))) goto stream_done;
+		}
+		{
 			/* what the sensor holds now: its mode's key registers read back (2026-11-12: "everything at register level") */
-			static const uint16_t regs[] = { 0x0340, 0x0342, 0x034C, 0x034E, 0x0900, 0x021E, 0x0B30, 0x0B80, 0x0E0B, 0x0310 };
+			static const uint16_t regs[] = { 0x0340, 0x0342, 0x034C, 0x034E, 0x0900, 0x021E, 0x0B30, 0x0B80, 0x0E0B, 0x0310, 0x0B04 };
 			char line[200] = "";
 			size_t at = 0;
 
 			(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
 			for (unsigned r = 0; r < sizeof(regs) / sizeof(regs[0]); r++) {
 				uint8_t a[2] = { (uint8_t)(regs[r] >> 8), (uint8_t)regs[r] }, v[2] = { 0, 0 };
-				bool okr = redwood_bbi2c_xfer(&sensor_bus, 0x10, a, 2, v, regs[r] == 0x0E0B ? 1 : 2);
+				bool okr = redwood_bbi2c_xfer(&sensor_bus, 0x10, a, 2, v, regs[r] == 0x0E0B || regs[r] == 0x0B04 ? 1 : 2);
 
 				at += (size_t)snprintf(line + at, sizeof(line) - at, " %04X=%s%02X%02X", regs[r], okr ? "" : "?",
-				    v[0], regs[r] == 0x0E0B ? 0 : v[1]);
+				    v[0], regs[r] == 0x0E0B || regs[r] == 0x0B04 ? 0 : v[1]);
 			}
 			printf("camera: rear %ux%u registers:%s\n", cam_s20_rear_w, cam_s20_rear_h, line);
 		}

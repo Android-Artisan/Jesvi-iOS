@@ -18,6 +18,9 @@ struct isp;
 void isp_set_tone(struct isp *isp, float contrast);
 extern int isp_black;   /* the raw frames' black level, subtracted from every value */
 extern int isp_black4[4];       /* ... per site of the 2x2 cell: the rear's differ, and move with the gain */
+extern int isp_black4_low[4];  /* ... below isp_band_row (the rear 12 MP mode's lower band) */
+extern const uint8_t *isp_band[2][2];
+extern int isp_band_row;
 
 struct isp_stats {
 	double          mean[3];        /* R, G, B above black, in 10-bit steps */
