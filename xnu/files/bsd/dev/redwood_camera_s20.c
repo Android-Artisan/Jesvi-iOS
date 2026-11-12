@@ -177,6 +177,87 @@ cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
 	delay_for_interval(200, NSEC_PER_USEC);
 }
 
+/* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
+static bool cam_s20_rear;
+void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
+
+/*
+ * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
+ * device tree (fragment@18) puts on gpp8-0 (SCL) and gpp8-1 (SDA); its supply is VDDAF_2.8V_VT (S2MPB02 LDO16), on
+ * with the sensor's. Samsung's is-actuator-ak737x.c: CONT1 (0x02) 0x40 standby, 0x00 active, 0x20 sleep; the
+ * position is 9 bits, 0x00 = bits 8..1 and 0x01 bit 7 = bit 0; first position 250 (vendor_first_pos), 2 ms to
+ * settle; soft landing 100, 30 ms, 0, 30 ms, then sleep. Driven only from the stream thread.
+ */
+static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
+static bool cam_s20_af_ready;
+static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
+static volatile uint32_t cam_s20_af_want;
+static volatile bool cam_s20_af_pending;
+
+static bool
+cam_s20_af_w(uint8_t reg, uint8_t value)
+{
+	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
+}
+
+static bool
+cam_s20_af_set(uint32_t p)
+{
+	p = p > 511 ? 511 : p;
+	return cam_s20_af_w(0x00, (uint8_t)(p >> 1)) && cam_s20_af_w(0x01, (uint8_t)((p & 1U) << 7));
+}
+
+static bool
+cam_s20_af_up(void)
+{
+	char report[160];
+	uint8_t id = 0;
+
+	/*
+	 * The rear main's lens motor is an AK737x too, at 0x0c on HSI2C0 (x1slte fragment@17 is-actuator@0C, id 0):
+	 * gpp0-0 SCL, gpp0-1 SDA (pinctrl hsi2c0-bus) -- 2026-11-12.
+	 */
+	if (cam_s20_rear) {
+		cam_s20_af_bus.name = "AK737x HSI2C0 gpp0-0/1 (rear)";
+		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC0_PHYS, 0x00);  /* gpp0 */
+	} else {
+		cam_s20_af_bus.name = "AK737x HSI2C24 gpp8-0/1";
+		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
+	}
+	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
+		printf("camera: %s focus: its bus cannot be used (%s)\n", cam_s20_rear ? "rear" : "front", report);
+		return false;
+	}
+	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
+	cam_s20_wait_ms(1);
+	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
+	if (!cam_s20_af_set(250)) goto fail;
+	cam_s20_wait_ms(2);
+	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
+	cam_s20_af_ready = true;
+	cam_s20_af_pos = 250;
+	printf("camera: %s focus: AK737x (id %#x) up, the lens at 250 of 511\n", cam_s20_rear ? "rear" : "front", id);
+	return true;
+fail:
+	printf("camera: %s focus: the AK737x does not answer at 0x0c; no focus in this session\n", cam_s20_rear ? "rear" : "front");
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	return false;
+}
+
+static void
+cam_s20_af_down(void)
+{
+	if (!cam_s20_af_ready) return;
+	(void)cam_s20_af_set(100);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_set(0);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_w(0x02, 0x20);
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	cam_s20_af_ready = false;
+	cam_s20_af_pos = 0xffffffffU;
+}
+
 /* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
 typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
 static redwood_s20_frame_fn cam_s20_stream_fn;
@@ -388,6 +469,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			volatile uint8_t *s_cmn = cam_s20_optical_dma + 0x3400, *s_vc = cam_s20_optical_dma + 0x3000;
 			uint32_t idle = 0;
 
+			(void)cam_s20_af_up();
+
 			for (;;) {
 				uint32_t st = cam_s20_rd(s_cmn, 8);
 
@@ -437,12 +520,19 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 						(void)cam_3j1_write16(&sensor_bus, 0x0204, (uint16_t)eg);
 						(void)cam_3j1_write8(&sensor_bus, 0x0104, 0);
 					}
+					if (cam_s20_af_pending && cam_s20_af_ready) {
+						uint32_t want = cam_s20_af_want;
+
+						cam_s20_af_pending = false;
+						if (want != cam_s20_af_pos && cam_s20_af_set(want)) cam_s20_af_pos = want;
+					}
 					if (!more) break;
 				} else {
 					if (++idle > 2000) break;
 					cam_s20_wait_ms(1);
 				}
 			}
+			cam_s20_af_down();
 			/* memory output off before the sensor goes down */
 			cam_s20_wr(cam_s20_optical_dma, 0x3000, 0);
 			cam_s20_wr(cam_s20_optical_dma, 0x3414, 1);
@@ -724,76 +814,6 @@ static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
 void redwood_camera_s20_set_full(bool full) { cam_s20_full = full; }
-/* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
-static bool cam_s20_rear;
-void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
-
-/*
- * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
- * device tree (fragment@18) puts on gpp8-0 (SCL) and gpp8-1 (SDA); its supply is VDDAF_2.8V_VT (S2MPB02 LDO16), on
- * with the sensor's. Samsung's is-actuator-ak737x.c: CONT1 (0x02) 0x40 standby, 0x00 active, 0x20 sleep; the
- * position is 9 bits, 0x00 = bits 8..1 and 0x01 bit 7 = bit 0; first position 250 (vendor_first_pos), 2 ms to
- * settle; soft landing 100, 30 ms, 0, 30 ms, then sleep. Driven only from the stream thread.
- */
-static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
-static bool cam_s20_af_ready;
-static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
-static volatile uint32_t cam_s20_af_want;
-static volatile bool cam_s20_af_pending;
-
-static bool
-cam_s20_af_w(uint8_t reg, uint8_t value)
-{
-	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
-}
-
-static bool
-cam_s20_af_set(uint32_t p)
-{
-	p = p > 511 ? 511 : p;
-	return cam_s20_af_w(0x00, (uint8_t)(p >> 1)) && cam_s20_af_w(0x01, (uint8_t)((p & 1U) << 7));
-}
-
-static bool
-cam_s20_af_up(void)
-{
-	char report[160];
-	uint8_t id = 0;
-
-	cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
-	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
-		printf("camera: front focus: its bus cannot be used (%s)\n", report);
-		return false;
-	}
-	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
-	cam_s20_wait_ms(1);
-	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
-	if (!cam_s20_af_set(250)) goto fail;
-	cam_s20_wait_ms(2);
-	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
-	cam_s20_af_ready = true;
-	cam_s20_af_pos = 250;
-	printf("camera: front focus: AK737x (id %#x) up, the lens at 250 of 511\n", id);
-	return true;
-fail:
-	printf("camera: front focus: the AK737x does not answer at 0x0c; no focus in this session\n");
-	redwood_bbi2c_restore(&cam_s20_af_bus);
-	return false;
-}
-
-static void
-cam_s20_af_down(void)
-{
-	if (!cam_s20_af_ready) return;
-	(void)cam_s20_af_set(100);
-	cam_s20_wait_ms(30);
-	(void)cam_s20_af_set(0);
-	cam_s20_wait_ms(30);
-	(void)cam_s20_af_w(0x02, 0x20);
-	redwood_bbi2c_restore(&cam_s20_af_bus);
-	cam_s20_af_ready = false;
-	cam_s20_af_pos = 0xffffffffU;
-}
 
 /* the lens to `position', 0 (the furthest) to 1023 as /dev/redwood-camera has it */
 void
