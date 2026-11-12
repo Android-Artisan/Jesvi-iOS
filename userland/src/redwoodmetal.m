@@ -3000,7 +3000,12 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		size_t size = sizeof(args) - 1;
 		const char *at;
 
-		profile = 0;
+		/* 1 unless metal_profile= says otherwise: 0 claims Apple1 alone, and MPS -- which Apple's
+		 * own OpenGL ES (AppleMetalGLRenderer) and games reach -- then aborts the process with
+		 * "Failed to get MPSDevice" (12 November: Leo's Fortune and Angry Birds Space, under 1 s).
+		 * The phone's boot line is at its 550-character limit, which is how metal_profile=1 fell
+		 * off it; the default does not depend on the line. */
+		profile = 1;
 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
 		    (at = strstr(args, "metal_profile=")) != NULL && (at == args || at[-1] == ' ')) {
 			profile = (NSUInteger)strtoul(at + strlen("metal_profile="), NULL, 10);

@@ -1,11 +1,11 @@
 Redwood (the Exynos 990 port): Panfrost's disk shader cache on Mach-O. The cache keys its directory by the
 library's ELF build-id, which a Mach-O image does not have (build_id_find_nhdr_for_addr finds nothing and
 the upstream code reads through NULL); LC_UUID, which ld64 derives from the contents, stands in for it.
-Where: redwood_shader_cache_dir (boot-arg metal_cache=1); built with -Dshader-cache=enabled -Dshader-cache-default=false.
+Where: redwood_shader_cache_dir (on; boot-arg metal_cache=0 turns it off); built with -Dshader-cache=enabled -Dshader-cache-default=false.
 
 --- a/src/gallium/drivers/panfrost/pan_disk_cache.c	2026-11-12 15:41:34
-+++ b/src/gallium/drivers/panfrost/pan_disk_cache.c	2026-11-12 15:45:06
-@@ -34,6 +34,64 @@
++++ b/src/gallium/drivers/panfrost/pan_disk_cache.c	2026-11-12 15:58:01
+@@ -34,6 +34,63 @@
  
  #include "pan_context.h"
  
@@ -19,8 +19,8 @@ Where: redwood_shader_cache_dir (boot-arg metal_cache=1); built with -Dshader-ca
 +#include <mach-o/loader.h>
 +
 +/*
-+ * Redwood: where this process keeps compiled shaders, and whether it does (boot-arg
-+ * metal_cache=1). Without it every process compiles every shader's NIR into Mali code again
++ * Redwood: where this process keeps compiled shaders, and whether it does (on; boot-arg
++ * metal_cache=0 turns it off). Without it every process compiles every shader's NIR into Mali code again
 + * each time it starts: the window server (CoreAnimation's OpenGL ES through OSMesa) after
 + * every boot, every Metal app at every launch -- upstream hakios measured 66-103 CoreAnimation
 + * stages a boot, the pauses of its first minute. Mesa is built with -Dshader-cache-default=false,
@@ -43,10 +43,9 @@ Where: redwood_shader_cache_dir (boot-arg metal_cache=1); built with -Dshader-ca
 +
 +   if (getenv("MESA_SHADER_CACHE_DIR") != NULL)
 +      return true;
-+   if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0)
-+      return false;
-+   at = strstr(args, "metal_cache=1");
-+   if (at == NULL || (at != args && at[-1] != ' '))
++   /* on unless metal_cache=0 (the phone's boot line is at its 550-character limit) */
++   if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
++       (at = strstr(args, "metal_cache=0")) != NULL && (at == args || at[-1] == ' '))
 +      return false;
 +   snprintf(dir, sizeof(dir), "/private/var/db/redwood-metal-cache/%u", (unsigned)getuid());
 +   if ((mkdir(dir, 0700) == 0 || errno == EEXIST) && stat(dir, &st) == 0 &&
@@ -70,7 +69,7 @@ Where: redwood_shader_cache_dir (boot-arg metal_cache=1); built with -Dshader-ca
  #ifdef ENABLE_SHADER_CACHE
  static bool debug = false;
  #endif
-@@ -163,6 +221,40 @@
+@@ -163,6 +220,40 @@
  #ifdef ENABLE_SHADER_CACHE
     const char *renderer = screen->base.get_name(&screen->base);
  
@@ -111,7 +110,7 @@ Where: redwood_shader_cache_dir (boot-arg metal_cache=1); built with -Dshader-ca
     const struct build_id_note *note =
        build_id_find_nhdr_for_addr(panfrost_disk_cache_init);
     assert(note && build_id_length(note) == 20); /* sha1 */
-@@ -170,8 +262,8 @@
+@@ -170,8 +261,8 @@
     const uint8_t *id_sha1 = build_id_data(note);
     assert(id_sha1);
  

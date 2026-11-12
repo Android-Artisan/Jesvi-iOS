@@ -1169,7 +1169,7 @@ mount_writable(void)
 	check(ok && made > 50, "create the directories of the data volume");
 
 	/*
-	 * Compiled GPU shaders kept across launches and boots (metal_cache=1; tools/mesa/panfrost-disk-cache-darwin.patch
+	 * Compiled GPU shaders kept across launches and boots (on unless metal_cache=0; tools/mesa/panfrost-disk-cache-darwin.patch
 	 * redwood_shader_cache_dir): one directory per user under this one, which every user may make its own in
 	 * -- the window server and SpringBoard are mobile, not root, and could not create it in /private/var/db.
 	 * On the flash it stays from boot to boot; in a memory /var it is made again (and starts empty).
