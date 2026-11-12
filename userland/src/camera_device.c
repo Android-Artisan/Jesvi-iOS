@@ -1103,6 +1103,16 @@ deliver(struct stream *s, struct output *out, const struct isp *isp, const struc
 
 	CMTime pts = CMClockMakeHostTimeFromSystemUnits(f->time);
 
+	/*
+	 * A photograph's time a little before its frame's: Live Photo's staging node builds the movie around the still's
+	 * time and wants it inside the video it has already staged (an iPhone's still comes from its time machine);
+	 * ours was the newest frame, at the very edge -- "still image host time is before earliest allowed host PTS,
+	 * but it's later than last staged video buffer PTS", no movie (2026-11-12).
+	 */
+	if (strcmp(out->name, "StillImage") == 0) {
+		pts = CMTimeSubtract(pts, CMTimeMake(100, 1000));
+	}
+
 	((pixel_buffer_handler)out->handler)(pb, pts);
 	/*
 	 * The moving picture's buffers are kept for HELD frames after they are given. The preview's pool

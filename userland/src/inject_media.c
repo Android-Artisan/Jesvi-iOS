@@ -980,7 +980,7 @@ iris_open(id self, SEL sel, id request)
 		CMTime still = request != nil ? ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime")) :
 		    kCMTimeInvalid;
 
-		if (!CMTIME_IS_VALID(begin) && CMTIME_IS_VALID(still)) {
+		if (!getenv("REDWOOD_IRIS_NOHACK") && !CMTIME_IS_VALID(begin) && CMTIME_IS_VALID(still)) {
 			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
 
 			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
@@ -995,7 +995,7 @@ iris_open(id self, SEL sel, id request)
 		CMTime still = ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime"));
 		CMTime b0 = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
 
-		if (!CMTIME_IS_VALID(b0) && CMTIME_IS_VALID(still)) {
+		if (!getenv("REDWOOD_IRIS_NOHACK") && !CMTIME_IS_VALID(b0) && CMTIME_IS_VALID(still)) {
 			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
 
 			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
