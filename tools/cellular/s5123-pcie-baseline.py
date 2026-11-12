@@ -5,6 +5,7 @@ Addresses from pinned Exynos9830 cmucal-sfr.c and HSI2 pinctrl. HSI2 also
 serves storage: this tool NEVER writes gates, muxes, resets or pin ownership.
 Default is offline plan. --read requires codex-cellular phone lock.
 """
+import os
 import argparse
 import datetime
 import importlib.util
@@ -49,7 +50,7 @@ def main():
     owner = RESEARCH / 'build/phone.lock/owner'
 
     def lock():
-        if not owner.exists() or owner.read_text().split()[0] != 'codex-cellular':
+        if not owner.exists() or owner.read_text().split()[0] != os.environ.get('CELLULAR_SESSION', 'codex-cellular'):
             raise RuntimeError('cellular does not hold the phone lock')
 
     lock()

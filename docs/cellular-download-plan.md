@@ -148,3 +148,55 @@ fault/certificate rejection. Build logs in research-root build/
 cellular-memory-build-final.log/.exit (0), loader log in private out/cellular/
 live/memory-loader-build.txt. Current phone remains on the previous proven
 SPI8/reservation base; this audit awaits a batched notified restart.
+
+## External SIPC loader recovered from source — Nov12 continuation
+
+Pinned upstream: [Samsung cpboot_v3 via LineageOS,27ec634140f0e8798fc626fa2f6f4a081dbd23cf](https://github.com/LineageOS/android_hardware_samsung_slsi-linaro_exynos/tree/27ec634140f0e8798fc626fa2f6f4a081dbd23cf/cpboot_v3).
+ProtocolSipc.cpp/.h, Protocol.cpp and BootDumpExt.cpp carry Samsung2020 Apache2
+notices. The [S20 common board configuration](https://github.com/LineageOS/android_device_samsung_universal9830-common/blob/0d6675d52807f129d624bc0d671dcdf6d7af71ce/device-common.mk)
+builds cbd with SIPC. More importantly, our own extracted init.baseband.rc invokes
+`cbd -t s5100 -bs -me -B umts_boot0` (SPI BOOT, PCIe MAIN), matching BootDumpExt
+and the device kernel/DT. This is a source-derived compatibility case, not proof
+that our CP has accepted these commands. No full vendor download is required
+for this protocol investigation; the partial encrypted archive is untouched.
+
+Actual RADIO table validates BOOT/MAIN/APM/VSS/INFO CRCs. TOC's final word is
+count7; the per-image final words are not used to assign stages. BootDumpExt
+moves BOOT to stage0 and starts the queue loop at TOC1. It stops building at
+OFFSET (index6), places FIN there, and does not send trailing INFO. Our profile:
+
+| Stage | Image | Bytes | 2048-byte fragments | Host sequence |
+| --- | --- | ---: | ---: | --- |
+| 0 | BOOT | 64496 | SPI, already proven | Not repeated in UDL loop |
+| 1 | TOC | 800 | 1 | START, SEND image, DONE |
+| 2 | MAIN | 59502592 | 29054 | START, SEND image, CRC, DONE |
+| 3 | APM | 29728 | 15 | START, SEND image, DONE |
+| 4 | VSS | 4827808 | 2358 | START, SEND image, DONE |
+| 5 | NV | 1048576 | 512 | External source unresolved; blocked |
+| F | FIN | 0 | 0 | START only, after all earlier stages |
+
+UDL command is little-endian u32: request9000 or responseA000, OR stage<<8,
+OR operation START0 / SEND1 / CRCc / DONEd (FAILf). Data contains four u32 words:
+command,total-frame-count,one-based-current-frame,payload-length, then up to2048
+bytes. One SEND acknowledgement follows the complete image, not each fragment.
+CRC message is command+CRC, MAIN only in this external loop. Each write is
+wrapped by our kernel's ordinary4-byte SIPC5 header, channel215, length excluding
+padding to8 bytes. First intended live transaction is TOC START9100 -> A100;
+its full TX bytes are `fc d7 08 00 00 91 00 00`. Do not send before IPC init,
+cache mapping and DMA prerequisites. No UDL bytes have been sent to the phone.
+
+New original MIT s5123-udl.h encodes these wire facts (no upstream implementation
+copied), checks exact chunk sizes/stages/output bounds, and rejects malformed,
+failed or unexpected ACKs. No automatic retransmission or device I/O. C sanitizer
+tests pass golden vectors, all2048 final lengths and padding/capacity guards,
+UINT32_MAX image arithmetic and malformed replies. udl_plan.py reads RADIO only,
+CRC-verifies, requires the reviewed exact profile, emits stage metadata, and
+explicitly blocks NV/FIN;3 plan tests pass. It never opens EFS/NV. Existing
+kernel SHMEM transport facts remain applicable; MODAP/SIT paths are not used.
+
+Additional mapping evidence: latest known-good loader log puts XNU RAM at
+880000000+17e000000, wholly above the IPCF0000000+800000 range. Thus the new
+cp.memory command is expected to report outside physical aperture without
+calling phystokv. Future mapping should require certificate, disjoint kernel
+aperture, no generic-debug alias, then validate every new NormalNC translation.
+This narrows the alias issue; it is not yet a mapped IPC/backend proof.

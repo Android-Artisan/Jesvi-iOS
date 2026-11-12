@@ -46,7 +46,7 @@ def main():
     owner = RESEARCH / 'build/phone.lock/owner'
 
     def lock():
-        if not owner.exists() or owner.read_text().split()[0] != 'codex-cellular':
+        if not owner.exists() or owner.read_text().split()[0] != os.environ.get('CELLULAR_SESSION', 'codex-cellular'):
             raise RuntimeError('phone lock is not held by codex-cellular; no further reads')
 
     ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', 's20']

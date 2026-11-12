@@ -4,6 +4,7 @@
 Default --status is prerequisites only. --root-id applies the isolated CP-off
 root-port probe. A timeout leaves state unknown: inspect transcript, do not retry.
 """
+import os
 import argparse
 import datetime
 import hashlib
@@ -27,7 +28,7 @@ def main():
     owner = RESEARCH / 'build/phone.lock/owner'
 
     def lock():
-        if not owner.exists() or owner.read_text().split()[0] != 'codex-cellular':
+        if not owner.exists() or owner.read_text().split()[0] != os.environ.get('CELLULAR_SESSION', 'codex-cellular'):
             raise RuntimeError('No deployment/probe: cellular must hold the normal phone lock')
 
     lock()

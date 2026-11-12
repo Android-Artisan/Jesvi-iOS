@@ -35,3 +35,9 @@ trap 'rm -rf "$CELLULAR_CHECK_DIR"' EXIT
 "${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
     tools/cellular/tests/cp_memory_test.c -o "$CELLULAR_CHECK_DIR/cp-memory-test"
 "$CELLULAR_CHECK_DIR/cp-memory-test"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/udl_test.c -o "$CELLULAR_CHECK_DIR/udl-test"
+"$CELLULAR_CHECK_DIR/udl-test"
+"${CC:-clang}" -std=c11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined \
+    tools/cellular/tests/cp_ipc_test.c -o "$CELLULAR_CHECK_DIR/cp-ipc-test"
+"$CELLULAR_CHECK_DIR/cp-ipc-test"

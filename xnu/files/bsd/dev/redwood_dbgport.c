@@ -20,16 +20,23 @@
 #include <kern/locks.h>
 #include <sys/redwood_spi8_debug.h>
 #include <sys/redwood_cp_memory.h>
+#include <sys/redwood_cp_ipc.h>
+#include <vm/memory_types.h>
 #include <pexpert/device_tree.h>
 #include <machine/machine_routines.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+extern void ml_io_unmap(vm_offset_t addr, vm_size_t size);
 
 #define SMC_CMD_REG     0xFFFFFFFFFFFFFF9BULL
 
 static char out_buf[8192];
 static struct { uint64_t page; volatile uint8_t *va; } maps[64];
 static unsigned nmaps;
+#ifdef GENERIC_GIC_V2_IRQ
+static vm_offset_t cp_ipc_va; /* fixed retained IPC, protected by dbgport_mtx */
+#endif
 static struct { char name[32]; const char *help; redwood_dbgport_fn fn; } cmds[96];
 static unsigned ncmds;
 static LCK_GRP_DECLARE(dbgport_grp, "redwood_dbgport");
@@ -52,6 +59,9 @@ static volatile uint8_t *
 pmap_pa(uint64_t pa)
 {
 	uint64_t page = pa & ~0x3fffULL;
+#ifdef GENERIC_GIC_V2_IRQ
+    if (cp_ipc_va && page>=CP_IPC_BASE && page<CP_IPC_BASE+CP_IPC_SIZE) return NULL;
+#endif
 
 	for (unsigned i = 0; i < nmaps; i++) {
 		if (maps[i].page == page) {
@@ -70,20 +80,37 @@ pmap_pa(uint64_t pa)
 }
 
 #ifdef GENERIC_GIC_V2_IRQ
+static int
+cp_memory_certified(void)
+{
+    DTEntry chosen;void *property;unsigned length;uint64_t values[3];
+    const char *names[]={"cellular-memory-version","cellular-ipc-base","cellular-ipc-size"};
+    if (SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess) return 0;
+    for (unsigned i=0;i<3;i++) {
+        if (SecureDTGetProperty(chosen,names[i],&property,&length)!=kSuccess || length!=8) return 0;
+        memcpy(&values[i],property,8);
+    }
+    return cp_memory_certificate(values[0],values[1],values[2]);
+}
+
+static uint64_t
+cp_memory_translation(vm_offset_t va)
+{
+    uint64_t saved,par;
+    boolean_t interrupts=ml_set_interrupts_enabled(FALSE);
+    __asm__ volatile("mrs %0, par_el1\n\tat s1e1r, %2\n\tisb\n\tmrs %1, par_el1\n\tmsr par_el1, %0\n\tisb"
+        : "=&r"(saved),"=&r"(par) : "r"(va) : "memory");
+    ml_set_interrupts_enabled(interrupts);
+    return par;
+}
+
 /* Audit the existing direct-map alias first. No RAM read/write, new mapping,
  * HVC, CP power or DMA operation. A cached alias requires resolution before
  * a NormalNC mapping is allowed. The debug mutex serializes commands. */
 static void
 cp_memory_audit(void)
 {
-    DTEntry chosen;void *property;unsigned length;uint64_t values[3];
-    const char *names[]={"cellular-memory-version","cellular-ipc-base","cellular-ipc-size"};
-    if (SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess) goto missing;
-    for (unsigned i=0;i<3;i++) {
-        if (SecureDTGetProperty(chosen,names[i],&property,&length)!=kSuccess || length!=8) goto missing;
-        memcpy(&values[i],property,8);
-    }
-    if (!cp_memory_certificate(values[0],values[1],values[2])) goto missing;
+    if (!cp_memory_certified()) goto missing;
     /* phystokv panics for a PA outside the kernel's physical aperture. */
     extern unsigned long gPhysBase,real_phys_size;
     if (CP_IPC_BASE<gPhysBase || CP_IPC_BASE-gPhysBase>real_phys_size ||
@@ -94,11 +121,7 @@ cp_memory_audit(void)
     for (unsigned i=0;i<nmaps;i++)
         if (maps[i].page>=CP_IPC_BASE && maps[i].page<CP_IPC_BASE+CP_IPC_SIZE) debug_alias++;
     for (uint64_t pa=CP_IPC_BASE;pa<CP_IPC_BASE+CP_IPC_SIZE;pa+=0x1000) {
-        vm_offset_t va=ml_static_ptovirt((vm_offset_t)pa);uint64_t par,saved;
-        boolean_t interrupts=ml_set_interrupts_enabled(FALSE);
-        __asm__ volatile("mrs %0, par_el1\n\tat s1e1r, %2\n\tisb\n\tmrs %1, par_el1\n\tmsr par_el1, %0\n\tisb"
-            : "=&r"(saved),"=&r"(par) : "r"(va) : "memory");
-        ml_set_interrupts_enabled(interrupts);
+        uint64_t par=cp_memory_translation(ml_static_ptovirt((vm_offset_t)pa));
         if (par&1) fault++;
         else if (!cp_memory_par_matches(par,pa)) wrong_pa++;
         else if (cp_memory_par_nc(par,pa)) nc++;
@@ -306,6 +329,76 @@ poke_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int 
 }
 
 SYSCTL_DECL(_kern_redwood);
+#ifdef GENERIC_GIC_V2_IRQ
+/* Binary, bounded IPC access for a single root bring-up helper. The external
+ * phone lock owns the full transaction. This mutex serializes each operation
+ * with generic debug mappings. No HVC, power, DMA grant, index reset or firmware
+ * command occurs automatically. UNMAP drops only the AP mapping, not reservation.
+ */
+static int
+cp_ipc_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
+    __unused int arg2, struct sysctl_req *req)
+{
+    struct cp_ipc_request q={.version=CP_IPC_API,.op=CP_IPC_INFO};
+    struct cp_ipc_reply reply={.version=CP_IPC_API};
+    int error=0;
+    size_t input_size=CP_IPC_HEADER;
+    if (req->newptr!=USER_ADDR_NULL) {
+        input_size=req->newlen;
+        if (input_size<CP_IPC_HEADER || input_size>sizeof(q)) return EINVAL;
+        if ((error=SYSCTL_IN(req,&q,input_size))) return error;
+    }
+    if (!cp_ipc_request_valid(&q,input_size)) return EINVAL;
+    size_t read_size=(q.op==CP_IPC_READ || q.op==CP_IPC_LOAD32)?q.length:0;
+    /* A too-small reply buffer must not cause a hidden partial operation. */
+    if (req->oldptr==USER_ADDR_NULL || req->oldlen<CP_IPC_HEADER+read_size) return ENOMEM;
+    lck_mtx_lock(&dbgport_mtx);
+    if (q.op==CP_IPC_MAP && !cp_ipc_va) {
+        extern unsigned long gPhysBase,real_phys_size;
+        if (!cp_memory_certified() || !cp_ipc_aperture_disjoint(gPhysBase,real_phys_size)) {
+            error=EPERM;goto done;
+        }
+        for (unsigned i=0;i<nmaps;i++) {
+            if (maps[i].page>=CP_IPC_BASE && maps[i].page<CP_IPC_BASE+CP_IPC_SIZE) {
+                error=EBUSY;goto done;
+            }
+        }
+        vm_offset_t mapped=ml_io_map_unmappable(CP_IPC_BASE,CP_IPC_SIZE,VM_WIMG_WCOMB);
+        if (!mapped) {error=ENOMEM;goto done;}
+        for (uint64_t off=0;off<CP_IPC_SIZE;off+=0x1000) {
+            if (!cp_memory_par_nc(cp_memory_translation(mapped+off),CP_IPC_BASE+off)) {
+                ml_io_unmap(mapped,CP_IPC_SIZE);error=EIO;goto done;
+            }
+        }
+        cp_ipc_va=mapped;
+    } else if (q.op==CP_IPC_UNMAP) {
+        if (cp_ipc_va) {ml_io_unmap(cp_ipc_va,CP_IPC_SIZE);cp_ipc_va=0;}
+    } else if (q.op>=CP_IPC_READ) {
+        if (!cp_ipc_va) {error=ENXIO;goto done;}
+        uint8_t *at=(uint8_t *)cp_ipc_va+q.offset;
+        __asm__ volatile("dsb sy" ::: "memory");
+        switch(q.op) {
+        case CP_IPC_READ: memcpy(reply.data,at,q.length);break;
+        case CP_IPC_WRITE: memcpy(at,q.data,q.length);break;
+        case CP_IPC_LOAD32: {
+            uint32_t v=*(volatile uint32_t *)at;memcpy(reply.data,&v,4);break;
+        }
+        case CP_IPC_STORE32: {
+            uint32_t v;memcpy(&v,q.data,4);*(volatile uint32_t *)at=v;break;
+        }
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
+    reply.mapped=cp_ipc_va!=0;reply.length=(uint32_t)read_size;
+    error=SYSCTL_OUT(req,&reply,CP_IPC_HEADER+read_size);
+done:
+    lck_mtx_unlock(&dbgport_mtx);
+    return error;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, cp_ipc, CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_LOCKED,
+    NULL, 0, cp_ipc_sysctl, "S,cp_ipc_reply", "root-only bounded retained modem IPC memory");
+#endif
+
 extern void dbg_fb_warm(const uint64_t *, unsigned, char *, size_t);
 
 /* backboardd runs as mobile. Expose only the bounded display preference,

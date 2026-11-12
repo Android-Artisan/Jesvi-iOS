@@ -19,3 +19,8 @@ xcrun clang -target arm64-apple-ios16.0 -isysroot "$sdk" -O2 -Wall -Wextra -Werr
 codesign --force --sign - --timestamp=none "$out/live-modem"
 codesign --verify --strict "$out/live-modem"
 printf '%s\n' "$out/live-modem"
+xcrun clang -target arm64-apple-ios16.0 -isysroot "$sdk" -O2 -Wall -Wextra -Werror \
+    "$repo/tools/cellular/live-ipc.c" -o "$out/live-ipc"
+codesign --force --sign - --timestamp=none "$out/live-ipc"
+codesign --verify --strict "$out/live-ipc"
+printf '%s\n' "$out/live-ipc"

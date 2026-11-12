@@ -225,3 +225,12 @@ snapshots. Root BMEoff/Type1 guards, actual EP Type0 proof; sole EP write is
 COMMAND low16 with BMEclear and statushigh0. No arbitrary config/endpoint writes.
 Combined helper GPL2; see NOTICE/license. Host combined model2612 fault cases
 plus clear-only/alias/root-BME/stuckBME/timeout scenarios pass under sanitizers.
+
+### External SIPC UDL (host only)
+
+`s5123-udl.h` provides bounded channel215 packet encoding and strict ACK checks.
+`python3 tools/cellular/udl_plan.py /private/path/radio.img` verifies CRCs and
+prints the reviewed S20 stage order. Output contains metadata only; no EFS/NV
+reads, device commands, or claim of modem acceptance. NV and final completion
+remain blocked until their prerequisites are resolved. See the download plan
+for pinned Samsung source and host tests.

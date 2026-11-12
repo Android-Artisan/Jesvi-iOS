@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run internal SPI loopback live; no reboot, firmware or CP control writes."""
+import os
 import argparse
 import datetime
 import hashlib
@@ -22,7 +23,7 @@ def main():
     owner = RESEARCH / 'build/phone.lock/owner'
 
     def lock():
-        if not owner.exists() or owner.read_text().split()[0] != 'codex-cellular':
+        if not owner.exists() or owner.read_text().split()[0] != os.environ.get('CELLULAR_SESSION', 'codex-cellular'):
             raise RuntimeError('cellular must hold the phone lock before any deployment or test')
 
     lock()
