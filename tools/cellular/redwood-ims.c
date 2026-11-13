@@ -560,7 +560,7 @@ static struct {
     unsigned bye_cseq;
 } call;
 static char call_ip6[64];
-static int call_ports;
+static int call_ports, call_sock = -1, call_portc;
 static const char *call_user;
 
 static int
@@ -699,10 +699,13 @@ call_tick(void)
             const char *v=q+13;while (*v==' ') v++;const char *le=strstr(v,"\r\n");
             size_t L=strlen(route);snprintf(route+L,sizeof(route)-L,"Route: %.*s\r\n",(int)(le-v),v);
         }
+        /* (a request of ours goes out on our own protected connection, port-c -> the P-CSCF's port-s, as REGISTER and
+         * MESSAGE do; sent back on the P-CSCF's connection to our port-s it was dropped silently, 2026-11-13 22:42) */
         o=snprintf(m,sizeof(m),"BYE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
             "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u BYE\r\nContent-Length: 0\r\n\r\n",
-            uri,call_ip6,call_ports,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
-        send(call.fd,m,(size_t)o,0);
+            uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
+        if (send(call_sock,m,(size_t)o,0)<0) printf("call: BYE send failed: %s\n",strerror(errno));
+        else printf("call: --> BYE (on the registration connection)\n");
         call_end("our BYE (test length reached)");
     }
 }
@@ -887,7 +890,7 @@ int main(int argc,char **argv)
 
     /* 5. stay: show what the network sends, answer requests with 200 */
     int cs[8];int ncs=0;time_t registered_at=time(NULL);
-    snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;
+    snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
         if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
