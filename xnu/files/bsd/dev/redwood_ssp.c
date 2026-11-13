@@ -21,8 +21,9 @@
  *            magnetometer's PDC matrix (0xFD, the dtbo's 27 bytes), its firmware revision, the accelerometer's range
  *   shub=6   ... the sensors on (shub_sensors=), their samples into /dev/redwood-sensors for as long as the phone runs
  *   shub_sensors=<mask>  Samsung's sensor numbers (sensor_list.h: 0 accel, 1 gyro, 4 magnetometer, 5 pressure,
- *            7 proximity, 9 light; default 0x233 = those but proximity, since 2026-11-13), only those the hub found
- *   shub_ms=<n>          their period in ms (default 60; light and pressure 1000, proximity 200)
+ *            7 proximity, 9 light; default 0x2b3 = those six), only those the hub found
+ *   shub_ms=<n>          their period in ms (default 60; pressure 1000; light and proximity: bursts of shub_burst_on=2000
+ *            ms every shub_burst_every=30000 ms at shub_prox_ms=200, nothing while the display is off)
  *   shub_div=<n>         USI14's divider, 0-15 (default 15: 400 MHz / 16 = 25 MHz IP clock, SCLK a quarter: 6.25 MHz;
  *            Samsung's spi-max-frequency is 25 MHz); 255 leaves it as found
  *   shub_ap_rev=<n>      the AP revision told to the hub (default 21: the dtbo's dtbo-hw_rev 0x15; Samsung sends the
@@ -167,10 +168,13 @@ static struct redwood_exynos_spi bus = {
 static vm_offset_t cmu_top, cmu_peric0;
 static volatile uint8_t *gpp3, *gpp6, *gpb0, *gpm19, *gpa0, *gpa1, *gpa4;
 static uint32_t steps, keep = 1, log_frames, div_ratio = 15, ap_rev = 21;
-/* 2026-11-13 (user: "the light sensor flashes every second", the phone laggy): proximity (7) off by default -- its IR
- * LED pulsed at every 200 ms reading, with nobody using it until calls exist -- and the motion sensors at 60 ms
- * (~16 Hz, plenty for rotation) instead of 20. shub_sensors=0x2b3 shub_ms=20 gives the old behaviour back. */
-static uint32_t want_sensors = 0x233, period_ms = 60, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
+/* 2026-11-13 (user: the sensor by the camera flashes every second, the phone laggy): the motion sensors at 60 ms
+ * (~16 Hz, plenty for rotation) instead of 20; shub_ms=20 gives that back. */
+static uint32_t want_sensors = 0x2b3, period_ms = 60, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
+/* Light and proximity in bursts (user, 2026-11-13): with the display on, both on for shub_burst_on ms (2000) every
+ * shub_burst_every ms (30000), at prox_ms (200) inside the burst; with the display off, both fully off. The proximity
+ * IR LED flashed 5 times a second all the time before; auto-brightness only needs a light reading now and then. */
+static uint32_t prox_ms = 200, burst_on_ms = 2000, burst_every_ms = 30000;
 static volatile bool powered;
 static const char *state = "off";
 
@@ -1382,7 +1386,7 @@ static void
 run(void)
 {
 	/* light and pressure once a second (auto-brightness needs no more); proximity, when asked for, 200 ms */
-	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 1000 }, { SSP_PROXIMITY, 200 },
+	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 0 /* prox_ms */ }, { SSP_PROXIMITY, 0 /* prox_ms */ },
 		                                                   { SSP_PRESSURE, 1000 } };
 	uint32_t frames_at_time = 0;
 	uint64_t report_at = now_ns();
@@ -1396,7 +1400,7 @@ run(void)
 		}
 		for (unsigned i = 0; i < sizeof(slow) / sizeof(slow[0]); i++) {
 			if (slow[i].id == id) {
-				ms = slow[i].ms;
+				ms = slow[i].ms ? slow[i].ms : prox_ms;
 			}
 		}
 		say("shub: 6: sensor %u on, every %u ms: %s\n", id, ms, sensor_on(id, ms) ? "taken" : "NOT taken");
@@ -1405,6 +1409,32 @@ run(void)
 	idle_us = 4000;
 	while (powered) {
 		proximity_diagnostic();
+		{       /* light + proximity bursts, nothing while the display is off */
+			static const uint8_t ids[] = { SSP_LIGHT, SSP_PROXIMITY };
+			static uint64_t cycle_at;
+			uint64_t now = now_ns();
+			if (!cycle_at || now - cycle_at >= (uint64_t)burst_every_ms * NSEC_PER_MSEC) {
+				cycle_at = now;
+			}
+			bool want = redwood_display_is_on && now - cycle_at < (uint64_t)burst_on_ms * NSEC_PER_MSEC;
+			for (unsigned i = 0; i < sizeof(ids); i++) {
+				uint8_t id = ids[i];
+				bool on = (ssp.enabled & (1ull << id)) != 0;
+				if (!(want_sensors & (1u << id)) || !(ssp.found & (1ull << id)) || on == want) {
+					continue;
+				}
+				if (want) {
+					(void)sensor_on(id, prox_ms);
+				} else {
+					uint8_t b[5];
+					b[0] = id;
+					shub_put32(b + 1, prox_ms);
+					if (ssp_cmd(SSP_SENSOR_REMOVE, SSP_AP2HUB_WRITE, 0, b, 5)) {
+						ssp.enabled &= ~(1ull << id);
+					}
+				}
+			}
+		}
 		pump(100, NULL);
 		if (ssp.frames - frames_at_time >= 3000) {
 			frames_at_time = ssp.frames;
@@ -1502,6 +1532,13 @@ redwood_ssp_init(void)
 	PE_parse_boot_argn("shub_keep", &keep, sizeof(keep));
 	PE_parse_boot_argn("shub_log", &log_frames, sizeof(log_frames));
 	PE_parse_boot_argn("shub_text", &shub_text, sizeof(shub_text));
+	PE_parse_boot_argn("shub_prox_ms", &prox_ms, sizeof(prox_ms));
+	prox_ms = prox_ms < 100 ? 100 : prox_ms;
+	PE_parse_boot_argn("shub_burst_on", &burst_on_ms, sizeof(burst_on_ms));
+	PE_parse_boot_argn("shub_burst_every", &burst_every_ms, sizeof(burst_every_ms));
+	if (burst_every_ms < burst_on_ms) {
+		burst_every_ms = burst_on_ms;
+	}
 	PE_parse_boot_argn("shub_div", &div_ratio, sizeof(div_ratio));
 	PE_parse_boot_argn("shub_ap_rev", &ap_rev, sizeof(ap_rev));
 	PE_parse_boot_argn("shub_sensors", &want_sensors, sizeof(want_sensors));
