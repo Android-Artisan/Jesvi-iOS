@@ -145,7 +145,7 @@ static double (*sbs_orig_lco)(id, SEL);
 static double
 sbs_lco(id self, SEL cmd)
 {
-	double v = sbs_orig_lco(self, cmd), r = v - sbs_lead / 2;
+	double v = sbs_orig_lco(self, cmd), r = v - sbs_lead / 2 - sbs_notch_shift;
 	static int told;
 
 	if (told++ < 2) {
@@ -166,7 +166,7 @@ static double (*sbs_orig_tco)(id, SEL);
 static double
 sbs_tco(id self, SEL cmd)
 {
-	double v = sbs_orig_tco(self, cmd), r = v + sbs_lead / 2 + sbs_trail;
+	double v = sbs_orig_tco(self, cmd), r = v + sbs_lead / 2 + sbs_trail;    /* (no notch shift: it is derived from the left, already corrected) */
 	static int told;
 
 	if (told++ < 2) {
@@ -175,9 +175,48 @@ sbs_tco(id self, SEL cmd)
 	return r;
 }
 
+/*
+ * The side areas are (screen width - notchSize.width) / 2 wide (UIKitCore 0x189ab1044): with the iPhone X's 209 pt
+ * notch the left one is ~83 pt, so a longer carrier text ("... | Jio" on the lock screen) scrolled although the S20's
+ * hole is small (user 2026-11-13). +notchSize's width is reported as `notch` (conf notch=, default 125; 0 = Apple's).
+ * The centring points move inward by (209 - notch) / 4 with it (leadingCenteringEdgeInset = notchRect.x / 2 + ...),
+ * so lco/tco take that back: the time and the battery stay where lead/trail put them.
+ */
+struct sbs_size { double w, h; };
+static double sbs_notch = 125;
+static struct sbs_size (*sbs_orig_notch)(id, SEL);
+static double sbs_notch_shift;          /* (orig - notch) / 4, set once the original is known */
+
+static struct sbs_size
+sbs_notch_size(id self, SEL cmd)
+{
+	struct sbs_size v = sbs_orig_notch(self, cmd);
+
+	if (sbs_notch > 0 && sbs_notch < v.w) {
+		sbs_notch_shift = (v.w - sbs_notch) / 4;
+		v.w = sbs_notch;
+	}
+	return v;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+		Method nm = sc ? class_getClassMethod(sc, sel_registerName("notchSize")) : NULL;
+		if (nm != NULL && sbs_orig_notch == NULL && sbs_notch > 0) {
+			sbs_orig_notch = (struct sbs_size (*)(id, SEL))method_getImplementation(nm);
+			struct sbs_size o = sbs_orig_notch((id)sc, sel_registerName("notchSize"));
+			if (sbs_notch < o.w) {
+				sbs_notch_shift = (o.w - sbs_notch) / 4;
+			}
+			if (!class_addMethod(object_getClass((id)sc), sel_registerName("notchSize"), (IMP)sbs_notch_size,
+			    method_getTypeEncoding(nm))) {
+				method_setImplementation(nm, (IMP)sbs_notch_size);
+			}
+		}
+	}
 	{
 		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
 		SEL ts = sel_registerName("trailingCenteringOffset");
@@ -247,6 +286,10 @@ statusbar_shift_start(void)
 		char *p = strstr(b, "lead=");
 		if (p != NULL) {
 			sbs_lead = atof(p + 5);
+		}
+		p = strstr(b, "notch=");
+		if (p != NULL) {
+			sbs_notch = atof(p + 6);
 		}
 		p = strstr(b, "trail=");
 		if (p != NULL) {
