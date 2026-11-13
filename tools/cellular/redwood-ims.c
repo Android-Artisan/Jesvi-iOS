@@ -914,17 +914,38 @@ static void call_sdp_from(const char *r)
     if (c) sscanf(c+10,"%95s",call.sdp_c);
     if (mm) sscanf(mm+9,"%95s",call.sdp_m);
 }
+
+/* E.164 country code from the IMSI's MCC (its first three digits); NULL when unknown (then numbers go out as dialled) */
+static const char *mcc_country_code(const char *imsi)
+{
+    static const struct {int mcc;const char *cc;} t[]={
+        {404,"91"},{405,"91"},{406,"91"},{310,"1"},{311,"1"},{312,"1"},{313,"1"},{314,"1"},{315,"1"},{316,"1"},{302,"1"},
+        {234,"44"},{235,"44"},{262,"49"},{208,"33"},{222,"39"},{214,"34"},{505,"61"},{530,"64"},{440,"81"},{441,"81"},
+        {450,"82"},{460,"86"},{454,"852"},{525,"65"},{502,"60"},{510,"62"},{515,"63"},{520,"66"},{452,"84"},{470,"880"},
+        {410,"92"},{413,"94"},{429,"977"},{424,"971"},{420,"966"},{427,"974"},{419,"965"},{422,"968"},{426,"973"},
+        {602,"20"},{655,"27"},{621,"234"},{639,"254"},{724,"55"},{722,"54"},{334,"52"},{730,"56"},{732,"57"},{716,"51"},
+        {250,"7"},{255,"380"},{260,"48"},{286,"90"},{204,"31"},{206,"32"},{228,"41"},{232,"43"},{238,"45"},{240,"46"},
+        {242,"47"},{244,"358"},{268,"351"},{272,"353"},{202,"30"},{425,"972"},{416,"962"},{415,"961"},{418,"964"},{432,"98"}};
+    if (!imsi || strlen(imsi)<3) return NULL;
+    int mcc=(imsi[0]-'0')*100+(imsi[1]-'0')*10+(imsi[2]-'0');
+    for (size_t i=0;i<sizeof(t)/sizeof(t[0]);i++) if (t[i].mcc==mcc) return t[i].cc;
+    return NULL;
+}
 static void call_dial(int sock,const char *tag,const char *number)
 {
     if (call.state) {call_ui_state("ended 0 busy %s",tag);return;}
     char num[40];size_t n=0;
-    for (const char *q=number;*q && n+1<sizeof(num);q++) if ((*q>='0' && *q<='9') || (*q=='+' && !n)) num[n++]=*q;
+    for (const char *q=number;*q && n+1<sizeof(num);q++) if ((*q>='0' && *q<='9') || (*q=='+' && !n) || *q=='*' || *q=='#') num[n++]=*q;
     num[n]=0;
-    char tel[48];
+    /* the number as the network wants it (A, 2026-11-14): no fixed country. The SIM's MCC gives the country code;
+     * 00... and +... are international already, a leading 0 is the national trunk prefix, a national number gets
+     * +CC, and short codes (under 7 digits, or * / #) stay local, in the SIM's own IMS domain (phone-context). */
+    char tel[96];const char *cc=mcc_country_code(cfg.imsi);
     if (num[0]=='+') snprintf(tel,sizeof(tel),"tel:%s",num);
-    else if (n==10) snprintf(tel,sizeof(tel),"tel:+91%s",num);
-    else if (n==11 && num[0]=='0') snprintf(tel,sizeof(tel),"tel:+91%s",num+1);
-    else snprintf(tel,sizeof(tel),"tel:%s;phone-context=ims.mnc%s.mcc405.3gppnetwork.org",num,"854");
+    else if (!strncmp(num,"00",2) && n>4) snprintf(tel,sizeof(tel),"tel:+%s",num+2);
+    else if (n<7 || strchr(num,'*') || strchr(num,'#') || !cc) snprintf(tel,sizeof(tel),"tel:%s;phone-context=%s",num,cfg.realm);
+    else if (num[0]=='0') snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num+1);
+    else snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num);
     memset(&call,0,sizeof(call));
     call.out=1;call.ui=1;call.id=++call_seq;call.state=10;call.at=time(NULL);call.bye_cseq=2;
     snprintf(call.branch,sizeof(call.branch),"z9hG4bK%08x",arc4random());
@@ -949,7 +970,7 @@ static void call_dial(int sock,const char *tag,const char *number)
         "Accept-Contact: *;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
         "P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel\r\n"
         "P-Preferred-Identity: <%s>\r\n"
-        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: 100rel,replaces\r\n"
+        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces\r\n"
         "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",
         tel,call_ip6,call_portc,call.branch,sms_route,call.to,call.from,call.cid,
         call_user,call_ip6,call_ports,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",strlen(sdp),sdp);
@@ -978,7 +999,15 @@ static int call_out_response(int sock,const char *r)
 {
     char ci[200],cq[80];
     if (!call.out || !call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
-    if (!hdr(r,"CSeq",cq,sizeof(cq)) || !strstr(cq,"INVITE")) return 1;   /* (PRACK/BYE answers) */
+    if (!hdr(r,"CSeq",cq,sizeof(cq))) return 1;
+    if (!strstr(cq,"INVITE")) {                             /* PRACK/BYE answers */
+        int c2=atoi(r+8);
+        if (c2==481 && call.state!=3) {                     /* the network lost the call: never stay on "calling" */
+            printf("%s call: <-- 481 to our %s: the call is gone\n",ts_now(),strstr(cq,"PRACK")?"PRACK":"request");
+            call_cancel(sock);call_end("the network lost the call");
+        }
+        return 1;
+    }
     int code=atoi(r+8);
     printf("%s call: <-- %d to our INVITE\n",ts_now(),code);
     char to[400];
