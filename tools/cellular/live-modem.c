@@ -398,8 +398,10 @@ static void cell_publish(void)
     mkdir("/var/tmp/redwood-cell",0755);
     FILE *f=fopen(tmp,"w");if (!f) return;
     const char *op=strncmp(cell.plmn,"4058",4)==0||strncmp(cell.plmn,"40586",5)==0?"Jio":cell.plmn[0]?cell.plmn:"";
-    fprintf(f,"bars %d\nmax 4\ndbm %d\noperator %s\nplmn %s\nreg %d\nrat LTE\nupdated %llu\n",
-        cell.bars,cell.rssi_dbm,op,cell.plmn,cell.reg_raw,(unsigned long long)time(NULL));
+    /* ios_reg/ios_data: SystemStatusServer's STTelephonyRegistrationStatus (2 = registered, 3 = notRegistered)
+     * and STTelephonyDataConnectionType (7 = lteConnection), as its debug-name functions list them */
+    fprintf(f,"bars %d\nmax 4\ndbm %d\noperator %s\nplmn %s\nreg %d\nrat LTE\nios_reg %d\nios_data %d\nupdated %llu\n",
+        cell.bars,cell.rssi_dbm,op,cell.plmn,cell.reg_raw,(cell.plmn[0] && strcmp(cell.plmn,"000000"))?2:3,7,(unsigned long long)time(NULL));
     fclose(f);chmod(tmp,0644);rename(tmp,"/var/tmp/redwood-cell/state");
 }
 static void cell_ipc(const uint8_t *m,unsigned len)
@@ -445,6 +447,10 @@ static int online_handshake(unsigned seconds)
                 else if (cmd==0x07 || cmd==0x09) phase("CP: CRASH");
             }
             last=m;lastu=u;lastmsi=msi;
+        }
+        if (online && stay_mode) {      /* heartbeat: SpringBoard treats a state older than two minutes as no modem */
+            static uint64_t beat;
+            if (now_us(NULL)-beat>20000000ull) {beat=now_us(NULL);if (cell.plmn[0] || cell.have_rssi) cell_publish();}
         }
         if (online) {
             static int asked;static uint64_t shown;
