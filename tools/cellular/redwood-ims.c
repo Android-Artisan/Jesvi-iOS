@@ -541,6 +541,172 @@ static void sms_outbox(int sock,int portc)
     closedir(d);
 }
 /* command pipe for the client: "sms NUMBER TEXT" (root only) */
+
+/*
+ * Calls, step 1 (2026-11-13, A): answering at the SIP level, behind /var/root/cell-answer (absent: 486 Busy as
+ * before). Jio's INVITE (docs/cellular-download-plan.md "Jio's INVITE") has no preconditions and 100rel is only
+ * supported, so: 100 Trying, 180 Ringing, after CALL_ANSWER_S 200 OK with an SDP answer (AMR-NB PT 100, DTMF 101) ->
+ * ACK; CANCEL -> 200 + 487; BYE -> 200; our own BYE after CALL_MAX_S. No media yet (the CP's CPVE comes next):
+ * the caller hears silence. One call at a time; a second INVITE gets 486.
+ */
+#define CALL_ANSWER_S 3
+#define CALL_MAX_S 45
+#define CALL_RTP_PORT 50010
+static struct {
+    int state;                          /* 0 none, 1 ringing, 2 answered (200 sent), 3 confirmed (ACK) */
+    int fd;                             /* the connection the INVITE came on */
+    time_t at, answered;
+    char via[1200], from[400], to[400], cid[200], cq[80], rr[600], contact[400], sdp_c[96], sdp_m[96];
+    unsigned bye_cseq;
+} call;
+static char call_ip6[64];
+static int call_ports;
+static const char *call_user;
+
+static int
+call_enabled(void)
+{
+    struct stat st;
+    return !stat("/var/root/cell-answer",&st);
+}
+
+static void
+call_copy_vias(const char *r,char *out,size_t cap)
+{
+    size_t o=0;out[0]=0;
+    for (const char *q=r;(q=strstr(q,"\r\nVia:"));) {
+        const char *e=strstr(q+2,"\r\n");if (!e) break;
+        o+=(size_t)snprintf(out+o,cap-o,"%.*s\r\n",(int)(e-q-2),q+2);if (o>=cap) {out[cap-1]=0;break;}
+        q=e;
+    }
+}
+
+static void
+call_copy_rr(const char *r,char *out,size_t cap)
+{
+    size_t o=0;out[0]=0;
+    for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:"));) {
+        const char *e=strstr(q+2,"\r\n");if (!e) break;
+        o+=(size_t)snprintf(out+o,cap-o,"%.*s\r\n",(int)(e-q-2),q+2);if (o>=cap) {out[cap-1]=0;break;}
+        q=e;
+    }
+}
+
+/* a response in the call's dialog; body may be NULL */
+static void
+call_respond(const char *status,const char *body)
+{
+    char m[4096];int o;
+    o=snprintf(m,sizeof(m),"SIP/2.0 %s\r\n%s%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n",
+        status,call.via,call.rr,call.from,call.to,call.cid,call.cq);
+    if (strncmp(status,"100",3)) {
+        o+=snprintf(m+o,sizeof(m)-(size_t)o,"Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n",
+            call_user,call_ip6,call_ports);
+        o+=snprintf(m+o,sizeof(m)-(size_t)o,"Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces\r\n");
+    }
+    if (body) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(body),body);
+    else o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
+    if (send(call.fd,m,(size_t)o,0)<0) printf("call: send %s failed: %s\n",status,strerror(errno));
+    else printf("call: --> %s\n",status);
+}
+
+static void
+call_end(const char *why)
+{
+    printf("call: ended (%s) after %lds\n",why,(long)(time(NULL)-call.at));
+    call.state=0;
+    unlink("/var/tmp/redwood-cell/call");
+}
+
+/* an INVITE; returns 1 when handled here (answer mode), 0 for the old busy path */
+static int
+call_invite(int fd,const char *r)
+{
+    if (!call_enabled()) return 0;
+    if (call.state) return 0;           /* (one call: the old path answers 486) */
+    memset(&call,0,sizeof(call));
+    call.fd=fd;call.at=time(NULL);call.state=1;call.bye_cseq=1;
+    call_copy_vias(r,call.via,sizeof(call.via));
+    call_copy_rr(r,call.rr,sizeof(call.rr));
+    hdr(r,"From",call.from,sizeof(call.from));
+    char to[300];hdr(r,"To",to,sizeof(to));
+    snprintf(call.to,sizeof(call.to),"%s%s",to,strstr(to,"tag=")?"":";tag=rwc1");
+    hdr(r,"Call-ID",call.cid,sizeof(call.cid));
+    hdr(r,"CSeq",call.cq,sizeof(call.cq));
+    hdr(r,"Contact",call.contact,sizeof(call.contact));
+    const char *b=strstr(r,"\r\n\r\n");
+    if (b) {
+        const char *c=strstr(b,"\nc=IN IP6 "),*mm=strstr(b,"\nm=audio ");
+        if (c) sscanf(c+11,"%95s",call.sdp_c);
+        if (mm) sscanf(mm+9,"%95s",call.sdp_m);
+    }
+    {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"ringing %ld\n",(long)call.at);fclose(f);}}
+    printf("call: INCOMING (answer mode): remote media port %s; answering in %ds\n",call.sdp_m,CALL_ANSWER_S);
+    call_respond("100 Trying",NULL);
+    call_respond("180 Ringing",NULL);
+    return 1;
+}
+
+/* other requests of the call's dialog; returns 1 when it was ours */
+static int
+call_request(int fd,const char *r)
+{
+    char ci[200];
+    if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
+    if (!strncmp(r,"ACK ",4)) {
+        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up (no media yet)\n");}
+        return 1;
+    }
+    char m[2048],via[1200],fr[400],to[400],cq[80];int o;
+    call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));
+    o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
+        via,fr,to,ci,cq);
+    send(fd,m,(size_t)o,0);
+    if (!strncmp(r,"CANCEL ",7)) {
+        printf("call: the caller cancelled\n");
+        if (call.state==1) call_respond("487 Request Terminated",NULL);
+        call_end("cancelled");
+    } else if (!strncmp(r,"BYE ",4)) {
+        call_end("the caller hung up");
+    } else {
+        printf("call: in-dialog request answered 200\n");
+    }
+    return 1;
+}
+
+/* once a second from the main loop */
+static void
+call_tick(void)
+{
+    if (call.state==1 && time(NULL)-call.at>=CALL_ANSWER_S) {
+        char sdp[700];
+        unsigned sid=arc4random();
+        snprintf(sdp,sizeof(sdp),
+            "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
+            "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
+            "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
+            "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
+            sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
+        call_respond("200 OK",sdp);
+        call.state=2;call.answered=time(NULL);
+        {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"answered %ld\n",(long)call.answered);fclose(f);}}
+    } else if (call.state>=2 && time(NULL)-call.answered>=CALL_MAX_S) {
+        /* our BYE: Route from Record-Route, to the remote Contact */
+        char m[3000],uri[400],route[700]="";int o;
+        const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
+        if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1); else snprintf(uri,sizeof(uri),"%s",call.contact);
+        for (const char *q=call.rr;(q=strstr(q,"Record-Route:"));q+=13) {
+            const char *v=q+13;while (*v==' ') v++;const char *le=strstr(v,"\r\n");
+            size_t L=strlen(route);snprintf(route+L,sizeof(route)-L,"Route: %.*s\r\n",(int)(le-v),v);
+        }
+        o=snprintf(m,sizeof(m),"BYE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
+            "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u BYE\r\nContent-Length: 0\r\n\r\n",
+            uri,call_ip6,call_ports,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
+        send(call.fd,m,(size_t)o,0);
+        call_end("our BYE (test length reached)");
+    }
+}
+
 static int ims_cmd_fd=-1;
 static void ims_cmd_poll(int sock,int portc)
 {
@@ -721,6 +887,7 @@ int main(int argc,char **argv)
 
     /* 5. stay: show what the network sends, answer requests with 200 */
     int cs[8];int ncs=0;time_t registered_at=time(NULL);
+    snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
         if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
@@ -734,6 +901,7 @@ int main(int argc,char **argv)
             if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
         }
         ims_cmd_poll(s,portc);
+        call_tick();
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
             if (!(p[i].revents&(POLLIN|POLLHUP)) || (ls>=0 && i==2)) continue;
@@ -742,6 +910,12 @@ int main(int argc,char **argv)
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
             if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
             printf("<-- %zd bytes\n",g);show(r);printf("\n");
+            if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) {
+                char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
+                int fd=open(fn,O_WRONLY|O_CREAT|O_TRUNC,0600);if (fd>=0) {(void)write(fd,r,(size_t)g);close(fd);}
+                continue;
+            }
+            if (strncmp(r,"SIP/2.0",7) && i!=1 && call_request(p[i].fd,r)) continue;
             if (strncmp(r,"SIP/2.0",7)) {      /* a request: 200 with its Via/From/To/Call-ID/CSeq */
                 /* An INVITE (a call to us) must NOT get a bare 200: the caller would be connected to silence, and
                  * billed. Until calls exist: 100 Trying, the request saved (root-only, for working out the call
