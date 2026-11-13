@@ -4,6 +4,22 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Files, Finder and fresh installs (2026-11-13, B) — `8cd6c3b`, `dd577f2`, `dc1cea2`, `c7e2856`
+- **Why it broke:** after a restart LaunchServices no longer knew `org.hakios.LocalFilesHost`, the hidden app that carries
+  Save to Files, the document picker and On My iPhone ("the requested app extension could not be found", no Finder sharing).
+- **Boot job** `/redwood/bin/register_finder_host` (`com.redwood.finder-host`): registers the host natively
+  (`registerApplicationDictionary:`, app + data container + 3 extensions, hidden), no uicache. On the phone's image; ran by
+  itself at 06:35 and 06:45 ("Jesvi Files user registration: complete").
+- **Finder shows the phone's storage:** the host's Documents is a link to On My iPhone (File Provider Storage); the Mac lists
+  Downloads etc. through House Arrest. Checked from the Mac (S20 only: the user's real iPhone is on the same Mac).
+- **Fresh install:** `userland/system.apfs` rebuilt (2630995968 bytes, `userland/system-only.sh`) with
+  `/Applications/HakiosLocalFiles.app`; written to `super` and booted. Old image: `system.apfs.bak-nov7`.
+- **Kernel `c7e2856` (on the phone since 06:50, kernel 06:45:20; booted, 90 s stable, hand-back to Log access worked at 06:49 on the old kernel by luck, camera flips still to be tried by the user):** camera ring freed under a reader (panic in camdev_read); printf with
+  interrupts off in `redwood_usbmux_link` (panic on every hand-back to the loader: `/menu?to=1` bounced into iOS); link
+  restart once when lockdownd first answers (Finder lost the phone after every restart).
+- Not done: grey backup/media tabs in Finder; `tools/run-visible.sh` did not start its command in this session (check before
+  trusting build/NAME.log).
+
 ## 2026-11-12 — OpenGL ES games run (Angry Birds Space, Leo's Fortune); screen sleeps on its own (user-verified)
 - **OpenGL ES games draw.** iOS's OpenGL ES runs on Metal and gives Metal its shaders in Apple's private GLIR form,
   which only Apple's GPU compiler reads: games showed black or died at once. `libredwood-eagl`
