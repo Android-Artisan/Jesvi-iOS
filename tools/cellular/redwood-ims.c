@@ -23,6 +23,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <time.h>
+#include "sms-pdu.h"
 #ifndef IPV6_BOUND_IF
 #define IPV6_BOUND_IF 125
 #endif
@@ -265,6 +267,68 @@ static int recv_msg(int s,char *b,size_t cap,int secs)
     }
 }
 
+/* ---- SMS over IP: MESSAGE with application/vnd.3gpp.sms carries an RP message (TS 24.011): network -> UE RP-DATA
+ * {0x01, ref, originator (SMSC) address, empty destination, user data len, TPDU SMS-DELIVER}; we answer the MESSAGE 200
+ * and send RP-ACK {0x02, ref, 0x41, 2, SMS-DELIVER-REPORT 00 00} in a MESSAGE of our own back to the sender URI. */
+static char sms_route[1600],sms_impu[256];
+static void sms_keep_registration(const char *ok)
+{   /* Service-Route(s) -> Route lines for our own requests; first P-Associated-URI as our identity */
+    size_t o=0;const char *q=ok;sms_route[0]=sms_impu[0]=0;
+    while ((q=strstr(q,"\r\nService-Route:")) && o<sizeof(sms_route)-8) {
+        const char *v=q+16,*e=strstr(v,"\r\n");while (*v==' ') v++;
+        o+=(size_t)snprintf(sms_route+o,sizeof(sms_route)-o,"Route: %.*s\r\n",(int)(e-v),v);q=e;
+    }
+    const char *a=strstr(ok,"\r\nP-Associated-URI:");
+    if (a) {const char *b=strchr(a,'<'),*e=b?strchr(b,'>'):NULL;if (b && e && e-b<(long)sizeof(sms_impu)) snprintf(sms_impu,sizeof(sms_impu),"%.*s",(int)(e-b-1),b+1);}
+    printf("SMS: %s Route line(s), identity %s\n",o?"with":"no",sms_impu[0]?"known":"unknown");
+}
+static int sms_incoming(int sock,const char *req,size_t len,int portc)
+{
+    char ct[120],cl[24],fr[300],ci[200];
+    if (strncmp(req,"MESSAGE ",8) || !hdr(req,"Content-Type",ct,sizeof(ct)) || !strstr(ct,"vnd.3gpp.sms")) return 0;
+    const char *hb=strstr(req,"\r\n\r\n");if (!hb) return 0;
+    const uint8_t *b=(const uint8_t *)hb+4;size_t n=hdr(req,"Content-Length",cl,sizeof(cl))?(size_t)atoi(cl):0;
+    if ((size_t)(hb+4-req)+n>len || n<2) {printf("SMS: body short\n");return 1;}
+    if (b[0]!=0x01) {printf("SMS: RP message type %u from the network (not RP-DATA), %zu bytes\n",b[0],n);return 1;}
+    unsigned ref=b[1],i=2;
+    if (i>=n) return 1;
+    unsigned ol=b[i];i+=1+ol;if (i>=n) return 1;
+    unsigned dl=b[i];i+=1+dl;if (i>=n) return 1;
+    unsigned ul=b[i++];
+    char from[64]="?",text[1600]="",when[32]="";uint8_t pdu[260];int ok=0;
+    if (i+ul<=n && ul<sizeof(pdu)-1) {pdu[0]=0;memcpy(pdu+1,b+i,ul);ok=!sms_decode(pdu,ul+1,from,sizeof(from),text,sizeof(text),when,sizeof(when));}
+    printf("SMS (IMS) from %s at %s: %s\n",from,when,ok?text:"(undecoded TPDU)");fflush(stdout);
+    FILE *f=fopen("/var/root/cell-sms.txt","a");
+    if (f) {fchmod(fileno(f),0600);fprintf(f,"%llu\t%s\t%s\t",(unsigned long long)time(NULL),from,when);
+        if (ok) {for (char *c=text;*c;c++) fputc(*c=='\n'||*c=='\t'?' ':*c,f);} else {fputs("tpdu:",f);for (unsigned k=0;k<ul && i+k<n;k++) fprintf(f,"%02x",b[i+k]);}
+        fputc('\n',f);fclose(f);}
+    /* RP-ACK back to the sender (the SMSC's URI in From) */
+    if (!hdr(req,"From",fr,sizeof(fr)) || !hdr(req,"Call-ID",ci,sizeof(ci))) return 1;
+    const char *u1=strchr(fr,'<'),*u2=u1?strchr(u1,'>'):NULL;if (!u1 || !u2) return 1;
+    static const uint8_t ackbody_t[]={0x02,0,0x41,0x02,0x00,0x00};uint8_t ack[sizeof(ackbody_t)];memcpy(ack,ackbody_t,sizeof(ack));ack[1]=(uint8_t)ref;
+    char m[4000];int o=snprintf(m,sizeof(m),
+        "MESSAGE %.*s SIP/2.0\r\n"
+        "Via: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+        "Max-Forwards: 70\r\n"
+        "%s"
+        "From: <%s>;tag=%08x\r\n"
+        "To: <%.*s>\r\n"
+        "Call-ID: %08x@[%s]\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "In-Reply-To: %s\r\n"
+        "Request-Disposition: no-fork\r\n"
+        "Accept-Contact: *;+g.3gpp.smsip\r\n"
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: %zu\r\n\r\n",
+        (int)(u2-u1-1),u1+1,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
+        (int)(u2-u1-1),u1+1,arc4random(),cfg.ip6,ci,sizeof(ack));
+    if (o<0 || (size_t)o+sizeof(ack)>sizeof(m)) return 1;
+    memcpy(m+o,ack,sizeof(ack));
+    ssize_t w=send(sock,m,(size_t)o+sizeof(ack),0);
+    printf("--> RP-ACK (ref %u) %s\n",ref,w>0?"sent":"NOT sent");fflush(stdout);
+    return 1;
+}
+
 int main(int argc,char **argv)
 {
     setvbuf(stdout,NULL,_IOLBF,0);
@@ -392,6 +456,7 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
+    sms_keep_registration(r);
     if (flag(argc,argv,"--once")) return 0;
 
     /* 5. stay: show what the network sends, answer requests with 200 */
@@ -418,6 +483,7 @@ int main(int argc,char **argv)
                 if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
                 o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
                 if (strncmp(r,"ACK",3)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}
+                sms_incoming(s,r,(size_t)g,portc);
             }
         }
     }

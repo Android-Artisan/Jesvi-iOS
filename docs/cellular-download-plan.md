@@ -505,3 +505,17 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - Without `--once` the client stays, answers requests with 200 and prints them (IMSI/IMEI/nonce masked).
 - Next: SIP MESSAGE (application/vnd.3gpp.sms: RP-DATA/RP-ACK) both ways, re-REGISTER before expiry, SUBSCRIBE reg;
   then calls (INVITE, preconditions, dedicated bearer, AMR-WB RTP) -- a much larger piece.
+
+## 2026-11-13 15:56 — SMS RECEIVE over IMS works (A)
+
+- Jio delivers texts to the registered client as SIP MESSAGE, Content-Type application/vnd.3gpp.sms, From tel:<SMSC>,
+  body = RP-DATA (TS 24.011): 01 ref | originator (SMSC) addr | empty destination | user-data len | TPDU SMS-DELIVER.
+- redwood-ims: 200 to the MESSAGE, TPDU decoded with sms-pdu.h, appended to /var/root/cell-sms.txt (0600, same format as
+  the modem path), then RP-ACK in our own MESSAGE to the From URI over the protected connection: body 02 ref 41 02 00 00,
+  Route = the Service-Route(s) of the 200 to REGISTER, From = first P-Associated-URI, In-Reply-To = their Call-ID,
+  Request-Disposition no-fork, Accept-Contact *;+g.3gpp.smsip. Jio answers 202 Accepted (4/4).
+- First run delivered 4 queued texts (incl. a two-part one: concatenation not joined yet).
+- The 15:24 "data stopped" was most likely the user's data pack expiring (JioPay text "Data pack Expired ... 15:24").
+  A downlink watchdog was added anyway (fd66d71).
+- Not done: sending (RP-DATA MO with SMS-SUBMIT to the SMSC), concatenated parts, re-REGISTER before expiry (7200 s),
+  launchd job, Messages app.
