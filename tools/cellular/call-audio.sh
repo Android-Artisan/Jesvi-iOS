@@ -35,6 +35,8 @@ WIDGETS=(
 
 case "${1:-}" in
 on)
+  # the mics: /dev/redwood-mic starts DMIC -> VTS SLIF -> UAIF6 -> NSRC4 -> WDMA4 while it is open (docs/x1slte-audio.md)
+  $SSH 'nohup sh -c "cat /dev/redwood-mic > /dev/null" >/dev/null 2>&1 & echo $! > /var/tmp/call-mic.pid'
   echo "s2mpu: $($SSH "/var/root/rwsys kern.redwood.poke 'cp.s2mpu'" 2>&1 | head -1)"
   echo "START_VSS: $(send 1 160)"
   echo "SET_MODE in-call: $(send 1 80 2)"
@@ -49,6 +51,7 @@ off)
   for ((i=${#WIDGETS[@]}-1; i>=0; i--)); do set -- ${WIDGETS[i]}; echo "$1 off: $(ctl $G $2 0)"; done
   for m in "${MUX[@]}"; do set -- $m; echo "$1=None: $(ctl $G $2 0)"; done
   echo "SET_MODE normal: $(send 1 80 0)"
+  $SSH 'kill $(cat /var/tmp/call-mic.pid) 2>/dev/null; pkill -f "cat /dev/redwood-mic"; rm -f /var/tmp/call-mic.pid' 
   ;;
 status)
   $SSH "/var/root/rwsys kern.redwood.snd_poke log" 2>&1 | tail -40
