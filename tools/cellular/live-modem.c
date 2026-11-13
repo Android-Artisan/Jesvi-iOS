@@ -374,6 +374,8 @@ static int data_off;          /* user switched mobile data off (Settings / Contr
 #define IMS_CH (10+IMS_CID-1)     /* PS channels: cid 2 (internet) arrives on ch 11 */
 static struct {int up,npcscf,tries;uint8_t ip6[16],pcscf[2][16];char imsi[16],imei[20];uint64_t tried;} ims;
 static void ims_write(void);
+static unsigned long long ims_dl_n, ims_dl_sbd;
+static void ims_deliver(const uint8_t *p,unsigned n);
 static int dm_on;
 static void cell_ipc(const uint8_t *m,unsigned len);
 static void pdn_ipconfig(const uint8_t *d,unsigned n);
@@ -465,6 +467,13 @@ static void sbd_dump_dl(void)
             if (sbd_chs[id].ch==235 && show>=11) cell_ipc(big,show);
             if (sbd_chs[id].ch==235 && show>=11 && big[8]==0x0d && big[9]==0x09) pdn_ipconfig(big+11,show-11);
             if (sbd_chs[id].ch==245 && show>4) {rfs_rx(big+4,show-4);show=0;}
+            /* the call's voice (A, 2026-11-13): the IMS dedicated bearer's RTP/RTCP comes on the SBD channels 10/11 as
+             * bare IPv6, not on pktproc: for our IMS address -> the IMS interface (was only logged: redwood-ims saw none) */
+            if ((sbd_chs[id].ch==10 || sbd_chs[id].ch==11) && show>=40 && (big[0]>>4)==6 && ims.up && !memcmp(big+24,ims.ip6,16)) {
+                unsigned plen=40u+((unsigned)big[4]<<8|big[5]);
+                if (plen<=show) {ims_deliver(big,plen);ims_dl_sbd++;}
+                show=0;
+            }
             if (sbd_chs[id].ch==25 && show>4) {
                 printf("cellular: AT <- ");for (unsigned k=4;k<show;k++) putchar(big[k]=='\r'?' ':big[k]=='\n'?'|':(big[k]>=32&&big[k]<127?big[k]:'.'));printf("\n");fflush(stdout);
                 show=0;
@@ -751,6 +760,8 @@ static void ping6(const char *dst)
 static void utun_deliver(const uint8_t *p,unsigned n);
 static void pkt_rx(const uint8_t *p,unsigned n)
 {
+    /* (A, 2026-11-14) a packet for the IMS address on the data PDN's channel (a dedicated bearer can land here) */
+    if (n>=40 && (p[0]>>4)==6 && ims.up && !memcmp(p+24,ims.ip6,16)) {ims_deliver(p,n);return;}
     if (ul_debug>0) {printf("cellular: DL %u bytes next %u -> %s%s\n",n,n>6?p[6]:0,l4_check(p,n),tcp_info(p,n));fflush(stdout);}
     utun_deliver(p,n);
     if (n>=40 && (p[0]>>4)==6 && p[6]==58 && n>=48 && p[40]==129)
@@ -899,6 +910,7 @@ static void ims_poll(void)
 }
 static void ims_deliver(const uint8_t *p,unsigned n)
 {
+    ims_dl_n++;
     static unsigned shown;if (shown++<10) {printf("cellular: IMS DL %u bytes\n",n);fflush(stdout);}
     if (ims_fd<0 || n>2048) return;
     uint8_t b[2100];uint32_t af=htonl((p[0]>>4)==6?AF_INET6:AF_INET);memcpy(b,&af,4);memcpy(b+4,p,n);
@@ -1114,9 +1126,9 @@ static int online_handshake(unsigned seconds)
                 if (now-said>60000000ull) {said=now;time_t t=time(NULL);struct tm tm;localtime_r(&t,&tm);
                     struct stat ls;if (!fstat(1,&ls) && S_ISREG(ls.st_mode) && ls.st_size>8*1024*1024 && !ftruncate(1,0)) {
                         lseek(1,0,SEEK_SET);printf("cellular: log cut back at 8 MB\n");}
-                    printf("cellular: health %02d:%02d:%02d rx %llu tx %llu ring rear %u done %u fore %u dbm %d bars %d ims %s\n",
+                    printf("cellular: health %02d:%02d:%02d rx %llu tx %llu ring rear %u done %u fore %u dbm %d bars %d ims %s (in %llu, sbd %llu)\n",
                         tm.tm_hour,tm.tm_min,tm.tm_sec,(unsigned long long)pp_rx,(unsigned long long)pp_tx,pp_last_rear,pp_done,pp_fore,
-                        cell.rssi_dbm,cell.bars,ims.up?"up":"down");fflush(stdout);}
+                        cell.rssi_dbm,cell.bars,ims.up?"up":"down",ims_dl_n,ims_dl_sbd);fflush(stdout);}
             }
             if (!probe && last_tx>last_rx && now-last_rx>60000000ull) {
                 char d[64];inet_ntop(AF_INET6,pdn.dns6,d,sizeof(d));
