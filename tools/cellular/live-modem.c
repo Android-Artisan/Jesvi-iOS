@@ -354,6 +354,8 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
     return doorbell(0);
 }
 static int stay_mode;
+static int restart_wanted;     /* watchdog: shut the CP down cleanly, then exec ourselves again */
+static char **saved_argv;
 static int data_off;          /* user switched mobile data off (Settings / Control Center / nodata) */
 #define IMS_CID 3
 #define IMS_CH (10+IMS_CID-1)     /* PS channels: cid 2 (internet) arrives on ch 11 */
@@ -1025,6 +1027,23 @@ static int online_handshake(unsigned seconds)
         if (online && stay_mode) ctl_poll();
         if (online && stay_mode && pdn.up) {if (!data_off) utun_up();pp_poll();utun_poll();}
         if (online && stay_mode && ims.up) {ims_up();ims_poll();}
+        if (online && stay_mode && pdn.up && !data_off && utun_fd>=0) {
+            /* downlink watchdog: the CP has been seen to stop delivering anything (ring idle, control IPC fine).
+             * Traffic going out and nothing back for 60 s -> ping the PDN's DNS; still nothing 20 s later -> restart */
+            static uint64_t last_rx,last_tx,probe;static uint64_t prev_rx,prev_tx,rx_at_probe;uint64_t now=now_us(NULL);
+            if (!last_rx) last_rx=now;
+            if (pp_rx!=prev_rx) {prev_rx=pp_rx;last_rx=now;probe=0;}
+            if (pp_tx!=prev_tx) {prev_tx=pp_tx;last_tx=now;}
+            if (!probe && last_tx>last_rx && now-last_rx>60000000ull) {
+                char d[64];inet_ntop(AF_INET6,pdn.dns6,d,sizeof(d));
+                printf("cellular: watchdog: nothing received for %llu s while sending; pinging %s\n",(unsigned long long)((now-last_rx)/1000000),d);fflush(stdout);
+                ping6(d);probe=now;rx_at_probe=pp_rx;
+            }
+            if (probe && now-probe>20000000ull && pp_rx==rx_at_probe) {
+                printf("cellular: watchdog: downlink silent, restarting the modem\n");fflush(stdout);
+                restart_wanted=1;stopped=1;
+            }
+        }
         if (online && stay_mode && pdn.up && !ims.up && ims.tries<6 && now_us(NULL)-ims.tried>20000000ull) {
             struct stat ni;
             if (stat("/var/root/cell-noims",&ni)) {ims.tried=now_us(NULL);ims.tries++;printf("cellular: IMS PDN, try %d\n",ims.tries);fflush(stdout);ctl_line((char[]){"ims"});}
@@ -1341,6 +1360,7 @@ static int read_file(const char *path,uint8_t *data,size_t capacity,size_t *leng
 }
 int main(int argc,char **argv)
 {
+    saved_argv=argv;
     if ((argc<4 || argc>8) || strcmp(argv[1],"--reserved-base-verified")) return 2;
     if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
     if (argc==6) {if (strcmp(argv[4],"--download")) return 2;link_requested=1;download_toc=argv[5];}
@@ -1383,6 +1403,9 @@ int main(int argc,char **argv)
         sleep(8);
         memset(&m,0,sizeof(m));memset(&result,0,sizeof(result));cleanup=0;ipc_mapped=0;
         error=s5123_boot_once(&ops,&result,image,length,fields[2]);
+    }
+    if (restart_wanted && result.cleanup_safe && saved_argv) {
+        printf("cellular: watchdog restart: exec %s\n",saved_argv[0]);fflush(stdout);sleep(3);execv(saved_argv[0],saved_argv);
     }
     printf("cellular live BOOT: error %d attempted %u power_requested %u phase %u completed %u cleanup_verified %u; acceptance unproven\n",
         error,result.attempted,result.power_requested,result.phase,result.spi_completed,result.cleanup_safe);fflush(stdout);
