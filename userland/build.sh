@@ -607,7 +607,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
-	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist root/LaunchDaemons/
+	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
 	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
