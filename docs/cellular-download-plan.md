@@ -533,3 +533,22 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - 16:05: redwood-cellulard starts /var/root/redwood-ims once the IMS utun is up (log /var/tmp/redwood-ims.log, 0600,
   appended) and again whenever it leaves (>= 30 s apart). The client leaves cleanly (SAs flushed) after 6600 s for a fresh
   registration, when the P-CSCF connection closes, or on SIGTERM. Kill switch: /var/root/cell-noimsclient.
+
+## 2026-11-13 16:15 — iOS integration: what is missing and the plan (A)
+
+User-visible gaps after SMS worked underneath: no LTE glyph, no Control Center cellular button, no hotspot, texts not
+in Messages, no calls.
+- LTE glyph: STTelephonySubscriptionInfo needs `preferredForDataConnections` and `providingDataConnection` besides
+  `dataConnectionType`; cell_sb.h sets them from the state file's new `data_up` (reboot 16:12, to verify).
+- Messages app (next): received texts are in /var/root/cell-sms.txt and redwood-ims; iOS's SMS path is
+  IMDaemon/IMAgent + the SMS service plugin talking to CommCenter (CTMessageCenter / CTXPCServiceSMSInterface).
+  Options: (a) the stand-in CommCenter answers the SMS interface and pushes incoming messages (needs its client
+  callbacks worked out first -- it blanked the status bar once, so only with real answers); (b) write into the
+  Messages database (sms.db) + notify IMAgent (fragile); (c) our own notification + a small app. (a) is the native
+  route; start by logging what IMAgent asks when the stand-in runs with real subscription answers.
+- Control Center cellular button: CCUIConnectivityCellularDataViewController, shown only when MobileGestalt says the
+  device has cellular data and CoreTelephony answers; same stand-in-CommCenter dependency.
+- Hotspot: NAT64-free design needed (Jio is IPv6-only): share over Wi-Fi with IPv6 (RA from the phone) + DNS64, or
+  CLAT/NAT; iOS Personal Hotspot (MISManager) needs CommCenter's tethering answers too.
+- Calls: INVITE with SDP (AMR-WB/EVS), preconditions (QoS via the dedicated bearer the network opens: new cid on
+  IMS APN signalled by 0d 10/0d 09), RTP to/from the modem's audio path (Samsung CP audio over a separate channel).
