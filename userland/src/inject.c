@@ -1754,6 +1754,8 @@ camera_front_by_default(void)
 	say("redwood: Camera: opens on the front camera in Photo after its reset time\n");
 }
 
+#include "statusbar_shift.h"
+
 __attribute__((constructor))
 static void
 redwood_init(void)
@@ -1823,5 +1825,6 @@ redwood_init(void)
 		redwood_location_fixes();
 	} else {
 		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
+		statusbar_shift_start();        /* the status bar's left side (src/statusbar_shift.h) */
 	}
 }

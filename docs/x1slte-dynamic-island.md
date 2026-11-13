@@ -81,6 +81,13 @@ SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking 
 SpringBoardUI.framework" and SpringBoard crash-loops (timing-dependent). (userland/src/island_tweak.m
 and island-install.sh are that withdrawn version.)
 
+## Status bar: left side nearer the edge
+
+`src/statusbar_shift.h` (in libredwood for apps and libredwood-sb for the home screen) makes the leading gap of
+`-[_UIStatusBarVisualProvider_DynamicSplit edgeInsets]` -- the island phones' status bar layout -- smaller by
+`lead` points: default **3** (user, 2026-11-13: "a tiny bit more to the left"). Tune with
+`/var/jb/etc/redwood-statusbar.conf` (`lead=5`; `lead=0` = Apple's), then respring and reopen apps.
+
 ## Known issue
 
 **An app does not shrink ("minimise") into the island** with a resized pill (user report 2026-11-13 with `circle`;
