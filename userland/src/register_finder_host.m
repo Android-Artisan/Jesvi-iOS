@@ -3,6 +3,8 @@
  * Copy the immutable system bundle once; never replace user documents. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
+#include <unistd.h>
 @interface MCMAppContainer : NSObject
 + (id)containerWithIdentifier:(NSString *)identifier createIfNecessary:(BOOL)create
                      existed:(BOOL *)existed error:(NSError **)error;
@@ -23,7 +25,7 @@
 extern int SecStaticCodeCreateWithPathAndAttributes(CFURLRef, uint32_t, CFDictionaryRef, void **);
 extern int SecCodeCopySigningInformation(void *, uint32_t, CFDictionaryRef *);
 
-static NSString *container(NSString *cls, NSString *identifier) {
+static NSString *mcm_path(NSString *cls, NSString *identifier) {
     NSError *error = nil; BOOL existed = NO;
     return [[[NSClassFromString(cls) containerWithIdentifier:identifier createIfNecessary:YES
         existed:&existed error:&error] url] path];
@@ -55,7 +57,7 @@ static NSDictionary *record(NSString *path, NSString *owner) {
         @"SignerIdentity": @"Apple iPhone OS Application Signing", @"IsAdHocSigned": @YES,
         @"LSInstallType": @1, @"HasMIDBasedSINF": @0, @"MissingSINF": @0, @"FamilyID": @0,
         @"IsOnDemandInstallCapable": @0 } mutableCopy];
-    NSString *home = container(owner ? @"MCMPluginKitPluginDataContainer" : @"MCMAppDataContainer", identifier);
+    NSString *home = mcm_path(owner ? @"MCMPluginKitPluginDataContainer" : @"MCMAppDataContainer", identifier);
     if (home) {
         r[@"Container"] = home; r[@"IsContainerized"] = @YES;
         r[@"EnvironmentVariables"] = @{ @"CFFIXED_USER_HOME": home, @"HOME": home,
@@ -64,7 +66,7 @@ static NSDictionary *record(NSString *path, NSString *owner) {
     NSMutableDictionary *groups = [NSMutableDictionary dictionary];
     id names = rights[@"com.apple.security.application-groups"];
     if ([names isKindOfClass:NSArray.class]) for (NSString *name in names) {
-        NSString *shared = container(@"MCMSharedDataContainer", name);
+        NSString *shared = mcm_path(@"MCMSharedDataContainer", name);
         if (shared) groups[name] = shared;
     }
     r[@"GroupContainers"] = groups;
@@ -81,6 +83,35 @@ static NSDictionary *record(NSString *path, NSString *owner) {
     }
     r[@"_LSBundlePlugins"] = plugins;
     return r;
+}
+
+/* Finder's file sharing shows one folder: the app's Documents. Make that folder the phone's own
+ * storage, "On My iPhone" (the local provider's File Provider Storage), so a Mac sees Downloads and
+ * the rest and not an empty folder of this hidden app. afcd follows the link (checked 2026-11-13).
+ * What was in a real Documents folder is moved into the storage first; nothing is deleted. */
+static void share_storage(NSString *home) {
+    NSString *group = mcm_path(@"MCMSharedDataContainer", @"group.com.apple.FileProvider.LocalStorage");
+    if (!home || !group) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *storage = [group stringByAppendingPathComponent:@"File Provider Storage"];
+    NSString *documents = [home stringByAppendingPathComponent:@"Documents"];
+    if (![fm fileExistsAtPath:storage]) {       /* (the provider makes it at its first start) */
+        if (mkdir(storage.fileSystemRepresentation, 0755)) return;
+        chown(storage.fileSystemRepresentation, 501, 501);
+    }
+    NSDictionary *is = [fm attributesOfItemAtPath:documents error:nil];
+    if ([is.fileType isEqual:NSFileTypeSymbolicLink]) {
+        if ([[fm destinationOfSymbolicLinkAtPath:documents error:nil] isEqual:storage]) return;
+        unlink(documents.fileSystemRepresentation);
+    } else if (is) {
+        for (NSString *name in [fm contentsOfDirectoryAtPath:documents error:nil] ?: @[])
+            [fm moveItemAtPath:[documents stringByAppendingPathComponent:name]
+                        toPath:[storage stringByAppendingPathComponent:name] error:nil];
+        if (rmdir(documents.fileSystemRepresentation)) return;      /* a name was taken: left as it is */
+    }
+    if (symlink(storage.fileSystemRepresentation, documents.fileSystemRepresentation) == 0)
+        lchown(documents.fileSystemRepresentation, 501, 501);
+    NSLog(@"Jesvi Files: Finder shares %@", storage);
 }
 
 int main(void) {
@@ -127,6 +158,7 @@ int main(void) {
                 (unsigned long)[whole[@"_LSBundlePlugins"] count]);
         }
         NSLog(@"Jesvi Files user registration: %@", ok ? @"complete" : @"retry needed");
+        if (ok) share_storage(mcm_path(@"MCMAppDataContainer", identifier));
         return ok ? 0 : 1;
     }
 }
