@@ -1090,6 +1090,37 @@ island_cache_sync(void)
 	}
 }
 
+/*
+ * The clock. The S20 starts every boot at 1970 (no RTC is read) until the network sets it, and iOS's daemons
+ * write what happens in between with 1970 dates. powerlog's daily archiver (inside aggregated) then made one
+ * archive per day since 1970: 12,691 files, 596 MB, a core at 92 % for good (2026-11-13: "it feels laggy").
+ * rwlogd saves the time every minute once it is real; here, before launchd starts iOS, a clock still in 1970
+ * is set to that saved time (minutes old at worst; the network corrects it).
+ */
+#define TIME_MARK "/private/var/db/redwood-time"
+static void
+clock_restore(void)
+{
+	char b[24];
+	long saved = 0;
+	int n = read_whole(TIME_MARK, b, sizeof(b) - 1);
+	struct timeval tv;
+
+	if (n <= 0 || gettimeofday(&tv, NULL) != 0 || tv.tv_sec > 1700000000) {
+		return;
+	}
+	b[n] = 0;
+	for (int i = 0; b[i] >= '0' && b[i] <= '9'; i++) {
+		saved = saved * 10 + (b[i] - '0');
+	}
+	if (saved < 1700000000) {
+		return;
+	}
+	tv.tv_sec = saved;
+	tv.tv_usec = 0;
+	printf("  clock: %s from the saved time %ld\n", settimeofday(&tv, NULL) == 0 ? "set" : "NOT set", saved);
+}
+
 static void
 mount_writable(void)
 {
@@ -1111,6 +1142,7 @@ mount_writable(void)
 	}
 	if (ok) {
 		island_cache_sync();
+		clock_restore();
 	}
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
