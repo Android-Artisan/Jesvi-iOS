@@ -456,8 +456,13 @@ static void sbd_dump_dl(void)
             if (sbd_chs[id].ch==235 && show>=11) {
                 printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
                     big[8],big[9],big[10],big[6],big[7],show-11);
+                /* SIM APDU answers, UICC auth, IMSI and IMEI stay out of the log (they go to root-only files) */
+                int secret=(big[8]==0x05 && (big[9]==0x06 || big[9]==0x09)) || (big[8]==0x0a && (big[9]==0x02 || big[9]==0x03));
+                if (secret) printf(" <not logged>\n");
+                else {
                 for (unsigned k=11;k<show;k++) printf(" %02x",big[k]);
                 printf("  |");for (unsigned k=11;k<show;k++) putchar(big[k]>=32&&big[k]<127?big[k]:'.');printf("|\n");
+                }
             } else if (show && sbd_chs[id].ch==28 && stay_mode) {
                 if (dm_on) {          /* printable runs of 6+ characters */
                     char run[256];unsigned rl=0;
@@ -602,6 +607,10 @@ static void cell_ipc(const uint8_t *m,unsigned len)
     if (g==0x04) sms_ipc(i,d,n,m[10]);
     if (g==0x0a && i==0x03 && m[10]==2 && n>=2 && d[0]==1 && d[1]<20 && 2u+d[1]<=n) {memcpy(ims.imei,d+2,d[1]);ims.imei[d[1]]=0;ims_write();}
     if (g==0x0a && i==0x02 && m[10]==2 && n>=1 && d[0]<16 && 1u+d[0]<=n) {memcpy(ims.imsi,d+1,d[0]);ims.imsi[d[0]]=0;ims_write();}
+    if (g==0x05 && i==0x06) {
+        FILE *f=fopen("/var/tmp/redwood-cell/apdu.tmp","w");
+        if (f) {fchmod(fileno(f),0600);for (unsigned k=0;k<n;k++) fprintf(f,"%02x",d[k]);fputc('\n',f);fclose(f);rename("/var/tmp/redwood-cell/apdu.tmp","/var/tmp/redwood-cell/apdu");}
+    }
     if (g==0x05 && i==0x09) {     /* UICC auth answer: written raw (hex) for redwood-ims */
         FILE *f=fopen("/var/tmp/redwood-cell/auth.tmp","w");
         if (f) {fchmod(fileno(f),0600);fprintf(f,"type %u\n",m[10]);for (unsigned k=0;k<n;k++) fprintf(f,"%02x",d[k]);fputc('\n',f);fclose(f);rename("/var/tmp/redwood-cell/auth.tmp","/var/tmp/redwood-cell/auth");}
@@ -932,6 +941,10 @@ static void ctl_line(char *l)
         if (!ims.imei[0]) ctl_line((char[]){"fmt 0a 03 02 01"});
         memset(d,0,sizeof(d));d[0]=1;d[1]=IMS_CID;d[2]=6;memcpy(d+3,"ims",3);d[0x7e]=3;HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
         memset(d,0,sizeof(d));d[0]=1;d[1]=IMS_CID;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
+    } else if (!strncmp(l,"apdu ",5)) {     /* apdu HEX: raw APDU to the SIM (05 06 {u16 BE len, APDU}); answer -> /var/tmp/redwood-cell/apdu */
+        char hx[600];size_t hl=0;for (const char *c=l+5;*c && hl<sizeof(hx)-1;c++) if (*c!=' ') hx[hl++]=*c;hx[hl]=0;
+        if (hl<8 || hl%2 || hl>500) return;
+        char cmd[700];snprintf(cmd,sizeof(cmd),"fmt 05 06 02 %02zx %02zx %s",(hl/2)>>8,(hl/2)&0xff,hx);unlink("/var/tmp/redwood-cell/apdu");ctl_line(cmd);
     } else if (!strncmp(l,"auth ",5)) {     /* auth TYPE RAND AUTN (hex): UICC authentication, answer in /var/tmp/redwood-cell/auth */
         unsigned ty=0;char r[80]={0},a[80]={0};if (sscanf(l+5,"%x %79s %79s",&ty,r,a)!=3 || strlen(r)!=32 || strlen(a)!=32) return;
         char cmd[256];snprintf(cmd,sizeof(cmd),"fmt 05 09 02 %02x 10 %s 10 %s",ty,r,a);unlink("/var/tmp/redwood-cell/auth");ctl_line(cmd);
