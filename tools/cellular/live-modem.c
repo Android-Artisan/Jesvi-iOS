@@ -629,7 +629,12 @@ static int poke_read1(uint32_t pa,uint32_t *w,unsigned n)
 static int poke_write(uint32_t pa,uint32_t v) {char c[64],r[8192];snprintf(c,sizeof(c),"w 0x%x 0x%x",pa,v);return request(c,r);}
 static void pdn_ipconfig(const uint8_t *d,unsigned n)
 {
-    if (n<0x9a || d[0]!=2) return;
+    if (n>=1 && d[0]!=2) {   /* other PDNs (IMS on cid 3): dump everything, P-CSCF is in here somewhere */
+        printf("cellular: PDN cid %u ipconfig (%u bytes):",d[0],n);for (unsigned k=0;k<n;k++) printf("%s%02x",k%32?" ":"\n  ",d[k]);printf("\n");
+        for (unsigned k=0;k+16<=n;k++) if (d[k]==0x24 && d[k+1]==0x05) {char t[64];inet_ntop(AF_INET6,d+k,t,sizeof(t));printf("cellular: cid %u IPv6-looking field at 0x%x: %s\n",d[0],k,t);}
+        fflush(stdout);return;
+    }
+    if (n<0x9a) return;
     memcpy(pdn.ip6,d+0x23,16);memcpy(pdn.dns6,d+0x63,16);pdn.mtu=d[0x98]|(d[0x99]<<8);pdn.up=1;
     printf("cellular: data PDN cid 2 up: IPv6 %02x%02x:%02x%02x:..., DNS %02x%02x:%02x%02x:..., MTU %u\n",
         pdn.ip6[0],pdn.ip6[1],pdn.ip6[2],pdn.ip6[3],pdn.dns6[0],pdn.dns6[1],pdn.dns6[2],pdn.dns6[3],pdn.mtu);fflush(stdout);
@@ -814,6 +819,7 @@ static void utun_deliver(const uint8_t *p,unsigned n)
 }
 static int ctl_fd=-1;static uint8_t ipc_mseq=0x40;
 static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
+#define HEXOF(buf,n) do{for(size_t _k=0;_k<(n);_k++) snprintf(hex+2*_k,3,"%02x",(buf)[_k]);}while(0)
 static void ctl_line(char *l)
 {
     uint8_t f[2048];
@@ -822,6 +828,12 @@ static void ctl_line(char *l)
         size_t n=strlen(l+3);if (n>1000) return;
         f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strncmp(l,"pdn ",4)) {      /* pdn CID APN: define + activate one more PDN (no attach-profile change) */
+        unsigned cid=0;char apn[100]={0};if (sscanf(l+4,"%u %99s",&cid,apn)!=2 || cid<3 || cid>8) return;
+        char cmd[1400],hex[1100];size_t al=strlen(apn);uint8_t d[330];
+        memset(d,0,sizeof(d));d[0]=1;d[1]=(uint8_t)cid;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
+        memset(d,0,sizeof(d));d[0]=1;d[1]=(uint8_t)cid;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
+        printf("cellular: PDN cid %u requested on APN %s\n",cid,apn);fflush(stdout);
     } else if (!strncmp(l,"nodata",6)) {
         data_off=1;close(open("/var/root/cell-nodata",O_CREAT|O_WRONLY,0644));utun_down();cell_publish();
     } else if (!strncmp(l,"data",4) && data_off) {
@@ -831,7 +843,6 @@ static void ctl_line(char *l)
     } else if (!strncmp(l,"data",4)) {
         const char *apn=l[4]==' '?l+5:"jionet";char cmd[1400],hex[1100];size_t al=strlen(apn);if (al>99) return;
         uint8_t d[330];
-        #define HEXOF(buf,n) do{for(size_t _k=0;_k<(n);_k++) snprintf(hex+2*_k,3,"%02x",(buf)[_k]);}while(0)
         memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);d[0x148]=6;HEXOF(d,330);snprintf(cmd,sizeof(cmd),"fmt 0d 14 03 %s",hex);ctl_line(cmd);
         ctl_line("fmt 0d 03 03 010000");
         memset(d,0,sizeof(d));d[0]=1;d[1]=2;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
