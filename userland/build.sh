@@ -615,15 +615,15 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
 	# calls on iOS's own call screen (A, 2026-11-14): callservicesd (CallKit's daemon; the system image leaves framework
-	# executables out) from the iOS root filesystem into /redwood/bin, its own launchd job pointed there, and
-	# RedwoodPhone (tools/cellular/RedwoodPhone, installed in /var/jb/Applications) as the CallKit provider of redwood-ims
+	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
+	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
+	# /var/jb/Applications) as the CallKit provider of redwood-ims
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
 	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
-		install -m 755 $IOS/rootfs/$CSD root/bin/callservicesd
 		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
 			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		plutil -replace ProgramArguments -json '["/redwood/bin/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
 	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
