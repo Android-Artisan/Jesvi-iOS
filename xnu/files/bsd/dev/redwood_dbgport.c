@@ -129,14 +129,18 @@ cp_hvc5(uint64_t function,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4)
 static void
 cp_s2mpu_grant(void)
 {
-    static const uint64_t regions[][2]={{0xf0000000ULL,0x800000ULL},{0xd0000000ULL,0x4000000ULL}};
-    uint64_t ret[2];
+    /* + the voice-call path (A, 2026-11-13): ABOX's PCI region (abox_pci.c exynos_set_dev_stage2_ap("hsi2", 0,
+     * abox-pci-rmem 0xF4200000, 8 MB)) and the VTS mailbox page (dtb s2mpu_mailbox 0x155a0000, 4 KB) */
+    static const uint64_t regions[][2]={{0xf0000000ULL,0x800000ULL},{0xd0000000ULL,0x4000000ULL},
+        {0xf4200000ULL,0x800000ULL},{0x155a0000ULL,0x1000ULL}};
+    uint64_t ret[4];
     if (!cp_memory_certified()) {
         snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: missing/invalid loader reservation certificate; nothing granted\n");return;
     }
-    for (unsigned i=0;i<2;i++) ret[i]=cp_hvc5(CP_HVC_SET_S2MPU,CP_S2MPU_HSI2,regions[i][0],regions[i][1],CP_S2MPU_RW);
-    snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: HSI2 RW f0000000+800000 ret %#llx, d0000000+4000000 ret %#llx\n",
-        (unsigned long long)ret[0],(unsigned long long)ret[1]);
+    for (unsigned i=0;i<4;i++) ret[i]=cp_hvc5(CP_HVC_SET_S2MPU,CP_S2MPU_HSI2,regions[i][0],regions[i][1],CP_S2MPU_RW);
+    snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: HSI2 RW f0000000+800000 ret %#llx, d0000000+4000000 ret %#llx, "
+        "abox pci f4200000+800000 ret %#llx, vts mailbox 155a0000+1000 ret %#llx\n",
+        (unsigned long long)ret[0],(unsigned long long)ret[1],(unsigned long long)ret[2],(unsigned long long)ret[3]);
 }
 
 /* Audit the existing direct-map alias first. No RAM read/write, new mapping,

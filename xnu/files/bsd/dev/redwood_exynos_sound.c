@@ -1570,17 +1570,29 @@ calliope_boot(void)
 	 * the log at 0xF2200000 (1 MB aligned, cleared), the dump buffer from 0xFAA00000 to the 4 GB line, right after
 	 * abox_rmem -- the same hole Samsung's sizes fill exactly.
 	 */
+	/*
+	 * cpcall=1 (A, 2026-11-13, VoLTE voice): the S20's modem is external (S5123 on PCIe), so call audio does not use a
+	 * VSS region in the modem's memory (the S20's cp_shmem has only IPC, MSI, PKTPROC) but ABOX's PCI path:
+	 * abox-pci-rmem 0xF4200000 + 8 MB (dtb reserved-memory; abox_pci.c maps it at IOVA_VSS_PCI and grants the modem's
+	 * HSI2 S2MPU access) and the modem's PCIe doorbell, s51xx_pcie dbaddr (pci_db_addr 0x14d60000) + 0x10000, 16 KB at
+	 * IOVA_VSS_PCI_DOORBELL 0xA3000000 (abox_pci_doorbell_paddr_set). The silent log gives up 8 MB so the PCI region
+	 * can sit where the modem's firmware expects it.
+	 */
+	uint32_t cpcall = 0;
+	PE_parse_boot_argn("cpcall", &cpcall, sizeof(cpcall));
+	uint32_t slog_size = cpcall ? 0x2000000U : CAL_SLOG_SIZE;
+	uint64_t pci_phys = cpcall ? 0xF4200000ULL : CAL_PCI_PHYS;
 	{
-		volatile uint8_t *slog = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_SLOG_PHYS, CAL_SLOG_SIZE,
+		volatile uint8_t *slog = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_SLOG_PHYS, slog_size,
 		    VM_WIMG_WCOMB);
 
 		if (slog != NULL) {
-			for (uint32_t i = 0; i < CAL_SLOG_SIZE; i += 4) {
+			for (uint32_t i = 0; i < slog_size; i += 4) {
 				*(volatile uint32_t *)(slog + i) = 0;
 			}
 			cal_slog = slog;
 		}
-		for (uint32_t mb = 0; mb < CAL_SLOG_SIZE >> 20; mb++) {
+		for (uint32_t mb = 0; mb < slog_size >> 20; mb++) {
 			*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_SLOG >> 20) + mb)) = (uint32_t)((CAL_SLOG_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
 		}
 		for (uint32_t mb = 0; mb < CAL_DUMP_SIZE >> 20; mb++) {
@@ -1592,7 +1604,7 @@ calliope_boot(void)
 		 * no modem behind them here: their 64 MB of IOVA all point at one cleared spare MB, the PCI 8 MB at its own.
 		 */
 		{
-			volatile uint8_t *pci = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_PCI_PHYS,
+			volatile uint8_t *pci = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)pci_phys,
 			    CAL_PCI_SIZE + (1U << 20), VM_WIMG_WCOMB);
 
 			if (pci != NULL) {
@@ -1604,7 +1616,26 @@ calliope_boot(void)
 				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_VSS >> 20) + mb)) = (uint32_t)(CAL_VSS_SPARE_PHYS >> 4) | 2;
 			}
 			for (uint32_t mb = 0; mb < CAL_PCI_SIZE >> 20; mb++) {
-				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((CAL_PCI_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((pci_phys + ((uint64_t)mb << 20)) >> 4) | 2;
+			}
+			if (cpcall) {
+				/* the doorbell: a 1 KB second-level table right after the first-level one (exynos-iommu.h:
+				 * mk_lv1ent_page(pa) = pa >> 4 | 1, lv2 small page pa >> 4 | 2, 256 entries, 1 KB aligned) */
+				uint64_t l2_phys = pt_phys + 0x4000;
+				volatile uint8_t *l2 = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)l2_phys, 0x1000,
+				    VM_WIMG_WCOMB);
+
+				if (l2 != NULL) {
+					for (uint32_t i = 0; i < 256; i++) {
+						*(volatile uint32_t *)(l2 + 4 * i) = 0;
+					}
+					for (uint32_t i = 0; i < 4; i++) {
+						*(volatile uint32_t *)(l2 + 4 * i) = (uint32_t)((0x14d70000ULL + 0x1000ULL * i) >> 4) | 2;
+					}
+					*(volatile uint32_t *)(pt + 4 * (0xA3000000U >> 20)) = (uint32_t)(l2_phys >> 4) | 1;
+				}
+				snd_log("snd: calliope: cpcall: PCI region %#llx at IOVA %#x, modem doorbell 0x14d70000 at IOVA 0xA3000000%s\n",
+				    pci_phys, CAL_IOVA_PCI, l2 ? "" : " (NOT mapped)");
 			}
 		}
 	}
