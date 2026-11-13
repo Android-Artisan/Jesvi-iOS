@@ -1048,6 +1048,7 @@ call_ui_poll(void)
         if (!strcmp(verb,"dial")) {char tag[80],num[64];if (sscanf(line,"%*s %79s %63s",tag,num)==2) call_dial(call_sock,tag,num);continue;}
         if (!call.state || id!=call.id) continue;           /* (an old call's button) */
         if (!strcmp(verb,"answer") && call.state==1) call.answer_req=1;
+        else if (!strcmp(verb,"route")) {char w[20]="";sscanf(line,"%*s %*u %19s",w);med.route=strcmp(w,"speaker")!=0;}
         else if (!strcmp(verb,"mute")) {unsigned on=0;sscanf(line,"%*s %*u %u",&on);med.muted=(int)on;}
         else if (!strcmp(verb,"end")) {
             if (call.out && call.state!=3) {call_cancel(call_sock);call_end("cancelled here");}

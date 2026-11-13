@@ -30,6 +30,7 @@ static struct {
     unsigned underruns, concealed;
     float mic_gain;
     volatile int muted;
+    volatile int route;                 /* 1 earpiece (default), 0 speakers: kept on the kernel every 0.5 s */
     int sock, spk, mic;
     struct sockaddr_in6 peer;
     pthread_t rx, tx;
@@ -174,6 +175,10 @@ static void *media_play(void *arg)
         }
         if (med.spk >= 0) (void)!write(med.spk, out, sizeof(out));
         played += 80;
+        if (played % 4000 == 0) {                           /* every 0.5 s: our route, whatever iOS's own sounds set */
+            int r = med.route;
+            sysctlbyname("kern.redwood.snd_route", NULL, NULL, &r, sizeof(r));
+        }
         if (played % 40000 == 0)                            /* every 5 s */
             {printf("call: media (AP): in %u pkts, out %u pkts (%u failed: %s), mic %u bytes, %u underruns, %u concealed, mic gain %.1f, buffered %u ms\n",
                 med.rx_pkts, med.tx_pkts, med.tx_err, med.tx_err ? strerror(med.tx_errno) : "-", med.mic_bytes, med.underruns,
@@ -288,7 +293,7 @@ static int media_start(int sock, const char *remote, unsigned rport)
         sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
         sysctlbyname("kern.redwood.snd_route", NULL, NULL, &one, sizeof(one));
     }
-    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0;
+    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0; med.route = 1;
     fir_init();
     med.run = 1;
     pthread_create(&med.play, NULL, media_play, NULL);
