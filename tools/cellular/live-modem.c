@@ -354,6 +354,10 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
 }
 static int stay_mode;
 static int data_off;          /* user switched mobile data off (Settings / Control Center / nodata) */
+#define IMS_CID 3
+#define IMS_CH (10+IMS_CID-1)     /* PS channels: cid 2 (internet) arrives on ch 11 */
+static struct {int up,npcscf,tries;uint8_t ip6[16],pcscf[2][16];char imsi[16];uint64_t tried;} ims;
+static void ims_write(void);
 static int dm_on;
 static void cell_ipc(const uint8_t *m,unsigned len);
 static void pdn_ipconfig(const uint8_t *d,unsigned n);
@@ -596,6 +600,12 @@ static void cell_ipc(const uint8_t *m,unsigned len)
     }
     if (g==0x08 && i==0x05 && n>=2) {if (cell.reg_raw!=d[1]) {cell.reg_raw=d[1];changed=1;}}
     if (g==0x04) sms_ipc(i,d,n,m[10]);
+    if (g==0x0a && i==0x02 && m[10]==2 && n>=1 && d[0]<16 && 1u+d[0]<=n) {memcpy(ims.imsi,d+1,d[0]);ims.imsi[d[0]]=0;ims_write();}
+    if (g==0x05 && i==0x09) {     /* UICC auth answer: written raw (hex) for redwood-ims */
+        FILE *f=fopen("/var/tmp/redwood-cell/auth.tmp","w");
+        if (f) {fchmod(fileno(f),0600);fprintf(f,"type %u\n",m[10]);for (unsigned k=0;k<n;k++) fprintf(f,"%02x",d[k]);fputc('\n',f);fclose(f);rename("/var/tmp/redwood-cell/auth.tmp","/var/tmp/redwood-cell/auth");}
+        printf("cellular: SIM auth answer (%u bytes)\n",n);fflush(stdout);
+    }
     if (changed) cell_publish();
 }
 
@@ -629,6 +639,11 @@ static int poke_read1(uint32_t pa,uint32_t *w,unsigned n)
 static int poke_write(uint32_t pa,uint32_t v) {char c[64],r[8192];snprintf(c,sizeof(c),"w 0x%x 0x%x",pa,v);return request(c,r);}
 static void pdn_ipconfig(const uint8_t *d,unsigned n)
 {
+    if (n>=0x53 && d[0]==IMS_CID) {
+        memcpy(ims.ip6,d+0x23,16);ims.npcscf=0;
+        for (int k=0;k<2;k++) {static const uint8_t z[16];if (memcmp(d+0x33+16*k,z,16)) memcpy(ims.pcscf[ims.npcscf++],d+0x33+16*k,16);}
+        ims.up=1;printf("cellular: IMS PDN up, %d P-CSCF\n",ims.npcscf);fflush(stdout);ims_write();
+    }
     if (n>=1 && d[0]!=2) {   /* other PDNs (IMS on cid 3): dump everything, P-CSCF is in here somewhere */
         printf("cellular: PDN cid %u ipconfig (%u bytes):",d[0],n);for (unsigned k=0;k<n;k++) printf("%s%02x",k%32?" ":"\n  ",d[k]);printf("\n");
         for (unsigned k=0;k+16<=n;k++) if (d[k]==0x24 && d[k+1]==0x05) {char t[64];inet_ntop(AF_INET6,d+k,t,sizeof(t));printf("cellular: cid %u IPv6-looking field at 0x%x: %s\n",d[0],k,t);}
@@ -640,6 +655,7 @@ static void pdn_ipconfig(const uint8_t *d,unsigned n)
         pdn.ip6[0],pdn.ip6[1],pdn.ip6[2],pdn.ip6[3],pdn.dns6[0],pdn.dns6[1],pdn.dns6[2],pdn.dns6[3],pdn.mtu);fflush(stdout);
 }
 static void pkt_rx(const uint8_t *p,unsigned n);
+static void ims_deliver(const uint8_t *p,unsigned n);
 static void pp_poll(void)
 {
     uint32_t rear=0;if (poke_read(0xd0000014,&rear,1) || rear>=PP_NDESC) return;
@@ -649,7 +665,7 @@ static void pp_poll(void)
         unsigned len=dw[2]&0xffff,ch=(dw[3]>>16)&0xff;uint32_t addr=dw[0];
         if (len && len<=2048 && addr>=0x28100000u && addr<0x2c000000u) {
             uint32_t words[520];unsigned nw=(len+3)/4;
-            if (!poke_read(addr-0x28000000u+0xd0000000u,words,nw)) {pp_rx++;pkt_rx((const uint8_t *)words,len);}
+            if (!poke_read(addr-0x28000000u+0xd0000000u,words,nw)) {pp_rx++;if (ch==IMS_CH) ims_deliver((const uint8_t *)words,len);else pkt_rx((const uint8_t *)words,len);}
         }
         if (pp_rx<20) {printf("cellular: DL desc %u len %u ch %u status %02x\n",pp_done,len,ch,(dw[1]>>16)&0xff);fflush(stdout);}
         /* hand the buffer back: same address, status cleared, fore advanced */
@@ -659,12 +675,14 @@ static void pp_poll(void)
         pp_done=(pp_done+1)%PP_NDESC;
     }
 }
-static int pkt_tx(const uint8_t *p,unsigned n)
+static int pkt_tx_ch(const uint8_t *p,unsigned n,unsigned ch);
+static int pkt_tx(const uint8_t *p,unsigned n) {return pkt_tx_ch(p,n,ul_ch);}
+static int pkt_tx_ch(const uint8_t *p,unsigned n,unsigned ch)
 {
     unsigned id=ul_ring;uint16_t rp,wp;unsigned len=sbd_chs[id].ul_len;
     if (ipc_load16(sbd_rp(id,0),&rp) || ipc_load16(sbd_wp(id,0),&wp) || (unsigned)(wp+1)%len==rp) return -1;
     if (n>sbd_chs[id].ul_size || ipc_write(sbd_buf[id][0]+wp*sbd_chs[id].ul_size,p,n) ||
-        ipc_store(sbd_lenarr[id][0]+4*wp,n|(ul_ch<<16))) return -1;
+        ipc_store(sbd_lenarr[id][0]+4*wp,n|(ch<<16))) return -1;
     __sync_synchronize();
     if (ipc_store16(sbd_wp(id,0),(uint16_t)((wp+1)%len))) return -1;
     pp_tx++;ipc_store(0x400,0x81);return doorbell(0);
@@ -753,27 +771,32 @@ static void sc_publish(void)
     printf("cellular: configd service redwood-cell %s (IPv6 %s, DNS %s on %s)\n",ok?"published":"REFUSED",a,d,utun_name);fflush(stdout);
     CFRelease(all);CFRelease(dns);CFRelease(ip6);CFRelease(aa);CFRelease(pa);CFRelease(da);CFRelease(pn);CFRelease(sa);CFRelease(sd);CFRelease(ifn);
 }
-static void utun_up(void)
+static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name)
 {
-    if (utun_fd>=0 || !pdn.up) return;
-    int fd=socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL);if (fd<0) {perror("cellular: utun socket");return;}
+    int fd=socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL);if (fd<0) {perror("cellular: utun socket");return -1;}
     struct ctl_info ci;memset(&ci,0,sizeof(ci));strlcpy(ci.ctl_name,"com.apple.net.utun_control",sizeof(ci.ctl_name));
-    if (ioctl(fd,CTLIOCGINFO,&ci)<0) {perror("cellular: CTLIOCGINFO");close(fd);return;}
+    if (ioctl(fd,CTLIOCGINFO,&ci)<0) {perror("cellular: CTLIOCGINFO");close(fd);return -1;}
     struct sockaddr_ctl sc;memset(&sc,0,sizeof(sc));sc.sc_len=sizeof(sc);sc.sc_family=AF_SYSTEM;sc.ss_sysaddr=AF_SYS_CONTROL;sc.sc_id=ci.ctl_id;sc.sc_unit=0;
-    if (connect(fd,(struct sockaddr *)&sc,sizeof(sc))<0) {perror("cellular: utun connect");close(fd);return;}
+    if (connect(fd,(struct sockaddr *)&sc,sizeof(sc))<0) {perror("cellular: utun connect");close(fd);return -1;}
     socklen_t nl=sizeof(utun_name);getsockopt(fd,SYSPROTO_CONTROL,UTUN_OPT_IFNAME,utun_name,&nl);
     fcntl(fd,F_SETFL,O_NONBLOCK);
     int s6=socket(AF_INET6,SOCK_DGRAM,0);
     struct rw_in6_aliasreq ar;memset(&ar,0,sizeof(ar));strlcpy(ar.ifra_name,utun_name,IFNAMSIZ);
-    ar.ifra_addr.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_addr.sin6_family=AF_INET6;memcpy(&ar.ifra_addr.sin6_addr,pdn.ip6,16);
+    ar.ifra_addr.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_addr.sin6_family=AF_INET6;memcpy(&ar.ifra_addr.sin6_addr,ip6,16);
     ar.ifra_prefixmask.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_prefixmask.sin6_family=AF_INET6;memset(&ar.ifra_prefixmask.sin6_addr,0xff,8);
     ar.ifra_lifetime.ia6t_vltime=ar.ifra_lifetime.ia6t_pltime=0xffffffff;
     if (ioctl(s6,RW_SIOCAIFADDR_IN6,&ar)<0) perror("cellular: SIOCAIFADDR_IN6");
-    struct ifreq ifr;memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);ifr.ifr_mtu=(int)(pdn.mtu?pdn.mtu:1500);
+    struct ifreq ifr;memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);ifr.ifr_mtu=(int)(mtu?mtu:1500);
     if (ioctl(s6,SIOCSIFMTU,&ifr)<0) perror("cellular: SIOCSIFMTU");
     memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);
     if (!ioctl(s6,SIOCGIFFLAGS,&ifr)) {ifr.ifr_flags|=IFF_UP|IFF_RUNNING;ioctl(s6,SIOCSIFFLAGS,&ifr);}
     close(s6);
+    return fd;
+}
+static void utun_up(void)
+{
+    if (utun_fd>=0 || !pdn.up) return;
+    int fd=tun_open(pdn.ip6,pdn.mtu,utun_name);if (fd<0) return;
     /* IPv6 default route through the interface (fails harmlessly if Wi-Fi already holds one) */
     int rs=socket(PF_ROUTE,SOCK_RAW,0);
     if (rs>=0) {
@@ -789,6 +812,48 @@ static void utun_up(void)
     utun_fd=fd;
     printf("cellular: %s up (index %u), IPv6 from the modem, MTU %u\n",utun_name,if_nametoindex(utun_name),pdn.mtu);fflush(stdout);
     sc_publish();
+}
+static int ims_fd=-1;static char ims_name[IFNAMSIZ];
+static void ims_write(void)
+{   /* for the SIP client (redwood-ims): root-only, the IMSI is in here */
+    char t[64];FILE *f=fopen("/var/tmp/redwood-cell/ims.tmp","w");if (!f) return;fchmod(fileno(f),0600);
+    fprintf(f,"up %d\nifname %s\n",ims.up && ims_fd>=0,ims_name);
+    inet_ntop(AF_INET6,ims.ip6,t,sizeof(t));fprintf(f,"ip6 %s\n",t);
+    for (int k=0;k<ims.npcscf;k++) {inet_ntop(AF_INET6,ims.pcscf[k],t,sizeof(t));fprintf(f,"pcscf %s\n",t);}
+    if (ims.imsi[0]) fprintf(f,"imsi %s\n",ims.imsi);
+    fclose(f);rename("/var/tmp/redwood-cell/ims.tmp","/var/tmp/redwood-cell/ims");
+}
+static void tun_route6(const char *ifn,const uint8_t *dst,int host)
+{   /* dst/128 (host) or ::/0 through the interface */
+    int rs=socket(PF_ROUTE,SOCK_RAW,0);if (rs<0) return;
+    struct {struct rt_msghdr h;struct sockaddr_in6 dst;struct sockaddr_dl gw;struct sockaddr_in6 mask;} m;memset(&m,0,sizeof(m));
+    m.h.rtm_msglen=sizeof(m);m.h.rtm_version=RTM_VERSION;m.h.rtm_type=RTM_ADD;m.h.rtm_flags=RTF_UP|RTF_STATIC|(host?0x4:0);  /* RTF_HOST */
+    m.h.rtm_addrs=RTA_DST|RTA_GATEWAY|RTA_NETMASK;m.h.rtm_seq=2;
+    m.dst.sin6_len=sizeof(m.dst);m.dst.sin6_family=AF_INET6;if (dst) memcpy(&m.dst.sin6_addr,dst,16);
+    m.gw.sdl_len=sizeof(m.gw);m.gw.sdl_family=AF_LINK;m.gw.sdl_index=(u_short)if_nametoindex(ifn);
+    m.mask.sin6_len=sizeof(m.mask);m.mask.sin6_family=AF_INET6;if (host) memset(&m.mask.sin6_addr,0xff,16);
+    if (write(rs,&m,sizeof(m))<0) perror("cellular: route");
+    close(rs);
+}
+static void ims_up(void)
+{
+    if (ims_fd>=0 || !ims.up) return;
+    ims_fd=tun_open(ims.ip6,1500,ims_name);if (ims_fd<0) return;
+    for (int k=0;k<ims.npcscf;k++) tun_route6(ims_name,ims.pcscf[k],1);
+    printf("cellular: IMS %s up (cid %d, ch %d, %d P-CSCF)\n",ims_name,IMS_CID,IMS_CH,ims.npcscf);fflush(stdout);ims_write();
+}
+static void ims_poll(void)
+{
+    if (ims_fd<0) return;
+    uint8_t b[2100];
+    for (int k=0;k<32;k++) {ssize_t n=read(ims_fd,b,sizeof(b));if (n<=4) break;if (pkt_tx_ch(b+4,(unsigned)(n-4),IMS_CH)) break;}
+}
+static void ims_deliver(const uint8_t *p,unsigned n)
+{
+    static unsigned shown;if (shown++<10) {printf("cellular: IMS DL %u bytes\n",n);fflush(stdout);}
+    if (ims_fd<0 || n>2048) return;
+    uint8_t b[2100];uint32_t af=htonl((p[0]>>4)==6?AF_INET6:AF_INET);memcpy(b,&af,4);memcpy(b+4,p,n);
+    (void)write(ims_fd,b,n+4);
 }
 static void utun_down(void)
 {
@@ -828,6 +893,14 @@ static void ctl_line(char *l)
         size_t n=strlen(l+3);if (n>1000) return;
         f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strcmp(l,"ims")) {        /* IMS PDN on cid 3, P-CSCF via PCO (d[0x7e]: 1 v4, 2 v6, 3 v4v6); never deactivated (crashes the CP) */
+        char cmd[1400],hex[1100];uint8_t d[330];
+        if (!ims.imsi[0]) ctl_line((char[]){"fmt 0a 02 02"});
+        memset(d,0,sizeof(d));d[0]=1;d[1]=IMS_CID;d[2]=6;memcpy(d+3,"ims",3);d[0x7e]=3;HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
+        memset(d,0,sizeof(d));d[0]=1;d[1]=IMS_CID;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
+    } else if (!strncmp(l,"auth ",5)) {     /* auth TYPE RAND AUTN (hex): UICC authentication, answer in /var/tmp/redwood-cell/auth */
+        unsigned ty=0;char r[80]={0},a[80]={0};if (sscanf(l+5,"%x %79s %79s",&ty,r,a)!=3 || strlen(r)!=32 || strlen(a)!=32) return;
+        char cmd[256];snprintf(cmd,sizeof(cmd),"fmt 05 09 02 %02x 10 %s 10 %s",ty,r,a);unlink("/var/tmp/redwood-cell/auth");ctl_line(cmd);
     } else if (!strncmp(l,"pdn ",4)) {      /* pdn CID APN: define + activate one more PDN (no attach-profile change) */
         unsigned cid=0;char apn[100]={0};if (sscanf(l+4,"%u %99s",&cid,apn)!=2 || cid<3 || cid>8) return;
         char cmd[1400],hex[1100];size_t al=strlen(apn);uint8_t d[330];
@@ -924,6 +997,11 @@ static int online_handshake(unsigned seconds)
         }
         if (online && stay_mode) ctl_poll();
         if (online && stay_mode && pdn.up) {if (!data_off) utun_up();pp_poll();utun_poll();}
+        if (online && stay_mode && ims.up) {ims_up();ims_poll();}
+        if (online && stay_mode && pdn.up && !ims.up && ims.tries<6 && now_us(NULL)-ims.tried>20000000ull) {
+            struct stat ni;
+            if (stat("/var/root/cell-noims",&ni)) {ims.tried=now_us(NULL);ims.tries++;printf("cellular: IMS PDN, try %d\n",ims.tries);fflush(stdout);ctl_line((char[]){"ims"});}
+        }
         if (online && stay_mode && !data_off && !pdn.up && cell.plmn[0] && strcmp(cell.plmn,"000000")) {
             static uint64_t tried;static unsigned tries;struct stat nd;
             if (tries<5 && now_us(NULL)-tried>20000000ull && stat("/var/root/cell-nodata",&nd)) {
