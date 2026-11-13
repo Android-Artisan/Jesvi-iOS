@@ -552,3 +552,22 @@ in Messages, no calls.
   CLAT/NAT; iOS Personal Hotspot (MISManager) needs CommCenter's tethering answers too.
 - Calls: INVITE with SDP (AMR-WB/EVS), preconditions (QoS via the dedicated bearer the network opens: new cid on
   IMS APN signalled by 0d 10/0d 09), RTP to/from the modem's audio path (Samsung CP audio over a separate channel).
+
+## 2026-11-13 16:40 — texts in the Messages app (A)
+
+- imagent gets the port's tweak loader: `libredwood-tweaks.dylib Preferences imagent` (live: sysctl kern.exec_inject;
+  persistent: userland/build.sh INJECT -- TODO next image). Tweak: /var/jb/usr/lib/TweakInject/RedwoodSMS.dylib (+ .plist,
+  filter imagent), source userland/src/sms_bridge.m, log /var/mobile/Library/Logs/redwood-sms.log (no texts in it).
+- SEND (works, user-verified): -[SMSServiceSession sendCTMessageFromIMMessageItem:forChat:chat:style:] replaced: the
+  item's body + chat identifier -> /var/tmp/redwood-cell/sms-out/<guid>.msg -> redwood-ims sends -> <guid>.ok/.fail ->
+  didSendMessage:forChat:style: / didReceiveError:forMessageID:forceError:. Numbers without +91 are normalised.
+- RECEIVE (works): redwood-ims writes /var/tmp/redwood-cell/sms-in/<t>-<ref>.txt (sender, time, text; mobile 0600). The
+  bridge (only while /var/tmp/redwood-cell/sms-bridge-in exists) moves it to sms-in/taken/ first (no crash loop on one
+  text), then builds the object the SMS plugin expects from BlastDoor -- real run-time subclasses of BlastDoorSMSMessage,
+  BlastDoorSMSCTPart, BlastDoorSMSCTPartContentWrapper (type 1 = plain), BlastDoorSMSCTPartPlain (plainTextContentBody),
+  allocated WITHOUT init (Swift wrappers: "Use of unimplemented initializer init()" traps) -- and calls
+  -[SMSServiceSession _processReceivedSMSMessage:storageContext:withCompletionBlock:].
+- Lessons: CTMessage is not what iOS 16 takes (it wants BlastDoorSMSMessage: -version); the dictionary path goes to
+  BlastDoor out of process; imagent crash loops end in launchd "spawn failed" with exponential throttling (wait ~1 min);
+  never open sms: URLs to wake Messages (each one makes a new draft). Crash text is in the console log (:8080/log).
+- /var/root/cell-sms.txt keeps every received text; re-queue from it if the bridge missed some.

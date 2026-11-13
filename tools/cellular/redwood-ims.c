@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
+#include <dirent.h>
 #include "sms-pdu.h"
 #ifndef IPV6_BOUND_IF
 #define IPV6_BOUND_IF 125
@@ -271,6 +272,7 @@ static int recv_msg(int s,char *b,size_t cap,int secs)
 /* ---- SMS over IP: MESSAGE with application/vnd.3gpp.sms carries an RP message (TS 24.011): network -> UE RP-DATA
  * {0x01, ref, originator (SMSC) address, empty destination, user data len, TPDU SMS-DELIVER}; we answer the MESSAGE 200
  * and send RP-ACK {0x02, ref, 0x41, 2, SMS-DELIVER-REPORT 00 00} in a MESSAGE of our own back to the sender URI. */
+static char sms_pending[256][80];   /* RP ref -> sms-out message id (Messages app sends) */
 static char sms_route[1600],sms_impu[256],sms_sc_uri[128];static uint8_t sms_sc[12];static unsigned sms_scl,sms_mr,sms_rpref=1;
 static void sms_keep_registration(const char *ok)
 {   /* Service-Route(s) -> Route lines for our own requests; first P-Associated-URI as our identity */
@@ -290,6 +292,10 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     const char *hb=strstr(req,"\r\n\r\n");if (!hb) return 0;
     const uint8_t *b=(const uint8_t *)hb+4;size_t n=hdr(req,"Content-Length",cl,sizeof(cl))?(size_t)atoi(cl):0;
     if ((size_t)(hb+4-req)+n>len || n<2) {printf("SMS: body short\n");return 1;}
+    if (b[0]==0x03 || b[0]==0x05) {   /* the result of one of our sends: tell the Messages app if it was its */
+        if (sms_pending[b[1]][0]) {char fn[200];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.%s",sms_pending[b[1]],b[0]==3?"ok":"fail");
+            FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}sms_pending[b[1]][0]=0;}
+    }
     if (b[0]==0x03) {printf("SMS: sent -- the SMSC confirmed (RP-ACK, ref %u)\n",b[1]);fflush(stdout);return 1;}
     if (b[0]==0x05) {printf("SMS: NOT sent -- RP-ERROR ref %u, cause %u\n",b[1],n>3?b[3]&0x7f:0);fflush(stdout);return 1;}
     if (b[0]!=0x01) {printf("SMS: RP message type %u from the network, %zu bytes\n",b[0],n);return 1;}
@@ -302,6 +308,12 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     char from[64]="?",text[1600]="",when[32]="";uint8_t pdu[260];int ok=0;
     if (i+ul<=n && ul<sizeof(pdu)-1) {pdu[0]=0;memcpy(pdu+1,b+i,ul);ok=!sms_decode(pdu,ul+1,from,sizeof(from),text,sizeof(text),when,sizeof(when));}
     printf("SMS (IMS) from %s at %s: %s\n",from,when,ok?text:"(undecoded TPDU)");fflush(stdout);
+    if (ok) {   /* for the Messages app: /var/tmp/redwood-cell/sms-in/<time>-<ref>.txt = sender, unix time, text (mobile, 0600) */
+        mkdir("/var/tmp/redwood-cell/sms-in",0700);chown("/var/tmp/redwood-cell/sms-in",501,501);
+        char fn[160],tmp[170];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-in/%lld-%u.txt",(long long)time(NULL),ref);snprintf(tmp,sizeof(tmp),"%s.tmp",fn);
+        FILE *q=fopen(tmp,"w");
+        if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n%lld\n%s",from,(long long)time(NULL),text);fclose(q);chown(tmp,501,501);rename(tmp,fn);}
+    }
     FILE *f=fopen("/var/root/cell-sms.txt","a");
     if (f) {fchmod(fileno(f),0600);fprintf(f,"%llu\t%s\t%s\t",(unsigned long long)time(NULL),from,when);
         if (ok) {for (char *c=text;*c;c++) fputc(*c=='\n'||*c=='\t'?' ':*c,f);} else {fputs("tpdu:",f);for (unsigned k=0;k<ul && i+k<n;k++) fprintf(f,"%02x",b[i+k]);}
@@ -310,6 +322,7 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     if (!hdr(req,"From",fr,sizeof(fr)) || !hdr(req,"Call-ID",ci,sizeof(ci))) return 1;
     const char *u1=strchr(fr,'<'),*u2=u1?strchr(u1,'>'):NULL;if (!u1 || !u2) return 1;
     if (u2-u1-1<(long)sizeof(sms_sc_uri)) snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%.*s",(int)(u2-u1-1),u1+1);
+    {FILE *q=fopen("/var/root/cell-smsc","w");if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n",sms_sc_uri);for (unsigned k=0;k<sms_scl;k++) fprintf(q,"%02x",sms_sc[k]);fputc('\n',q);fclose(q);}}
     static const uint8_t ackbody_t[]={0x02,0,0x41,0x02,0x00,0x00};uint8_t ack[sizeof(ackbody_t)];memcpy(ack,ackbody_t,sizeof(ack));ack[1]=(uint8_t)ref;
     char m[4000];int o=snprintf(m,sizeof(m),
         "MESSAGE %.*s SIP/2.0\r\n"
@@ -357,16 +370,37 @@ static int sms_ud(const char *t,uint8_t *ud,unsigned *udl,int *ucs2)
     }
     *udl=o;*ucs2=1;return (int)o;
 }
-static void sms_send(int sock,int portc,const char *number,const char *text)
+static void sms_smsc_load(void)
+{   /* the SMSC learnt from an earlier incoming text, else Jio's (seen as the sender of every incoming text) */
+    if (sms_scl && sms_sc_uri[0]) return;
+    char uri[128]="tel:+917012075009",hex[64]="";
+    FILE *q=fopen("/var/root/cell-smsc","r");
+    if (q) {if (fscanf(q,"%127s %63s",uri,hex)<1) uri[0]=0;fclose(q);}
+    if (!uri[0]) return;
+    snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%s",uri);
+    size_t hl=strlen(hex);sms_scl=0;
+    for (size_t k=0;k+1<hl && sms_scl<sizeof(sms_sc);k+=2) {int a=hexval(hex[k]),b=hexval(hex[k+1]);if (a<0||b<0) {sms_scl=0;break;}sms_sc[sms_scl++]=(uint8_t)(a<<4|b);}
+    if (!sms_scl) {   /* from the URI's digits: TON international, BCD */
+        const char *d=strchr(uri,'+');d=d?d+1:uri;char dg[24];size_t nd=0;
+        for (;*d && nd<20;d++) if (*d>='0' && *d<='9') dg[nd++]=*d;
+        sms_sc[sms_scl++]=0x91;
+        for (size_t k=0;k<nd;k+=2) sms_sc[sms_scl++]=(uint8_t)((dg[k]-'0')|((k+1<nd?dg[k+1]-'0':15)<<4));
+    }
+    printf("SMS: SMSC %s\n",sms_sc_uri);
+}
+static int sms_send(int sock,int portc,const char *number,const char *text)
 {
-    if (!sms_scl || !sms_sc_uri[0]) {printf("SMS: no SMSC known yet (it is learnt from the first incoming text)\n");fflush(stdout);return;}
-    char dig[24];size_t nd=0;for (const char *c=number;*c && nd<20;c++) if (*c>='0' && *c<='9') dig[nd++]=*c;dig[nd]=0;
-    if (nd<3) {printf("SMS: bad number\n");return;}
+    sms_smsc_load();
+    if (!sms_scl || !sms_sc_uri[0]) {printf("SMS: no SMSC known yet (it is learnt from the first incoming text)\n");fflush(stdout);return -1;}
+    char dig[24];size_t nd=0;int intl=number[0]=='+';for (const char *c=number;*c && nd<20;c++) if (*c>='0' && *c<='9') dig[nd++]=*c;dig[nd]=0;
+    if (nd<3) {printf("SMS: bad number\n");return -1;}
+    if (!intl && nd==10 && dig[0]>='6') {memmove(dig+2,dig,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}   /* Indian mobile without +91 */
+    else if (!intl && nd==11 && dig[0]=='0') {memmove(dig+2,dig+1,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}
     uint8_t ud[140];unsigned udl=0;int ucs2=0,udn=sms_ud(text,ud,&udl,&ucs2);
-    if (udn<0) {printf("SMS: text too long for one part (160 GSM / 70 other characters)\n");fflush(stdout);return;}
+    if (udn<0) {printf("SMS: text too long for one part (160 GSM / 70 other characters)\n");fflush(stdout);return -1;}
     uint8_t tp[200];unsigned t=0;
     tp[t++]=0x01;tp[t++]=(uint8_t)(sms_mr++);                     /* SMS-SUBMIT, no validity period; TP-MR */
-    tp[t++]=(uint8_t)nd;tp[t++]=number[0]=='+'?0x91:0x81;          /* destination: digits, international or unknown */
+    tp[t++]=(uint8_t)nd;tp[t++]=intl?0x91:0x81;          /* destination: digits, international or unknown */
     for (size_t k=0;k<nd;k+=2) tp[t++]=(uint8_t)((dig[k]-'0')|((k+1<nd?dig[k+1]-'0':15)<<4));
     tp[t++]=0x00;tp[t++]=ucs2?0x08:0x00;tp[t++]=(uint8_t)udl;      /* PID, DCS, UDL */
     memcpy(tp+t,ud,(size_t)udn);t+=(unsigned)udn;
@@ -389,15 +423,34 @@ static void sms_send(int sock,int portc,const char *number,const char *text)
         "Content-Length: %u\r\n\r\n",
         sms_sc_uri,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
         sms_sc_uri,arc4random(),cfg.ip6,r);
-    if (o<0 || (size_t)o+r>sizeof(m)) return;
+    if (o<0 || (size_t)o+r>sizeof(m)) return -1;
     memcpy(m+o,rp,r);
     ssize_t w=send(sock,m,(size_t)o+r,0);
     printf("--> SMS to %s (%u characters, %s, RP ref %u) %s\n",number,ucs2?udl/2:udl,ucs2?"UCS-2":"GSM",ref,w>0?"handed to the network":"NOT sent");fflush(stdout);
+    return w>0?(int)ref:-1;
 }
 /* command pipe for the client: "sms NUMBER TEXT" (root only) */
 static int ims_cmd_fd=-1;
+static void sms_outbox(int sock,int portc)
+{   /* /var/tmp/redwood-cell/sms-out/<id>.msg from the Messages app: number on the first line, then the text */
+    mkdir("/var/tmp/redwood-cell/sms-out",0700);chown("/var/tmp/redwood-cell/sms-out",501,501);
+    DIR *d=opendir("/var/tmp/redwood-cell/sms-out");if (!d) return;
+    struct dirent *e;
+    while ((e=readdir(d))) {
+        size_t L=strlen(e->d_name);if (L<5 || strcmp(e->d_name+L-4,".msg") || L-4>=sizeof(sms_pending[0])) continue;
+        char fn[300],body[1400];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s",e->d_name);
+        FILE *q=fopen(fn,"r");if (!q) continue;size_t n=fread(body,1,sizeof(body)-1,q);fclose(q);body[n]=0;unlink(fn);
+        char id[80];snprintf(id,sizeof(id),"%.*s",(int)(L-4),e->d_name);
+        char *nl=strchr(body,'\n');int ref=-1;
+        if (nl) {*nl=0;ref=sms_send(sock,portc,body,nl+1);}
+        if (ref>=0) snprintf(sms_pending[ref&0xff],sizeof(sms_pending[0]),"%s",id);
+        else {snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",id);q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}}
+    }
+    closedir(d);
+}
 static void ims_cmd_poll(int sock,int portc)
 {
+    sms_outbox(sock,portc);
     if (ims_cmd_fd<0) {
         unlink("/var/tmp/redwood-cell/ims-cmd");
         if (mkfifo("/var/tmp/redwood-cell/ims-cmd",0600)) return;
@@ -409,7 +462,7 @@ static void ims_cmd_poll(int sock,int portc)
     char *nl;
     while ((nl=strchr(buf,'\n'))) {
         *nl=0;
-        if (!strncmp(buf,"sms ",4)) {char *num=buf+4;while (*num==' ') num++;char *sp=strchr(num,' ');if (sp) {*sp=0;sms_send(sock,portc,num,sp+1);}}
+        if (!strncmp(buf,"sms ",4)) {char *num=buf+4;while (*num==' ') num++;char *sp=strchr(num,' ');if (sp) {*sp=0;(void)sms_send(sock,portc,num,sp+1);}}
         size_t used=(size_t)(nl+1-buf);memmove(buf,nl+1,have-used+1);have-=used;
     }
     if (have>=sizeof(buf)-1) have=0;
