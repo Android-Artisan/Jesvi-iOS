@@ -1791,8 +1791,11 @@ redwood_init(void)
 	if (strcmp(name, "Camera") == 0) {
 		camera_front_by_default();
 	}
-	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+	if (strcmp(name, "MobilePhone") == 0) {
 		phone_dial_hook();
+	}
+	if (strcmp(name, "InCallService") == 0) {
+		phone_system_hook();
 	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";

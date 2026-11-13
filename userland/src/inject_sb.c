@@ -1461,6 +1461,7 @@ control_center_fades(const char *arguments)
 /* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
 #include "cell_sb.h"
 #include "statusbar_shift.h"
+#include "phone_dial.h"
 
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
@@ -1522,6 +1523,9 @@ redwood_springboard_init(void)
 	 * run here before UIKit caches the iPhone X's SPU capabilities. */
 	extern void redwood_coremotion_fixes(void);
 	redwood_coremotion_fixes();
+	if (strcmp(name, "SpringBoard") == 0) {
+		phone_system_hook();        /* RedwoodPhone's calls get the full call screen (phone_dial.h) */
+	}
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
 

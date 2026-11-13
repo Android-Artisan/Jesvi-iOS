@@ -13,6 +13,9 @@
 #import <CallKit/CallKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
+#import <Intents/Intents.h>
+#import <objc/message.h>
+#include <dlfcn.h>
 
 static NSString *const Dir = @"/var/tmp/redwood-cell/call-ui";
 
@@ -33,6 +36,16 @@ static void rp_cmd(NSString *line)
     [[line stringByAppendingString:@"\n"] writeToFile:tmp atomically:NO encoding:NSUTF8StringEncoding error:nil];
     rename(tmp.fileSystemRepresentation, [fn stringByReplacingOccurrencesOfString:@".tmp" withString:@""].fileSystemRepresentation);
     rp_log(@"-> %@", line);
+}
+
+/* the same, without the line in the log (it has the number) */
+static void rp_cmd_quiet(NSString *line)
+{
+    NSString *fn = [Dir stringByAppendingFormat:@"/cmd.%.0f.%u", [[NSDate date] timeIntervalSince1970] * 1000, arc4random() % 100000];
+    NSString *tmp = [fn stringByAppendingString:@".tmp"];
+    [[line stringByAppendingString:@"\n"] writeToFile:tmp atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    rename(tmp.fileSystemRepresentation, fn.fileSystemRepresentation);
+    rp_log(@"-> dial");
 }
 
 @interface RP : NSObject <CXProviderDelegate>
@@ -152,7 +165,7 @@ static void rp_cmd(NSString *line)
     NSString *tag = [[a.callUUID UUIDString] substringToIndex:8];
     self.dialing[tag] = a.callUUID;
     rp_log(@"dialling (from the Phone app)");
-    rp_cmd([NSString stringWithFormat:@"dial %@ %@", tag, [[num componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""]]);
+    rp_cmd_quiet([NSString stringWithFormat:@"dial %@ %@", tag, [[num componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""]]);
     CXCallUpdate *up = [CXCallUpdate new];
     up.remoteHandle = a.handle; up.hasVideo = NO; up.supportsHolding = NO; up.supportsDTMF = NO;
     [a fulfill];
@@ -173,14 +186,60 @@ static void rp_cmd(NSString *line)
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o
 {
     rp_log(@"launched by iOS (pid %d): UI instance only", getpid());
+    NSDictionary *uad = o[UIApplicationLaunchOptionsUserActivityDictionaryKey];
+    NSUserActivity *ua = uad[@"UIApplicationLaunchOptionsUserActivityKey"];
+    if ([ua isKindOfClass:[NSUserActivity class]]) { rp_log(@"dial request at launch (%@)", ua.activityType); rp_start_call(rp_intent_number(ua)); }
     return YES;
 }
+/* a dial from the Phone app / Recents / Contacts: iOS opens the provider's app with an INStartCallIntent; the app
+ * asks CallKit to start the call (CXStartCallAction), which callservicesd hands to our provider in the launchd
+ * instance (same bundle), which writes "dial" for redwood-ims */
+static NSString *rp_intent_number(NSUserActivity *ua)
+{
+    INIntent *in = ua.interaction.intent;
+    NSArray *people = nil;
+    if ([in respondsToSelector:@selector(contacts)]) people = [(id)in contacts];
+    INPerson *p = people.firstObject;
+    return p.personHandle.value;
+}
+static void rp_start_call(NSString *num)
+{
+    if (!num.length) { rp_log(@"dial: no number in the request"); return; }
+    static CXCallController *cc;
+    if (!cc) cc = [CXCallController new];
+    CXHandle *h = [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:num];
+    CXStartCallAction *st = [[CXStartCallAction alloc] initWithCallUUID:[NSUUID UUID] handle:h];
+    [cc requestTransaction:[[CXTransaction alloc] initWithAction:st] completion:^(NSError *e) {
+        rp_log(@"dial: start-call request %@", e ? e.localizedDescription : @"accepted");
+    }];
+}
+- (BOOL)application:(UIApplication *)a continueUserActivity:(NSUserActivity *)ua restorationHandler:(void (^)(NSArray<id<UIUserActivityRestoring>> *))r
+{
+    rp_log(@"dial request from iOS (%@)", ua.activityType);
+    rp_start_call(rp_intent_number(ua));
+    return YES;
+}
+- (BOOL)application:(UIApplication *)a openURL:(NSURL *)url options:(NSDictionary *)o
+{
+    NSString *num = url.resourceSpecifier ?: url.host;
+    rp_log(@"dial request by URL");
+    rp_start_call([num stringByRemovingPercentEncoding]);
+    return YES;
+}
+
 /* brought to the front when a call is answered: nothing to show (a blank screen covered the call screen, the user
  * 2026-11-14 04:08): step back at once, so iOS's own call screen (InCallService) stays in front */
 - (void)applicationDidBecomeActive:(UIApplication *)a
 {
-    rp_log(@"in front: stepping back to the call screen");
-    dispatch_async(dispatch_get_main_queue(), ^{
+    /* iOS's full call screen in front (suspending alone sent the call into the Dynamic Island, 2026-11-14 04:20):
+     * -[TUCallCenter activateInCallUIWithActivityContinuationIdentifier:], then step back if still in front */
+    rp_log(@"in front: bringing the call screen up");
+    Class cc = NSClassFromString(@"TUCallCenter");
+    id center = cc ? ((id (*)(id, SEL))objc_msgSend)(cc, NSSelectorFromString(@"sharedInstance")) : nil;
+    SEL act = NSSelectorFromString(@"activateInCallUIWithActivityContinuationIdentifier:");
+    if (center && [center respondsToSelector:act]) ((void (*)(id, SEL, id))objc_msgSend)(center, act, nil);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (a.applicationState != UIApplicationStateActive) return;
         SEL s = NSSelectorFromString(@"suspend");
         if ([a respondsToSelector:s]) ((void (*)(id, SEL))[a methodForSelector:s])(a, s);
     });
@@ -191,6 +250,7 @@ int main(int argc, char **argv)
 {
     const char *svc = getenv("XPC_SERVICE_NAME");
     if (svc && !strncmp(svc, "UIKitApplication", 16)) {
+        dlopen("/System/Library/PrivateFrameworks/TelephonyUtilities.framework/TelephonyUtilities", RTLD_NOW);
         @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass([RPApp class])); }
     }
     @autoreleasepool {
