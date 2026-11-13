@@ -288,6 +288,16 @@ cell_cc_add(id self, const char *list)
 	if (a != nil) cell_set1(self, "setButtonViewControllers:", a);
 	say("redwood: cellular: Control Center: cellular data button added (%s)\n", list);
 }
+static void (*cell_cc_orig_appear)(id, SEL, BOOL);
+static void
+cell_cc_appear(id self, SEL _cmd, BOOL animated)
+{   /* every time Control Center shows the module: the button is there (in case the module was built before our hooks) */
+	cell_cc_add(self, "portrait");
+	cell_cc_add(self, "landscape");
+	id v = cell_get(self, "view");
+	if (v != nil) ((void (*)(id, SEL))objc_msgSend)(v, sel_registerName("setNeedsLayout"));
+	cell_cc_orig_appear(self, _cmd, animated);
+}
 static void cell_cc_portrait(id self, SEL _cmd) { cell_cc_orig_portrait(self, _cmd); cell_cc_add(self, "portrait"); }
 static void cell_cc_landscape(id self, SEL _cmd) { cell_cc_orig_landscape(self, _cmd); cell_cc_add(self, "landscape"); }
 static void
@@ -356,6 +366,8 @@ cell_cc_scan(void)
 		Method m3 = cv ? class_getInstanceMethod(cv, sel_registerName("buttonTapped:")) : NULL;
 		Method m4 = cv ? class_getInstanceMethod(cv, sel_registerName("_toggleState")) : NULL;
 		Method m5 = cv ? class_getInstanceMethod(cv, sel_registerName("_isCellularDataRestricted")) : NULL;
+		Method m0 = mv ? class_getInstanceMethod(mv, sel_registerName("viewWillAppear:")) : NULL;
+		if (m0) { cell_cc_orig_appear = (void (*)(id, SEL, BOOL))method_setImplementation(m0, (IMP)cell_cc_appear); hooked++; }
 		if (m1) { cell_cc_orig_portrait = (void (*)(id, SEL))method_setImplementation(m1, (IMP)cell_cc_portrait); hooked++; }
 		if (m2) { cell_cc_orig_landscape = (void (*)(id, SEL))method_setImplementation(m2, (IMP)cell_cc_landscape); hooked++; }
 		if (m3) { cell_cc_orig_tapped = (void (*)(id, SEL, id))method_setImplementation(m3, (IMP)cell_cc_tapped); hooked++; }
@@ -432,6 +444,14 @@ cell_sb_tools(void)
 		fclose(f);
 		unlink("/var/tmp/redwood-cell/sb-hook");
 	}
+}
+
+static void
+cell_cc_image_added(const struct mach_header *mh, intptr_t slide)
+{   /* the moment ConnectivityModule is loaded (Control Center's first opening), before it builds any button */
+	(void)slide;
+	Dl_info info;
+	if (dladdr(mh, &info) && info.dli_fname != NULL && strstr(info.dli_fname, "ConnectivityModule") != NULL) cell_cc_scan();
 }
 
 static void
@@ -548,4 +568,5 @@ cell_start(void)
 		}
 	}
 	dispatch_async_f(dispatch_get_main_queue(), NULL, cell_hook);   /* as early as SpringBoard's main queue runs */
+	_dyld_register_func_for_add_image(cell_cc_image_added);
 }
