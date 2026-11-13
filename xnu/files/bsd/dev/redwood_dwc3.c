@@ -392,6 +392,15 @@ static uint64_t vbus_heard_at;          /* mach_absolute_time of the last report
 static bool link_stopped;               /* VBUS went: transfers ended, the pull-up off, the PHY down */
 static bool watch_storms = true;        /* the console's usb watch */
 static bool want_restart;               /* the console's usb restart */
+
+/* The link again, as after a replug, from another driver: tick() does it. (redwood_usbmux.c asks once after a
+ * start-up in which the computer came for lockdownd before launchd had its socket.) */
+void redwood_usb_gadget_replug(void);
+void
+redwood_usb_gadget_replug(void)
+{
+	want_restart = true;
+}
 static uint32_t want_drop_ms;           /* the console's usb drop */
 static uint32_t resets_no_setup, resets_no_config, quiet_restarts;
 static uint64_t last_heard;             /* mach_absolute_time of the host's last SOF or reset, or of the last restart */

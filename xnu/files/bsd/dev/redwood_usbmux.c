@@ -14,6 +14,7 @@
 #include <sys/errno.h>
 #include <sys/kpi_socket.h>
 #include <sys/systm.h>
+#include <machine/machine_routines.h>
 
 #define MQ 16u
 #define MC 16u
@@ -39,6 +40,7 @@ static uint32_t rxhead, rxtail, txhead, txtail, generation, worker_generation;
 static bool mux_started, mux_link;
 extern void redwood_usbmux_notify(bool);
 static unsigned mux_version;
+static bool lockdown_refused;      /* (see mux_lockdown_probe) */
 static uint16_t txseq, rxseq;
 static uint64_t mux_packets, mux_connections, mux_bad;
 static uint8_t assembly[RWMUX_MAX], output[RWMUX_MAX];
@@ -213,6 +215,8 @@ static void mux_input(const uint8_t *p, size_t length) {
 		if (!error)
 			error = sock_connect(c->so, (struct sockaddr *)&a, MSG_DONTWAIT);
 		if (error && error != EINPROGRESS) {
+			if (port == 62078)
+				lockdown_refused = true;
 			mux_close(c, true);
 			return;
 		}
@@ -289,8 +293,11 @@ static void mux_poll(struct mux_connection *c) {
 			int error = 0;
 			int size = sizeof(error);
 			(void)sock_getsockopt(c->so, SOL_SOCKET, SO_ERROR, &error, &size);
-			if (error || mach_absolute_time() > c->deadline)
+			if (error || mach_absolute_time() > c->deadline) {
+				if (c->port == 62078)
+					lockdown_refused = true;
 				mux_close(c, true);
+			}
 			return;
 		}
 		if (mux_tcp(c, 0x12, NULL, 0)) {
@@ -345,6 +352,36 @@ static void mux_poll(struct mux_connection *c) {
 	else
 		mux_close(c, true);
 }
+/* A Mac asks for lockdownd (62078) the moment the device is on its bus; at start-up that is before launchd
+ * has the socket, the Mac is refused, and its discovery agent gives the device up: no Finder entry until the
+ * agent is restarted or the cable replugged (every restart of the phone, 2026-11-13: "USBMuxConnectByPort
+ * failed ... Connection refused", AMDeviceConnect 0xE8000065). So: once refused, look every second whether
+ * the port answers now, and then let the link drop and come back once -- the Mac asks again and is answered. */
+extern void redwood_usb_gadget_replug(void);
+static uint64_t lockdown_probe_at;
+static void mux_lockdown_probe(void) {
+	if (!lockdown_refused)
+		return;
+	uint64_t now = mach_absolute_time(), second;
+	if (now < lockdown_probe_at)
+		return;
+	nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+	lockdown_probe_at = now + second;
+	socket_t so = NULL;
+	struct sockaddr_in a = {.sin_len = sizeof(a),
+				.sin_family = AF_INET,
+				.sin_port = htons(62078),
+				.sin_addr.s_addr = htonl(0x7f000001)};
+	if (sock_socket(PF_INET, SOCK_STREAM, 0, NULL, NULL, &so))
+		return;
+	int error = sock_connect(so, (struct sockaddr *)&a, 0);
+	sock_close(so);
+	if (error)
+		return;
+	lockdown_refused = false;
+	printf("usbmux: lockdownd answers now and the computer was refused before: the link restarts once\n");
+	redwood_usb_gadget_replug();
+}
 static void mux_worker(__unused void *arg, __unused wait_result_t result) {
 	uint32_t seen = 0;
 	struct mux_packet *packet = kalloc_data(sizeof(struct mux_packet), Z_WAITOK | Z_ZERO);
@@ -371,6 +408,7 @@ static void mux_worker(__unused void *arg, __unused wait_result_t result) {
 				mux_stream(packet->bytes, packet->len);
 			for (unsigned i = 0; i < MC; i++)
 				mux_poll(&mc[i]);
+			mux_lockdown_probe();
 		}
 		delay_for_interval(1, NSEC_PER_MSEC);
 	}
@@ -402,6 +440,10 @@ void redwood_usbmux_link(bool up) {
 	rxtail = rxhead;
 	txtail = txhead;
 	lck_spin_unlock(&mux_lock);
-	printf("usbmux: cable %s (packets %llu, connections %llu, invalid %llu)\n", up ? "configured" : "disconnected",
-	       mux_packets, mux_connections, mux_bad);
+	/* (not with interrupts off: loader_return() quiesces the gadget that way, and the console then panics
+	 * "Console I/O from interrupt-disabled context" -- kern.redwood_menu never reached Log access, 2026-11-13) */
+	if (ml_get_interrupts_enabled()) {
+		printf("usbmux: cable %s (packets %llu, connections %llu, invalid %llu)\n", up ? "configured" : "disconnected",
+		       mux_packets, mux_connections, mux_bad);
+	}
 }

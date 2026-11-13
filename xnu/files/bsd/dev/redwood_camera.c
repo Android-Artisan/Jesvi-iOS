@@ -3278,6 +3278,10 @@ enum { PLACE_FREE, PLACE_WRITING, PLACE_READY, PLACE_READING };
 
 static LCK_GRP_DECLARE(ios_lck_grp, "redwood-camera");
 static LCK_MTX_DECLARE(ios_lock, &ios_lck_grp);
+/* camdev_read()s that copy a frame out of the ring with ios_lock released. The ring is not freed under them:
+ * a stream that ended while mediaserverd was in its uiomove() freed it, and the kernel stopped on a data abort
+ * in camdev_read (2026-11-13, twice, at a front/rear switch a few seconds after start). */
+static int ios_readers;
 static struct {
 	uint8_t         state;
 	uint64_t        sequence, time;
@@ -3376,6 +3380,12 @@ exposure_write(uint32_t lines, uint32_t gain, uint32_t frame_lines)
 static void
 ring_free(void)
 {
+	lck_mtx_lock(&ios_lock);
+	while (ios_readers > 0) {
+		struct timespec ts = { 0, 20 * NSEC_PER_MSEC };
+		(void)msleep(&ios_readers, &ios_lock, PZERO, "redwood-camera-readers", &ts);
+	}
+	lck_mtx_unlock(&ios_lock);
 	if (page_tables != 0) {
 		kmem_free(kernel_map, page_tables, ring_tables_bytes);
 		page_tables = 0;
@@ -3997,6 +4007,7 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		ios_last_read = ios_ms();
 	}
 	place[b].state = PLACE_READING;
+	ios_readers++;
 	ios_given = place[b].sequence;
 	bzero(&f, sizeof(f));
 	memcpy(f.magic, REDWOOD_CAMERA_MAGIC, 8);
@@ -4052,6 +4063,9 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		place[b].state = PLACE_READY;
 	}
 	ios_last_read = ios_ms();
+	if (--ios_readers == 0) {
+		wakeup(&ios_readers);
+	}
 	lck_mtx_unlock(&ios_lock);
 	return error;
 }
