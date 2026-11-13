@@ -245,6 +245,71 @@ static BOOL cell_cc_data_on(id self, SEL _cmd)
 	}
 	return on ? YES : NO;
 }
+/* the button itself: the module leaves it out (MobileGestalt: no cellular data), so it is added after the module's
+ * own setup, made by the module's own factory; a tap sends data/nodata to the modem service's pipe */
+static void (*cell_cc_orig_portrait)(id, SEL), (*cell_cc_orig_landscape)(id, SEL);
+static void (*cell_cc_orig_tapped)(id, SEL, id);
+static BOOL cell_responds(id o, const char *sel)
+{
+	return o != nil && ((BOOL (*)(id, SEL, SEL))objc_msgSend)(o, sel_registerName("respondsToSelector:"), sel_registerName(sel));
+}
+static id cell_get(id o, const char *sel) { return ((id (*)(id, SEL))objc_msgSend)(o, sel_registerName(sel)); }
+static void cell_set1(id o, const char *sel, id v) { ((void (*)(id, SEL, id))objc_msgSend)(o, sel_registerName(sel), v); }
+static id
+cell_with_inserted(id arr, id obj)
+{   /* a mutable copy of arr with obj after the first element (after airplane mode, as on an iPhone) */
+	id m = arr != nil ? cell_get(arr, "mutableCopy") :
+	    ((id (*)(Class, SEL))objc_msgSend)(objc_getClass("NSMutableArray"), sel_registerName("array"));
+	if (((BOOL (*)(id, SEL, id))objc_msgSend)(m, sel_registerName("containsObject:"), obj)) return nil;
+	unsigned long n = ((unsigned long (*)(id, SEL))objc_msgSend)(m, sel_registerName("count"));
+	((void (*)(id, SEL, id, unsigned long))objc_msgSend)(m, sel_registerName("insertObject:atIndex:"), obj, n ? 1 : 0);
+	return m;
+}
+static void
+cell_cc_add(id self, const char *list)
+{
+	Class c = objc_getClass("CCUIConnectivityCellularDataViewController");
+	id btn;
+
+	if (c == Nil || !cell_responds(self, "_makeButtonWithClass:")) return;
+	btn = cell_get(self, "cellularDataButton");
+	if (btn == nil) {
+		btn = ((id (*)(id, SEL, Class))objc_msgSend)(self, sel_registerName("_makeButtonWithClass:"), c);
+		if (btn == nil) return;
+		cell_set1(self, "setCellularDataButton:", btn);
+	}
+	char get[96], set[96];
+	snprintf(get, sizeof(get), "%sButtonViewControllers", list);
+	snprintf(set, sizeof(set), "set%c%sButtonViewControllers:", list[0] - 32, list + 1);
+	id m = cell_with_inserted(cell_get(self, get), btn);
+	if (m == nil) return;
+	cell_set1(self, set, m);
+	id a = cell_with_inserted(cell_get(self, "buttonViewControllers"), btn);
+	if (a != nil) cell_set1(self, "setButtonViewControllers:", a);
+	say("redwood: cellular: Control Center: cellular data button added (%s)\n", list);
+}
+static void cell_cc_portrait(id self, SEL _cmd) { cell_cc_orig_portrait(self, _cmd); cell_cc_add(self, "portrait"); }
+static void cell_cc_landscape(id self, SEL _cmd) { cell_cc_orig_landscape(self, _cmd); cell_cc_add(self, "landscape"); }
+static void
+cell_cc_tapped(id self, SEL _cmd, id sender)
+{
+	(void)_cmd;
+	(void)sender;
+	BOOL on = cell_cc_data_on(self, NULL);
+	int fd = open("/var/tmp/redwood-cell/cmd", O_WRONLY | O_NONBLOCK);
+	if (fd >= 0) {
+		const char *c = on ? "nodata\n" : "data\n";
+		(void)write(fd, c, strlen(c));
+		close(fd);
+	}
+	say("redwood: cellular: Control Center: mobile data %s\n", on ? "off" : "on");
+	for (int k = 1; k <= 3; k++)
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)k * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			if (cell_responds(self, "_updateState"))
+				((void (*)(id, SEL))objc_msgSend)(self, sel_registerName("_updateState"));
+		});
+}
+
 static void
 cell_cc_scan(void)
 {
@@ -284,6 +349,19 @@ cell_cc_scan(void)
 		free(ms);
 	}
 	free(all);
+	{
+		Class mv = objc_getClass("CCUIConnectivityModuleViewController"), cv = objc_getClass("CCUIConnectivityCellularDataViewController");
+		Method m1 = mv ? class_getInstanceMethod(mv, sel_registerName("_setupPortraitButtons")) : NULL;
+		Method m2 = mv ? class_getInstanceMethod(mv, sel_registerName("_setupLandscapeButtons")) : NULL;
+		Method m3 = cv ? class_getInstanceMethod(cv, sel_registerName("buttonTapped:")) : NULL;
+		Method m4 = cv ? class_getInstanceMethod(cv, sel_registerName("_toggleState")) : NULL;
+		Method m5 = cv ? class_getInstanceMethod(cv, sel_registerName("_isCellularDataRestricted")) : NULL;
+		if (m1) { cell_cc_orig_portrait = (void (*)(id, SEL))method_setImplementation(m1, (IMP)cell_cc_portrait); hooked++; }
+		if (m2) { cell_cc_orig_landscape = (void (*)(id, SEL))method_setImplementation(m2, (IMP)cell_cc_landscape); hooked++; }
+		if (m3) { cell_cc_orig_tapped = (void (*)(id, SEL, id))method_setImplementation(m3, (IMP)cell_cc_tapped); hooked++; }
+		if (m4) { method_setImplementation(m4, (IMP)cell_cc_data_on); hooked++; }
+		if (m5) { method_setImplementation(m5, (IMP)cell_cc_no); hooked++; }
+	}
 	done = 1;
 	say("redwood: cellular: Control Center module seen, %u check(s) answered\n", hooked);
 }
@@ -319,6 +397,12 @@ cell_sb_tools(void)
 				unsigned mc = 0;
 				Method *ms = class_copyMethodList(all[i], &mc);
 				say("redwood: sb-dump: class %s (%u methods)\n", cn, mc);
+				{
+					unsigned cc = 0;
+					Method *cm = class_copyMethodList(object_getClass((id)all[i]), &cc);
+					for (unsigned j = 0; j < cc; j++) say("redwood: sb-dump:   +%s\n", sel_getName(method_getName(cm[j])));
+					free(cm);
+				}
 				for (unsigned j = 0; j < mc && shown < 400; j++) {
 					const char *sn = sel_getName(method_getName(ms[j]));
 					if (got < 2 || strcasestr(sn, b) != NULL) {
