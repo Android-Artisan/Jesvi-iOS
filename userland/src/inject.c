@@ -1815,6 +1815,7 @@ redwood_init(void)
 		 * moved the start of the event server onto the moment make_service() now knows how to
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
+		redwood_coremotion_fixes();     /* backboardd also consumes motion; it has no Apple SPU */
 		redwood_sensors_early();        /* CMDeviceOrientationManager taken over, if the kernel has sensors */
 		input_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {

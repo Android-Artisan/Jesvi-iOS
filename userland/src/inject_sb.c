@@ -1458,6 +1458,7 @@ control_center_fades(const char *arguments)
 
 /* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
 #include "island_sb.h"
+#include "wallpaper_motion.h"
 
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
@@ -1514,6 +1515,11 @@ redwood_springboard_init(void)
 	if (name == NULL) {
 		return;
 	}
+	/* Wallpaper/UI motion uses CoreMotion in this process too. SpringBoard
+	 * loads this library instead of libredwood.dylib, so the app fix must
+	 * run here before UIKit caches the iPhone X's SPU capabilities. */
+	extern void redwood_coremotion_fixes(void);
+	redwood_coremotion_fixes();
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
 
@@ -1537,6 +1543,7 @@ redwood_springboard_init(void)
 	 */
 	mps_unsupported_returns_nil();
 	island_start();
+	wallpaper_motion_start();
 	load_tweaks();
 	/*
 	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output

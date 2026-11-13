@@ -65,7 +65,7 @@ cp obj/m2m_mark ../prebuilt/userland/m2m_mark
 $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood.dylib.new src/inject.c src/inject_sensors.c src/inject_location.c   # (sensors; locationd/CoreMotion compass)
 $DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-	-o obj/libredwood-sb.dylib.new src/inject_sb.c
+	-o obj/libredwood-sb.dylib.new src/inject_sb.c src/inject_location.c
 for lib in libredwood libredwood-sb; do
 	[ -f ../prebuilt/userland/$lib.dylib.orig ] || [ ! -f ../prebuilt/userland/$lib.dylib ] || cp ../prebuilt/userland/$lib.dylib ../prebuilt/userland/$lib.dylib.orig
 	mv obj/$lib.dylib.new ../prebuilt/userland/$lib.dylib
