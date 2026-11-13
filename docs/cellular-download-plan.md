@@ -727,3 +727,9 @@ private extract folder -- it holds names, numbers and the IMEI: never paste it)
   a=maxptime:80, a=sendrecv.
 - The CP media for it (CPVE): 16/06 SetPdnIp (our IMS IPv6), 16/01 SetChannel (local port; remote = the SDP's
   c=/m= address and port), 16/02 SetCodec (AMR-NB, PT 100, DTMF PT 101, ptime 20), 16/03 start -- after the 200 OK.
+
+### VoLTE calls, milestone 2 (2026-11-13 22:50, user-verified): SIP answer works end to end
+redwood-ims (3f7ea76, 6c061c5) with /var/root/cell-answer: the caller's phone rings, the call connects (silent: no
+media yet), the network's session-timer UPDATE is answered, and the call ends by our BYE (sent on the registration
+connection from port-c: on the P-CSCF's own connection it was dropped) or by the caller's. Without the switch file:
+486 Busy as before. Next: the CP voice channel (CPVE 16/06, 16/01, 16/02, 16/03 after the ACK), then the ABOX route.
