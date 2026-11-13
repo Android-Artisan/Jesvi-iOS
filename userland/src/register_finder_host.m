@@ -68,6 +68,9 @@ static NSDictionary *record(NSString *path, NSString *owner) {
         if (shared) groups[name] = shared;
     }
     r[@"GroupContainers"] = groups;
+    /* (SpringBoard takes the tags from the record, not from Info.plist: without them the hidden
+     * host gets an icon on the home screen) */
+    if (info[@"SBAppTags"]) r[@"SBAppTags"] = info[@"SBAppTags"];
     if (owner) { r[@"PluginOwnerBundleID"] = owner; return r; }
     NSMutableDictionary *plugins = [NSMutableDictionary dictionary];
     NSString *dir = [path stringByAppendingPathComponent:@"PlugIns"];
