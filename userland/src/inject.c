@@ -1799,7 +1799,7 @@ redwood_init(void)
 		/* as a "telephony" call in InCallService the screen stayed on "calling..." and its End never reached RedwoodPhone
 		 * (2026-11-14 05:21); without any, the call went to the Dynamic Island. Default here: isSystemProvider only;
 		 * switchable live (phone_spoof_flags) */
-		phone_spoof_default = 1;
+		phone_spoof_default = 0;     /* (reverted: isSystemProvider alone still gave the Dynamic Island, 05:30) */
 		phone_system_hook();
 		phone_speaker_hook();
 	}
