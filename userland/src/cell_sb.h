@@ -22,6 +22,7 @@ static struct {
 	int valid, bars, max, reg;
 	char op[32], plmn[8], rat[8];
 	long ios_reg, ios_data;         /* iOS enum values given by the modem service (override the found ones) */
+	int data_up;                    /* 1: the modem's data connection carries traffic (LTE glyph); -1 not said */
 	long updated;
 } cell_state;
 static unsigned long cell_reg_registered = ~0UL, cell_data_lte = ~0UL;
@@ -42,6 +43,7 @@ cell_read(void)
 	memset(&s, 0, sizeof(s));
 	s.max = 4;
 	s.ios_reg = s.ios_data = -1;
+	s.data_up = -1;
 	if (f == NULL) {
 		return 0;
 	}
@@ -55,6 +57,7 @@ cell_read(void)
 		else if (!strcmp(key, "updated")) s.updated = atol(value);
 		else if (!strcmp(key, "ios_reg")) s.ios_reg = atol(value);
 		else if (!strcmp(key, "ios_data")) s.ios_data = atol(value);
+		else if (!strcmp(key, "data_up")) s.data_up = atoi(value);
 	}
 	fclose(f);
 	s.valid = s.updated != 0 && time(NULL) - s.updated < 120;
@@ -174,6 +177,11 @@ cell_subscription(id self, SEL sel, long slot)
 	}
 	if (data != ~0UL) {
 		cell_set_n(info, "setDataConnectionType:", data);
+	}
+	/* the status bar draws the data glyph (LTE) only for the SIM providing the data connection */
+	if (cell_state.data_up >= 0) {
+		cell_set_n(info, "setPreferredForDataConnections:", 1);
+		cell_set_n(info, "setProvidingDataConnection:", cell_state.data_up ? 1 : 0);
 	}
 	cell_set_n(info, "setSignalStrengthBars:", (unsigned long)cell_state.bars);
 	cell_set_n(info, "setMaxSignalStrengthBars:", (unsigned long)cell_state.max);
