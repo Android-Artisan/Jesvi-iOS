@@ -11,6 +11,53 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Files, Finder and fresh installs (2026-11-13, B) — `8cd6c3b`, `dd577f2`, `dc1cea2`, `c7e2856`
+- **Why it broke:** after a restart LaunchServices no longer knew `org.hakios.LocalFilesHost`, the hidden app that carries
+  Save to Files, the document picker and On My iPhone ("the requested app extension could not be found", no Finder sharing).
+- **Boot job** `/redwood/bin/register_finder_host` (`com.redwood.finder-host`): registers the host natively
+  (`registerApplicationDictionary:`, app + data container + 3 extensions, hidden), no uicache. On the phone's image; ran by
+  itself at 06:35 and 06:45 ("Jesvi Files user registration: complete").
+- **Finder shows the phone's storage:** the host's Documents is a link to On My iPhone (File Provider Storage); the Mac lists
+  Downloads etc. through House Arrest. Checked from the Mac (S20 only: the user's real iPhone is on the same Mac).
+- **Fresh install:** `userland/system.apfs` rebuilt (2630995968 bytes, `userland/system-only.sh`) with
+  `/Applications/HakiosLocalFiles.app`; written to `super` and booted. Old image: `system.apfs.bak-nov7`.
+- **Kernel `c7e2856` (on the phone since 06:50, kernel 06:45:20; booted, 90 s stable, hand-back to Log access worked at 06:49 on the old kernel by luck, camera flips still to be tried by the user):** camera ring freed under a reader (panic in camdev_read); printf with
+  interrupts off in `redwood_usbmux_link` (panic on every hand-back to the loader: `/menu?to=1` bounced into iOS); link
+  restart once when lockdownd first answers (Finder lost the phone after every restart).
+- **Camera off at boot (`b494677`):** `device_request_streams` started frames at every reservation; mediaserverd reserves
+  both streams at start just to list the cameras, so every boot powered the rear sensor and streamed the front one.
+  Now only a stream with a PixelBufferHandler begins. On the phone's image since 07:00: "only listed ... its sensor
+  stays off" at boot; Camera.app 365 pictures of 366 frames on the dev copy.
+- Phone at 07:03: kernel 06:45:20, root with the helper + this media library, system image with the host; Mac: 0 refused
+  connects after the restart, 1 file-sharing app. Rollback images: `proposals/finder-host/deploy/`.
+- Not done: grey backup/media tabs in Finder; `tools/run-visible.sh` did not start its command in this session (check before
+  trusting build/NAME.log).
+
+## 2026-11-12 — OpenGL ES games run (Angry Birds Space, Leo's Fortune); screen sleeps on its own (user-verified)
+- **OpenGL ES games draw.** iOS's OpenGL ES runs on Metal and gives Metal its shaders in Apple's private GLIR form,
+  which only Apple's GPU compiler reads: games showed black or died at once. `libredwood-eagl`
+  (`userland/src/eagl_app.m`) replaces EAGLContext in the games named in build.sh `EAGL_APPS` (default
+  `AngryBirdsSpace Leos_fortune`): a Mesa OpenGL ES 3 context on the Mali (panfrost), iOS's gl* functions reach
+  Mesa through the table in TSD slot 30, and each presented frame is copied on the GPU (turned upright) into
+  IOSurfaces the layer shows. Angry Birds Space: 97% -> 14% CPU with the GPU copy. Commit 09b9956.
+  Doc: docs/x1slte-games-gl.md.
+- **Screen sleep by default**: our idle timer (`inject.c`) is now on unless `idle_lock=0`: lock screen dark after
+  10 s untouched (`idle_lock_s=`), unlocked after Settings' Auto-Lock time ("Never" = stays on), not while sound plays.
+- How tested: both games launched from the home screen, played (user: "works flawlessly"); frames grabbed from the
+  game (`eagl-shot`), CPU from `ps`. Leo's Fortune looks stretched: the game itself draws at 1280x960 (4:3) and
+  scales up (an old IPA); not ours.
+
+## 2026-11-12 — rear camera: video recording saves, frame rate (session A, verified on the phone)
+- **Rear recordings in H.264.** Camera.app asks the back camera for HEVC; the only HEVC encoder here is Apple's
+  software one (registered for photographs), too slow for video: rear movies were never finished or ~8 fps.
+  `inject_media.c` answers `-[FigCaptureMovieFileRecordingSettings videoSettings]` hvc1 as avc1 (OpenH264, as the
+  front). Verified: complete files, video and audio in sync, 20.7 fps (IMG_0169, IMG_0170). Commit 7c3b2ee.
+- **Rear stats every other frame**, rear render below the encoder's priority (`camera_device.c`): the phone
+  throttles at 91-96 C; rear preview ~20 fps hot, ~28 fps cool.
+- Also in 7c3b2ee: front/rear switch waits for the asked sensor; sensor asked for before the first frame; lens
+  shading per sensor; rear 12 MP black measured per frame. 12 MP rear (cam_s20_rear_full=1) stays off: row-1912 band.
+- How tested: Camera.app Video on the rear; files checked for moov, codec, durations, frame count.
+
 ## 2026-11-12 — Dynamic Island pill moved up over the camera hole (user-verified on the phone)
 - Pill width 81 pt ("iPhone 18 Pro" look, user-chosen). Known issue: charging banner cuts the "100" of "100%".
 - In libredwood-sb (`userland/src/island_sb.h`, with `island=1`): pill top gap 5 pt instead of Apple's 11.33,
@@ -137,6 +184,10 @@ this file is the changelog; "Open" lists what a release must mention as known is
   remaining modem firmware, SIM/network/packet service and VoLTE are pending.
 - Camera: front only, photos only. Video recording, microphone in video, full resolution, colour tuning, rear
   cameras, zoom switching and flash are open (`tools/camera/CHECKLIST.md`, section ROADMAP).
+- Camera: rear 12 MP mode off (row-1912 band; binned 2016x1512 used), ultra-wide/tele not brought up
+  (`tools/camera/CHECKLIST.md`, OPEN ITEMS).
+- OpenGL ES games work only when named in build.sh `EAGL_APPS` (executable name); others still use iOS's
+  GL-on-Metal and show black. ES 1 (fixed function) games are not covered. PVRTC textures are not decoded yet.
 - Proximity is registered/enabled but near/far operation is not verified; raw diagnostics are available through `shub.prox`.
 - True Tone is a fixed mild warmth approximation, not an ambient colour measurement. User can disable it normally.
 - CoreMotion raw gyro samples work; the combined device-motion/attitude stream still returns no samples.

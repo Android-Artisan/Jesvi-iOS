@@ -3890,6 +3890,27 @@ publishDisplayNode(void)
 
 static bool gAcceleratorTakesProperties;        /* boot-arg metal=1 */
 
+/*
+ * OpenGL ES for apps (with metal=1; gles=0 turns it off). An app's EAGLContext goes through
+ * OpenGLES.framework/libGFXShared.dylib: gfxInitializeLibrary() (0x1d31762f0) reads, off each
+ * IOAcceleratorES, "IOGLESBundleName", then "IOGLESMetalBundleName" (taken when the preference
+ * com.apple.opengl UseMetal, or else the boolean "IOGLESDefaultUseMetal", says so), dlopens
+ * /System/Library/Extensions/<name>.bundle/<name> and calls its gldInitializeLibrary. With none
+ * of them here no GL driver loads, -[EAGLContext initWithAPI:] gives nil, and games built on
+ * OpenGL ES die at their first gl call (Leo's Fortune: strstr(glGetString(GL_EXTENSIONS)) on
+ * NULL). Apple's own GL ES on top of Metal, AppleMetalGLRenderer (in the shared cache, exports
+ * gldInitializeLibrary/gldCreateDevice), is what an iPhone of this generation names here; it
+ * draws through MTLCreateSystemDefaultDevice(), i.e. our RedwoodMetal.
+ * Published together with MetalPluginName (and removed with it), so GL ES is never offered
+ * before Metal is.
+ */
+#define kGLESBundleNameKey             "IOGLESBundleName"
+#define kGLESMetalBundleNameKey        "IOGLESMetalBundleName"
+#define kGLESDefaultUseMetalKey        "IOGLESDefaultUseMetal"
+#define kGLESRenderer                  "AppleMetalGLRenderer"
+
+static bool gAcceleratorOffersGLES;             /* metal=1, unless gles=0 */
+
 class IOAcceleratorES : public IOService
 {
 	OSDeclareDefaultStructors(IOAcceleratorES);
@@ -3980,9 +4001,22 @@ IOAcceleratorES::setProperties(OSObject * properties)
 		if (value->getLength() == 0) {
 			removeProperty(key);
 			IOLog("IOAcceleratorES: %s removed by %s\n", key->getCStringNoCopy(), who);
+			if (gAcceleratorOffersGLES && key->isEqualTo(kAcceleratorPluginNameKey)) {
+				removeProperty(kGLESBundleNameKey);
+				removeProperty(kGLESMetalBundleNameKey);
+				removeProperty(kGLESDefaultUseMetalKey);
+				IOLog("IOAcceleratorES: gles: OpenGL ES withdrawn with Metal\n");
+			}
 		} else if (setProperty(key, value)) {
 			IOLog("IOAcceleratorES: %s = %s, set by %s\n", key->getCStringNoCopy(),
 			    value->getCStringNoCopy(), who);
+			if (gAcceleratorOffersGLES && key->isEqualTo(kAcceleratorPluginNameKey)) {
+				setProperty(kGLESBundleNameKey, kGLESRenderer);
+				setProperty(kGLESMetalBundleNameKey, kGLESRenderer);
+				setProperty(kGLESDefaultUseMetalKey, kOSBooleanTrue);
+				IOLog("IOAcceleratorES: gles: " kGLESBundleNameKey " = " kGLESRenderer
+				    " (OpenGL ES for apps, on Metal)\n");
+			}
 		} else {
 			IOLog("IOAcceleratorES: %s could not be set\n", key->getCStringNoCopy());
 			keys->release();
@@ -4184,6 +4218,13 @@ publishAccelerator(IOService * provider)
 	uint32_t metal = 0;
 
 	gAcceleratorTakesProperties = PE_parse_boot_argn("metal", &metal, sizeof(metal)) && metal != 0;
+	{
+		/* on with Metal unless gles=0: the phone's boot line is at its 550-character limit */
+		uint32_t gles = 1;
+
+		PE_parse_boot_argn("gles", &gles, sizeof(gles));
+		gAcceleratorOffersGLES = gAcceleratorTakesProperties && gles != 0;
+	}
 	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
 		accelerator->setName("sgx");
 		accelerator->registerService();

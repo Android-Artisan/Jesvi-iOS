@@ -20,6 +20,7 @@
 #include <sys/systm.h>
 #include "redwood_camera_s20_3j1.h"
 #include "redwood_camera_s20_2ld.h"
+#include "redwood_camera_s20_2ld_ret.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
@@ -131,6 +132,8 @@ cam_s20_smc4(uint64_t function, uint64_t a1, uint64_t a2, uint64_t a3)
  */
 static bool cam_3j1_write16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t value);
 static bool cam_3j1_read8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t *value);
+static bool cam_3j1_write8(struct redwood_bbi2c *bus, uint16_t reg, uint8_t value);
+static bool cam_3j1_read16(struct redwood_bbi2c *bus, uint16_t reg, uint16_t *value);
 static bool cam_3j1_apply(struct redwood_bbi2c *bus, const uint32_t *table, uint32_t count);
 static uint64_t cam_s20_smc4(uint64_t fn, uint64_t a, uint64_t b, uint64_t c);
 
@@ -175,6 +178,137 @@ cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
 	delay_for_interval(200, NSEC_PER_USEC);
 }
 
+/* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
+static bool cam_s20_rear;
+void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
+/*
+ * The rear main in its full 4032x3024 mode (Samsung's setA A0: what the stock camera shows and shoots, 2964 Msps
+ * like the binned mode, 12160 lines of 4240 clocks at 30 fps), not the 2x2-binned 2016x1512 (A10, a speed mode).
+ * Binned, the picture was 1008x756 colour cells blown up to the 1504x1128 preview: soft, and every frame went
+ * through libredwood-media's slow "magnified" path (11-21 fps, 2026-11-12). cam_s20_rear_full=0: the binned mode.
+ */
+bool
+redwood_camera_s20_rear_full(void)
+{
+	static int full = -1;
+
+	if (full < 0) {
+		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
+		 * odd rows in 3 of 4 (laid out for Samsung's ISP: dual-pixel/PDAF), a green-red-blue checkerboard here */
+		uint32_t v = 0;   /* OFF (2026-11-12, user: binned was better): 12 MP has a sensor black band at row 1912 and a 32-row structure; 1 = 12 MP */
+
+		(void)PE_parse_boot_argn("cam_s20_rear_full", &v, sizeof(v));
+		full = v != 0;
+	}
+	return full != 0;
+}
+
+
+/*
+ * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
+ * device tree (fragment@18) puts on gpp8-0 (SCL) and gpp8-1 (SDA); its supply is VDDAF_2.8V_VT (S2MPB02 LDO16), on
+ * with the sensor's. Samsung's is-actuator-ak737x.c: CONT1 (0x02) 0x40 standby, 0x00 active, 0x20 sleep; the
+ * position is 9 bits, 0x00 = bits 8..1 and 0x01 bit 7 = bit 0; first position 250 (vendor_first_pos), 2 ms to
+ * settle; soft landing 100, 30 ms, 0, 30 ms, then sleep. Driven only from the stream thread.
+ */
+static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
+static bool cam_s20_af_ready;
+static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
+static volatile uint32_t cam_s20_af_want;
+static volatile bool cam_s20_af_pending;
+
+static bool
+cam_s20_af_w(uint8_t reg, uint8_t value)
+{
+	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
+}
+
+static bool
+cam_s20_af_set(uint32_t p)
+{
+	p = p > 511 ? 511 : p;
+	return cam_s20_af_w(0x00, (uint8_t)(p >> 1)) && cam_s20_af_w(0x01, (uint8_t)((p & 1U) << 7));
+}
+
+static bool
+cam_s20_af_up(void)
+{
+	char report[160];
+	uint8_t id = 0;
+
+	/*
+	 * The rear main's lens motor is an AK737x too, at 0x0c on HSI2C0 (x1slte fragment@17 is-actuator@0C, id 0):
+	 * gpp0-0 SCL, gpp0-1 SDA (pinctrl hsi2c0-bus) -- 2026-11-12.
+	 */
+	if (cam_s20_rear) {
+		cam_s20_af_bus.name = "AK737x HSI2C0 gpp0-0/1 (rear)";
+		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC0_PHYS, 0x00);  /* gpp0 */
+	} else {
+		cam_s20_af_bus.name = "AK737x HSI2C24 gpp8-0/1";
+		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
+	}
+	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
+		printf("camera: %s focus: its bus cannot be used (%s)\n", cam_s20_rear ? "rear" : "front", report);
+		return false;
+	}
+	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
+	cam_s20_wait_ms(1);
+	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
+	if (!cam_s20_af_set(250)) goto fail;
+	cam_s20_wait_ms(2);
+	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
+	cam_s20_af_ready = true;
+	cam_s20_af_pos = 250;
+	printf("camera: %s focus: AK737x (id %#x) up, the lens at 250 of 511\n", cam_s20_rear ? "rear" : "front", id);
+	return true;
+fail:
+	printf("camera: %s focus: the AK737x does not answer at 0x0c; no focus in this session\n", cam_s20_rear ? "rear" : "front");
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	return false;
+}
+
+static void
+cam_s20_af_down(void)
+{
+	if (!cam_s20_af_ready) return;
+	(void)cam_s20_af_set(100);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_set(0);
+	cam_s20_wait_ms(30);
+	(void)cam_s20_af_w(0x02, 0x20);
+	redwood_bbi2c_restore(&cam_s20_af_bus);
+	cam_s20_af_ready = false;
+	cam_s20_af_pos = 0xffffffffU;
+}
+
+/* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
+ * the sensor's black level per site (2026-11-12) */
+static uint32_t cam_s20_rear_test_lines = 16384;
+static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
+
+/*
+ * The rear main kept warm between sessions (2026-11-12): its rails, clock and reset stay as they are and the sensor
+ * waits in software standby, so the next start sends only the mode table -- the 7354-record global table over
+ * bit-banged I2C was most of the ~3.1 s every start and flip took. redwood_camera_s20_rear_cool() (the camera
+ * thread, 20 s after the last session) takes it down as a session's end used to. cam_s20_rear_warm=0: never warm.
+ */
+static bool cam_s20_rear_warm;
+static struct {
+	uint8_t p02[3], p03[3];
+	uint32_t reset_con, reset_dat, reset_pud, mclk_con, mclk_dat, mclk_pud, clock[4];
+} cam_s20_rear_cold;
+bool redwood_camera_s20_rear_is_warm(void) { return cam_s20_rear_warm; }
+
+/* (the stream's state, here so the rear's loop in cam_s20_identify sees it; see redwood_camera_s20_stream) */
+typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
+static redwood_s20_frame_fn cam_s20_stream_fn;
+static const volatile uint8_t *cam_s20_stream_buf[2];
+static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
+static volatile bool cam_s20_exp_pending;
+static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
+static bool cam_s20_stream_cached;
+static volatile uint8_t *cam_s20_optical_dma;
+
 static void
 cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 {
@@ -184,6 +318,9 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	/* v[0] 2: also the receiver -- csi0 C-PHY and CSIS0 set up (Samsung's sequence), CSIS0's frame counter and
 	 * status read while the sensor streams; every PHY/CSIS/CMU/PMU register written is put back */
 	bool rx_test = n > 0 && v[0] == 2, rx_saved = false;
+	/* the iOS stream (cam_s20_stream_fn) in the full mode; the bounded tests keep the binned one they were measured in */
+	const bool rear_full_now = cam_s20_stream_fn != NULL && redwood_camera_s20_rear_full();
+	const uint32_t cam_s20_rear_w = rear_full_now ? 4032U : 2016U, cam_s20_rear_h = rear_full_now ? 3024U : 1512U;
 	char rx_report[240] = "";
 	volatile uint8_t *rx_csi = NULL, *rx_phy = NULL, *rx_bias = NULL, *rx_cmu = NULL, *rx_pmu = NULL, *rx_sys = NULL;
 	uint32_t rx_csi_saved[12] = { 0 }, rx_phy_saved[3][16] = { { 0 } }, rx_bias_saved[4] = { 0 }, rx_qch = 0, rx_iso = 0, rx_rst = 0;
@@ -194,7 +331,10 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	static const uint32_t rx_phy_offs[16] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x30, 0x34, 0x40, 0x64, 0x68, 0x00 };
 	uint8_t fc[4] = { 0 };
 	char stream_phase[48] = "";
-	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 4 };
+	/* half_us 1 (2026-11-12; was 2, and 4 before): the 7354-record global table is ~180 000 bits, and the rear
+	 * still took ~3 s from a flip to its first frame at 2. The S5K2LD takes fast-mode I2C (400 kHz); the pin
+	 * writes themselves keep a half period well above the 0.6 us fast mode wants. cam_s20_rear_i2c=N sets it. */
+	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
 	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
@@ -206,11 +346,17 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char phase[40] = "S2MPB03 bus";
 	char acked[96] = "";
 	bool pmic03_ready = false, sensor_ready = false, clock_ready = false, rails02 = false, rails03 = false;
-	bool ok = false, sensor_ack = false;
+	bool ok = false, sensor_ack = false, warm_start = false, cold_again = false;
 	uint32_t clock_offsets[4] = { CMU_CIS_CLK0_MUX, CMU_CIS_CLK0_DIV, CMU_CIS_CLK0_GATE, CMU_CIS_CLK0_QCH };
 	unsigned i;
 
 	if (cap == 0) return;
+	{
+		uint32_t half = 0;
+
+		if (PE_parse_boot_argn("cam_s20_rear_i2c", &half, sizeof(half)) && half > 0 && half <= 8) sensor_bus.half_us = half;
+		if (cam_s20_rear_slow && sensor_bus.half_us < 2) sensor_bus.half_us = 2;
+	}
 	if (cmu == NULL) {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"error\",\"phase\":\"CMU map\"}\n");
 		return;
@@ -229,6 +375,17 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		goto cleanup;
 	}
 	rails02 = true;
+	if (cam_s20_rear_warm) {
+		/* what was there before the rear was first powered: what the real power-down goes back to */
+		memcpy(p02, cam_s20_rear_cold.p02, sizeof(p02));
+		memcpy(p03, cam_s20_rear_cold.p03, sizeof(p03));
+		reset_con = cam_s20_rear_cold.reset_con; reset_dat = cam_s20_rear_cold.reset_dat; reset_pud = cam_s20_rear_cold.reset_pud;
+		mclk_con = cam_s20_rear_cold.mclk_con; mclk_dat = cam_s20_rear_cold.mclk_dat; mclk_pud = cam_s20_rear_cold.mclk_pud;
+		for (i = 0; i < 4; i++) clock[i] = cam_s20_rear_cold.clock[i];
+		warm_start = true;
+		goto warm_bus;
+	}
+cold_start:
 	/* x1slte's per-module power sequence: shared 1.3 V first, reset low, then VDDIO/analog/PHY/core. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	redwood_gpio_func(reset, 0, REDWOOD_GPIO_OUTPUT);
@@ -243,13 +400,20 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    !cam_s20_pmic03_bits(CAM_S2MPB03_LDO2, p03[0], 0x80) ||
 	    !redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO14, 0x80, 0x80)) goto cleanup;
 	cam_s20_wait_ms(2);
+warm_bus:
 	(void)snprintf(phase, sizeof(phase), "sensor I2C pins");
 	sensor_ready = true;
 	sensor_bus.bank = redwood_gpio_bank(PINCTRL_PERIC0_PHYS, 0);
 	/* This bus's saved pin state carries a pull-down, unlike the DT's I2C pin state (no internal pull). */
 	if (!redwood_bbi2c_setup(&sensor_bus, true, out, cap)) goto cleanup;
+	if (warm_start) {
+		/* (clock running, reset high, the sensor in standby: straight to its ID) */
+		clock_ready = true;
+		sensor_ack = true;
+		goto read_id;
+	}
 	/* CIS_CLK0: OSCCLK (26 MHz), divider 1; save and restore the mux, divider, QCH and gate. */
-	for (i = 0; i < 4; i++) clock[i] = cam_s20_rd(cmu, clock_offsets[i]);
+	if (!cold_again) for (i = 0; i < 4; i++) clock[i] = cam_s20_rd(cmu, clock_offsets[i]);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_MUX, clock[0] & ~1U);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_DIV, clock[1] & ~0x1fU);
 	cam_s20_wr(cmu, CMU_CIS_CLK0_QCH, clock[3] | 3U);
@@ -275,6 +439,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		}
 	}
 	if (!sensor_ack) goto cleanup;
+read_id:
 	(void)snprintf(phase, sizeof(phase), "S5K2LD model ID read");
 	{
 		uint8_t a[2] = { 0x00, 0x00 }, b[2] = { 0x00, 0x02 };
@@ -284,14 +449,101 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			ok = redwood_bbi2c_xfer(&sensor_bus, 0x10, b, sizeof(b), rev, sizeof(rev));
 		}
 	}
+	if (warm_start && !(ok && id[0] == 0x20 && id[1] == 0xcd)) {
+		/* the warm sensor does not answer as itself: a real power cycle, from the top */
+		printf("camera: rear: the warm sensor did not answer (id %02x%02x): cold start\n", id[0], id[1]);
+		cam_s20_rear_warm = false;
+		warm_start = false;
+		cold_again = true;
+		ok = false;
+		redwood_bbi2c_restore(&sensor_bus);
+		sensor_ready = false;
+		goto cold_start;
+	}
 	if (ok && stream_test) {
 		/* (Samsung picks Global_A3 for revision 0xA301: is-cis-2ld.c) */
 		uint64_t t0 = mach_absolute_time(), ns;
 
 		(void)snprintf(stream_phase, sizeof(stream_phase), "global A3");
-		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
-		(void)snprintf(stream_phase, sizeof(stream_phase), "mode 2016x1512");
-		if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		if (warm_start) {
+			/* (the global table is in the sensor since its cold start) */
+		} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) {
+			/* the faster bus did not take it: the old speed, again from the top, and for the rest of this boot */
+			if (sensor_bus.half_us >= 2) goto stream_done;
+			cam_s20_rear_slow = true;
+			sensor_bus.half_us = 2;
+			printf("camera: rear: the global table failed at the fast bus speed; again at half_us 2 (kept)\n");
+			if (!cam_3j1_apply(&sensor_bus, redwood_2ld_global_a3, REDWOOD_2LD_GLOBAL_A3_WORDS)) goto stream_done;
+		}
+		(void)snprintf(stream_phase, sizeof(stream_phase), "mode %ux%u", cam_s20_rear_w, cam_s20_rear_h);
+		if (rear_full_now) {
+			/*
+			 * The full 4032x3024 (setA A0). Its table turns the sensor's own HDR on (0x021E = 0x0100; the binned table
+			 * leaves 0): long and short exposures interleaved pixel by pixel for Samsung's ISP to merge -- through
+			 * ours one green was black, the other doubled, red and blue in alternating blocks (2026-11-12). Off
+			 * after the table: one exposure, a plain Bayer picture. (Samsung's retention sequence, tried the same
+			 * day with the same result, is kept: cam_s20_rear_ret=1.)
+			 */
+			uint32_t ret = 0;
+
+			(void)PE_parse_boot_argn("cam_s20_rear_ret", &ret, sizeof(ret));
+			if (ret) {
+				if (!cam_3j1_apply(&sensor_bus, redwood_2ld_full_retention, REDWOOD_2LD_FULL_RETENTION_WORDS) ||
+				    !cam_3j1_write16(&sensor_bus, 0x6028, 0x3000) || !cam_3j1_write16(&sensor_bus, 0x602A, 0x0484) ||
+				    !cam_3j1_write16(&sensor_bus, 0x6F12, 0x0100) || !cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
+				    !cam_3j1_write16(&sensor_bus, 0x010E, 0x0100) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0000) ||
+				    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100) || !cam_3j1_write8(&sensor_bus, 0x0100, 0x00)) goto stream_done;
+				cam_s20_wait_ms(10);
+				if (!cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps_load_sram,
+				    REDWOOD_2LD_4032X3024_30FPS_LOAD_SRAM_WORDS)) goto stream_done;
+			} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_4032x3024_30fps, REDWOOD_2LD_4032X3024_30FPS_WORDS)) {
+				goto stream_done;
+			}
+			if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x021E, 0x0000)) goto stream_done;
+		} else if (!cam_3j1_apply(&sensor_bus, redwood_2ld_2016x1512_30fps, REDWOOD_2LD_2016X1512_30FPS_WORDS)) goto stream_done;
+		/*
+		 * What Samsung's sensor_2ld_cis_mode_change() writes after every mode table and we did not (2026-11-12): auto
+		 * exposure bracketing off (0x0E0B = 0: left on, the sensor may alternate long and short exposures) and the low-
+		 * noise mode explicitly off (0x0B30 = 0x0100, "LN OFF"; the mode table leaves 0x0000). The rear's black level
+		 * wandered with gain AND exposure and its dark colours shifted as the exposure changed; these are the sensor's
+		 * own settings for a plain single-exposure stream. cam_s20_rear_plain=0 leaves them out.
+		 */
+		{
+			uint32_t plain = 0;   /* OFF: on 2026-11-12 it gave a frame of noise (with half_us 1) */
+
+			(void)PE_parse_boot_argn("cam_s20_rear_plain", &plain, sizeof(plain));
+			if (plain && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write8(&sensor_bus, 0x0E0B, 0x00) ||
+			    !cam_3j1_write16(&sensor_bus, 0x0B30, 0x0100))) goto stream_done;
+		}
+		{
+			/*
+			 * The sensor's own black-level correction ON (SMIA++ 0x0B04). Samsung's tables write 0x0B04 = 0x0001 as one
+			 * 16-bit word, so 0x0B04 (black level correction) gets 0 and 0x0B05 (mapped defects) 1: their ISP clamps
+			 * the black from the optical-black lines itself. Ours does not, and the black wandered from 22 to 65 with
+			 * gain and exposure -- the green/purple shadows (2026-11-12). cam_s20_rear_blc=0 leaves it as the table has it.
+			 */
+			uint32_t blc = 0;   /* OFF (2026-11-12): on, it clamps at 0 and the 12 MP mode's lower band (rows >= ~1914, a lower
+			                     * black) is cut off below zero -- shadow detail lost; the band is corrected in libredwood-media */
+
+			(void)PE_parse_boot_argn("cam_s20_rear_blc", &blc, sizeof(blc));
+			if (blc && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write8(&sensor_bus, 0x0B04, 0x01))) goto stream_done;
+		}
+		{
+			/* what the sensor holds now: its mode's key registers read back (2026-11-12: "everything at register level") */
+			static const uint16_t regs[] = { 0x0340, 0x0342, 0x034C, 0x034E, 0x0900, 0x021E, 0x0B30, 0x0B80, 0x0E0B, 0x0310, 0x0B04 };
+			char line[200] = "";
+			size_t at = 0;
+
+			(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
+			for (unsigned r = 0; r < sizeof(regs) / sizeof(regs[0]); r++) {
+				uint8_t a[2] = { (uint8_t)(regs[r] >> 8), (uint8_t)regs[r] }, v[2] = { 0, 0 };
+				bool okr = redwood_bbi2c_xfer(&sensor_bus, 0x10, a, 2, v, regs[r] == 0x0E0B || regs[r] == 0x0B04 ? 1 : 2);
+
+				at += (size_t)snprintf(line + at, sizeof(line) - at, " %04X=%s%02X%02X", regs[r], okr ? "" : "?",
+				    v[0], regs[r] == 0x0E0B || regs[r] == 0x0B04 ? 0 : v[1]);
+			}
+			printf("camera: rear %ux%u registers:%s\n", cam_s20_rear_w, cam_s20_rear_h, line);
+		}
 		if (rx_test) {
 			unsigned k, t;
 
@@ -346,7 +598,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 			cam_s20_wr(rx_csi, 0x0008, rx_csi_saved[1] | (1U << 4));
 			cam_s20_wr(rx_csi, 0x0704, (rx_csi_saved[11] & ~0x1fU) | (0x0fU << 1));    /* trios on */
 			cam_s20_wr(rx_csi, 0x0040, (0x2bU << 2) | (2U << 12));                       /* VC0 RAW10 */
-			cam_s20_wr(rx_csi, 0x0044, (1512U << 16) | 2016U);
+			cam_s20_wr(rx_csi, 0x0044, (cam_s20_rear_h << 16) | cam_s20_rear_w);
 			/* LRTE_CONFIG EPD_EN: the DT's lrte 1 for every S5K2LD mode (Samsung: csi_hw_s_control(CSIS_CTRL_LRTE)) --
 			 * off, CSIS0 passed frame starts and no lines (2026-11-12) */
 			cam_s20_wr(rx_csi, 0x0600, rx_csi_saved[9] | (1U << 31));
@@ -362,10 +614,105 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		}
 		(void)snprintf(stream_phase, sizeof(stream_phase), "stream on");
 		/* a fixed indoor exposure for the test: 16384 of the mode's 22564 lines (~24 ms), analog gain 4x (0x20 = 1x) */
-		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0202, 0x4000) ||
-		    !cam_3j1_write16(&sensor_bus, 0x0204, 0x0080))) goto stream_done;
+		if (rx_test && (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) ||
+		    /* (lines + 100000 * g: gain code g -- 1 1x, 4 4x, 8 8x, 16 16x -- with that exposure, for dark frames) */
+		    !cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)((cam_s20_rear_test_lines % 100000) + 64 > 22564 ?
+		    (cam_s20_rear_test_lines % 100000) + 64 : 22564)) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)(cam_s20_rear_test_lines % 100000)) ||
+		    !cam_3j1_write16(&sensor_bus, 0x0204, cam_s20_rear_test_lines >= 100000 ? (uint16_t)(0x20 * (cam_s20_rear_test_lines / 100000)) :
+		    cam_s20_rear_test_lines == 3 ? 0x0080 : cam_s20_rear_test_lines == 4 ? 0x0100 :
+		    cam_s20_rear_test_lines == 5 ? 0x0200 : cam_s20_rear_test_lines < 16 ? 0x0020 : 0x0080))) goto stream_done;
 		if (!cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000) || !cam_3j1_write16(&sensor_bus, 0x0BCC, 0x0100) ||
 		    !cam_3j1_write16(&sensor_bus, 0x0100, 0x0100)) goto stream_done;
+		if (rx_saved && cam_s20_stream_fn != NULL && cam_s20_optical_dma != NULL) {
+			/*
+			 * The rear main streaming to /dev/redwood-camera: the front's loop (cam_s20_front_stream_probe) on WDMA2.
+			 * Frame end -> the finished slot (even buffer 0, odd buffer 1) -> cam_s20_stream_fn; exposure asked for
+			 * is written in an SMIA group hold between frames.
+			 */
+			volatile uint8_t *s_cmn = cam_s20_optical_dma + 0x3400, *s_vc = cam_s20_optical_dma + 0x3000;
+			uint32_t idle = 0;
+
+			(void)cam_s20_af_up();
+
+			for (;;) {
+				uint32_t st = cam_s20_rd(s_cmn, 8);
+
+				if ((st & (1U << 4)) && !(st & (1U << 8))) {
+					cam_s20_wr(s_cmn, 8, 1U << 4);
+					st &= ~(1U << 4);
+				}
+				if (st & (1U << 8)) {
+					uint32_t p0 = (cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU, st2 = cam_s20_rd(s_cmn, 8), ptr;
+					bool more;
+
+					if (st & (1U << 4)) ptr = (p0 + 31U) & 0x1fU;
+					else if (!(st2 & (1U << 4))) ptr = p0;
+					else ptr = (((cam_s20_rd(s_vc, 0x90) >> 2) & 0x1fU) + 31U) & 0x1fU;
+					cam_s20_wr(s_cmn, 8, (st | st2) & 0x01111110U);
+					if (st & 0x01101000U) cam_s20_stream_errors++;
+					if (cam_s20_stream_cached) {
+						vm_offset_t line = (vm_offset_t)cam_s20_stream_buf[ptr & 1] & ~(vm_offset_t)63;
+						vm_offset_t end = (vm_offset_t)cam_s20_stream_buf[ptr & 1] + cam_s20_stream_bytes;
+
+						for (; line < end; line += 64) __asm__ volatile ("dc ivac, %0" : : "r" (line));
+						__asm__ volatile ("dsb sy" ::: "memory");
+					}
+					more = cam_s20_stream_fn(cam_s20_stream_buf[ptr & 1], cam_s20_rear_w, cam_s20_rear_h,
+					    ((cam_s20_rear_w * 10 / 8) + 15) & ~15U);
+					cam_s20_stream_frames++;
+					if (cam_s20_stream_frames % 30 == 1) {
+						/* what the sensor really has: coarse integration, analog gain, frame length */
+						uint16_t cit = 0, ag = 0, fll = 0;
+
+						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
+						(void)cam_3j1_read16(&sensor_bus, 0x0202, &cit);
+						(void)cam_3j1_read16(&sensor_bus, 0x0204, &ag);
+						(void)cam_3j1_read16(&sensor_bus, 0x0340, &fll);
+						printf("camera: rear frame %u: sensor has exposure %u lines, gain %#x, frame %u lines (asked %u, %#x, %u)\n",
+						    cam_s20_stream_frames, cit, ag, fll, cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame);
+					}
+					idle = 0;
+					if (cam_s20_exp_pending) {
+						uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
+
+						cam_s20_exp_pending = false;
+						/* (the SMIA registers are on page 0x4000: the tables leave others selected) */
+						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
+						(void)cam_3j1_write8(&sensor_bus, 0x0104, 1);
+						if (ef) (void)cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)ef);
+						(void)cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)el);
+						(void)cam_3j1_write16(&sensor_bus, 0x0204, (uint16_t)eg);
+						(void)cam_3j1_write8(&sensor_bus, 0x0104, 0);
+					}
+					if (cam_s20_af_pending && cam_s20_af_ready) {
+						uint32_t want = cam_s20_af_want;
+
+						cam_s20_af_pending = false;
+						if (want != cam_s20_af_pos && cam_s20_af_set(want)) cam_s20_af_pos = want;
+					}
+					if (!more) break;
+				} else {
+					if (++idle > 2000) break;
+					cam_s20_wait_ms(1);
+				}
+			}
+			cam_s20_af_down();
+			/*
+			 * Memory output off while the sensor still sends: the frame being written ends (up to 80 ms), then the
+			 * abort is asked and waited for (its acknowledgement, status bit 16). Asked with the sensor already going
+			 * down, the write never ended: "previous DMA did not stop; reboot required", no camera until a reboot
+			 * (2026-11-12, the user's failed switch).
+			 */
+			{
+				unsigned k;
+
+				cam_s20_wr(s_vc, 0, 0);
+				for (k = 0; k < 80 && (cam_s20_rd(s_vc, 0x90) & 1U); k++) cam_s20_wait_ms(1);
+				cam_s20_wr(s_cmn, 0x14, cam_s20_rd(s_cmn, 0x14) | 1U);
+				for (k = 0; k < 100 && !(cam_s20_rd(s_cmn, 8) & (1U << 16)); k++) cam_s20_wait_ms(1);
+			}
+		} else
 		for (i = 0; i < 4; i++) {
 			unsigned w;
 
@@ -417,6 +764,28 @@ stream_done:
 		    rx_fc_before, rx_fc_after, rx_irq, rx_irq_or, rx_phy_or, rx_phy_and, rx_cmn);
 	}
 cleanup:
+	{
+		uint32_t want = 1;
+
+		(void)PE_parse_boot_argn("cam_s20_rear_warm", &want, sizeof(want));
+		if (want && ok && cam_s20_stream_fn != NULL && cam_s20_stream_frames != 0 && clock_ready && rails02 && rails03) {
+			/* kept warm: the sensor in standby (stream off above), everything else as it is */
+			if (!cam_s20_rear_warm) {
+				memcpy(cam_s20_rear_cold.p02, p02, sizeof(p02));
+				memcpy(cam_s20_rear_cold.p03, p03, sizeof(p03));
+				cam_s20_rear_cold.reset_con = reset_con; cam_s20_rear_cold.reset_dat = reset_dat; cam_s20_rear_cold.reset_pud = reset_pud;
+				cam_s20_rear_cold.mclk_con = mclk_con; cam_s20_rear_cold.mclk_dat = mclk_dat; cam_s20_rear_cold.mclk_pud = mclk_pud;
+				for (i = 0; i < 4; i++) cam_s20_rear_cold.clock[i] = clock[i];
+				cam_s20_rear_warm = true;
+			}
+			if (sensor_ready) redwood_bbi2c_restore(&sensor_bus);
+			if (pmic03_ready) redwood_bbi2c_restore(&cam_pmic03_bus);
+			(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"ok\",\"stream\":\"%s\",\"start\":\"%s\",\"kept_warm\":true}\n",
+			    stream_phase, warm_start ? "warm" : "cold");
+			return;
+		}
+		cam_s20_rear_warm = false;      /* (a session that failed, or a bounded test: all the way down) */
+	}
 	/* Stop clock and hold reset low before taking supplies away. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	if (clock_ready) {
@@ -451,6 +820,44 @@ cleanup:
 	} else {
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"address\":\"0x10\",\"result\":\"error\",\"phase\":\"%s\",\"acked\":\"%s\",\"state_restored\":true}\n", phase, acked);
 	}
+}
+
+/* The warm rear main all the way down, as a session's end used to leave it (the camera thread, when nobody has used
+ * a camera for a while). */
+void
+redwood_camera_s20_rear_cool(void)
+{
+	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
+	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
+	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	const uint8_t *p02 = cam_s20_rear_cold.p02, *p03 = cam_s20_rear_cold.p03;
+	char report[160];
+
+	if (!cam_s20_rear_warm || cmu == NULL) return;
+	cam_s20_rear_warm = false;
+	cam_pmic03_bus.bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM0);
+	cam_pmic03_bus.sda_bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM1);
+	if (!redwood_bbi2c_setup(&cam_pmic03_bus, false, report, sizeof(report))) {
+		printf("camera: rear: cannot reach its supplies to power down (%s)\n", report);
+		return;
+	}
+	(void)redwood_gpio_set(reset, 0, 0);
+	(void)redwood_gpio_set(mclk, 0, 0);
+	redwood_gpio_func(mclk, 0, REDWOOD_GPIO_OUTPUT);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_GATE, cam_s20_rear_cold.clock[2]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_QCH, cam_s20_rear_cold.clock[3]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_DIV, cam_s20_rear_cold.clock[1]);
+	cam_s20_wr(cmu, CMU_CIS_CLK0_MUX, cam_s20_rear_cold.clock[0]);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO14, 0x80, p02[2] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO2, p03[0], p03[0] & 0x80);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_LDO1, 0x80, p02[1] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO5, p03[2], p03[2] & 0x80);
+	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO3, p03[1], p03[1] & 0x80);
+	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+	redwood_gpio_restore(reset, 0, cam_s20_rear_cold.reset_con & 0xfU, cam_s20_rear_cold.reset_pud & 0xfU, cam_s20_rear_cold.reset_dat & 1U);
+	redwood_gpio_restore(mclk, 0, cam_s20_rear_cold.mclk_con & 0xfU, cam_s20_rear_cold.mclk_pud & 0xfU, cam_s20_rear_cold.mclk_dat & 1U);
+	redwood_bbi2c_restore(&cam_pmic03_bus);
+	printf("camera: rear: powered down after 20 s without a camera in use\n");
 }
 
 /* Front SAK3J1 candidate. Uses only the x1slte overlay's VT rails, HSI2C1, reset and MCLK1. */
@@ -584,7 +991,6 @@ cam_s20_cached_cmd(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    redwood_camera_cached_enable ? "cached" : "write-combined");
 }
 static bool cam_s20_dma_quarantined;
-static volatile uint8_t *cam_s20_optical_dma;
 static void cam_s20_front_stream_probe(const uint64_t *, unsigned, char *, size_t);
 static LCK_GRP_DECLARE(cam_frame_group, "s20_camera_frame");
 static LCK_MTX_DECLARE(cam_frame_lock, &cam_frame_group);
@@ -639,85 +1045,11 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
  * (its 32 frame-pointer slots, even/odd) and every finished frame is handed to the callback until it returns false.
  */
 /* data: one frame of MIPI RAW10 (four pixels in five bytes), `stride' bytes from one line to the next */
-typedef bool (*redwood_s20_frame_fn)(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t stride);
-static redwood_s20_frame_fn cam_s20_stream_fn;
-static const volatile uint8_t *cam_s20_stream_buf[2];
-static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
-static volatile bool cam_s20_exp_pending;
-static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
-static bool cam_s20_stream_cached;
 /* the stream's sensor mode: full 3648x2736 (Samsung's 3648x2736_30fps, FULL MIPI PLL) or the 2x2-binned 1824x1368 */
 static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
 void redwood_camera_s20_set_full(bool full) { cam_s20_full = full; }
-
-/*
- * The front camera's lens motor: an AK737x (AK7374/AK7377, product ID at 0xf3) at 0x0c on HSI2C24, which x1slte's
- * device tree (fragment@18) puts on gpp8-0 (SCL) and gpp8-1 (SDA); its supply is VDDAF_2.8V_VT (S2MPB02 LDO16), on
- * with the sensor's. Samsung's is-actuator-ak737x.c: CONT1 (0x02) 0x40 standby, 0x00 active, 0x20 sleep; the
- * position is 9 bits, 0x00 = bits 8..1 and 0x01 bit 7 = bit 0; first position 250 (vendor_first_pos), 2 ms to
- * settle; soft landing 100, 30 ms, 0, 30 ms, then sleep. Driven only from the stream thread.
- */
-static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
-static bool cam_s20_af_ready;
-static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
-static volatile uint32_t cam_s20_af_want;
-static volatile bool cam_s20_af_pending;
-
-static bool
-cam_s20_af_w(uint8_t reg, uint8_t value)
-{
-	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
-}
-
-static bool
-cam_s20_af_set(uint32_t p)
-{
-	p = p > 511 ? 511 : p;
-	return cam_s20_af_w(0x00, (uint8_t)(p >> 1)) && cam_s20_af_w(0x01, (uint8_t)((p & 1U) << 7));
-}
-
-static bool
-cam_s20_af_up(void)
-{
-	char report[160];
-	uint8_t id = 0;
-
-	cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
-	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
-		printf("camera: front focus: its bus cannot be used (%s)\n", report);
-		return false;
-	}
-	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
-	cam_s20_wait_ms(1);
-	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
-	if (!cam_s20_af_set(250)) goto fail;
-	cam_s20_wait_ms(2);
-	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
-	cam_s20_af_ready = true;
-	cam_s20_af_pos = 250;
-	printf("camera: front focus: AK737x (id %#x) up, the lens at 250 of 511\n", id);
-	return true;
-fail:
-	printf("camera: front focus: the AK737x does not answer at 0x0c; no focus in this session\n");
-	redwood_bbi2c_restore(&cam_s20_af_bus);
-	return false;
-}
-
-static void
-cam_s20_af_down(void)
-{
-	if (!cam_s20_af_ready) return;
-	(void)cam_s20_af_set(100);
-	cam_s20_wait_ms(30);
-	(void)cam_s20_af_set(0);
-	cam_s20_wait_ms(30);
-	(void)cam_s20_af_w(0x02, 0x20);
-	redwood_bbi2c_restore(&cam_s20_af_bus);
-	cam_s20_af_ready = false;
-	cam_s20_af_pos = 0xffffffffU;
-}
 
 /* the lens to `position', 0 (the furthest) to 1023 as /dev/redwood-camera has it */
 void
@@ -746,7 +1078,7 @@ static void cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t
 bool
 redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 {
-	uint64_t args[2] = { 1, 14 };
+	uint64_t args[2] = { cam_s20_rear ? 2 : 1, 14 };
 	if (fn == NULL || cam_s20_stream_fn != NULL) return false;
 	cam_s20_stream_frames = cam_s20_stream_errors = 0;
 	cam_s20_stream_fn = fn;
@@ -762,9 +1094,10 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const bool rear = n > 0 && v[0] == 2;
 	const bool optical = n > 0 && (v[0] == 1 || rear);
 	const bool full_frames = optical && !rear && cam_s20_stream_fn != NULL && cam_s20_full;
-	const uint32_t width = rear ? 2016 : optical ? (full_frames ? 3648 : 1824) : 320;
-	const uint32_t height = rear ? 1512 : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
-	const bool stream = optical && !rear && cam_s20_stream_fn != NULL;
+	const bool rear_full = rear && cam_s20_stream_fn != NULL && redwood_camera_s20_rear_full();
+	const uint32_t width = rear ? (rear_full ? 4032 : 2016) : optical ? (full_frames ? 3648 : 1824) : 320;
+	const uint32_t height = rear ? (rear_full ? 3024 : 1512) : optical ? (full_frames ? 2736 : 1368) : 240, guard = 16384;
+	const bool stream = optical && cam_s20_stream_fn != NULL;
 	/* The stream has the DMA write MIPI RAW10 as it comes (format 7, ANDROID10: four pixels in five bytes, lines padded
 	 * to 16 bytes -- verified 2026-11-11, logs/camera/front-stage-b-20261111/fmt7-preview.png): the very layout
 	 * /dev/redwood-camera hands out, so a frame is one copy. The bounded tests keep 16-bit pixels (format 6). */
@@ -791,8 +1124,11 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	const char *phase = "map";
 	bool saved = false, allocated = false, stopped = true, ended = false;
 	if (!cap) return;
+	if (rear) {
+		cam_s20_rear_test_lines = n > 1 && v[1] > 0 && v[1] < 2000000 ? (uint32_t)v[1] : 16384;
+		sensor_mode = 2;
+	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
-	if (cam_s20_dma_quarantined) { phase = "previous DMA did not stop; reboot required"; goto report; }
 	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
 	if (!pmu) goto report;
 	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { phase = "CSIS domain off"; goto report; }
@@ -811,6 +1147,15 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (!mmu1) mmu1 = (volatile uint8_t *)ml_io_map(0x17140000, 0x100);
 	if (!dma) dma = (volatile uint8_t *)ml_io_map(0x170c0000, 0x5000);
 	if (!mmu0 || !mmu1 || !dma) goto report;
+	if (cam_s20_dma_quarantined) {
+		/* a stop that was not acknowledged in time may have ended since: looked at again instead of refusing until a reboot */
+		bool busy = ((cam_s20_rd(dma, 0x2090) | cam_s20_rd(dma, 0x3090)) & 1U) != 0;
+
+		if (busy) { phase = "previous DMA did not stop; reboot required"; goto report; }
+		cam_s20_dma_quarantined = false;
+		redwood_camera_dma_put();
+		printf("camera: the DMA that had not stopped is idle now: used again\n");
+	}
 	mmu_ver[0] = cam_s20_rd(mmu0, 0x34); mmu_ver[1] = cam_s20_rd(mmu1, 0x34);
 	mmu_ctrl[0] = cam_s20_rd(mmu0, 0); mmu_ctrl[1] = cam_s20_rd(mmu1, 0);
 	/* This path understands v7.x pass-through only. Never replace live tables. */
@@ -883,7 +1228,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		if (rear) {
 			uint64_t rx = 2;
 
+			cam_s20_optical_dma = dma;
 			cam_s20_identify(&rx, 1, sensor_report, sizeof(sensor_report));
+			cam_s20_optical_dma = NULL;
 		} else {
 			cam_s20_optical_dma = dma;
 			cam_s20_front_stream_probe(&sensor_mode, 1, sensor_report, sizeof(sensor_report));

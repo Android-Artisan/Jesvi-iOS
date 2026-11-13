@@ -533,6 +533,42 @@ flashlight_classes(void)
  * there is one, keeps what was there (the vendor's: given as it is wherever there is one, and where
  * there is none, ours only with the kernel's camera or flashlight).
  */
+/*
+ * Rear recordings in H.264, as the front's. Camera.app's movie settings ask the back camera for HEVC (hvc1),
+ * and the one HEVC encoder here is Apple's software one (VCPHEVC, registered for photographs below), far
+ * too slow for video: the first compressed frame came 14-28 s late, the Stop never reached the file, rear
+ * videos were never finished or came out at ~8 frames a second (2026-11-12). The front's are H.264 (avc1),
+ * which libredwood-media's OpenH264 encoder keeps up with. So an HEVC request is answered as H.264.
+ */
+static IMP original_movie_video_settings;
+
+static CFDictionaryRef
+movie_video_settings(id self, SEL selector)
+{
+	CFDictionaryRef d = ((CFDictionaryRef (*)(id, SEL))original_movie_video_settings)(self, selector);
+	CFStringRef codec;
+
+	if (d == NULL || CFGetTypeID(d) != CFDictionaryGetTypeID() ||
+	    (codec = CFDictionaryGetValue(d, CFSTR("AVVideoCodecKey"))) == NULL || CFGetTypeID(codec) != CFStringGetTypeID() ||
+	    (CFStringCompare(codec, CFSTR("hvc1"), 0) != kCFCompareEqualTo && CFStringCompare(codec, CFSTR("hev1"), 0) != kCFCompareEqualTo)) {
+		return d;
+	}
+	CFMutableDictionaryRef m = CFDictionaryCreateMutableCopy(NULL, 0, d);
+	CFDictionaryRef props = CFDictionaryGetValue(d, CFSTR("AVVideoCompressionPropertiesKey"));
+
+	CFDictionarySetValue(m, CFSTR("AVVideoCodecKey"), CFSTR("avc1"));
+	if (props != NULL && CFGetTypeID(props) == CFDictionaryGetTypeID()) {
+		CFMutableDictionaryRef mp = CFDictionaryCreateMutableCopy(NULL, 0, props);
+
+		CFDictionaryRemoveValue(mp, CFSTR("ProfileLevel"));      /* (HEVC_Main_AutoLevel: not an H.264 profile) */
+		CFDictionarySetValue(m, CFSTR("AVVideoCompressionPropertiesKey"), mp);
+		CFRelease(mp);
+	}
+	static int said;
+	if (said++ < 4) say("redwood: movie: HEVC asked for, H.264 given (the software HEVC encoder cannot keep up)\n");
+	return (CFDictionaryRef)CFAutorelease(m);
+}
+
 static struct replacement {
 	const char *class_name, *selector;
 	uintptr_t expected;
@@ -553,6 +589,9 @@ static struct replacement {
 	  (IMP)quality_prioritization, &original_quality_prioritization, true, false },
 	{ "BWGNRNode", "renderSampleBuffer:forInput:", 0x1a1ec83b8UL, (IMP)gnr_render, NULL, true, false },
 	{ "BWNodeOutput", "emitSampleBuffer:", 0x1a1ea37e0UL, (IMP)emit_sample_buffer, &original_emit_sample_buffer, true, false },
+	/* (expected 1: any address -- the getter is only wrapped, and says in the log when it changes something) */
+	{ "FigCaptureMovieFileRecordingSettings", "videoSettings", 1, (IMP)movie_video_settings, &original_movie_video_settings,
+	  true, false },
 };
 
 /* ---- the Metal device leaves this process before the capture stack asks for it -------------------- */
@@ -980,7 +1019,7 @@ iris_open(id self, SEL sel, id request)
 		CMTime still = request != nil ? ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime")) :
 		    kCMTimeInvalid;
 
-		if (!CMTIME_IS_VALID(begin) && CMTIME_IS_VALID(still)) {
+		if (!getenv("REDWOOD_IRIS_NOHACK") && !CMTIME_IS_VALID(begin) && CMTIME_IS_VALID(still)) {
 			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
 
 			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
@@ -995,7 +1034,7 @@ iris_open(id self, SEL sel, id request)
 		CMTime still = ((CMTime (*)(id, SEL))objc_msgSend)(request, sel_registerName("stillImageCaptureTime"));
 		CMTime b0 = ((CMTime (*)(id, SEL))objc_msgSend)(self, sel_registerName("beginIrisMovieCaptureTime"));
 
-		if (!CMTIME_IS_VALID(b0) && CMTIME_IS_VALID(still)) {
+		if (!getenv("REDWOOD_IRIS_NOHACK") && !CMTIME_IS_VALID(b0) && CMTIME_IS_VALID(still)) {
 			CMTime half = CMTimeMakeWithSeconds(1.5, 1000000000);
 
 			((void (*)(id, SEL, CMTime))objc_msgSend)(self, sel_registerName("setBeginIrisMovieCaptureTime:"), CMTimeSubtract(still, half));
@@ -1132,7 +1171,7 @@ image_added(__unused const struct mach_header *header, __unused intptr_t image_s
 		method = r->instance ? class_getInstanceMethod(cls, sel_registerName(r->selector)) :
 		    class_getClassMethod(cls, sel_registerName(r->selector));
 		original = method ? method_getImplementation(method) : NULL;
-		if (original == NULL || (uintptr_t)original != r->expected + slide) {
+		if (original == NULL || (r->expected != 1 && (uintptr_t)original != r->expected + slide)) {
 			say("redwood: %c[%s %s]: found %#lx, expected %#lx; left alone\n", r->instance ? '-' : '+', r->class_name,
 			    r->selector,
 			    original ? (uintptr_t)original - slide : 0, r->expected);

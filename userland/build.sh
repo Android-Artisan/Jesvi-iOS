@@ -138,7 +138,10 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-app.dylib Sileo
 /redwood/lib/libredwood-tweaks.dylib Preferences
 /redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
-/redwood/lib/libredwood-finder.dylib lockdownd"}
+/redwood/lib/libredwood-finder.dylib lockdownd
+/redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}"}
+# libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
+# with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
@@ -328,7 +331,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
 			-o obj/libredwood-finder.dylib src/inject_finder.c
 		$DYN -o obj/LocalFilesHost src/local_files_host.c
-		$DYN -fobjc-arc -framework Foundation -o obj/register_finder_host src/register_finder_host.m
+		$DYN -fobjc-arc -framework Foundation -framework Security -o obj/register_finder_host src/register_finder_host.m
 		${LDID:-ldid} -S../tools/storage/register-finder-host.entitlements obj/register_finder_host
 		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
@@ -384,6 +387,12 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			$DYN -dynamiclib -install_name /redwood/lib/libredwood-gl.dylib -Iobj -framework CoreFoundation \
 				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-gl.dylib \
 				src/eagl.c src/gl_osmesa.c
+			# OpenGL ES for games by Mesa instead of iOS's GL-on-Metal (src/eagl_app.m); no -framework
+			# OpenGLES: its gl* names must bind to Mesa's, or every call loops back into iOS's library
+			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl_app.m > obj/eagl_app_gen.h
+			$DYN -fobjc-arc -dynamiclib -install_name /redwood/lib/libredwood-eagl.dylib -Iobj -framework Foundation \
+				-framework QuartzCore -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-eagl.dylib \
+				src/eagl_app.m
 			$DYN -framework CoreFoundation -framework IOKit $M/libOSMesa.8.dylib -o obj/gl_test src/gl_test.c
 			# ... and what this GPU makes of an unsigned integer turned into a float (src/u2f_test.c)
 			$DYN $M/libOSMesa.8.dylib -o obj/u2f_test src/u2f_test.c
@@ -528,6 +537,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		if [ -f obj/u2f_test ]; then cp obj/u2f_test root/bin/; fi   # an "if": see the inject.conf loop below
 		[ -f obj/air_run ] && cp obj/air_run root/bin/
 		[ "$GL" = test ] || cp obj/libredwood-gl.dylib root/lib/
+		[ -f obj/libredwood-eagl.dylib ] && cp obj/libredwood-eagl.dylib root/lib/
 	fi
 	# a program is not started with a library that is not there: it would not start at all
 	echo "$INJECT" | while read -r library names; do

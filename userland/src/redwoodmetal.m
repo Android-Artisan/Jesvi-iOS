@@ -1374,6 +1374,57 @@ rw_prof_toggle(void)
 	}
 }
 
+#include <execinfo.h>
+#include <objc/objc-exception.h>
+
+/*
+ * Every Objective-C exception thrown in a Metal client, said where it is thrown: its name, its
+ * reason and the frames of the throw. A game that catches nothing dies of it in std::terminate with
+ * the reason lost (12 November: Leo's Fortune and Angry Birds Space, through Apple's OpenGL ES on
+ * this driver, aborted inside CADisplayLink's callout and printed nothing). The preprocessor only
+ * looks: the exception goes on as it came, to whatever was there before.
+ */
+static objc_exception_preprocessor rw_exception_previous;
+
+static id
+rw_exception_seen(id exception)
+{
+	static volatile int said;
+
+	if (said < 24) {
+		void *frames[16];
+		int n = backtrace(frames, 16);
+		char where[1100] = "";
+		size_t at = 0;
+
+		said++;
+		for (int i = 1; i < n && at < sizeof(where) - 80; i++) {
+			Dl_info d;
+			const char *image = "?";
+			uintptr_t off = (uintptr_t)frames[i];
+
+			if (dladdr(frames[i], &d) != 0 && d.dli_fname != NULL) {
+				image = strrchr(d.dli_fname, '/') ? strrchr(d.dli_fname, '/') + 1 : d.dli_fname;
+				off = (uintptr_t)frames[i] - (uintptr_t)d.dli_fbase;
+			}
+			at += (size_t)snprintf(where + at, sizeof(where) - at, " %s+%#lx", image, (unsigned long)off);
+		}
+		@try {
+			m2m_log('E', "EXC", "%s: %s; thrown at%s\n",
+			    [[exception name] UTF8String] ?: "?", [[exception reason] UTF8String] ?: "(no reason)", where);
+		} @catch (id ignored) {
+			m2m_log('E', "EXC", "an exception of class %s; thrown at%s\n", object_getClassName(exception), where);
+		}
+	}
+	return rw_exception_previous != NULL ? rw_exception_previous(exception) : exception;
+}
+
+__attribute__((constructor)) static void
+rw_exception_install(void)
+{
+	rw_exception_previous = objc_setExceptionPreprocessor(rw_exception_seen);
+}
+
 __attribute__((constructor)) static void
 rw_stats_install(void)
 {
@@ -3000,7 +3051,12 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		size_t size = sizeof(args) - 1;
 		const char *at;
 
-		profile = 0;
+		/* 1 unless metal_profile= says otherwise: 0 claims Apple1 alone, and MPS -- which Apple's
+		 * own OpenGL ES (AppleMetalGLRenderer) and games reach -- then aborts the process with
+		 * "Failed to get MPSDevice" (12 November: Leo's Fortune and Angry Birds Space, under 1 s).
+		 * The phone's boot line is at its 550-character limit, which is how metal_profile=1 fell
+		 * off it; the default does not depend on the line. */
+		profile = 1;
 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
 		    (at = strstr(args, "metal_profile=")) != NULL && (at == args || at[-1] == ' ')) {
 			profile = (NSUInteger)strtoul(at + strlen("metal_profile="), NULL, 10);
@@ -3318,6 +3374,40 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		 * specification was declined 80 times over 42 lives of backboardd before the
 		 * vertex layout existed, and that number had to be counted by hand. */
 		RW_AGAIN('E', "PSO", "this render pipeline is refused: %s\n", why);
+		{
+			/* what the AIR that was refused starts with (2026-11-12: Apple's OpenGL ES on Metal hands functions whose
+			 * bitcode is "not LLVM bitcode" -- a wrapper or another container?) */
+			static int said_bytes;
+
+			if (said_bytes++ < 6) {
+				for (int w = 0; w < 2; w++) {
+					NSData *a = w ? fragment_air : vertex_air;
+					const uint8_t *p = a != nil ? [a bytes] : NULL;
+					char hex[100] = "";
+
+					for (NSUInteger k = 0; p != NULL && k < 24 && k < [a length]; k++) {
+						snprintf(hex + strlen(hex), sizeof(hex) - strlen(hex), "%02x", p[k]);
+					}
+					if (a != nil) {
+						/* the whole of it, for reading on the Mac */
+						NSString *path = [NSString stringWithFormat:@"%@redwood-glir-%d-%s.bin", NSTemporaryDirectory(), getpid(),
+						    w ? "fragment" : "vertex"];
+
+						if (![a writeToFile:path atomically:NO]) {
+							path = [NSString stringWithFormat:@"/var/tmp/redwood-glir-%d-%s.bin", getpid(), w ? "fragment" : "vertex"];
+							[a writeToFile:path atomically:NO];
+						}
+						m2m_log('I', "PSO", "refused %s AIR written to %s\n", w ? "fragment" : "vertex", [path UTF8String]);
+					}
+					id fn = w ? fragment : vertex;
+					id lib = fn != nil && [fn respondsToSelector:@selector(library)] ? [fn performSelector:@selector(library)] : nil;
+					m2m_log('E', "PSO", "refused %s AIR: %lu bytes, starts %s; function %s, library %s, type %ld\n",
+					    w ? "fragment" : "vertex", (unsigned long)[a length], hex,
+					    fn != nil ? object_getClassName(fn) : "-", lib != nil ? object_getClassName(lib) : "-",
+					    fn != nil && [fn respondsToSelector:@selector(functionType)] ? (long)[fn functionType] : -1L);
+				}
+			}
+		}
 		return [self fail:error with:[NSString stringWithUTF8String:why]];
 	}
 	/* and what the library made of it, in GALLIUM's bits: for any mask but All, None,
@@ -7588,6 +7678,40 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 - (void)setCullMode:(NSUInteger)mode                  { (void)mode; }
 - (void)setFrontFacingWinding:(NSUInteger)winding     { (void)winding; }
 - (void)setTriangleFillMode:(NSUInteger)mode          { (void)mode; }
+/* MTLRenderCommandEncoderSPI, sent by Apple's OpenGL ES on Metal (AppleMetalGLRenderer) at every
+ * pass for GL's "flat shading takes the LAST vertex" rule; unanswered, it killed every GL game in
+ * its first frame (12 November). Accepted like the three above: flat-shaded varyings are rare in
+ * games, and the wrong vertex of a flat triangle is a shade, not a failure. */
+- (void)setProvokingVertexMode:(NSUInteger)mode       { (void)mode; }
+
+/*
+ * Any other one-argument setter of the encoder SPI (set...:) that this class does not have is
+ * said once by name and dropped, instead of NSInvalidArgumentException in the app's frame: Apple's
+ * OpenGL ES sends several (setProvokingVertexMode:, setViewportTransformEnabled:, ...) and each
+ * one alone killed every GL game. Only setters: a method that answers something still fails loudly.
+ */
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector
+{
+	NSMethodSignature *signature = [super methodSignatureForSelector:selector];
+	const char *name = sel_getName(selector);
+	const char *colon = strchr(name, ':');
+
+	if (signature == nil && strncmp(name, "set", 3) == 0 && colon != NULL && colon[1] == '\0') {
+		signature = [NSMethodSignature signatureWithObjCTypes:"v@:Q"];
+	}
+	return signature;
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation
+{
+	unsigned long long value = 0;
+
+	if ([[invocation methodSignature] numberOfArguments] == 3) {
+		[invocation getArgument:&value atIndex:2];
+	}
+	RW_ONCE('W', "ENC", "render encoder: %s %llu dropped (not implemented by this driver)\n",
+	    sel_getName([invocation selector]), value);
+}
 
 /* The depth/stencil state, recorded like the pipeline state: nothing runs at encode time,
  * so what a draw tests against is whatever was bound when that draw was encoded. A state

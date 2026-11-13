@@ -395,6 +395,12 @@ static const struct rwd_format rwd_formats[] = {
 	 * "Failed to allocate MTLTexture from IOSurface" in one boot, the layers simply missing) */
 	{  30, 'LA08', 2, 0, "MTLPixelFormatRG8Unorm" },
 	{  30, '2C08', 2, 0, "MTLPixelFormatRG8Unorm" },
+	/* 16-bit 5:6:5, red in the high bits and blue in the low ones of a little-endian word: what
+	 * a CAEAGLLayer with kEAGLColorFormatRGB565 is made of (12 November: Angry Birds Space ran,
+	 * sound and all, on a black screen -- every frame "no drawable: pixel format 40"). The
+	 * kernel keeps 'L565' as it is (MiniIOSurface.cpp substitutes only the ten-bit ones), and
+	 * the compiler library serves 40 as Gallium's R5G6B5_UNORM (air_metal.c rwa_pixel_formats). */
+	{  40, 'L565', 2, 0, "MTLPixelFormatB5G6R5Unorm" },
 	{  70, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm" },
 	{  71, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm_sRGB" },
 	{  80, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm" },
