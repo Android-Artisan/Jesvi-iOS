@@ -10,7 +10,7 @@
  * Both are found by address among the classes of SpringBoardUIServices and replaced, from the main
  * queue once SpringBoard runs, and only when SpringBoardUIServices is already loaded on its own.
  *
- * Default: top 5 pt, 75 x 28 pt (preset "18pro-small"), user-chosen 2026-11-13 (was 81 x 36.67).
+ * Default: top 6 pt, 21 x 21 pt punch hole (preset "punch-21"), user-chosen 2026-11-13 (before: 75 x 28 "18pro-small").
  * /var/jb/etc/redwood-island.conf overrides it, read when SpringBoard starts (a respring applies it):
  *     y=5 w=81 h=36.667     points; any left out keep Apple's value
  *     lh=32                 height while a Live Activity shows (kept when the conf leaves it out)
@@ -37,7 +37,7 @@
 
 struct island_size { double width, height; };   /* CGSize */
 
-static double island_w = 75.0, island_h = 28.0, island_y = 5.0;  /* the "18pro-small" pill (user-chosen 2026-11-13) */
+static double island_w = 21.0, island_h = 21.0, island_y = 6.0;  /* punch hole "punch-21" (user-chosen 2026-11-13; was 18pro-small) */
 /* lh: the island's height while a Live Activity shows (compact / minimal views), user 2026-11-13: "when a live
  * activity is there it should increase its height". Default 32 pt; conf lh=; <= 0: the same rules as the pill. */
 static double island_lh = 32.0;

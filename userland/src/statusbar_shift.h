@@ -14,7 +14,7 @@
 #include <string.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 3.0;
+static double sbs_lead = 20.0;   /* (user-verified 2026-11-13 with cut=125; was 3) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static struct sbs_insets

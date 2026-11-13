@@ -50,6 +50,16 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Punch-hole island, taller for Live Activities; status bar time at the left (2026-11-13 21:05, A) — `b383af6`
+- Island default is now the 21 x 21 pt punch hole, 6 pt from the top (preset `punch-21`). While any Live Activity /
+  system element is minimal, compact or expanded (SAUI layout modes 1-3), the island is `lh` tall (32 pt) and at
+  least that wide; back to the circle when they end. User-verified.
+- Status bar: laid out around a cutout of at least 125 pt (`cut=`), so the time sits where an iPhone has it instead
+  of centred in the wide space left of a small hole; `lead=` 20 by default. User-verified ("all worked").
+- Sleep (`idle_lock=1`) confirmed on the phone: the display turns off 10 s after an untouched wake on the lock screen.
+- Tunables, all in /var/jb/etc, applied by a respring: redwood-island.conf (`y= w= h= lh=`, `off`),
+  redwood-statusbar.conf (`lead= cut=`), redwood-idle.conf (`mode=0|1|2`).
+
 ### Cellular restored, sleep = lock screen only, punch-hole island grows for Live Activities (2026-11-13 20:56, A)
 - **Cellular/VoLTE back:** the two flashes from this tree (20:30, 20:40) built the loader without
   `CELLULAR_RESERVE_CP`, so the modem got "IPC map refused" (no LTE, no VoLTE, no texts). `x1slte.sh payload` now
