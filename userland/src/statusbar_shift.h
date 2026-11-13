@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 20.0;   /* (user-verified 2026-11-13 with cut=125; was 3) */
+static double sbs_lead = 16.0;   /* (user 2026-11-13 22:10: a little more padding both sides; was 20) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -160,7 +160,7 @@ sbs_lco(id self, SEL cmd)
  * the same amount (user 2026-11-13: "the battery ... too much to the right"). It is given back here, plus `trail`
  * points more inward (conf trail=, default 0). Added on Split1125's own metaclass (the method is inherited).
  */
-static double sbs_trail = 0;
+static double sbs_trail = 2;     /* (same: the right side 2 pt further in) */
 static double (*sbs_orig_tco)(id, SEL);
 
 static double
