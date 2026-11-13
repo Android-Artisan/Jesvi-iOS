@@ -1,13 +1,15 @@
 /* MIT. S20 Cellular Settings UI, independent of the radio driver.
- * Loaded only in Preferences by the port's existing tweak loader. No fake
- * CommCenter replies, SIM state, registration, carrier name or signal bars.
+ * Loaded only in Preferences by the port's existing tweak loader. Shows the live state that
+ * redwood-cellulard publishes (/var/tmp/redwood-cell/state) and drives mobile data through its pipe.
  */
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach-o/dyld.h>
+#include <fcntl.h>
 #include <notify.h>
+#include <time.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -49,60 +51,169 @@ static void store_specifiers(id controller, NSArray *items)
 @interface RWCellularSettingsController : PSListController
 @end
 
+/* Live state from redwood-cellulard (/var/tmp/redwood-cell/state, world-readable; written every 20 s and on
+ * change). Fresh = updated within two minutes, as the status bar uses it. */
+static NSDictionary *cell_state(BOOL *fresh)
+{
+    NSString *s = [NSString stringWithContentsOfFile:@"/var/tmp/redwood-cell/state" encoding:NSUTF8StringEncoding error:nil];
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    for (NSString *line in [s componentsSeparatedByString:@"\n"]) {
+        NSRange r = [line rangeOfString:@" "];
+        if (r.location != NSNotFound) d[[line substringToIndex:r.location]] = [line substringFromIndex:r.location + 1];
+    }
+    long updated = [d[@"updated"] longLongValue];
+    if (fresh) *fresh = updated && time(NULL) - updated < 120;
+    return d;
+}
+
+/* data on/off goes to the modem service's command pipe (mode 0622); never blocks if nobody reads it */
+static BOOL cell_command(const char *cmd)
+{
+    int fd = open("/var/tmp/redwood-cell/cmd", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return NO;
+    BOOL ok = write(fd, cmd, strlen(cmd)) == (ssize_t)strlen(cmd);
+    close(fd);
+    return ok;
+}
+
+static PSSpecifier *value_row(NSString *name, id target, SEL get)
+{
+    return [PSSpecifier preferenceSpecifierNamed:name target:target set:NULL get:get detail:Nil cell:4 edit:Nil];
+}
+
 @implementation RWCellularSettingsController
+{
+    NSTimer *refresh;
+    NSString *last;
+}
 - (NSArray *)specifiers
 {
     static dispatch_once_t page_once;
     dispatch_once(&page_once, ^{ diagnostic("cellular-page-opened"); });
-    PSSpecifier *group = [PSSpecifier preferenceSpecifierNamed:nil target:nil
-        set:NULL get:NULL detail:Nil cell:0 edit:Nil];
-    [group setProperty:@"Cellular service is not available yet. This setting will apply when it is ready."
-        forKey:@"footerText"];
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    last = [st description];
+
+    PSSpecifier *top = [PSSpecifier preferenceSpecifierNamed:nil target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
+    [top setProperty:fresh ? @"Mobile data uses the S20's own modem (LTE). Turning it off keeps the signal but stops internet over cellular."
+                           : @"The modem is starting or off. Settings here apply as soon as it is up."
+              forKey:@"footerText"];
     PSSpecifier *data = [PSSpecifier preferenceSpecifierNamed:@"Cellular Data" target:self
-        set:@selector(setCellularData:specifier:) get:@selector(cellularData:)
-        detail:Nil cell:6 edit:Nil];
+        set:@selector(setCellularData:specifier:) get:@selector(cellularData:) detail:Nil cell:6 edit:Nil];
     [data setProperty:@"redwood.cellular.data" forKey:@"id"];
-    PSSpecifier *network = [PSSpecifier preferenceSpecifierNamed:@"Network" target:self
-        set:NULL get:@selector(network:) detail:Nil cell:4 edit:Nil];
-    PSSpecifier *calls = [PSSpecifier preferenceSpecifierNamed:@"Calls" target:self
-        set:NULL get:@selector(calls:) detail:Nil cell:4 edit:Nil];
+
+    PSSpecifier *netg = [PSSpecifier preferenceSpecifierNamed:@"NETWORK" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
+    PSSpecifier *simg = [PSSpecifier preferenceSpecifierNamed:@"SIM" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
+    PSSpecifier *svcg = [PSSpecifier preferenceSpecifierNamed:@"SERVICES" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
+    [svcg setProperty:@"Calls and text messages on Jio go over VoLTE (IMS). That part is still being built." forKey:@"footerText"];
+
+    NSArray *items = @[top, data,
+        netg, value_row(@"Network", self, @selector(network:)), value_row(@"Signal", self, @selector(signal:)),
+              value_row(@"Technology", self, @selector(technology:)),
+        simg, value_row(@"Carrier", self, @selector(carrier:)), value_row(@"SIM", self, @selector(sim:)),
+              value_row(@"Network Code", self, @selector(plmn:)),
+        svcg, value_row(@"VoLTE", self, @selector(volte:)), value_row(@"Calls", self, @selector(calls:)),
+              value_row(@"Text Messages", self, @selector(sms:))];
     self.title = @"Cellular";
-    NSArray *items = @[group, data, network, calls];
     store_specifiers(self, items);
     return items;
 }
-
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    [refresh invalidate];
+    __weak typeof(self) weak = self;
+    refresh = [NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t) {
+        (void)t;
+        typeof(self) me = weak;
+        if (me && ![[cell_state(NULL) description] isEqualToString:me->last]) [me reloadSpecifiers];
+    }];
+}
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    [refresh invalidate];
+    refresh = nil;
+}
 - (NSNumber *)cellularData:(PSSpecifier *)specifier
 {
     (void)specifier;
-    Boolean valid = false;
-    Boolean enabled = CFPreferencesGetAppBooleanValue(RWDataKey, RWDomain, &valid);
-    return @(valid && enabled);
+    NSString *on = cell_state(NULL)[@"data_on"];
+    if (on) return @([on intValue] != 0);
+    Boolean valid = false, enabled = CFPreferencesGetAppBooleanValue(RWDataKey, RWDomain, &valid);
+    return @(!valid || enabled);
 }
-
 - (void)setCellularData:(NSNumber *)value specifier:(PSSpecifier *)specifier
 {
     (void)specifier;
     CFPreferencesSetAppValue(RWDataKey, value.boolValue ? kCFBooleanTrue : kCFBooleanFalse, RWDomain);
-    if (!CFPreferencesAppSynchronize(RWDomain)) {
-        NSLog(@"RedwoodCellular: could not save Cellular Data preference");
-    }
-    /* A future Samsung session service consumes this preference and event.
-     * No modem command or route change is implied before that service exists. */
+    CFPreferencesAppSynchronize(RWDomain);
     notify_post("com.redwood.cellular.data-changed");
-    diagnostic(value.boolValue ? "data-preference-on" : "data-preference-off");
+    BOOL sent = cell_command(value.boolValue ? "data\n" : "nodata\n");
+    diagnostic(value.boolValue ? (sent ? "data-on-sent" : "data-on-not-sent") : (sent ? "data-off-sent" : "data-off-not-sent"));
 }
-
 - (NSString *)network:(PSSpecifier *)specifier
 {
     (void)specifier;
-    return @"No Service";
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    if (!fresh) return @"No Service";
+    return [st[@"ios_reg"] intValue] == 2 ? (st[@"operator"] ?: @"Registered") : @"Searching…";
 }
-
+- (NSString *)signal:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    if (!fresh || !st[@"dbm"]) return @"—";
+    return [NSString stringWithFormat:@"%@ of %@ bars (%@ dBm)", st[@"bars"] ?: @"0", st[@"max"] ?: @"4", st[@"dbm"]];
+}
+- (NSString *)technology:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    if (!fresh) return @"—";
+    NSString *rat = st[@"rat"] ?: @"LTE";
+    return [st[@"data_on"] intValue] ? [rat stringByAppendingString:@" · data on"] : [rat stringByAppendingString:@" · data off"];
+}
+- (NSString *)carrier:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    return fresh && [st[@"operator"] length] ? st[@"operator"] : @"—";
+}
+- (NSString *)sim:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    return fresh && [st[@"plmn"] length] && ![st[@"plmn"] isEqualToString:@"000000"] ? @"Ready" : @"—";
+}
+- (NSString *)plmn:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    BOOL fresh = NO;
+    NSDictionary *st = cell_state(&fresh);
+    NSString *p = st[@"plmn"];
+    if (!fresh || p.length < 5) return @"—";
+    return [NSString stringWithFormat:@"%@ %@", [p substringToIndex:3], [p substringFromIndex:3]];
+}
+- (NSString *)volte:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/ims-registered"] ? @"Registered" : @"Not registered yet";
+}
 - (NSString *)calls:(PSSpecifier *)specifier
 {
     (void)specifier;
-    return @"Unavailable";
+    return @"Not available yet";
+}
+- (NSString *)sms:(PSSpecifier *)specifier
+{
+    (void)specifier;
+    return @"Not available yet";
 }
 @end
 
