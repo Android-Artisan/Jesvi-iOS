@@ -322,3 +322,19 @@ max_packet 2048 <<8 = 00080011, q_info[0] = desc_base 28000100, num_desc 0x1933 
   f8 eb 15 01 | 11 01 04 01 0a 01 02 ...         MISC_ME_VERSION response to our GET: "G980FXXSNHYB1 ... REV0"
 (SBD buff_len_array values are not lengths here; use the SIPC5 length.) The legacy-FMT duplicate request
 is not used by this CP (TX tail stays 0). Next: SIM status (SEC group), then radio power / registration.
+
+### MILESTONE Nov13 ~06:50: SIM read and network seen (40 s live run, SIM inserted)
+
+Decoded umts_ipc0 traffic (Samsung IPC: len u16, mseq, aseq, group, index, type; type 3 = NOTI, 2 = RESP):
+- 13/05 "AST_POWERON"; 01/01 PWR_PHONE_PWR_UP; 26/01, 0d/0f early notices; 0a/01 ME_VERSION response.
+- SIM: 05/13 carries the card ATR (3b 9f 96 80 1f c6 ...), 05/11, 05/10, 05/07, then 05/01 SIM status
+  notices (00 00 / 82 00 alternating). Our SEC_SIM_STATUS GET (05 01 02) got GEN_PHONE_RES 80/01
+  "05 01 02 03 80" -- error/unsupported form; the CP reports the SIM by itself anyway.
+- NET (08): current PLMN notices with the Jio PLMN (405-8xx), NET_REGIST (08/05) updates, 08/3c, 08/19;
+  DISP (07/06, 07/01) signal/icon info; 27/01, 0d/19. The CP powers RF and camps on LTE by itself after
+  PWR_UP (stock NV behaviour); it is shut down at the end of every run (cleanup_verified 1).
+Logs with SIM/cell identifiers stay private (logs/ and out/ are gitignored); do not copy them into docs.
+
+Next: a long-running daemon instead of the 40 s test (keep CP up, rings serviced, MSI driven), decode
+SIM status / NET_REGIST properly (libsamsung-ipc tables as a guide), then data: PDP context (GPRS group
+0x0d) + pktproc RX/TX path -> a utun interface in iOS; SMS (group 0x04); calls/IMS last.

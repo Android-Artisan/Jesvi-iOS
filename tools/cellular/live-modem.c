@@ -355,8 +355,17 @@ static void sbd_dump_dl(void)
         if (rp>=len || wp>=len) continue;      /* (not a valid index: reported by the rp/wp dump) */
         for (unsigned guard=0;rp!=wp && guard<len;guard++) {
             uint32_t n=0;uint8_t b[96];ipc_load(sbd_lenarr[id][1]+4*rp,&n);
-            uint32_t show=48;ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,b,show);
-            printf("cellular live DL: SBD RX ch %u (%u bytes):",sbd_chs[id].ch,n);for (unsigned k=0;k<show;k++) printf(" %02x",b[k]);printf("\n");
+            uint8_t big[320];uint32_t show=sizeof(big);(void)b;(void)n;
+            ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,big,show);
+            uint32_t flen=big[2]|(big[3]<<8);if (big[0]>=0xf8 && flen>=4 && flen<show) show=flen;
+            if (sbd_chs[id].ch==235 && show>=11) {
+                printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
+                    big[8],big[9],big[10],big[6],big[7],show-11);
+                for (unsigned k=11;k<show;k++) printf(" %02x",big[k]);
+                printf("  |");for (unsigned k=11;k<show;k++) putchar(big[k]>=32&&big[k]<127?big[k]:'.');printf("|\n");
+            } else {
+                printf("cellular live DL: SBD RX ch %u (%u bytes):",sbd_chs[id].ch,show);for (unsigned k=0;k<show && k<48;k++) printf(" %02x",big[k]);printf("\n");
+            }
             rp=(uint16_t)((rp+1)%len);ipc_store16(sbd_rp(id,1),rp);
         }
     }
@@ -436,15 +445,22 @@ static int online_handshake(unsigned seconds)
                 }
             }
             sbd_dump_dl();
-            if (!asked && now_us(NULL)+15000000ull<deadline) {
+            if (!asked && now_us(NULL)+35000000ull<deadline) {
                 /* Samsung IPC on umts_ipc0 (ch 235, SBD id 1): IPC_MISC_ME_VERSION GET (0a 01, type 02), data ff */
                 uint8_t f[16]={0xf8,235,0,0, 8,0, 1,0, 0x0a,0x01,0x02, 0xff};
                 f[2]=12;asked=1;
                 int e=sbd_send(1,f,12);
                 printf("cellular live DL: IPC MISC_ME_VERSION GET on umts_ipc0: %s\n",e?"send failed":"sent");fflush(stdout);
             }
+            static int asked_sim;
+            if (asked && !asked_sim && now_us(NULL)+25000000ull<deadline) {
+                /* IPC_SEC_SIM_STATUS (05 01) GET (02), no data */
+                uint8_t f[16]={0xf8,235,11,0, 7,0, 2,0, 0x05,0x01,0x02};asked_sim=1;
+                int e=sbd_send(1,f,11);
+                printf("cellular live DL: IPC SEC_SIM_STATUS GET: %s\n",e?"send failed":"sent");fflush(stdout);
+            }
             static int legacy;
-            if (asked && !legacy && now_us(NULL)+12000000ull<deadline) {
+            if (0 && asked && !legacy && now_us(NULL)+12000000ull<deadline) {
                 /* the same request on the legacy FMT queue: TX buf 0x1000 (4 KB), head 0x8 tail 0xc; SEND_FMT 0x82 */
                 uint8_t f[12]={0xf8,235,12,0, 8,0, 2,0, 0x0a,0x01,0x02, 0xff};uint32_t h=0,t=0;legacy=1;
                 ipc_load(0x8,&h);ipc_load(0xc,&t);
@@ -542,7 +558,7 @@ static int download_stages(void)
     fclose(p);
     if (!error) {
         phase("download complete: Samsung's IPC handshake, 20 s");
-        error=online_handshake(20);
+        error=online_handshake(40);
         for (unsigned i=0;i<2;i++) {
             uint32_t in=0,w[10];inputs(&in);for (unsigned k=0;k<10;k++) ipc_load(k*4,&w[k]);
             printf("cellular live DL: +%ums GPIO %x IPC",i*500,in);for (unsigned k=0;k<10;k++) printf(" %08x",w[k]);printf("\n");fflush(stdout);
