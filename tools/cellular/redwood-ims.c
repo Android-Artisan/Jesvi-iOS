@@ -550,7 +550,7 @@ static void sms_outbox(int sock,int portc)
  * the caller hears silence. One call at a time; a second INVITE gets 486.
  */
 #define CALL_ANSWER_S 3
-#define CALL_MAX_S 90
+#define CALL_MAX_S 3600
 #define CALL_RTP_PORT 50010
 static struct {
     int state;                          /* 0 none, 1 ringing, 2 answered (200 sent), 3 confirmed (ACK) */
@@ -656,11 +656,29 @@ call_channel(int op,const char *remote,unsigned rport)
     return 0;
 }
 
+#include "ims-media.h"
+
+static int
+call_cpvoice(void)
+{
+    struct stat st;
+    return !stat("/var/root/cell-cpvoice",&st);   /* the CP's CPVE instead of the AP (it does not take the stream yet) */
+}
+
 static void
 call_media(int start)
 {
     static int open;
     unsigned rport=(unsigned)atoi(call.sdp_m);
+    if (!call_cpvoice()) {
+        if (start) {
+            if (!call.sdp_c[0] || !rport) {printf("call: media: no remote address in the SDP\n");return;}
+            int s=bound(SOCK_DGRAM,CALL_RTP_PORT);
+            if (s<0) {printf("call: media: RTP socket: %s\n",strerror(errno));return;}
+            media_start(s,call.sdp_c,rport);
+        } else media_stop();
+        return;
+    }
     if (start) {
         if (!call.sdp_c[0] || !rport) {printf("call: media: no remote address in the SDP\n");return;}
         uint8_t pdn[38]={0},ip[16];
@@ -721,7 +739,7 @@ call_invite(int fd,const char *r)
     const char *b=strstr(r,"\r\n\r\n");
     if (b) {
         const char *c=strstr(b,"\nc=IN IP6 "),*mm=strstr(b,"\nm=audio ");
-        if (c) sscanf(c+11,"%95s",call.sdp_c);
+        if (c) sscanf(c+10,"%95s",call.sdp_c);   /* (strlen("\nc=IN IP6 ") = 10: 11 dropped the first digit) */
         if (mm) sscanf(mm+9,"%95s",call.sdp_m);
     }
     {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"ringing %ld\n",(long)call.at);fclose(f);}}
@@ -738,7 +756,7 @@ call_request(int fd,const char *r)
     char ci[200];
     if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
     if (!strncmp(r,"ACK ",4)) {
-        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");call_media(1);}
+        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");fflush(stdout);if (!med.run) call_media(1);fflush(stdout);}
         return 1;
     }
     char m[2048],via[1200],fr[400],to[400],cq[80];int o;
@@ -773,7 +791,12 @@ call_tick(void)
             sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
         call_respond("200 OK",sdp);
         call.state=2;call.answered=time(NULL);
+        if (!med.run) {call_media(1);fflush(stdout);}  /* media from our 200 OK on: the ACK can come late or not at all */
         {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"answered %ld\n",(long)call.answered);fclose(f);}}
+    } else if (call.state==2 && time(NULL)-call.answered>=30 && med.rx_pkts==0) {
+        /* answered but never confirmed (A, 2026-11-14 03:25: our 200 OK went unanswered, the call stayed "answered" and
+         * every new call got 486 Busy): give it up */
+        call_end("no ACK and no voice in 30 s after our 200 OK");
     } else if (call.state>=2 && time(NULL)-call.answered>=CALL_MAX_S) {
         /* our BYE: Route from Record-Route, to the remote Contact */
         char m[3000],uri[400],route[700]="";int o;
