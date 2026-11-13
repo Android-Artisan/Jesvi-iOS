@@ -134,9 +134,36 @@ sbs_setup(id self, SEL cmd, id container)
 	return r;
 }
 
+/*
+ * The layout this phone really uses (2026-11-13, found by logging: DynamicSplit's methods were never called): the
+ * screen is the iPhone X's (1125 px), so UIKit picks _UIStatusBarVisualProvider_Split1125, the notch layout, even with
+ * the island on. It centres the time in the 83 pt left of a 209 pt notch, nudged by +leadingCenteringOffset
+ * (-0.667). That nudge is moved left by lead/2 (the same feel `lead` had: lead=20 -> about 10 pt left).
+ */
+static double (*sbs_orig_lco)(id, SEL);
+
+static double
+sbs_lco(id self, SEL cmd)
+{
+	double v = sbs_orig_lco(self, cmd), r = v - sbs_lead / 2;
+	static int told;
+
+	if (told++ < 2) {
+		sbs_log("Split1125 leadingCenteringOffset %.2f -> %.2f", v, r);
+	}
+	return r;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+		Method lm = sc ? class_getClassMethod(sc, sel_registerName("leadingCenteringOffset")) : NULL;
+		if (lm != NULL && sbs_orig_lco == NULL && sbs_lead > 0) {
+			sbs_orig_lco = (double (*)(id, SEL))method_setImplementation(lm, (IMP)sbs_lco);
+		}
+	}
 	{
 		Class dc = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
 		Method um = dc ? class_getInstanceMethod(dc, sel_registerName("setupInContainerView:")) : NULL;
