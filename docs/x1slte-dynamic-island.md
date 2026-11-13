@@ -61,13 +61,15 @@ Switch from the Mac with `tools/island-preset.sh NAME` (copies the preset to the
 | `apple-14pro` | `off` | 125.33 x 36.67, 11.33 pt | Apple's 14 Pro pill, no adjustment ("no dynamic config") |
 | `18pro` | `y=5 w=81` | 81 x 36.67, 5 pt | first "iPhone 18 Pro" look |
 | `18pro-adapted` | `y=5 w=81 h=30.67` | 81 x 30.67, 5 pt | 6 pt shorter (~1 mm) |
-| `18pro-small` | `y=5 w=75 h=28` | 75 x 28, 5 pt | a little smaller all round; on the phone since 2026-11-13 18:10 |
+| `18pro-small` | `y=5 w=75 h=28` | 75 x 28, 5 pt | a little smaller all round |
+| `circle-24` | `y=5 w=24 h=24` | 24 x 24, 5 pt | round, just over the camera hole (user: good) |
+| `circle` | `y=6 w=22 h=22` | 22 x 22, 6 pt | round, a bit smaller, same centre; on the phone since 2026-11-13 18:20 |
 
 On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/etc/redwood-island.conf; /var/jb/usr/bin/sbreload`.
 Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
 `sbreload` restarts SpringBoard twice in a row here; the second start (~10 s) is the one that reads the conf.
-Keep the pill over the camera hole: the hole's bottom edge sits roughly 25-28 pt below the top, so heights much
-below ~22 pt with `y=5` would show the hole under the pill (estimate, not measured).
+Keep the pill over the camera hole: the hole's bottom edge sits roughly 25-28 pt below the top, so a round pill much
+below ~22 pt would show the hole's edge (estimate; 24 and 22 pt user-checked as covering it).
 The conf is on the data volume: it survives reboots and new boot images, but a fresh install starts with the
 built-in default (the table above).
 Log: `/var/mobile/Library/Logs/redwood-island.log`. 1 pt on the S20 panel ~ 0.18 mm.
