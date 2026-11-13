@@ -513,6 +513,11 @@ static void ctl_line(char *l)
         size_t n=strlen(l+3);if (n>1000) return;
         f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strncmp(l,"stat",4)) {
+        printf("cellular: rings id:ch ulrp/ulwp dlrp/dlwp:");
+        for (unsigned i=0;i<SBD_N;i++) {uint16_t a1=0,a2=0,a3=0,a4=0;ipc_load16(sbd_rp(i,0),&a1);ipc_load16(sbd_wp(i,0),&a2);ipc_load16(sbd_rp(i,1),&a3);ipc_load16(sbd_wp(i,1),&a4);
+            printf(" %u:%u %u/%u %u/%u",i,sbd_chs[i].ch,a1,a2,a3,a4);}
+        uint32_t m=0,u=0;ipc_load(0x404,&m);ipc_load(0x40c,&u);printf(" | cp2ap %x united %x\n",m,u);fflush(stdout);
     } else if (!strncmp(l,"fmt ",4)) {
         unsigned g,i,t;int used=0;
         if (sscanf(l+4,"%x %x %x %n",&g,&i,&t,&used)<3) return;
