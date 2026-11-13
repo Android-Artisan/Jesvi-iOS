@@ -92,40 +92,79 @@ phone_system_hook(void)
 }
 
 /*
- * The call screen's Speaker button (A, 2026-11-14). The audio plug-in has no receiver port that iOS knows, so the
- * button has nothing to switch between; in InCallService a tap on it (TURouteController pickRoute:) toggles our route
- * instead: notify com.redwood.call.speaker / .earpiece, which redwood-ims follows (kern.redwood.snd_route), and the
- * button shows it (TURoute isSpeaker). Every call starts on the earpiece (redwood-ims posts com.redwood.call.started).
+ * The call screen's Speaker button (A, 2026-11-14). The audio plug-in has no receiver port iOS knows, so iOS saw one
+ * route and greyed the button. In InCallService, TURouteController offers two routes of ours, "iPhone" (the earpiece)
+ * and "Speaker"; picking one posts com.redwood.call.speaker / .earpiece, which redwood-ims follows
+ * (kern.redwood.snd_route). Every call starts on the earpiece (redwood-ims posts com.redwood.call.started).
  */
 #include <notify.h>
+#include <CoreFoundation/CoreFoundation.h>
 static int phone_speaker;
-static IMP phone_orig_pick, phone_orig_pick_id, phone_orig_is_speaker;
+static id phone_rcv, phone_spk;
 
-static void
-phone_toggle_speaker(void)
+static id
+phone_route(CFStringRef uid, CFStringRef name, int speaker)
 {
-	phone_speaker = !phone_speaker;
-	notify_post(phone_speaker ? "com.redwood.call.speaker" : "com.redwood.call.earpiece");
+	Class c = objc_getClass("TURoute");
+	id r = ((id (*)(id, SEL))objc_msgSend)((id)c, sel_registerName("alloc"));
+	r = ((id (*)(id, SEL, id, id))objc_msgSend)(r, sel_registerName("initWithUniqueIdentifier:name:"), (id)uid, (id)name);
+	((void (*)(id, SEL, BOOL))objc_msgSend)(r, sel_registerName(speaker ? "setSpeaker:" : "setReceiver:"), YES);
+	return r;
 }
-static void phone_pick(id self, SEL _cmd, id route) { phone_toggle_speaker(); ((void (*)(id, SEL, id))phone_orig_pick)(self, _cmd, route); }
-static void phone_pick_id(id self, SEL _cmd, id ident) { phone_toggle_speaker(); ((void (*)(id, SEL, id))phone_orig_pick_id)(self, _cmd, ident); }
-static BOOL phone_is_speaker(id self, SEL _cmd) { return ((BOOL (*)(id, SEL))phone_orig_is_speaker)(self, _cmd) ? (BOOL)phone_speaker : NO; }
+static void
+phone_routes_refresh(void)
+{
+	if (!phone_rcv) {
+		phone_rcv = phone_route(CFSTR("com.redwood.route.receiver"), CFSTR("iPhone"), 0);
+		phone_spk = phone_route(CFSTR("com.redwood.route.speaker"), CFSTR("Speaker"), 1);
+	}
+	((void (*)(id, SEL, BOOL))objc_msgSend)(phone_rcv, sel_registerName("setCurrentlyPicked:"), !phone_speaker);
+	((void (*)(id, SEL, BOOL))objc_msgSend)(phone_spk, sel_registerName("setCurrentlyPicked:"), phone_speaker);
+}
+static void
+phone_set_speaker(int on)
+{
+	phone_speaker = on;
+	phone_routes_refresh();
+	notify_post(on ? "com.redwood.call.speaker" : "com.redwood.call.earpiece");
+}
+static id phone_routes(id self, SEL _cmd)
+{
+	phone_routes_refresh();
+	CFTypeRef v[2] = { phone_rcv, phone_spk };
+	return (id)CFAutorelease(CFArrayCreate(NULL, v, 2, &kCFTypeArrayCallBacks));
+}
+static id phone_picked(id self, SEL _cmd) { phone_routes_refresh(); return phone_speaker ? phone_spk : phone_rcv; }
+static id phone_spk_route(id self, SEL _cmd) { phone_routes_refresh(); return phone_spk; }
+static id phone_rcv_route(id self, SEL _cmd) { phone_routes_refresh(); return phone_rcv; }
+static void phone_pick(id self, SEL _cmd, id route)
+{
+	SEL is = sel_registerName("isSpeaker");
+	phone_set_speaker(route && ((BOOL (*)(id, SEL))objc_msgSend)(route, is));
+}
+static void phone_pick_id(id self, SEL _cmd, id ident)
+{
+	const char *c = ident ? ((const char *(*)(id, SEL))objc_msgSend)(ident, sel_registerName("UTF8String")) : NULL;
+	phone_set_speaker(c && strstr(c, "speaker") != NULL);
+}
 
 static void
 phone_speaker_hook(void)
 {
 	static int tries;
-	Class rc = objc_getClass("TURouteController"), r = objc_getClass("TURoute");
-	Method a = rc ? class_getInstanceMethod(rc, sel_registerName("pickRoute:")) : NULL;
-	Method b = rc ? class_getInstanceMethod(rc, sel_registerName("pickRouteWithUniqueIdentifier:")) : NULL;
-	Method c = r ? class_getInstanceMethod(r, sel_registerName("isSpeaker")) : NULL;
-	if (!a || !b || !c) {
+	Class rc = objc_getClass("TURouteController");
+	if (!rc || !objc_getClass("TURoute")) {
 		if (tries++ < 20) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ phone_speaker_hook(); });
 		return;
 	}
-	if (!phone_orig_pick) phone_orig_pick = method_setImplementation(a, (IMP)phone_pick);
-	if (!phone_orig_pick_id) phone_orig_pick_id = method_setImplementation(b, (IMP)phone_pick_id);
-	if (!phone_orig_is_speaker) phone_orig_is_speaker = method_setImplementation(c, (IMP)phone_is_speaker);
+	struct { const char *sel; IMP imp; } h[] = {
+		{ "routes", (IMP)phone_routes }, { "pickedRoute", (IMP)phone_picked }, { "speakerRoute", (IMP)phone_spk_route },
+		{ "receiverRoute", (IMP)phone_rcv_route }, { "pickRoute:", (IMP)phone_pick }, { "pickRouteWithUniqueIdentifier:", (IMP)phone_pick_id },
+	};
+	for (unsigned i = 0; i < sizeof(h) / sizeof(h[0]); i++) {
+		Method m = class_getInstanceMethod(rc, sel_registerName(h[i].sel));
+		if (m) method_setImplementation(m, h[i].imp);
+	}
 	int t;
-	notify_register_dispatch("com.redwood.call.started", &t, dispatch_get_main_queue(), ^(int tok) { (void)tok; phone_speaker = 0; });
+	notify_register_dispatch("com.redwood.call.started", &t, dispatch_get_main_queue(), ^(int tok) { (void)tok; phone_speaker = 0; phone_routes_refresh(); });
 }

@@ -1793,6 +1793,7 @@ redwood_init(void)
 	}
 	if (strcmp(name, "MobilePhone") == 0) {
 		phone_dial_hook();
+		phone_system_hook();        /* our calls are phone calls in Recents ("mobile", message button) */
 	}
 	if (strcmp(name, "InCallService") == 0) {
 		phone_system_hook();
