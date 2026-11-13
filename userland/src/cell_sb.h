@@ -20,6 +20,7 @@
 static struct {
 	int valid, bars, max, reg;
 	char op[32], plmn[8], rat[8];
+	long ios_reg, ios_data;         /* iOS enum values given by the modem service (override the found ones) */
 	long updated;
 } cell_state;
 static unsigned long cell_reg_registered = ~0UL, cell_data_lte = ~0UL;
@@ -39,6 +40,7 @@ cell_read(void)
 
 	memset(&s, 0, sizeof(s));
 	s.max = 4;
+	s.ios_reg = s.ios_data = -1;
 	if (f == NULL) {
 		return 0;
 	}
@@ -50,12 +52,17 @@ cell_read(void)
 		else if (!strcmp(key, "plmn")) snprintf(s.plmn, sizeof(s.plmn), "%s", value);
 		else if (!strcmp(key, "rat")) snprintf(s.rat, sizeof(s.rat), "%s", value);
 		else if (!strcmp(key, "updated")) s.updated = atol(value);
+		else if (!strcmp(key, "ios_reg")) s.ios_reg = atol(value);
+		else if (!strcmp(key, "ios_data")) s.ios_data = atol(value);
 	}
 	fclose(f);
 	s.valid = s.updated != 0 && time(NULL) - s.updated < 120;
 	if (s.bars < 0) s.bars = 0;
 	if (s.bars > s.max) s.bars = s.max;
-	int changed = memcmp(&s, &cell_state, sizeof(s)) != 0;
+	/* a heartbeat alone (only "updated" moved) is not a change */
+	typeof(cell_state) a = s, b = cell_state;
+	a.updated = b.updated = 0;
+	int changed = memcmp(&a, &b, sizeof(a)) != 0;
 	cell_state = s;
 	return changed;
 }
@@ -157,12 +164,15 @@ cell_subscription(id self, SEL sel, long slot)
 	cell_set(info, "setSIMLabel:", cell_nsstring("Primary"));
 	cell_set(info, "setShortSIMLabel:", cell_nsstring("P"));
 	cell_set(info, "setSIMStatus:", cell_nsstring("kCTSIMSupportSIMStatusReady"));
-	if (cell_reg_registered != ~0UL) {
-		cell_set_n(info, "setRegistrationStatus:", cell_reg_registered);
-		cell_set_n(info, "setCellularRegistrationStatus:", cell_reg_registered);
+	unsigned long reg = cell_state.ios_reg >= 0 ? (unsigned long)cell_state.ios_reg : cell_reg_registered;
+	unsigned long data = cell_state.ios_data >= 0 ? (unsigned long)cell_state.ios_data : cell_data_lte;
+
+	if (reg != ~0UL) {
+		cell_set_n(info, "setRegistrationStatus:", reg);
+		cell_set_n(info, "setCellularRegistrationStatus:", reg);
 	}
-	if (cell_data_lte != ~0UL) {
-		cell_set_n(info, "setDataConnectionType:", cell_data_lte);
+	if (data != ~0UL) {
+		cell_set_n(info, "setDataConnectionType:", data);
 	}
 	cell_set_n(info, "setSignalStrengthBars:", (unsigned long)cell_state.bars);
 	cell_set_n(info, "setMaxSignalStrengthBars:", (unsigned long)cell_state.max);
@@ -235,7 +245,7 @@ cell_hook(void *context)
 			return;
 		}
 	}
-	cell_reg_registered = cell_enum_named("STTelephonyRegistrationStatusDebugName", "Registered", "Not");
+	cell_reg_registered = cell_enum_named("STTelephonyRegistrationStatusDebugName", "registered", "not");
 	cell_data_lte = cell_enum_named("STTelephonyDataConnectionTypeDebugName", "lteConnection", "Plus");
 	for (unsigned i = 0; i < sizeof(hooks) / sizeof(hooks[0]); i++) {
 		Method m = class_getInstanceMethod(provider, sel_registerName(hooks[i].sel));
