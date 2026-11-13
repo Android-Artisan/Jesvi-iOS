@@ -1774,6 +1774,7 @@ camera_front_by_default(void)
 }
 
 #include "statusbar_shift.h"
+#include "phone_dial.h"
 
 __attribute__((constructor))
 static void
@@ -1789,6 +1790,9 @@ redwood_init(void)
 	slide = (uintptr_t)cache - CACHE_BASE;
 	if (strcmp(name, "Camera") == 0) {
 		camera_front_by_default();
+	}
+	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+		phone_dial_hook();
 	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
