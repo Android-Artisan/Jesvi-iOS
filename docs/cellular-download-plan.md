@@ -447,3 +447,9 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - Verified: `cell-get ipv6.google.com` → 200 OK, 94 KB; `cell-get github.com` → DNS64 `64:ff9b::87eb:9590` → 301 (IPv4-only sites work through Jio NAT64).
 - Test tools (phone /var/root): `cell-http IF ADDR HOST [PATH]` (pinned to one interface), `cell-get HOST [PATH]` (app-style), `sc-dump [regex]` (tiny scutil).
 - Throughput is limited by the sysctl peek path (one sysctl per 256 bytes); a kernel-side copy or direct mapping is the next speed step.
+
+## 2026-11-13 — SMS receive, mobile-data switch (service side)
+
+- SMS (group 04, decoded from libsec-ril IpcProtocol41Sms): CP NOTI `04 07` (device ready) → answer `04 07` SET (empty) **once** (answering every NOTI loops: 621 in a minute). Incoming `04 02` NOTI: `{msg_type, type, u16 sim_index, tpid, len}` + PDU (SMSC first) → decoded (SMS-DELIVER, GSM-7/8-bit/UCS-2, UDH skipped), logged, appended to `/var/root/cell-sms.txt` (`time<TAB>from<TAB>scts<TAB>text`), delivery report `04 06` EXEC `{msg_type, u16 0, tpid, 0}`. Not yet verified with a real incoming text (Jio may deliver only over IMS).
+- Mobile data switch: FIFO `nodata` (utun closed, configd service removed, `/var/root/cell-nodata` kept across restarts) / `data`. State file has `data_on 0|1`. FIFO is now mode 0622 so SpringBoard/Settings (user mobile) can write it.
+- Settings/Control Center: both use CoreTelephony C calls `_CTServerConnectionGet/SetCellularDataIsEnabled(Ex)` (→ CommCenter, absent). Plan: entry-trampoline hooks (as inject_files.c) in libredwood-sb + Preferences, answering from `data_on` and writing `data`/`nodata`; each behind its own boot arg.

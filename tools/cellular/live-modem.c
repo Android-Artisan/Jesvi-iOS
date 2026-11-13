@@ -353,6 +353,7 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
     return doorbell(0);
 }
 static int stay_mode;
+static int data_off;          /* user switched mobile data off (Settings / Control Center / nodata) */
 static int dm_on;
 static void cell_ipc(const uint8_t *m,unsigned len);
 static void pdn_ipconfig(const uint8_t *d,unsigned n);
@@ -507,6 +508,7 @@ static void cell_publish(void)
     const char *op=strncmp(cell.plmn,"4058",4)==0||strncmp(cell.plmn,"40586",5)==0?"Jio":cell.plmn[0]?cell.plmn:"";
     /* ios_reg/ios_data: SystemStatusServer's STTelephonyRegistrationStatus (2 = registered, 3 = notRegistered)
      * and STTelephonyDataConnectionType (7 = lteConnection), as its debug-name functions list them */
+    fprintf(f,"data_on %d\n",!data_off);
     fprintf(f,"bars %d\nmax 4\ndbm %d\noperator %s\nplmn %s\nreg %d\nrat LTE\nios_reg %d\nios_data %d\nupdated %llu\n",
         cell.bars,cell.rssi_dbm,op,cell.plmn,cell.reg_raw,(cell.plmn[0] && strcmp(cell.plmn,"000000"))?2:3,7,(unsigned long long)time(NULL));
     fclose(f);chmod(tmp,0644);rename(tmp,"/var/tmp/redwood-cell/state");
@@ -783,6 +785,18 @@ static void utun_up(void)
     printf("cellular: %s up (index %u), IPv6 from the modem, MTU %u\n",utun_name,if_nametoindex(utun_name),pdn.mtu);fflush(stdout);
     sc_publish();
 }
+static void utun_down(void)
+{
+    if (utun_fd<0) return;
+    close(utun_fd);utun_fd=-1;     /* the interface, its address and route go with the socket */
+    void *sc=dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration",RTLD_NOW);
+    void *(*create)(CFAllocatorRef,CFStringRef,void *,void *)=sc?(void *(*)(CFAllocatorRef,CFStringRef,void *,void *))dlsym(sc,"SCDynamicStoreCreate"):NULL;
+    Boolean (*setm)(void *,CFDictionaryRef,CFArrayRef,CFArrayRef)=sc?(Boolean (*)(void *,CFDictionaryRef,CFArrayRef,CFArrayRef))dlsym(sc,"SCDynamicStoreSetMultiple"):NULL;
+    void *st=create?create(NULL,CFSTR("redwood-cellulard-off"),NULL,NULL):NULL;
+    if (st && setm) {const void *k[]={CFSTR("State:/Network/Service/redwood-cell/IPv6"),CFSTR("State:/Network/Service/redwood-cell/DNS")};
+        CFArrayRef rm=CFArrayCreate(NULL,k,2,&kCFTypeArrayCallBacks);setm(st,NULL,rm,NULL);CFRelease(rm);CFRelease(st);}
+    printf("cellular: mobile data off (%s closed, configd service removed)\n",utun_name);fflush(stdout);
+}
 static void utun_poll(void)
 {
     if (utun_fd<0) return;
@@ -808,6 +822,12 @@ static void ctl_line(char *l)
         size_t n=strlen(l+3);if (n>1000) return;
         f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strncmp(l,"nodata",6)) {
+        data_off=1;close(open("/var/root/cell-nodata",O_CREAT|O_WRONLY,0644));utun_down();cell_publish();
+    } else if (!strncmp(l,"data",4) && data_off) {
+        data_off=0;unlink("/var/root/cell-nodata");cell_publish();
+        printf("cellular: mobile data on\n");fflush(stdout);
+        if (!pdn.up) ctl_line((char[]){"data"});   /* PDN still up: utun_up() follows in the main loop */
     } else if (!strncmp(l,"data",4)) {
         const char *apn=l[4]==' '?l+5:"jionet";char cmd[1400],hex[1100];size_t al=strlen(apn);if (al>99) return;
         uint8_t d[330];
@@ -853,7 +873,8 @@ static void ctl_poll(void)
     static char buf[4096];static size_t have;
     if (ctl_fd<0) {
         mkdir("/var/tmp/redwood-cell",0755);unlink("/var/tmp/redwood-cell/cmd");
-        if (mkfifo("/var/tmp/redwood-cell/cmd",0600)) return;
+        if (mkfifo("/var/tmp/redwood-cell/cmd",0622)) return;
+        chmod("/var/tmp/redwood-cell/cmd",0622);
         ctl_fd=open("/var/tmp/redwood-cell/cmd",O_RDWR|O_NONBLOCK);if (ctl_fd<0) return;
     }
     ssize_t r=read(ctl_fd,buf+have,sizeof(buf)-1-have);if (r<=0) return;have+=(size_t)r;buf[have]=0;
@@ -891,8 +912,8 @@ static int online_handshake(unsigned seconds)
             last=m;lastu=u;lastmsi=msi;
         }
         if (online && stay_mode) ctl_poll();
-        if (online && stay_mode && pdn.up) {utun_up();pp_poll();utun_poll();}
-        if (online && stay_mode && !pdn.up && cell.plmn[0] && strcmp(cell.plmn,"000000")) {
+        if (online && stay_mode && pdn.up) {if (!data_off) utun_up();pp_poll();utun_poll();}
+        if (online && stay_mode && !data_off && !pdn.up && cell.plmn[0] && strcmp(cell.plmn,"000000")) {
             static uint64_t tried;static unsigned tries;struct stat nd;
             if (tries<5 && now_us(NULL)-tried>20000000ull && stat("/var/root/cell-nodata",&nd)) {
                 tried=now_us(NULL);tries++;printf("cellular: automatic data call, try %u\n",tries);fflush(stdout);ctl_line((char[]){"data"});
@@ -1210,7 +1231,7 @@ int main(int argc,char **argv)
     if (argc==8 && !strcmp(argv[7],"--stay")) {
         char args[1024]="";size_t al=sizeof(args)-1;
         if (!sysctlbyname("kern.bootargs",args,&al,NULL,0) && strstr(args,"cellular=0")) {puts("cellular=0: modem left off");return 0;}
-        stay_mode=1;argc=7;
+        stay_mode=1;{struct stat nd;data_off=!stat("/var/root/cell-nodata",&nd);}argc=7;
         /* a newer copy in /var/root (root only) runs instead of the image's: updates without a new image */
         if (strcmp(argv[0],"/var/root/redwood-cellulard") && access("/var/root/redwood-cellulard",X_OK)==0) {
             argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
