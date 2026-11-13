@@ -24,6 +24,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <time.h>
+#include <signal.h>
 #include "sms-pdu.h"
 #ifndef IPV6_BOUND_IF
 #define IPV6_BOUND_IF 125
@@ -414,9 +415,15 @@ static void ims_cmd_poll(int sock,int portc)
     if (have>=sizeof(buf)-1) have=0;
 }
 
+static void ims_stop(int sig)
+{   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own) */
+    (void)sig;ipsec_flush();_exit(0);
+}
+
 int main(int argc,char **argv)
 {
     setvbuf(stdout,NULL,_IOLBF,0);
+    signal(SIGTERM,ims_stop);signal(SIGINT,ims_stop);signal(SIGPIPE,SIG_IGN);
     pfk=socket(PF_KEY,SOCK_RAW,PF_KEY_V2);
     if (argc>1 && !strcmp(argv[1],"--pfkey")) {printf("PF_KEY socket: %s\n",pfk>=0?"available":strerror(errno));return pfk<0;}
     if (argc>1 && !strcmp(argv[1],"--flush")) {ipsec_flush();printf("SAs and policies flushed\n");return 0;}
@@ -545,8 +552,10 @@ int main(int argc,char **argv)
     if (flag(argc,argv,"--once")) return 0;
 
     /* 5. stay: show what the network sends, answer requests with 200 */
-    int cs[8];int ncs=0;
+    int cs[8];int ncs=0;time_t registered_at=time(NULL);
     for (;;) {
+        /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
+        if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         if (poll(p,(nfds_t)k,1000)<0) break;
@@ -557,7 +566,7 @@ int main(int argc,char **argv)
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");return 0;} break;}
+            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");ipsec_flush();return 0;} break;}
             printf("<-- %zd bytes\n",g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7)) {      /* a request: 200 with its Via/From/To/Call-ID/CSeq */
                 char via[900],fr[300],to[300],ci[200],cq[80];int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n");

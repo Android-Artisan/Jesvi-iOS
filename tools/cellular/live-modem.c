@@ -159,6 +159,9 @@ static int inputs(uint32_t *value)
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
 #include <time.h>
 #include "../../xnu/files/bsd/sys/redwood_cp_ipc.h"
 #include "s5123-udl.h"
@@ -1027,6 +1030,22 @@ static int online_handshake(unsigned seconds)
         if (online && stay_mode) ctl_poll();
         if (online && stay_mode && pdn.up) {if (!data_off) utun_up();pp_poll();utun_poll();}
         if (online && stay_mode && ims.up) {ims_up();ims_poll();}
+        if (online && stay_mode && ims_fd>=0) {
+            /* the VoLTE/SMS client (redwood-ims, /var/root): started once IMS is up, started again when it leaves
+             * (fresh registration every ~110 min, or a lost connection), at most every 30 s. /var/root/cell-noimsclient: never */
+            static pid_t ims_pid;static uint64_t ims_spawned;struct stat st2;
+            if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {printf("cellular: IMS client left\n");fflush(stdout);ims_pid=0;}
+            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
+                posix_spawn_file_actions_t fa;posix_spawn_file_actions_init(&fa);
+                posix_spawn_file_actions_addopen(&fa,1,"/var/tmp/redwood-ims.log",O_WRONLY|O_CREAT|O_APPEND,0600);
+                posix_spawn_file_actions_adddup2(&fa,1,2);posix_spawn_file_actions_addopen(&fa,0,"/dev/null",O_RDONLY,0);
+                char *av[]={"/var/root/redwood-ims",NULL};
+                if (!posix_spawn(&ims_pid,av[0],&fa,NULL,av,environ)) {printf("cellular: IMS client started (pid %d)\n",ims_pid);fflush(stdout);}
+                else ims_pid=0;
+                posix_spawn_file_actions_destroy(&fa);ims_spawned=now_us(NULL);
+            }
+            if (stopped && ims_pid>0) {kill(ims_pid,SIGTERM);ims_pid=0;}
+        }
         if (online && stay_mode && pdn.up && !data_off && utun_fd>=0) {
             /* downlink watchdog: the CP has been seen to stop delivering anything (ring idle, control IPC fine).
              * Traffic going out and nothing back for 60 s -> ping the PDN's DNS; still nothing 20 s later -> restart */

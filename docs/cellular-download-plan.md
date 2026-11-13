@@ -530,3 +530,6 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - First test went to the user's other phone (+91…7988); the SIM's own number (P-Associated-URI) ends …3945.
 - The SMSC is only known after the first incoming text (the client learns it); TODO: read it from the SIM (EF_SMSP) or
   the modem (IpcTxGetSmscAddress) at start.
+- 16:05: redwood-cellulard starts /var/root/redwood-ims once the IMS utun is up (log /var/tmp/redwood-ims.log, 0600,
+  appended) and again whenever it leaves (>= 30 s apart). The client leaves cleanly (SAs flushed) after 6600 s for a fresh
+  registration, when the P-CSCF connection closes, or on SIGTERM. Kill switch: /var/root/cell-noimsclient.
