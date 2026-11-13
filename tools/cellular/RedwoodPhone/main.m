@@ -48,7 +48,7 @@ static void rp_cmd_quiet(NSString *line)
     rp_log(@"-> dial");
 }
 
-@interface RP : NSObject <CXProviderDelegate>
+@interface RP : NSObject <CXProviderDelegate, CXCallObserverDelegate>
 @property (strong) CXProvider *provider;
 @property (strong) NSMutableDictionary<NSNumber *, NSUUID *> *calls;   /* redwood-ims call id -> CallKit UUID */
 @property (strong) NSMutableSet<NSNumber *> *done;                       /* ids already reported ended */
@@ -56,6 +56,7 @@ static void rp_cmd_quiet(NSString *line)
 @property (strong) NSMutableDictionary<NSString *, NSUUID *> *dialing;   /* tag -> UUID until redwood-ims names the call */
 @property (strong) NSMutableSet<NSUUID *> *outgoing;
 @property (strong) AVAudioEngine *engine;
+@property (strong) CXCallObserver *observer;
 @end
 
 @implementation RP
@@ -73,6 +74,10 @@ static void rp_cmd_quiet(NSString *line)
         _calls = [NSMutableDictionary new];
         _done = [NSMutableSet new];
         _dialing = [NSMutableDictionary new];
+        /* safety net: a call iOS has ended must not stay up at the network (05:21: an End that never reached the provider
+         * left the call connected in the background) */
+        _observer = [CXCallObserver new];
+        [_observer setDelegate:self queue:nil];
         _outgoing = [NSMutableSet new];
         [[NSFileManager defaultManager] createDirectoryAtPath:Dir withIntermediateDirectories:YES attributes:nil error:nil];
     }
@@ -145,6 +150,16 @@ static void rp_cmd_quiet(NSString *line)
     rp_log(@"provider reset");
     for (NSNumber *cid in self.calls.allKeys) {
         if (![self.done containsObject:cid]) { [self.done addObject:cid]; rp_cmd([NSString stringWithFormat:@"end %@", cid]); }
+    }
+}
+- (void)callObserver:(CXCallObserver *)o callChanged:(CXCall *)c
+{
+    if (!c.hasEnded) return;
+    NSNumber *cid = [self idFor:c.UUID];
+    if (cid && ![self.done containsObject:cid]) {
+        [self.done addObject:cid];
+        rp_log(@"call %@ ended by iOS: hanging up", cid);
+        rp_cmd([NSString stringWithFormat:@"end %@", cid]);
     }
 }
 - (void)providerDidBegin:(CXProvider *)p { rp_log(@"provider ready"); }

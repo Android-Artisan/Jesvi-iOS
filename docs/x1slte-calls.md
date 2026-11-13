@@ -75,6 +75,19 @@ with hooks so that iOS treats them as the phone's own calls.
   video calls (ViLTE), no Wi-Fi calling (VoWiFi needs an IKEv2/EAP-AKA tunnel to Jio's ePDG).
 - Dynamic Island / Control Center show no live mic level (the voice bypasses iOS's audio system).
 
+## Earpiece and speaker (user-verified 2026-11-14)
+
+- Every call starts on the **earpiece**: the kernel's speaker driver plays the call through the top amplifier only
+  (it drives the earpiece/top speaker), 18 dB quieter than the speakers' level, with the bottom speaker muted
+  (`kern.redwood.snd_route` = 1; level `kern.redwood.snd_ear_below`, eighths of a dB).
+- The call screen's **Speaker** button switches to both speakers and back (`snd_route` 0 / 1). iOS itself has no
+  receiver port here (the audio plug-in's devices are Speaker/Codec/Hawking/Actuator; on the iPhone X the earpiece is
+  part of iOS's "Speaker" device), so InCallService is given two routes of ours ("iPhone", "Speaker") by
+  `userland/src/phone_dial.h`; picking one posts `com.redwood.call.speaker` / `.earpiece`, which redwood-ims applies.
+- During a call redwood-ims re-applies its route every 0.5 s, and the audio plug-in does not change the route while
+  `kern.redwood.snd_call` is set: system sounds on iOS's Speaker device no longer switch a call to the loudspeaker.
+- After the call both are cleared (speakers again for everything else).
+
 ## The native path (later)
 
 For a fully native phone, the modem and the audio DSP have to be reverse-engineered further so that they carry the

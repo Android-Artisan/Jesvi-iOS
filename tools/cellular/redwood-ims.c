@@ -267,16 +267,39 @@ static int param_u(const char *v,const char *k,uint32_t *out)
     }
     return -1;
 }
+/* (A, 2026-11-14) bytes after a complete message, per connection: one TCP read can carry two messages (Jio sent 180 and
+ * 200 together; the 200 was lost and the call screen stayed on "calling"), so the rest is kept for the next call */
+static struct {int fd;size_t n;char b[16384];} recv_left[16];
+static int recv_pending(int s)
+{
+    for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 && recv_left[i].n) return 1;
+    return 0;
+}
 static int recv_msg(int s,char *b,size_t cap,int secs)
 {   /* one SIP message from a stream (headers + Content-Length), or a datagram */
     size_t n=0;b[0]=0;
+    for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 && recv_left[i].n) {
+        n=recv_left[i].n<cap-1?recv_left[i].n:cap-1;memcpy(b,recv_left[i].b,n);b[n]=0;recv_left[i].n=0;break;
+    }
     for (;;) {
+        char *e=n?strstr(b,"\r\n\r\n"):NULL;
+        if (e) {
+            /* (keep-alive CRLFs in front of a message are skipped) */
+            size_t skip=0;while (skip+1<n && b[skip]=='\r' && b[skip+1]=='\n') skip+=2;
+            if (skip) {memmove(b,b+skip,n-skip+1);n-=skip;continue;}
+            char cl[32];int body=hdr(b,"Content-Length",cl,sizeof(cl))?atoi(cl):hdr(b,"l",cl,sizeof(cl))?atoi(cl):0;
+            size_t len=(size_t)(e+4-b)+(size_t)(body>0?body:0);
+            if (n>=len) {
+                if (n>len) {   /* the next message(s): kept */
+                    int k=-1;for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 || (k<0 && !recv_left[i].n)) {k=i;if (recv_left[i].fd==s+1) break;}
+                    if (k>=0) {size_t m=n-len<sizeof(recv_left[k].b)?n-len:sizeof(recv_left[k].b);memcpy(recv_left[k].b,b+len,m);recv_left[k].n=m;recv_left[k].fd=s+1;}
+                }
+                b[len]=0;return (int)len;
+            }
+        }
         struct pollfd p={s,POLLIN,0};if (poll(&p,1,secs*1000)<=0) return n?(int)n:-1;
         ssize_t r=recv(s,b+n,cap-1-n,0);if (r<=0) return n?(int)n:-1;
         n+=(size_t)r;b[n]=0;
-        char *e=strstr(b,"\r\n\r\n");if (!e) continue;
-        char cl[32];int body=hdr(b,"Content-Length",cl,sizeof(cl))?atoi(cl):hdr(b,"l",cl,sizeof(cl))?atoi(cl):0;
-        if (n>=(size_t)(e+4-b)+(size_t)body) return (int)n;
     }
 }
 
@@ -1296,7 +1319,8 @@ int main(int argc,char **argv)
         if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
-        if (poll(p,(nfds_t)k,call.state?200:1000)<0) break;
+        {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
+         if (poll(p,(nfds_t)k,pend?0:call.state?200:1000)<0) break;}
         {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
@@ -1317,6 +1341,7 @@ int main(int argc,char **argv)
         call_tick();
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
+            if (i!=1 && i!=2 && !(p[i].revents&(POLLIN|POLLHUP)) && recv_pending(p[i].fd)) p[i].revents|=POLLIN;   /* kept messages */
             if (!(p[i].revents&(POLLIN|POLLHUP)) || (ls>=0 && i==2)) continue;
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
