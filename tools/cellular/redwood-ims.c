@@ -65,6 +65,15 @@ int main(int argc,char **argv)
     struct sockaddr_in6 a={.sin6_len=sizeof(a),.sin6_family=AF_INET6,.sin6_port=htons(5060)};inet_pton(AF_INET6,cfg.pcscf[pci],&a.sin6_addr);
     if (tcp && connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect");return 1;}
     struct sockaddr_in6 me;socklen_t ml=sizeof(me);getsockname(s,(struct sockaddr *)&me,&ml);int myport=ntohs(me.sin6_port);
+    char secc[900];
+    if (tcp) {portc=myport;ports=myport+2;}
+    if (flag(argc,argv,"--nullonly"))   /* (the first form tried: Jio's P-CSCF answers it 403 with no challenge) */
+        snprintf(secc,sizeof(secc),"ipsec-3gpp;prot=esp;mod=trans;spi-c=%u;spi-s=%u;port-c=%d;port-s=%d;ealg=null;alg=%s",spic,spis,portc,ports,alg);
+    else {
+        static const char *const algs[]={"hmac-md5-96","hmac-sha-1-96"},*const ealgs[]={"aes-cbc","null"};size_t o=0;
+        for (int i=0;i<2;i++) for (int j=0;j<2;j++)
+            o+=(size_t)snprintf(secc+o,sizeof(secc)-o,"%sipsec-3gpp;alg=%s;ealg=%s;spi-c=%u;spi-s=%u;port-c=%d;port-s=%d",o?", ":"",algs[i],ealgs[j],spic,spis,portc,ports);
+    }
     char m[3000];uint32_t br=arc4random(),tag=arc4random(),cid=arc4random();
     int n=snprintf(m,sizeof(m),
         "REGISTER sip:%s SIP/2.0\r\n"
@@ -76,7 +85,7 @@ int main(int argc,char **argv)
         "CSeq: 1 REGISTER\r\n"
         "Contact: <sip:%s@[%s]:%d>;+sip.instance=\"<urn:gsma:imei:%.8s-%.6s-0>\";+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\";+g.3gpp.smsip;audio;expires=600000\r\n"
         "Authorization: Digest username=\"%s@%s\",realm=\"%s\",uri=\"sip:%s\",nonce=\"\",response=\"\",algorithm=AKAv1-MD5\r\n"
-        "Security-Client: ipsec-3gpp;prot=esp;mod=trans;spi-c=%u;spi-s=%u;port-c=%d;port-s=%d;ealg=null;alg=%s\r\n"
+        "Security-Client: %s\r\n"
         "%s%s%s"
         "Require: sec-agree\r\nProxy-Require: sec-agree\r\n"
         "Supported: path,sec-agree\r\n"
@@ -85,7 +94,7 @@ int main(int argc,char **argv)
         "Expires: 600000\r\n"
         "Content-Length: 0\r\n\r\n",
         cfg.realm,tcp?"TCP":"UDP",cfg.ip6,tcp?myport:5060,br,cfg.imsi,cfg.realm,tag,cfg.imsi,cfg.realm,cid,cfg.ip6,cfg.imsi,cfg.ip6,ports,cfg.imei,cfg.imei+8,
-        cfg.imsi,cfg.realm,cfg.realm,cfg.realm,spic,spis,portc,ports,alg,*pani?"P-Access-Network-Info: ":"",pani,*pani?"\r\n":"",ua);
+        cfg.imsi,cfg.realm,cfg.realm,cfg.realm,secc,*pani?"P-Access-Network-Info: ":"",pani,*pani?"\r\n":"",ua);
     printf("--> REGISTER to [%s] over %s (%d bytes)\n",cfg.pcscf[pci],tcp?"TCP":"UDP",n);show(m);
     struct timeval tv={4,0};setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
     for (int t=0;t<3;t++) {

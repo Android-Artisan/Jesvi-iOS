@@ -475,3 +475,18 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - Service: descriptors read in batches, one write back per batch, `fore` kept locally and written once per poll; falls back to the peek on an old kernel.
 - Measured over cellular only (IPV6_BOUND_IF utun1): 3 MB in ~1 s, connects in ~63 ms, 3/3 OK (was 1 MB in 3.4 s with stalls).
 - Boot: modem start at top priority 25 s after boot, 5 attempts 8 s apart (first attempt fails under boot load, second works); data ~40 s after the service starts.
+
+## 2026-11-13 13:11 — IMS: the 403 was the Security-Client offer; REGISTER now draws the 401 AKA challenge (session B)
+
+- Cause of the bare 403: our initial REGISTER offered only `ealg=null` (one tuple, with `prot=esp;mod=trans`). Jio's P-CSCF
+  refuses that with 403 and no challenge. Found by comparing with selvakn/gsm-sip-bridge (a client that registers on Jio and
+  Vodafone India; its notes name this exact behaviour for an ealg=null-only offer).
+- Now sent: four tuples, `ipsec-3gpp;alg={hmac-md5-96,hmac-sha-1-96};ealg={aes-cbc,null};spi-c;spi-s;port-c;port-s`
+  (port-c = the socket's source port, port-s = port-c + 2 = the Contact port), TCP, home-domain request line, PANI
+  `3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=<serving MCC MNC><TAC 4 hex><ECI 7 hex>` (08 05: ECI bytes 6-9 LE, TAC 11-12 LE).
+- Answer: `401 Unauthorized`, `WWW-Authenticate: Digest realm=<home>, nonce=<b64 RAND|AUTN>, algorithm=AKAv1-MD5, qop="auth"`,
+  `Security-Server: ipsec-3gpp; q=0.1; alg=hmac-md5-96; ealg=aes-cbc; spi-c=..; spi-s=..; port-c=..; port-s=6000`.
+- Next: nonce -> RAND/AUTN -> `auth` (05 09) on the ISIM -> RES/CK/IK; four ESP transport SAs (PF_KEY: hmac-md5-96 with IK,
+  aes-cbc with CK); second REGISTER from port-c to the P-CSCF's port-s with the digest response (password = RES, qop=auth)
+  and `Security-Verify` = the Security-Server line as received; then 200, SUBSCRIBE reg, SIP MESSAGE for SMS, INVITE for calls.
+- `--nullonly` keeps the old offer for comparison. One attempt per several minutes, as before.
