@@ -1796,8 +1796,11 @@ redwood_init(void)
 		/* (not phone_system_hook() here: in MobilePhone it broke dialling ("call failed") and emptied Recents, 05:18) */
 	}
 	if (strcmp(name, "InCallService") == 0) {
-		/* (not phone_system_hook() here: as a "telephony" call in InCallService the screen stayed on "calling..." and
-		 * its End never reached RedwoodPhone (2026-11-14 05:21); SpringBoard's hook alone gives the full call screen) */
+		/* as a "telephony" call in InCallService the screen stayed on "calling..." and its End never reached RedwoodPhone
+		 * (2026-11-14 05:21); without any, the call went to the Dynamic Island. Default here: isSystemProvider only;
+		 * switchable live (phone_spoof_flags) */
+		phone_spoof_default = 1;
+		phone_system_hook();
 		phone_speaker_hook();
 	}
 	if (strcmp(name, "backboardd") == 0) {

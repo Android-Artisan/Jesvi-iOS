@@ -8,6 +8,7 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <dispatch/dispatch.h>
+#include <notify.h>
 
 #define PHONE_PROVIDER_ID "com.redwood.phone"
 
@@ -73,8 +74,23 @@ phone_is_ours(id provider)
 	const char *c = s ? ((const char *(*)(id, SEL))objc_msgSend)(s, sel_registerName("UTF8String")) : NULL;
 	return c && !strcmp(c, PHONE_PROVIDER_ID);
 }
-static BOOL phone_system(id self, SEL _cmd) { return phone_is_ours(self) ? YES : ((BOOL (*)(id, SEL))phone_orig_system)(self, _cmd); }
-static BOOL phone_tel(id self, SEL _cmd) { return phone_is_ours(self) ? YES : ((BOOL (*)(id, SEL))phone_orig_tel)(self, _cmd); }
+/*
+ * Which of the two answers are given is switchable at run time (notify state of com.redwood.call.spoof, set from a
+ * shell: bit 0 isSystemProvider, bit 1 isTelephonyProvider, bit 7 set = use bits 0..1; 0 = this process's default),
+ * so the full-screen call screen can be worked out without a new boot image each try.
+ */
+static int phone_spoof_default = 3;
+static int
+phone_spoof_flags(void)
+{
+	static int tok = -1;
+	uint64_t st = 0;
+	if (tok < 0) notify_register_check("com.redwood.call.spoof", &tok);
+	if (tok >= 0) notify_get_state(tok, &st);
+	return (st & 0x80) ? (int)(st & 3) : phone_spoof_default;
+}
+static BOOL phone_system(id self, SEL _cmd) { return (phone_spoof_flags() & 1) && phone_is_ours(self) ? YES : ((BOOL (*)(id, SEL))phone_orig_system)(self, _cmd); }
+static BOOL phone_tel(id self, SEL _cmd) { return (phone_spoof_flags() & 2) && phone_is_ours(self) ? YES : ((BOOL (*)(id, SEL))phone_orig_tel)(self, _cmd); }
 
 static void
 phone_system_hook(void)
