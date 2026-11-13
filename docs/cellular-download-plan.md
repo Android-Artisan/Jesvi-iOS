@@ -584,3 +584,23 @@ in Messages, no calls.
 - Incoming delivery is on by default; off: /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
 - From boot (no hands): image inject.conf has `libredwood-tweaks.dylib Preferences imagent`; RedwoodSMS in /var/jb;
   redwood-ims (/var/root) started by redwood-cellulard; SMSC in /var/root/cell-smsc.
+
+## 2026-11-13 17:50 — Control Center cellular button: not solved yet (A)
+
+- iOS hides it because MobileGestalt says HasBaseband = false, cellular-data = false (no Apple baseband).
+- Control Center's ConnectivityModule (loaded into SpringBoard at the first opening):
+  CCUIConnectivityModuleViewController (_setupPortraitButtons, _setupLandscapeButtons, _makeButtonWithClass:,
+  cellularDataButton, portrait/landscape/buttonViewControllers) and CCUIConnectivityCellularDataViewController
+  (buttonTapped:, _toggleState, _updateState, _isCellularDataButtonDemoMode, _isCellularDataRestricted).
+- libredwood-sb (cell_sb.h) hooks them at module load (dyld add-image) and on viewWillAppear: the cellular button is
+  made by the module's factory and inserted after airplane mode; the tap sends data/nodata; the state follows data_on.
+  All 7 hooks install, but the button is not shown and "button added" is never logged -> the button object most likely
+  already exists in the lists and the compressed 2x2 layout picks its four buttons elsewhere (AirDrop takes the slot).
+  Next: sb-dump the arrays' contents at viewWillAppear, find the layout's choice (viewWillLayoutSubviews /
+  _compressedButtonSize), or set the cellular button where AirDrop is.
+- Tools for this without new images: /var/tmp/redwood-cell/sb-dump ("CLASSPART [METHODPART]", class + instance methods
+  and matching images to the console) and sb-hook ("CLASS SELECTOR YES|NO|DATA" for BOOL getters).
+- Lesson: the deploy tool can fail to reach fastboot ("did not reach Log access") and the phone then boots the OLD image;
+  always compare the md5 of /redwood/lib/<lib> with the build after a deploy.
+- ControlCenterCellularDataButtonDemoMode (com.apple.springboard / com.apple.controlcenter) did not show the button;
+  set back to false.
