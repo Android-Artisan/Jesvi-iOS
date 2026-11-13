@@ -21,8 +21,8 @@
  *            magnetometer's PDC matrix (0xFD, the dtbo's 27 bytes), its firmware revision, the accelerometer's range
  *   shub=6   ... the sensors on (shub_sensors=), their samples into /dev/redwood-sensors for as long as the phone runs
  *   shub_sensors=<mask>  Samsung's sensor numbers (sensor_list.h: 0 accel, 1 gyro, 4 magnetometer, 5 pressure,
- *            7 proximity, 9 light; default 0x2b3 = those six), only those the hub found
- *   shub_ms=<n>          their period in ms (default 20; light, proximity and pressure 200)
+ *            7 proximity, 9 light; default 0x233 = those but proximity, since 2026-11-13), only those the hub found
+ *   shub_ms=<n>          their period in ms (default 60; light and pressure 1000, proximity 200)
  *   shub_div=<n>         USI14's divider, 0-15 (default 15: 400 MHz / 16 = 25 MHz IP clock, SCLK a quarter: 6.25 MHz;
  *            Samsung's spi-max-frequency is 25 MHz); 255 leaves it as found
  *   shub_ap_rev=<n>      the AP revision told to the hub (default 21: the dtbo's dtbo-hw_rev 0x15; Samsung sends the
@@ -167,7 +167,10 @@ static struct redwood_exynos_spi bus = {
 static vm_offset_t cmu_top, cmu_peric0;
 static volatile uint8_t *gpp3, *gpp6, *gpb0, *gpm19, *gpa0, *gpa1, *gpa4;
 static uint32_t steps, keep = 1, log_frames, div_ratio = 15, ap_rev = 21;
-static uint32_t want_sensors = 0x2b3, period_ms = 20, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
+/* 2026-11-13 (user: "the light sensor flashes every second", the phone laggy): proximity (7) off by default -- its IR
+ * LED pulsed at every 200 ms reading, with nobody using it until calls exist -- and the motion sensors at 60 ms
+ * (~16 Hz, plenty for rotation) instead of 20. shub_sensors=0x2b3 shub_ms=20 gives the old behaviour back. */
+static uint32_t want_sensors = 0x233, period_ms = 60, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
 static volatile bool powered;
 static const char *state = "off";
 
@@ -983,11 +986,17 @@ on_sample(void *ctx, const struct shub_sample *s)
 	post_sample(s);
 }
 
+/* The hub's own debug text (print_mcu_debug): ~8 lines a second in normal use (482 a minute on 2026-11-13, most
+ * of the kernel log). Only with shub_text=1; counted either way (c->debug). */
+static uint32_t shub_text;
+
 static void
 on_text(void *ctx, const uint8_t *p, size_t n)
 {
 	(void)ctx;
-	text_rpc("says", p, (uint16_t)(n > 150 ? 150 : n));
+	if (shub_text) {
+		text_rpc("says", p, (uint16_t)(n > 150 ? 150 : n));
+	}
 }
 
 static void
@@ -1372,8 +1381,9 @@ report(void)
 static void
 run(void)
 {
-	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 200 }, { SSP_PROXIMITY, 200 },
-		                                                   { SSP_PRESSURE, 200 } };
+	/* light and pressure once a second (auto-brightness needs no more); proximity, when asked for, 200 ms */
+	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 1000 }, { SSP_PROXIMITY, 200 },
+		                                                   { SSP_PRESSURE, 1000 } };
 	uint32_t frames_at_time = 0;
 	uint64_t report_at = now_ns();
 
@@ -1491,6 +1501,7 @@ redwood_ssp_init(void)
 	n = n > 6 ? 6 : n;
 	PE_parse_boot_argn("shub_keep", &keep, sizeof(keep));
 	PE_parse_boot_argn("shub_log", &log_frames, sizeof(log_frames));
+	PE_parse_boot_argn("shub_text", &shub_text, sizeof(shub_text));
 	PE_parse_boot_argn("shub_div", &div_ratio, sizeof(div_ratio));
 	PE_parse_boot_argn("shub_ap_rev", &ap_rev, sizeof(ap_rev));
 	PE_parse_boot_argn("shub_sensors", &want_sensors, sizeof(want_sensors));
