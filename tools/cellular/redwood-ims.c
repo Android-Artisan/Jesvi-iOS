@@ -733,11 +733,33 @@ int main(int argc,char **argv)
             if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
             printf("<-- %zd bytes\n",g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7)) {      /* a request: 200 with its Via/From/To/Call-ID/CSeq */
-                char via[900],fr[300],to[300],ci[200],cq[80];int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n");
+                /* An INVITE (a call to us) must NOT get a bare 200: the caller would be connected to silence, and
+                 * billed. Until calls exist: 100 Trying, the request saved (root-only, for working out the call
+                 * flow), then 486 Busy Here. The ACK for the 486 needs no answer. (2026-11-13) */
+                int invite=!strncmp(r,"INVITE ",7);
+                const char *status=invite?"486 Busy Here":"200 OK";
+                if (invite) {
+                    char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
+                    int fd=open(fn,O_WRONLY|O_CREAT|O_TRUNC,0600);if (fd>=0) {(void)write(fd,r,(size_t)g);close(fd);}
+                    printf("INCOMING CALL: saved %s, answered busy (calls not implemented yet)\n",fn);
+                }
+                char via[900],fr[300],to[300],ci[200],cq[80];int o=0;
+                if (invite) {
+                    o=snprintf(m,sizeof(m),"SIP/2.0 100 Trying\r\n");
+                    const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
+                    if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
+                    if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s\r\n",to);
+                    if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
+                    if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
+                    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
+                    if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);
+                }
+                o=snprintf(m,sizeof(m),"SIP/2.0 %s\r\n",status);
                 const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
                 (void)via;
                 if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
                 if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s%s\r\n",to,strstr(to,"tag=")?"":";tag=rw1");
+                (void)status;
                 if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
                 if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
                 o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
