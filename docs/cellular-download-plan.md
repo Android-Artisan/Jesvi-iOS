@@ -395,3 +395,10 @@ profile 0d 1b?), deactivate before re-activate; also serve real EFS files (FLL.b
   IpcRxIpConfiguration / IpcRxGprsCallStatus -- which group/index?) or needs a PDU-session/CID allocation
   step (DataCallManager::DoAllocatePduSessionId) or QoS/data profile (0d 1b). Next: find JsonData's rx
   group/index and the RIL's exact SETUP_DATA_CALL message order (DataCallManager handlers).
+- JSON variant tried (IpcProtocol41JsonData uses JsonUtil::MakeJsonPacket(buf, grp, idx, type, json); data =
+  09, u16 len, JSON, padded to 512): define {"cid":1,"pdp_type":6,"apn":"jionet"} -> 0x8001 refused; activate
+  {"cid":1,"state":1,"auth_type":0,"reason":0} -> no answer. => this CP takes the binary define/activate.
+- Open question: what makes the CP complete the binary activation (it accepts, then stays silent until the
+  next request closes it with cause 2 = REGULAR_DEACTIVATION). Candidates: PS attach state (IpcRxGprsPsState
+  -- which index? not yet seen), APN/IMS dummy PDN (DataCallManager::SetupDummyPdn), PDU session id
+  allocation (DoAllocatePduSessionId), or a data profile (IpcTxSetDataProfile 0d 1b) before setup.
