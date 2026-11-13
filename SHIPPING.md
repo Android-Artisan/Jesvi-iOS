@@ -9,8 +9,8 @@
 - Tested: end to end S20 -> own number -> SMSC -> back -> Messages; texts from another phone; sends from Messages;
   cold boot. Kill switches: /var/root/cell-nodata, cell-noims, cell-noimsclient, cell-nocommcenter;
   /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
-- Open: Control Center data button, hotspot, MMS (pictures/groups), calls; first modem start after boot can stall
-  (watchdog restarts it).
+- Open: Control Center data button (hooks in place, button not laid out yet), hotspot (IPv6-only Jio needs 464XLAT),
+  MMS (pictures/groups), calls. A stalled first modem start after boot is restarted by the registration watchdog.
 - Details: work/hackios-cellular/docs/cellular-download-plan.md, sessions/A.md.
 
 ## 2026-11-12 — cellular IPC memory audit (built, not deployed)
