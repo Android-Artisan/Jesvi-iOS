@@ -381,3 +381,17 @@ registration notices (08 05 ... "21 03 07" -> "21 03 01" -> "21 01 02"), but def
 not active) at once. Next: decode IpcRx for 08 05 (NET_REGIST) and 0d 10 from the library to know the PS
 state; find what the RIL sends between attach and setup-data-call (IpcTxSetDataCallEstablish 03 02? data
 profile 0d 1b?), deactivate before re-activate; also serve real EFS files (FLL.bin).
+
+### Nov13 ~09:30: data-call results decoded (session A)
+- GPRS_CALL_STATUS 0d10 data: cid, state (1 active, 3 disabled), cause byte. Cause 2 -> RIL DataFailCause 36
+  (REGULAR_DEACTIVATION) via the converter at libsec-ril 0x371f44 (table 0x153592). With the correct sizes
+  (define 149 B, activate 248 B) the CP answers 0x8000 and then stays silent until the next define/
+  activate, which ends the previous context with cause 2 -- no 0d09 IP configuration or "active" status.
+- 03 02 SET (IpcTxSetDataCallEstablish, data 01 allow / 02 disallow) -> 0x8003 unsupported (same as Note 8).
+- PDP type bytes: 02 IPv4, 05 IPv6, 06 IPv4v6 (define builder table 0x040605).
+- The CP is truly registered: NITZ (0a 05: yy mm dd hh mm ss + PLMN), JSON serving-cell info (0b 0d
+  {"JVER":"SSB2","PLMN":"405854","ACT_":"4",...}), 0a 52 periodic counters, 0f 36 toggling 00 03 / 01 03.
+- Likely gaps: the success report may come through the JSON data protocol (IpcProtocol41JsonData::
+  IpcRxIpConfiguration / IpcRxGprsCallStatus -- which group/index?) or needs a PDU-session/CID allocation
+  step (DataCallManager::DoAllocatePduSessionId) or QoS/data profile (0d 1b). Next: find JsonData's rx
+  group/index and the RIL's exact SETUP_DATA_CALL message order (DataCallManager handlers).
