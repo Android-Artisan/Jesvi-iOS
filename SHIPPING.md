@@ -50,6 +50,24 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Auto-brightness back in Settings, faster; perceptual slider (2026-11-13 20:45, A + codex-brightness)
+- **Auto-Brightness switch is back** (Settings > Accessibility > Display & Text Size): MobileGestalt's
+  `ambient-light-sensor` asks IOKit for a {PrimaryUsagePage 0xff00, PrimaryUsage 4} entry, which the virtual HID light
+  never had; the kernel now publishes `RedwoodAmbientLightSensor` once the hub finds the light sensor, and init rebuilds
+  the stale MobileGestalt cache once. User-verified: the switch shows and auto-brightness follows the room.
+- **Slider is perceptual** (`fb_bl_curve=1`, **on**; 0 = old linear): the slider's legacy value went to the panel as
+  value x 420 nits (50 % = 210, 100 % = 420: "50-100 % feels the same"). Now 2 + 418 s^2.2: 10 % 4.7 nits, 25 % 22,
+  50 % 93, 75 % 224, 100 % 420 (measured on the panel target). Auto-brightness's manual anchor uses the same curve.
+- **Faster auto-brightness:** light sensor every 250 ms (`shub_light_ms=`, was 1000); brighten after 1.5 s, dim after 3 s
+  (were 3 / 5), big changes (4x) after 0.5 / 1.5 s; wake hold 1 s (was 5); ramps 0.5 / 1.2 s (were 0.9 / 2). The manual
+  anchor holds only within 1.5x lux (was 2x or 20 lux: a level set at 30 lux kept a dark room at 167 nits).
+  Tests: tools/tests/brightness_policy.c. User: "feels much much better".
+- **Proximity on demand only:** no more 2 s bursts every 30 s; the IR emitter turns on only for backboardd's native
+  active/monitoring modes (calls), never for lock-screen passive/pocket checks, and both sensors are off with the
+  display off (`shub.prox` poke shows the state). Idle: light on, proximity off -- verified. Call-time proximity: **not
+  yet verified** (no calls yet).
+- Kernel 20:40 + boot volume flashed 20:42.
+
 ### Files, Finder and fresh installs (2026-11-13, B) — `8cd6c3b`, `dd577f2`, `dc1cea2`, `c7e2856`
 - **Why it broke:** after a restart LaunchServices no longer knew `org.hakios.LocalFilesHost`, the hidden app that carries
   Save to Files, the document picker and On My iPhone ("the requested app extension could not be found", no Finder sharing).

@@ -1074,18 +1074,26 @@ static void
 island_cache_sync(void)
 {
 	const char *arg = boot_arg("island");
-	char now = arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', last[4];
+	/* Version the hardware capability cache too: old builds cached ALS=false
+	 * because their light sensor existed only in virtual HID, not IORegistry.
+	 * Invalidate once before launchd (and when the ALS boot configuration changes),
+	 * so Settings and CoreBrightness both obtain the real kernel capability. */
+	char now[3] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2' }, last[4];
 	int fd;
+	arg = boot_arg("shub");
+	if (arg != NULL && strcmp(arg, "6") == 0) now[1] = '1';
+	arg = boot_arg("sens_als");
+	if (arg != NULL && strcmp(arg, "0") == 0) now[1] = '0';
 
-	if (read_whole(ISLAND_MARK, last, sizeof(last)) == 1 && last[0] == now) {
+	if (read_whole(ISLAND_MARK, last, sizeof(last)) == sizeof(now) && !memcmp(last, now, sizeof(now))) {
 		return;
 	}
 	if (unlink(MG_CACHE) == 0) {
-		printf("  island=%c (changed): MobileGestalt's cache removed, rebuilt from the device tree\n", now);
+		printf("  hardware capabilities changed (island=%c ALS=%c): rebuilding MobileGestalt cache\n", now[0], now[1]);
 	}
 	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd >= 0) {
-		write(fd, &now, 1);
+		write(fd, now, sizeof(now));
 		close(fd);
 	}
 }

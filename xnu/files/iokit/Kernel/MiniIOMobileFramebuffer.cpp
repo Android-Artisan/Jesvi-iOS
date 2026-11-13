@@ -3911,6 +3911,34 @@ static bool gAcceleratorTakesProperties;        /* boot-arg metal=1 */
 
 static bool gAcceleratorOffersGLES;             /* metal=1, unless gles=0 */
 
+/* The virtual HID service supplies events, but MobileGestalt's ALS capability
+ * query uses IOPropertyMatch in the kernel registry (20F66: 0x19c547058).
+ * Publish backing metadata only after SSP has detected the light sensor. This
+ * is deliberately not an IOHIDEventService: it must not create duplicate events. */
+extern "C" void
+redwood_als_publish(void)
+{
+	uint32_t enabled = 1;
+	PE_parse_boot_argn("sens_als", &enabled, sizeof(enabled));
+	if (!enabled) return;
+	IOService *service = new IOService;
+	IOService *provider = IOService::getResourceService();
+	if (!service) return;
+	if (!service->init() || !service->attach(provider)) {
+		service->release();
+		return;
+	}
+	service->setName("RedwoodAmbientLightSensor");
+	service->setProperty("PrimaryUsagePage", (unsigned long long)0xff00, 32);
+	service->setProperty("PrimaryUsage", (unsigned long long)4, 32);
+	service->setProperty("Built-In", kOSBooleanTrue);
+	service->setProperty("VendorID", (unsigned long long)0x5ac, 32);
+	service->setProperty("Product", "Redwood ambient light sensor");
+	service->registerService();
+	service->release();
+	IOLog("sensors: detected ALS published in IORegistry\n");
+}
+
 class IOAcceleratorES : public IOService
 {
 	OSDeclareDefaultStructors(IOAcceleratorES);
@@ -4073,6 +4101,41 @@ AppleARMBacklight::publishParameters(void)
 /* a "brightness": a number of 0..max, or { value = N } */
 static uint32_t gPendingFade;           /* FadePeriod of the request being taken (16.16 s) */
 
+/*
+ * fb_bl_curve=1 (default; A, 2026-11-13, user: "50-100% almost feels the same"): the slider's legacy value to nits on a
+ * perceptual curve, not value x 420. backboardd writes the Control Center slider s as 0.025 + 0.95 s (measured: 0.1 ->
+ * 0.120, 0.5 -> 0.500, 1.0 -> 0.975), so that range is stretched back to 0..1 first, then nits = 2 + 418 s^2.2 (the
+ * eye's response; CoreBrightness's own slider -> nits is ~s^2.05): 25 % 22 nits, 50 % 93, 75 % 224, 100 % 420.
+ * Linear gave 50 % = 210 and 100 % = 420, one doubling the eye barely notices. fb_bl_curve=0: the old linear map.
+ * The same curve is in userland/src/brightness_policy.h (rb_slider_nits), for auto-brightness's manual anchor.
+ */
+static TUNABLE(uint32_t, gBLCurve, "fb_bl_curve", 1);
+static const uint32_t gSliderNits16[33] = {      /* 2 + 418 s^2.2 nits in 16.16, s = i / 32 */
+	131072, 144448, 192532, 281038, 413468, 592454, 820135, 1098329, 1428622, 1812428, 2251025, 2745581, 3297175,
+	3906808, 4575419, 5303888, 6093048, 6943688, 7856557, 8832373, 9871819, 10975551, 12144201, 13378376, 14678660,
+	16045619, 17479800, 18981731, 20551927, 22190886, 23899093, 25677018, 27525120,
+};
+
+static uint32_t
+legacyToNits16(uint32_t value)
+{
+	if (!gBLCurve) {
+		return (uint32_t) ((uint64_t) value * kPanelMaxNits);
+	}
+	if (value == 0) {
+		return 0;                               /* the display going off */
+	}
+	/* s in 1/65536: (value / 65536 - 0.025) / 0.95 */
+	int64_t lo = kBacklightMax / 40, span = (int64_t) kBacklightMax * 95 / 100;
+	int64_t s = ((int64_t) value - lo) * kBacklightMax / span;
+	s = s < 0 ? 0 : s > kBacklightMax ? kBacklightMax : s;
+	uint32_t i = (uint32_t) (s >> 11), frac = (uint32_t) (s & 2047);
+	if (i >= 32) {
+		return gSliderNits16[32];
+	}
+	return gSliderNits16[i] + (uint32_t) (((uint64_t) (gSliderNits16[i + 1] - gSliderNits16[i]) * frac) >> 11);
+}
+
 bool
 AppleARMBacklight::takeBrightness(OSObject * value, const char * name)
 {
@@ -4088,7 +4151,7 @@ AppleARMBacklight::takeBrightness(OSObject * value, const char * name)
 	fValue = number->unsigned32BitValue() > kBacklightMax ? kBacklightMax : number->unsigned32BitValue();
 	publishParameters();
 	if (fFB != NULL) {
-		fFB->brightnessRequest((uint32_t) ((uint64_t) fValue * kPanelMaxNits), gPendingFade);
+		fFB->brightnessRequest(legacyToNits16(fValue), gPendingFade);
 	}
 	fbSay("fb: bl: backlight %s = %u of %u\n", name, fValue, kBacklightMax);
 	return true;

@@ -22,8 +22,8 @@
  *   shub=6   ... the sensors on (shub_sensors=), their samples into /dev/redwood-sensors for as long as the phone runs
  *   shub_sensors=<mask>  Samsung's sensor numbers (sensor_list.h: 0 accel, 1 gyro, 4 magnetometer, 5 pressure,
  *            7 proximity, 9 light; default 0x2b3 = those six), only those the hub found
- *   shub_ms=<n>          their period in ms (default 60; pressure 1000; light shub_light_ms=1000 while the display is on;
- *            proximity bursts of shub_burst_on=2000 ms every shub_burst_every=30000 ms at shub_prox_ms=200; both off
+ *   shub_ms=<n>          their period in ms (default 60; pressure 1000; light shub_light_ms=250 while the display is on;
+ *            proximity on native HID demand at shub_prox_ms=200; both off
  *            while the display is off)
  *   shub_div=<n>         USI14's divider, 0-15 (default 15: 400 MHz / 16 = 25 MHz IP clock, SCLK a quarter: 6.25 MHz;
  *            Samsung's spi-max-frequency is 25 MHz); 255 leaves it as found
@@ -172,10 +172,9 @@ static uint32_t steps, keep = 1, log_frames, div_ratio = 15, ap_rev = 21;
 /* 2026-11-13 (user: the sensor by the camera flashes every second, the phone laggy): the motion sensors at 60 ms
  * (~16 Hz, plenty for rotation) instead of 20; shub_ms=20 gives that back. */
 static uint32_t want_sensors = 0x2b3, period_ms = 60, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
-/* Proximity in bursts (user, 2026-11-13): with the display on, shub_burst_on ms (2000) every shub_burst_every ms
- * (30000) at shub_prox_ms (200); its IR LED flashed 5 times a second all the time before. Light every shub_light_ms
- * (1000) with the display on (auto-brightness needs steady readings). With the display off, both fully off. */
-static uint32_t prox_ms = 200, burst_on_ms = 2000, burst_every_ms = 30000, light_ms = 1000;
+/* Light stays continuous while awake. The visible IR emitter needs explicit
+ * native proximity demand; periodic unsolicited bursts are never necessary. */
+static uint32_t prox_ms = 200, light_ms = 250;     /* light 4x a second: auto-brightness reacts in ~1.5 s (A, 2026-11-13) */
 static volatile bool powered;
 static const char *state = "off";
 
@@ -1214,6 +1213,8 @@ proximity_setup(void)
 /* Queue diagnostic transactions to the SPI owner; never race an SSP command
  * from the sysctl thread. Raw proximity is off unless explicitly requested. */
 static int prox_request = -1;
+static bool prox_raw_wanted;
+static uint32_t sensor_power_state;
 static uint16_t prox_thresholds[4];
 static bool prox_thresholds_valid;
 static uint8_t prox_info[18];
@@ -1227,7 +1228,10 @@ dbg_shub_prox(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 	if (n) __atomic_store_n(&prox_request, (int)v[0], __ATOMIC_RELAXED);
 	lck_mtx_lock(&shub_lock);
-	snprintf(out, cap, "proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u; chip %s %#x drive %#x persist %#x pulse %#x gain %#x time %#x pulse_len %#x offset %02x%02x%s\n",
+	uint32_t power = __atomic_load_n(&sensor_power_state, __ATOMIC_RELAXED);
+	snprintf(out, cap, "display %d light %u prox %u raw %u demand %#x; proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u; chip %s %#x drive %#x persist %#x pulse %#x gain %#x time %#x pulse_len %#x offset %02x%02x%s\n",
+	    redwood_display_is_on, !!(power & (1u << SSP_LIGHT)), !!(power & (1u << SSP_PROXIMITY)),
+	    !!(power & (1u << SSP_PROXIMITY_RAW)), redwood_sensors_proximity_mode(),
 	    last[SSP_PROXIMITY].count, last[SSP_PROXIMITY].data[0], shub_le16(last[SSP_PROXIMITY].data + 1),
 	    last[SSP_PROXIMITY_RAW].count, shub_le16(last[SSP_PROXIMITY_RAW].data),
 	    prox_thresholds_valid ? "read" : "unavailable", prox_thresholds[0], prox_thresholds[1],
@@ -1243,6 +1247,7 @@ proximity_diagnostic(void)
 	int request = __atomic_exchange_n(&prox_request, -1, __ATOMIC_RELAXED);
 	uint8_t b[8] = {0};
 	if (request < 0) return;
+	prox_raw_wanted = request != 0;
 	if (request) {
 		if (request == 2) {
 			/* Samsung set_prox_cal_to_ssp(): two zero s32s when the
@@ -1264,10 +1269,6 @@ proximity_diagnostic(void)
 		prox_info_valid = ok;
 		if (ok) memcpy(prox_info, info, sizeof(info));
 		lck_mtx_unlock(&shub_lock);
-		if (!(ssp.enabled & (1ull << SSP_PROXIMITY_RAW))) (void)sensor_on(SSP_PROXIMITY_RAW, 200);
-	} else if (ssp.enabled & (1ull << SSP_PROXIMITY_RAW)) {
-		b[0] = SSP_PROXIMITY_RAW; shub_put32(b + 1, 200);
-		if (ssp_cmd(SSP_SENSOR_REMOVE, SSP_AP2HUB_WRITE, 0, b, 5)) ssp.enabled &= ~(1ull << SSP_PROXIMITY_RAW);
 	}
 }
 
@@ -1393,8 +1394,11 @@ run(void)
 	uint64_t report_at = now_ns();
 
 	proximity_setup();
+	if ((want_sensors & (1u << SSP_LIGHT)) && (ssp.found & (1ull << SSP_LIGHT))) redwood_als_publish();
 	for (uint8_t id = 0; id < SSP_SENSORS && id < 32; id++) {
 		uint32_t ms = period_ms;
+		/* These are exclusively controlled below; no boot-time IR flash. */
+		if (id == SSP_LIGHT || id == SSP_PROXIMITY || id == SSP_PROXIMITY_RAW) continue;
 
 		if (!(want_sensors & (1u << id)) || !(ssp.found & (1ull << id))) {
 			continue;
@@ -1410,23 +1414,18 @@ run(void)
 	idle_us = 4000;
 	while (powered) {
 		proximity_diagnostic();
-		{       /* light + proximity bursts, nothing while the display is off */
-			/* Light: every light_ms while the display is on -- it emits nothing, and auto-brightness
-			 * (inject_sensors.c, brightness_policy.h) needs 5-8 s of steady, fresh readings before it moves:
-			 * in bursts it never moved (user 2026-11-13). Proximity (an IR LED): the bursts. */
-			static const uint8_t ids[] = { SSP_LIGHT, SSP_PROXIMITY };
-			static uint64_t cycle_at;
-			uint64_t now = now_ns();
-			if (!cycle_at || now - cycle_at >= (uint64_t)burst_every_ms * NSEC_PER_MSEC) {
-				cycle_at = now;
-			}
-			bool burst = redwood_display_is_on && now - cycle_at < (uint64_t)burst_on_ms * NSEC_PER_MSEC;
+		{       /* All emitter/power changes stay on the SPI owner thread. */
+			static const uint8_t ids[] = { SSP_LIGHT, SSP_PROXIMITY, SSP_PROXIMITY_RAW };
 			for (unsigned i = 0; i < sizeof(ids); i++) {
 				uint8_t id = ids[i];
-				bool want = id == SSP_LIGHT ? (bool)redwood_display_is_on : burst;
-				uint32_t ms = id == SSP_LIGHT ? light_ms : prox_ms;
+				bool allowed = id == SSP_PROXIMITY_RAW ? (ssp.found & (1ull << SSP_PROXIMITY)) != 0 :
+				    (want_sensors & (1u << id)) && (ssp.found & (1ull << id));
+				bool demand = id == SSP_LIGHT || (id == SSP_PROXIMITY_RAW ? prox_raw_wanted :
+				    redwood_sensors_proximity_mode() != 0);
+				bool want = allowed && redwood_display_is_on && demand;
+				uint32_t ms = id == SSP_LIGHT ? light_ms : id == SSP_PROXIMITY_RAW ? 200 : prox_ms;
 				bool on = (ssp.enabled & (1ull << id)) != 0;
-				if (!(want_sensors & (1u << id)) || !(ssp.found & (1ull << id)) || on == want) {
+				if (on == want) {
 					continue;
 				}
 				if (want) {
@@ -1440,6 +1439,7 @@ run(void)
 					}
 				}
 			}
+			__atomic_store_n(&sensor_power_state, (uint32_t)ssp.enabled, __ATOMIC_RELAXED);
 		}
 		pump(100, NULL);
 		if (ssp.frames - frames_at_time >= 3000) {
@@ -1540,12 +1540,9 @@ redwood_ssp_init(void)
 	PE_parse_boot_argn("shub_text", &shub_text, sizeof(shub_text));
 	PE_parse_boot_argn("shub_prox_ms", &prox_ms, sizeof(prox_ms));
 	prox_ms = prox_ms < 100 ? 100 : prox_ms;
-	PE_parse_boot_argn("shub_burst_on", &burst_on_ms, sizeof(burst_on_ms));
 	PE_parse_boot_argn("shub_light_ms", &light_ms, sizeof(light_ms));
-	PE_parse_boot_argn("shub_burst_every", &burst_every_ms, sizeof(burst_every_ms));
-	if (burst_every_ms < burst_on_ms) {
-		burst_every_ms = burst_on_ms;
-	}
+	/* Keep samples inside the automatic controller's three-second freshness window. */
+	light_ms = light_ms < 100 ? 100 : light_ms > 1000 ? 1000 : light_ms;
 	PE_parse_boot_argn("shub_div", &div_ratio, sizeof(div_ratio));
 	PE_parse_boot_argn("shub_ap_rev", &ap_rev, sizeof(ap_rev));
 	PE_parse_boot_argn("shub_sensors", &want_sensors, sizeof(want_sensors));

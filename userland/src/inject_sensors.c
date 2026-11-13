@@ -36,6 +36,8 @@
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
+#include "sensor_power_policy.h"
 #include <mach/mach_time.h>
 #include <math.h>
 #include <objc/message.h>
@@ -125,6 +127,7 @@ number(int value)
 
 struct service {
 	CFMutableDictionaryRef properties;
+	int usage;
 	volatile bool opened;
 	IOHIDEventRef last;             /* the last event, for copyEvent (CoreBrightness asks for the light's) */
 	uint32_t last_type;
@@ -136,7 +139,7 @@ static double gyro_k = 1.0 / 16400;                     /* counts to HID degrees
 static double mag_k = 0.054;                            /* counts to uT */
 /* ALS is on by default. sens_als=0 disables both the service and the automatic
  * luminance bridge. The controller null guard permits boot without a native ALS controller. */
-static long use_als;
+static long use_als = 1;
 static mach_timebase_info_data_t timebase;
 
 static CFTypeRef
@@ -151,6 +154,18 @@ static Boolean
 set_property(__unused void *target, void *refcon, __unused IOHIDServiceClientRef service, CFStringRef key, CFTypeRef value)
 {
 	static int told;
+	struct service *made = refcon;
+	if (made->usage == HID_USAGE_PROXIMITY && key && value && CFEqual(key, CFSTR("DetectionMode"))) {
+		uint32_t mode = 0;
+		if (CFGetTypeID(value) != CFNumberGetTypeID() || !CFNumberGetValue(value, kCFNumberSInt32Type, &mode))
+			return false;
+		uint32_t required = redwood_proximity_required(mode);
+		if (ioctl(device, REDWOOD_SENSORS_PROXIMITY, &required) != 0) {
+			say("redwood: sensors: proximity demand failed: %s\n", strerror(errno));
+			return false;
+		}
+		say("redwood: sensors: native proximity mode %u, emitter requested %u\n", mode, required);
+	}
 
 	if (key != NULL && value != NULL && CFEqual(key, CFSTR("DeviceOpenedByEventSystem")) &&
 	    CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue(value)) {
@@ -266,6 +281,7 @@ make_sensor(IOHIDEventSystemClientRef client, const char *product, int usage, bo
 		CFDictionarySetValue(properties, CFSTR("Placement"), one);
 	}
 	made->properties = properties;
+	made->usage = usage;
 	for (int attempt = 1; attempt <= 20; attempt++) {
 		made->opened = false;
 		service = IOHIDVirtualServiceClientCreateWithCallbacks(client, properties, &callbacks, NULL, made);
@@ -643,7 +659,7 @@ automatic_brightness_thread(__unused void *arg)
 				rb_wake(&policy, now / 1e6, actual);
 				say("redwood: auto brightness: active at %.2f lux, %.2f nits\n", lux, current);
 			} else if (slider >= 0 && last_slider >= 0 && fabs(slider - last_slider) > .0001) {
-				actual = fmax(3, fmin(420, slider * 420));
+				actual = fmax(3, fmin(420, rb_slider_nits(slider)));   /* the kernel's slider curve */
 				/* Anchor a manual adjustment to this lighting; the policy holds it
 				 * locally and releases it across a sustained large ambient change. */
 				rb_manual(&policy, now / 1e6, lux, actual);
@@ -660,13 +676,14 @@ automatic_brightness_thread(__unused void *arg)
 			double target = rb_observe(&policy, now / 1e6, lux);
 			double dt = fmin(.5, (now - step_at) / 1e6);
 			step_at = now;
-			double tau = target > current ? .9 : 2.;
+			double tau = target > current ? .5 : 1.2;    /* ramp time constants, s (were .9 / 2) */
 			if (fabs(target - current) > fmax(.2, current * .01)) wait_us = 50000;
 			current = exp(log(current) + (log(target) - log(current)) * (1 - exp(-dt / tau)));
 			if (fabs(current - target) < .15) current = target;
 			if (sent >= 0 && fabs(current - sent) < fmax(.15, sent * .005)) goto next;
 			/* Check display power again immediately before the write. */
-			if (!automatic_boolean(client, CFSTR("DisplayOn"))) { active = false; goto next; }
+			if (!automatic_boolean(client, CFSTR("DisplayOn")) ||
+			    !automatic_boolean(client, CFSTR("DisplayBrightnessAuto"))) { active = false; goto next; }
 			CFNumberRef number = CFNumberCreate(NULL, kCFNumberDoubleType, &current);
 			const void *keys[] = { CFSTR("Brightness"), CFSTR("Commit") };
 			const void *values[] = { number, kCFBooleanFalse };
@@ -811,7 +828,7 @@ redwood_sensors_early(void)
 	char arguments[1024] = "";
 	size_t size = sizeof(arguments) - 1;
 
-	device = open(REDWOOD_SENSORS_DEVICE, O_RDONLY);
+	device = open(REDWOOD_SENSORS_DEVICE, O_RDWR);
 	if (device < 0) {
 		return;                 /* no sensor driver in the kernel: nothing of this happens */
 	}

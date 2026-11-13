@@ -1176,7 +1176,9 @@ brightness_registry_fix(void)
     if (memcmp(stub, expected, sizeof(expected))) {
         say("redwood: ALS registry bridge: unexpected stub %08x %08x %08x\n", stub[0], stub[1], stub[2]); return;
     }
-    io_service_t backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
+    io_service_t backing = IOServiceGetMatchingService(0, IOServiceNameMatching("RedwoodAmbientLightSensor"));
+    /* Compatibility with older kernels while updating the bridge independently. */
+    if (!backing) backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
     uint64_t id = 0;
     if (!backing || IORegistryEntryGetRegistryEntryID(backing, &id) != KERN_SUCCESS) {
         if (backing) IOObjectRelease(backing);

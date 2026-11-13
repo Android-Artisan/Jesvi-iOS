@@ -21,6 +21,10 @@
 #define _SYS_REDWOOD_SENSORS_H_
 
 #include <stdint.h>
+#include <sys/ioccom.h>
+
+/* Native HID active/monitoring demand, consumed by the hub's SPI owner. */
+#define REDWOOD_SENSORS_PROXIMITY _IOW('R', 1, uint32_t)
 
 #define REDWOOD_SENSORS_NAME    "redwood-sensors"
 #define REDWOOD_SENSORS_DEVICE  "/dev/redwood-sensors"
@@ -48,6 +52,8 @@ struct redwood_sensor_sample {
 void redwood_sensors_device(void);
 void redwood_sensors_post(const struct redwood_sensor_sample *s);
 int redwood_sensors_readers(void);
+uint32_t redwood_sensors_proximity_mode(void);
+void redwood_als_publish(void);
 
 void redwood_ssp_init(void);            /* boot-arg shub=N: the S20's sensor hub (bsd/dev/redwood_ssp.c) */
 void redwood_ssp_quiesce(void);         /* the hub into standby (NSTDBY low): the run's end, a panic's way out */
