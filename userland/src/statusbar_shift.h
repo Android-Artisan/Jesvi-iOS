@@ -19,6 +19,19 @@ struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectional
 static double sbs_lead = 20.0;   /* (user-verified 2026-11-13 with cut=125; was 3) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
+static void
+sbs_log(const char *fmt, double a, double b)
+{
+	FILE *f = fopen("/var/mobile/Library/Logs/redwood-statusbar.log", "a");
+
+	if (f != NULL) {
+		fprintf(f, "statusbar: pid %d ", getpid());
+		fprintf(f, fmt, a, b);
+		fputc('\n', f);
+		fclose(f);
+	}
+}
+
 static struct sbs_insets
 sbs_edge_insets(id self, SEL cmd)
 {
@@ -26,6 +39,12 @@ sbs_edge_insets(id self, SEL cmd)
 
 	/* (allowed below 0: the time is centred in the left area, so the area's start must go past the edge for the
 	 * time to move by more than half of what is taken off -- user 2026-11-13: "push it further left") */
+	{
+		static int told;
+		if (told++ < 2) {
+			sbs_log("edgeInsets leading %.1f -> %.1f", v.leading, v.leading - sbs_lead);
+		}
+	}
 	v.leading -= sbs_lead;
 	return v;
 }
@@ -80,6 +99,12 @@ sbs_widen(id constraint, const char *why)
 		return;
 	}
 	c = ((double (*)(id, SEL))objc_msgSend)(constraint, get);
+	{
+		static int told;
+		if (told++ < 4) {
+			sbs_log("cutout constraint constant %.1f (cut %.1f)", c, sbs_cut);
+		}
+	}
 	if (c > 0 && c < sbs_cut) {
 		((void (*)(id, SEL, double))objc_msgSend)(constraint, set, sbs_cut);
 		FILE *f = fopen("/var/mobile/Library/Logs/redwood-statusbar.log", "a");
@@ -141,6 +166,12 @@ sbs_hook(void *unused)
 	(void)unused;
 	if (m != NULL && sbs_orig == NULL) {
 		sbs_orig = (struct sbs_insets (*)(id, SEL))method_setImplementation(m, (IMP)sbs_edge_insets);
+		sbs_log("hooks: edgeInsets %.0f, avoidance/setup/constraint %.0f", 1, sbs_orig_avoid && sbs_orig_setup && sbs_orig_set_cut);
+	} else if (m == NULL) {
+		static int told;
+		if (told++ < 1) {
+			sbs_log("hooks: DynamicSplit not there yet (%.0f %.0f)", unused != NULL, 0);
+		}
 	}
 }
 
