@@ -402,3 +402,10 @@ profile 0d 1b?), deactivate before re-activate; also serve real EFS files (FLL.b
   next request closes it with cause 2 = REGULAR_DEACTIVATION). Candidates: PS attach state (IpcRxGprsPsState
   -- which index? not yet seen), APN/IMS dummy PDN (DataCallManager::SetupDummyPdn), PDU session id
   allocation (DoAllocatePduSessionId), or a data profile (IpcTxSetDataProfile 0d 1b) before setup.
+- GET probes: 0d04 GET -> "01 14 00"; 0d10 GET -> cid 1 state 3 cause 2 (ignores a cid argument);
+  0d09 GET -> 0x8001 (not a GET). IpcRxPdpContext / IpcRxGprs* check ModemType()==0x40 and
+  IsSupportJsonCmd(): per command, JSON is used only if the CP announced it (JsonUtil::SaveSupportJsonCmdList)
+  -> find that announcement in the CP's startup messages; it decides the format of each data/SMS command.
+- SMS/calls on Jio: LTE-only network -> SMS over IMS and VoLTE; on Samsung the IMS client runs on the AP
+  (not in the CP). So Jio SMS needs data first, then an AP-side IMS (SIP) client. Plain CP SMS (IPC 04 xx)
+  only helps on networks with SMS over SGs/CS fallback.
