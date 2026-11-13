@@ -299,3 +299,11 @@ versions (sbd.h variants), try placing the SBD area elsewhere (mld->base may not
 SBD: check cp_shmem_get_nc_region / SZ_2M split in link_device.c ~3926) -- the 2 MB "nc region" hint
 suggests the SBD base could be IPC+0 but sized 2 MB, or a different SHMEM index. Loop bug fixed: the
 DL dump skips out-of-range indices (one run spun; tool killed, CP held off by hand, restarted).
+Raw dump after INIT_END (IPC+0x400): ap2cp c2 | **cp2ap 0x83** (INT_VALID|SEND_FMT|SEND_RAW: "data for
+you", so the MSIs are data notices, not PHONE_START repeats) | ap2cp_united 0x8022. At IPC+0xf48 the CP
+wrote 20 bytes of its own: 00 01 17 28 80 33 ce 4d e0 33 ce 4d 04 00 00 10 ff ff ff ff -- inside our DL
+wp array (0xf0c + 3*20). Legacy queue indices stay 0, SBD DL buffers zero. Our buff_pos arrays (from
+0xf5c) are intact. => find what the CP places at 0xf48 (a CP-side descriptor at a fixed offset? then our
+rpwp array must not sit there: compare the S20's real g_desc size -- if the stock cpif has
+MAX_SBD_LINK_IDS 32 but an extra field, the rpwp array moves). Next: decode those 20 bytes, read the
+stock S20 kernel's cpif (Samsung opensource G980F kernel, not ExtremeXT) sbd.h.

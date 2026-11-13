@@ -388,6 +388,12 @@ static int online_handshake(unsigned seconds)
         }
         if (online) {
             static int asked;static uint64_t shown;
+            static int rawn;
+            if (rawn<3 && now_us(NULL)-shown>1000000) {
+                uint8_t r[256];rawn++;
+                if (!ipc_read(0xf00,r,sizeof(r))) {printf("cellular live DL: raw IPC+f00:");for (unsigned k=0;k<sizeof(r);k++) printf("%s%02x",k%32?" ":"\n   ",r[k]);printf("\n");}
+                if (!ipc_read(0x400,r,32)) {printf("cellular live DL: raw IPC+400:");for (unsigned k=0;k<32;k++) printf(" %02x",r[k]);printf("\n");}
+            }
             if (now_us(NULL)-shown>1000000) {
                 shown=now_us(NULL);uint8_t a[2*2*2*SBD_N];
                 if (!ipc_read(sbd_rpwp,a,sizeof(a))) {
