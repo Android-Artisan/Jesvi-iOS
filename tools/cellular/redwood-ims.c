@@ -272,7 +272,7 @@ static int recv_msg(int s,char *b,size_t cap,int secs)
 /* ---- SMS over IP: MESSAGE with application/vnd.3gpp.sms carries an RP message (TS 24.011): network -> UE RP-DATA
  * {0x01, ref, originator (SMSC) address, empty destination, user data len, TPDU SMS-DELIVER}; we answer the MESSAGE 200
  * and send RP-ACK {0x02, ref, 0x41, 2, SMS-DELIVER-REPORT 00 00} in a MESSAGE of our own back to the sender URI. */
-static char sms_pending[256][80];   /* RP ref -> sms-out message id (Messages app sends) */
+static void sms_job_result(unsigned ref,int ok);
 static char sms_route[1600],sms_impu[256],sms_sc_uri[128];static uint8_t sms_sc[12];static unsigned sms_scl,sms_mr,sms_rpref=1;
 static void sms_keep_registration(const char *ok)
 {   /* Service-Route(s) -> Route lines for our own requests; first P-Associated-URI as our identity */
@@ -285,6 +285,57 @@ static void sms_keep_registration(const char *ok)
     if (a) {const char *b=strchr(a,'<'),*e=b?strchr(b,'>'):NULL;if (b && e && e-b<(long)sizeof(sms_impu)) snprintf(sms_impu,sizeof(sms_impu),"%.*s",(int)(e-b-1),b+1);}
     printf("SMS: %s Route line(s), identity %s\n",o?"with":"no",sms_impu[0]?"known":"unknown");
 }
+static void sms_to_inbox(const char *from,unsigned ref,const char *text)
+{   /* for the Messages app: /var/tmp/redwood-cell/sms-in/<time>-<ref>.txt = sender, unix time, text (mobile, 0600) */
+    mkdir("/var/tmp/redwood-cell/sms-in",0700);chown("/var/tmp/redwood-cell/sms-in",501,501);
+    char fn[160],tmp[170];static unsigned seq;snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-in/%lld-%u-%u.txt",(long long)time(NULL),ref,seq++);
+    snprintf(tmp,sizeof(tmp),"%s.tmp",fn);
+    FILE *q=fopen(tmp,"w");
+    if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n%lld\n%s",from,(long long)time(NULL),text);fclose(q);chown(tmp,501,501);rename(tmp,fn);}
+}
+/* concatenated texts (TS 23.040 UDH IEI 00 / 08): parts held per sender+reference until complete or 5 minutes old */
+static struct {char from[64];unsigned ref,total;time_t first;char *part[32];} sms_cat[8];
+static int sms_concat_info(const uint8_t *pdu,unsigned n,unsigned *ref,unsigned *total,unsigned *seq)
+{
+    unsigned i=1+pdu[0];if (i>=n) return 0;unsigned fo=pdu[i++];if (!(fo&0x40)) return 0;
+    if (i+2>n) return 0;unsigned ol=pdu[i];i+=2+(ol+1)/2;i+=2+7;if (i+2>n) return 0;
+    i++;const uint8_t *ud=pdu+i;unsigned udhl=ud[0];if (i+1+udhl>n) return 0;
+    for (unsigned k=1;k+1<=udhl;) {
+        unsigned iei=ud[k],l=ud[k+1];if (k+2+l>udhl+1) break;
+        if (iei==0 && l==3) {*ref=ud[k+2];*total=ud[k+3];*seq=ud[k+4];return *total>1 && *seq>=1 && *seq<=*total && *total<=32;}
+        if (iei==8 && l==4) {*ref=(ud[k+2]<<8)|ud[k+3];*total=ud[k+4];*seq=ud[k+5];return *total>1 && *seq>=1 && *seq<=*total && *total<=32;}
+        k+=2+l;
+    }
+    return 0;
+}
+static void sms_cat_flush(int i,int complete)
+{
+    char all[6000];size_t o=0;all[0]=0;
+    for (unsigned k=0;k<sms_cat[i].total;k++) {
+        const char *t=sms_cat[i].part[k]?sms_cat[i].part[k]:"…";
+        size_t L=strlen(t);if (o+L+1<sizeof(all)) {memcpy(all+o,t,L);o+=L;all[o]=0;}
+        free(sms_cat[i].part[k]);sms_cat[i].part[k]=NULL;
+    }
+    printf("SMS: %u-part text from …%s joined%s\n",sms_cat[i].total,strlen(sms_cat[i].from)>4?sms_cat[i].from+strlen(sms_cat[i].from)-4:sms_cat[i].from,complete?"":" (parts missing after 5 min)");fflush(stdout);
+    sms_to_inbox(sms_cat[i].from,sms_cat[i].ref,all);
+    sms_cat[i].from[0]=0;
+}
+static void sms_cat_tick(void)
+{
+    for (int i=0;i<8;i++) if (sms_cat[i].from[0] && time(NULL)-sms_cat[i].first>300) sms_cat_flush(i,0);
+}
+static void sms_cat_add(const char *from,unsigned ref,unsigned total,unsigned seq,const char *text)
+{
+    int i=-1,freei=-1;
+    for (int k=0;k<8;k++) {if (sms_cat[k].from[0] && sms_cat[k].ref==ref && sms_cat[k].total==total && !strcmp(sms_cat[k].from,from)) {i=k;break;} if (!sms_cat[k].from[0] && freei<0) freei=k;}
+    if (i<0) {
+        if (freei<0) {freei=0;for (int k=1;k<8;k++) if (sms_cat[k].first<sms_cat[freei].first) freei=k;sms_cat_flush(freei,0);}
+        i=freei;snprintf(sms_cat[i].from,sizeof(sms_cat[i].from),"%s",from);sms_cat[i].ref=ref;sms_cat[i].total=total;sms_cat[i].first=time(NULL);
+    }
+    if (!sms_cat[i].part[seq-1]) sms_cat[i].part[seq-1]=strdup(text);
+    for (unsigned k=0;k<total;k++) if (!sms_cat[i].part[k]) return;
+    sms_cat_flush(i,1);
+}
 static int sms_incoming(int sock,const char *req,size_t len,int portc)
 {
     char ct[120],cl[24],fr[300],ci[200];
@@ -293,8 +344,7 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     const uint8_t *b=(const uint8_t *)hb+4;size_t n=hdr(req,"Content-Length",cl,sizeof(cl))?(size_t)atoi(cl):0;
     if ((size_t)(hb+4-req)+n>len || n<2) {printf("SMS: body short\n");return 1;}
     if (b[0]==0x03 || b[0]==0x05) {   /* the result of one of our sends: tell the Messages app if it was its */
-        if (sms_pending[b[1]][0]) {char fn[200];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.%s",sms_pending[b[1]],b[0]==3?"ok":"fail");
-            FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}sms_pending[b[1]][0]=0;}
+        sms_job_result(b[1],b[0]==3);
     }
     if (b[0]==0x03) {printf("SMS: sent -- the SMSC confirmed (RP-ACK, ref %u)\n",b[1]);fflush(stdout);return 1;}
     if (b[0]==0x05) {printf("SMS: NOT sent -- RP-ERROR ref %u, cause %u\n",b[1],n>3?b[3]&0x7f:0);fflush(stdout);return 1;}
@@ -308,11 +358,10 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     char from[64]="?",text[1600]="",when[32]="";uint8_t pdu[260];int ok=0;
     if (i+ul<=n && ul<sizeof(pdu)-1) {pdu[0]=0;memcpy(pdu+1,b+i,ul);ok=!sms_decode(pdu,ul+1,from,sizeof(from),text,sizeof(text),when,sizeof(when));}
     printf("SMS (IMS) from %s at %s: %s\n",from,when,ok?text:"(undecoded TPDU)");fflush(stdout);
-    if (ok) {   /* for the Messages app: /var/tmp/redwood-cell/sms-in/<time>-<ref>.txt = sender, unix time, text (mobile, 0600) */
-        mkdir("/var/tmp/redwood-cell/sms-in",0700);chown("/var/tmp/redwood-cell/sms-in",501,501);
-        char fn[160],tmp[170];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-in/%lld-%u.txt",(long long)time(NULL),ref);snprintf(tmp,sizeof(tmp),"%s.tmp",fn);
-        FILE *q=fopen(tmp,"w");
-        if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n%lld\n%s",from,(long long)time(NULL),text);fclose(q);chown(tmp,501,501);rename(tmp,fn);}
+    if (ok) {
+        unsigned cr=0,ct=0,cs=0;
+        if (sms_concat_info(pdu,ul+1,&cr,&ct,&cs)) sms_cat_add(from,cr,ct,cs,text);
+        else sms_to_inbox(from,ref,text);
     }
     FILE *f=fopen("/var/root/cell-sms.txt","a");
     if (f) {fchmod(fileno(f),0600);fprintf(f,"%llu\t%s\t%s\t",(unsigned long long)time(NULL),from,when);
@@ -347,63 +396,44 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     return 1;
 }
 
-/* text -> TP-UD: GSM 7-bit when every character is in the basic table's ASCII-equal part, else UCS-2 */
-static int sms_ud(const char *t,uint8_t *ud,unsigned *udl,int *ucs2)
+/* text -> parts: GSM 7-bit when every character is in the basic table's ASCII-equal part (160 a text, 153 a part
+ * with the concatenation header), else UCS-2 (70 / 67 UTF-16 units, a surrogate pair never split) */
+static int sms_is_gsm(const char *t)
 {
     static const char ok7[]=" !\"#%&'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\n\r";
-    int all7=1;for (const char *c=t;*c;c++) if (!strchr(ok7,*c)) {all7=0;break;}
-    if (all7) {
-        size_t n=strlen(t);if (n>160) return -1;memset(ud,0,140);
-        for (size_t k=0;k<n;k++) {unsigned bit=7*(unsigned)k;ud[bit/8]|=(uint8_t)(t[k]<<(bit%8));if (bit%8>1) ud[bit/8+1]|=(uint8_t)(t[k]>>(8-bit%8));}
-        *udl=(unsigned)n;*ucs2=0;return (int)((n*7+7)/8);
-    }
-    unsigned o=0;const unsigned char *u=(const unsigned char *)t;
-    while (*u) {
-        unsigned c;
-        if (*u<0x80) c=*u++;
-        else if ((*u&0xe0)==0xc0 && u[1]) {c=((u[0]&0x1fu)<<6)|(u[1]&0x3fu);u+=2;}
-        else if ((*u&0xf0)==0xe0 && u[1] && u[2]) {c=((u[0]&0x0fu)<<12)|((u[1]&0x3fu)<<6)|(u[2]&0x3fu);u+=3;}
-        else if ((*u&0xf8)==0xf0 && u[1] && u[2] && u[3]) {c=((u[0]&0x07u)<<18)|((u[1]&0x3fu)<<12)|((u[2]&0x3fu)<<6)|(u[3]&0x3fu);u+=4;
-            c-=0x10000;if (o+4>140) return -1;ud[o++]=(uint8_t)((0xd800+(c>>10))>>8);ud[o++]=(uint8_t)(0xd800+(c>>10));c=0xdc00+(c&0x3ff);}
-        else return -1;
-        if (o+2>140) return -1;ud[o++]=(uint8_t)(c>>8);ud[o++]=(uint8_t)c;
-    }
-    *udl=o;*ucs2=1;return (int)o;
+    for (const char *c=t;*c;c++) if (!strchr(ok7,*c)) return 0;
+    return 1;
 }
-static void sms_smsc_load(void)
-{   /* the SMSC learnt from an earlier incoming text, else Jio's (seen as the sender of every incoming text) */
-    if (sms_scl && sms_sc_uri[0]) return;
-    char uri[128]="tel:+917012075009",hex[64]="";
-    FILE *q=fopen("/var/root/cell-smsc","r");
-    if (q) {if (fscanf(q,"%127s %63s",uri,hex)<1) uri[0]=0;fclose(q);}
-    if (!uri[0]) return;
-    snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%s",uri);
-    size_t hl=strlen(hex);sms_scl=0;
-    for (size_t k=0;k+1<hl && sms_scl<sizeof(sms_sc);k+=2) {int a=hexval(hex[k]),b=hexval(hex[k+1]);if (a<0||b<0) {sms_scl=0;break;}sms_sc[sms_scl++]=(uint8_t)(a<<4|b);}
-    if (!sms_scl) {   /* from the URI's digits: TON international, BCD */
-        const char *d=strchr(uri,'+');d=d?d+1:uri;char dg[24];size_t nd=0;
-        for (;*d && nd<20;d++) if (*d>='0' && *d<='9') dg[nd++]=*d;
-        sms_sc[sms_scl++]=0x91;
-        for (size_t k=0;k<nd;k+=2) sms_sc[sms_scl++]=(uint8_t)((dg[k]-'0')|((k+1<nd?dg[k+1]-'0':15)<<4));
-    }
-    printf("SMS: SMSC %s\n",sms_sc_uri);
-}
-static int sms_send(int sock,int portc,const char *number,const char *text)
+static int sms_utf16(const char *t,uint16_t *u,int cap)
 {
-    sms_smsc_load();
-    if (!sms_scl || !sms_sc_uri[0]) {printf("SMS: no SMSC known yet (it is learnt from the first incoming text)\n");fflush(stdout);return -1;}
-    char dig[24];size_t nd=0;int intl=number[0]=='+';for (const char *c=number;*c && nd<20;c++) if (*c>='0' && *c<='9') dig[nd++]=*c;dig[nd]=0;
-    if (nd<3) {printf("SMS: bad number\n");return -1;}
-    if (!intl && nd==10 && dig[0]>='6') {memmove(dig+2,dig,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}   /* Indian mobile without +91 */
-    else if (!intl && nd==11 && dig[0]=='0') {memmove(dig+2,dig+1,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}
-    uint8_t ud[140];unsigned udl=0;int ucs2=0,udn=sms_ud(text,ud,&udl,&ucs2);
-    if (udn<0) {printf("SMS: text too long for one part (160 GSM / 70 other characters)\n");fflush(stdout);return -1;}
-    uint8_t tp[200];unsigned t=0;
-    tp[t++]=0x01;tp[t++]=(uint8_t)(sms_mr++);                     /* SMS-SUBMIT, no validity period; TP-MR */
-    tp[t++]=(uint8_t)nd;tp[t++]=intl?0x91:0x81;          /* destination: digits, international or unknown */
-    for (size_t k=0;k<nd;k+=2) tp[t++]=(uint8_t)((dig[k]-'0')|((k+1<nd?dig[k+1]-'0':15)<<4));
-    tp[t++]=0x00;tp[t++]=ucs2?0x08:0x00;tp[t++]=(uint8_t)udl;      /* PID, DCS, UDL */
-    memcpy(tp+t,ud,(size_t)udn);t+=(unsigned)udn;
+    int o=0;const unsigned char *p=(const unsigned char *)t;
+    while (*p) {
+        unsigned c;
+        if (*p<0x80) c=*p++;
+        else if ((*p&0xe0)==0xc0 && p[1]) {c=((p[0]&0x1fu)<<6)|(p[1]&0x3fu);p+=2;}
+        else if ((*p&0xf0)==0xe0 && p[1] && p[2]) {c=((p[0]&0x0fu)<<12)|((p[1]&0x3fu)<<6)|(p[2]&0x3fu);p+=3;}
+        else if ((*p&0xf8)==0xf0 && p[1] && p[2] && p[3]) {c=((p[0]&0x07u)<<18)|((p[1]&0x3fu)<<12)|((p[2]&0x3fu)<<6)|(p[3]&0x3fu);p+=4;}
+        else return -1;
+        if (c>=0x10000) {if (o+2>cap) return -1;c-=0x10000;u[o++]=(uint16_t)(0xd800+(c>>10));u[o++]=(uint16_t)(0xdc00+(c&0x3ff));}
+        else {if (o+1>cap) return -1;u[o++]=(uint16_t)c;}
+    }
+    return o;
+}
+/* the Messages app's pending sends: every part's RP ref points at a job; the job answers when all parts did */
+static struct {char id[80];int left,failed;} sms_job[32];
+static unsigned char sms_ref_job[256];   /* RP ref -> job index + 1 */
+static void sms_job_result(unsigned ref,int ok)
+{
+    unsigned j=sms_ref_job[ref&0xff];if (!j) return;
+    sms_ref_job[ref&0xff]=0;j--;
+    if (!ok) sms_job[j].failed=1;
+    if (--sms_job[j].left>0) return;
+    char fn[200];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.%s",sms_job[j].id,sms_job[j].failed?"fail":"ok");
+    FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}
+    sms_job[j].id[0]=0;
+}
+static int sms_send_tpdu(int sock,int portc,const uint8_t *tp,unsigned t)
+{   /* one TPDU in an RP-DATA to the SMSC: the RP ref, or -1 */
     uint8_t rp[260];unsigned r=0;unsigned ref=sms_rpref++&0xff;
     rp[r++]=0x00;rp[r++]=(uint8_t)ref;rp[r++]=0x00;                  /* RP-DATA MS->network, ref, no originator */
     rp[r++]=(uint8_t)sms_scl;memcpy(rp+r,sms_sc,sms_scl);r+=sms_scl;  /* destination: the SMSC */
@@ -425,32 +455,96 @@ static int sms_send(int sock,int portc,const char *number,const char *text)
         sms_sc_uri,arc4random(),cfg.ip6,r);
     if (o<0 || (size_t)o+r>sizeof(m)) return -1;
     memcpy(m+o,rp,r);
-    ssize_t w=send(sock,m,(size_t)o+r,0);
-    printf("--> SMS to %s (%u characters, %s, RP ref %u) %s\n",number,ucs2?udl/2:udl,ucs2?"UCS-2":"GSM",ref,w>0?"handed to the network":"NOT sent");fflush(stdout);
-    return w>0?(int)ref:-1;
+    return send(sock,m,(size_t)o+r,0)>0?(int)ref:-1;
 }
-/* command pipe for the client: "sms NUMBER TEXT" (root only) */
-static int ims_cmd_fd=-1;
+static void sms_smsc_load(void)
+{   /* the SMSC learnt from an earlier incoming text, else Jio's (seen as the sender of every incoming text) */
+    if (sms_scl && sms_sc_uri[0]) return;
+    char uri[128]="tel:+917012075009",hex[64]="";
+    FILE *q=fopen("/var/root/cell-smsc","r");
+    if (q) {if (fscanf(q,"%127s %63s",uri,hex)<1) uri[0]=0;fclose(q);}
+    if (!uri[0]) return;
+    snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%s",uri);
+    size_t hl=strlen(hex);sms_scl=0;
+    for (size_t k=0;k+1<hl && sms_scl<sizeof(sms_sc);k+=2) {int a=hexval(hex[k]),b=hexval(hex[k+1]);if (a<0||b<0) {sms_scl=0;break;}sms_sc[sms_scl++]=(uint8_t)(a<<4|b);}
+    if (!sms_scl) {   /* from the URI's digits: TON international, BCD */
+        const char *d=strchr(uri,'+');d=d?d+1:uri;char dg[24];size_t nd=0;
+        for (;*d && nd<20;d++) if (*d>='0' && *d<='9') dg[nd++]=*d;
+        sms_sc[sms_scl++]=0x91;
+        for (size_t k=0;k<nd;k+=2) sms_sc[sms_scl++]=(uint8_t)((dg[k]-'0')|((k+1<nd?dg[k+1]-'0':15)<<4));
+    }
+    printf("SMS: SMSC %s\n",sms_sc_uri);
+}
+static int sms_send(int sock,int portc,const char *number,const char *text,const char *job_id)
+{
+    sms_smsc_load();
+    if (!sms_scl || !sms_sc_uri[0]) {printf("SMS: no SMSC known yet\n");fflush(stdout);return -1;}
+    char dig[24];size_t nd=0;int intl=number[0]=='+';for (const char *c=number;*c && nd<20;c++) if (*c>='0' && *c<='9') dig[nd++]=*c;dig[nd]=0;
+    if (nd<3) {printf("SMS: bad number\n");return -1;}
+    if (!intl && nd==10 && dig[0]>='6') {memmove(dig+2,dig,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}   /* Indian mobile without +91 */
+    else if (!intl && nd==11 && dig[0]=='0') {memmove(dig+2,dig+1,11);dig[0]='9';dig[1]='1';nd=12;intl=1;}
+    int gsm=sms_is_gsm(text);
+    static uint16_t u[2048];int n=gsm?(int)strlen(text):sms_utf16(text,u,2048);
+    if (n<0 || (gsm && n>153*255) || (!gsm && n>67*255)) {printf("SMS: text not encodable or too long\n");fflush(stdout);return -1;}
+    int one=gsm?160:70,per=gsm?153:67;
+    int parts=n<=one?1:(n+per-1)/per;
+    if (!gsm && parts>1) {int k=0,c=0;while (k<n) {int e=k+per;if (e<n && u[e-1]>=0xd800 && u[e-1]<0xdc00) e--;k=e<n?e:n;c++;}parts=c;}
+    static uint8_t cref;cref++;
+    int j=-1;
+    if (job_id) {for (int i=0;i<32;i++) if (!sms_job[i].id[0]) {j=i;break;}
+        if (j<0) {printf("SMS: too many sends waiting\n");return -1;}
+        snprintf(sms_job[j].id,sizeof(sms_job[j].id),"%s",job_id);sms_job[j].left=parts;sms_job[j].failed=0;}
+    int pos=0,sent=0;
+    for (int part=1;part<=parts;part++) {
+        int len=parts==1?n:per;if (pos+len>n) len=n-pos;
+        if (!gsm && parts>1 && pos+len<n && u[pos+len-1]>=0xd800 && u[pos+len-1]<0xdc00) len--;
+        uint8_t tp[200];unsigned t=0;
+        tp[t++]=(uint8_t)(0x01|(parts>1?0x40:0));tp[t++]=(uint8_t)(sms_mr++);   /* SMS-SUBMIT (UDHI when in parts), TP-MR */
+        tp[t++]=(uint8_t)nd;tp[t++]=intl?0x91:0x81;
+        for (size_t k=0;k<nd;k+=2) tp[t++]=(uint8_t)((dig[k]-'0')|((k+1<nd?dig[k+1]-'0':15)<<4));
+        tp[t++]=0x00;tp[t++]=gsm?0x00:0x08;
+        uint8_t udh[6]={5,0,3,cref,(uint8_t)parts,(uint8_t)part};int hl=parts>1?6:0;
+        unsigned udlpos=t++;uint8_t *ud=tp+t;memset(ud,0,140);
+        if (hl) memcpy(ud,udh,(size_t)hl);
+        if (gsm) {   /* septets after the header, which is padded to a septet boundary (6 bytes = 48 bits -> 49) */
+            unsigned skip=hl?49:0;
+            for (int k=0;k<len;k++) {unsigned bit=skip+7*(unsigned)k;uint8_t c=(uint8_t)text[pos+k];ud[bit/8]|=(uint8_t)(c<<(bit%8));if (bit%8>1) ud[bit/8+1]|=(uint8_t)(c>>(8-bit%8));}
+            unsigned septets=(hl?7:0)+(unsigned)len;tp[udlpos]=(uint8_t)septets;t+=(septets*7+7)/8;
+        } else {
+            for (int k=0;k<len;k++) {ud[hl+2*k]=(uint8_t)(u[pos+k]>>8);ud[hl+2*k+1]=(uint8_t)u[pos+k];}
+            tp[udlpos]=(uint8_t)(hl+2*len);t+=(unsigned)(hl+2*len);
+        }
+        int ref=sms_send_tpdu(sock,portc,tp,t);
+        if (ref<0) {if (j>=0) {sms_job[j].failed=1;sms_job[j].left-=(parts-part+1);}break;}
+        if (j>=0) sms_ref_job[ref]=(unsigned char)(j+1);
+        sent++;pos+=len;
+    }
+    printf("--> SMS to …%s: %d character(s) in %d part(s), %s, %d handed to the network\n",nd>4?dig+nd-4:dig,n,parts,gsm?"GSM":"UCS-2",sent);fflush(stdout);
+    if (j>=0 && sent==0) {sms_job[j].id[0]=0;return -1;}   /* nothing went out: the caller answers "failed" */
+    return 0;                                               /* parts out: their RP-ACK/RP-ERROR answer the job */
+}
 static void sms_outbox(int sock,int portc)
 {   /* /var/tmp/redwood-cell/sms-out/<id>.msg from the Messages app: number on the first line, then the text */
     mkdir("/var/tmp/redwood-cell/sms-out",0700);chown("/var/tmp/redwood-cell/sms-out",501,501);
     DIR *d=opendir("/var/tmp/redwood-cell/sms-out");if (!d) return;
     struct dirent *e;
     while ((e=readdir(d))) {
-        size_t L=strlen(e->d_name);if (L<5 || strcmp(e->d_name+L-4,".msg") || L-4>=sizeof(sms_pending[0])) continue;
+        size_t L=strlen(e->d_name);if (L<5 || strcmp(e->d_name+L-4,".msg") || L-4>=80) continue;
         char fn[300],body[1400];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s",e->d_name);
         FILE *q=fopen(fn,"r");if (!q) continue;size_t n=fread(body,1,sizeof(body)-1,q);fclose(q);body[n]=0;unlink(fn);
         char id[80];snprintf(id,sizeof(id),"%.*s",(int)(L-4),e->d_name);
-        char *nl=strchr(body,'\n');int ref=-1;
-        if (nl) {*nl=0;ref=sms_send(sock,portc,body,nl+1);}
-        if (ref>=0) snprintf(sms_pending[ref&0xff],sizeof(sms_pending[0]),"%s",id);
-        else {snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",id);q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}}
+        char *nl=strchr(body,'\n');int rc=-1;
+        if (nl) {*nl=0;rc=sms_send(sock,portc,body,nl+1,id);}
+        if (rc<0) {snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",id);q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}}
     }
     closedir(d);
 }
+/* command pipe for the client: "sms NUMBER TEXT" (root only) */
+static int ims_cmd_fd=-1;
 static void ims_cmd_poll(int sock,int portc)
 {
     sms_outbox(sock,portc);
+    sms_cat_tick();
     if (ims_cmd_fd<0) {
         unlink("/var/tmp/redwood-cell/ims-cmd");
         if (mkfifo("/var/tmp/redwood-cell/ims-cmd",0600)) return;
@@ -462,7 +556,7 @@ static void ims_cmd_poll(int sock,int portc)
     char *nl;
     while ((nl=strchr(buf,'\n'))) {
         *nl=0;
-        if (!strncmp(buf,"sms ",4)) {char *num=buf+4;while (*num==' ') num++;char *sp=strchr(num,' ');if (sp) {*sp=0;(void)sms_send(sock,portc,num,sp+1);}}
+        if (!strncmp(buf,"sms ",4)) {char *num=buf+4;while (*num==' ') num++;char *sp=strchr(num,' ');if (sp) {*sp=0;(void)sms_send(sock,portc,num,sp+1,NULL);}}
         size_t used=(size_t)(nl+1-buf);memmove(buf,nl+1,have-used+1);have-=used;
     }
     if (have>=sizeof(buf)-1) have=0;

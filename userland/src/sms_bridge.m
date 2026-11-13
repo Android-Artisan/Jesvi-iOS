@@ -191,8 +191,9 @@ static id rw_sms(NSString *guid, NSString *from, NSDate *date, NSString *text)
 /* ---- incoming ---- */
 static void rw_deliver_inbox(void)
 {
-    /* incoming delivery only while /var/tmp/redwood-cell/sms-bridge-in exists (a crash in imagent loops otherwise) */
-    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/sms-bridge-in"]) return;
+    /* incoming delivery is on; /var/mobile/Library/Preferences/com.redwood.sms-bridge-off turns it off (a text is taken out
+     * of the inbox before it is handed over, so a crash in imagent never comes back for the same text) */
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/Preferences/com.redwood.sms-bridge-off"]) return;
     NSArray *names = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:RWIn error:nil]
         sortedArrayUsingSelector:@selector(compare:)];
     if (!names.count) return;
@@ -241,6 +242,19 @@ static void rw_send(id self, SEL _cmd, id item, id chatIdentifier, id chat, unsi
     NSString *text = [body respondsToSelector:@selector(string)] ? [body string] : nil;
     if (!text.length && [item respondsToSelector:sel_registerName("plainBody")])
         text = ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("plainBody"));
+    if (!text.length && [item respondsToSelector:sel_registerName("associatedMessageType")]) {
+        /* a reaction (tapback): the text iPhones send over SMS for it, e.g. Liked "..." */
+        long type = ((long (*)(id, SEL))objc_msgSend)(item, sel_registerName("associatedMessageType"));
+        id info = [item respondsToSelector:sel_registerName("messageSummaryInfo")] ? ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("messageSummaryInfo")) : nil;
+        Class tb = objc_getClass("IMTapback");
+        SEL make = sel_registerName("tapbackWithAssociatedMessageType:messageSummaryInfo:");
+        if (type && tb && [tb respondsToSelector:make]) {
+            id tap = ((id (*)(Class, SEL, long, id))objc_msgSend)(tb, make, type, info);
+            SEL str = sel_registerName("backwardCompatibilityStringWithMessageSummaryInfo:");
+            if ([tap respondsToSelector:str]) text = ((id (*)(id, SEL, id))objc_msgSend)(tap, str, info);
+            rw_log(@"send: reaction (type %ld) as text: %s", type, text.length ? "yes" : "no text");
+        }
+    }
     NSString *to = [chatIdentifier isKindOfClass:NSString.class] ? chatIdentifier : nil;
     if (!guid || !text.length || !to.length) {
         rw_log(@"send: not a plain text (guid %d text %d to %d); left to the original path", guid != nil, text.length > 0, to.length > 0);
