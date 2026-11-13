@@ -82,6 +82,16 @@ and island-install.sh are that withdrawn version.)
 
 ## Known issue
 
+**An app does not shrink ("minimise") into the island** when you leave it with a Live Activity running (user report
+2026-11-13 with the `circle` preset; the user says it also happened before, with the earlier pill sizes -- never
+written down until now). Nothing crashes (no SpringBoard report, liveactivitiesd and ClockAngel keep running): it
+is layout/animation. Suspects: (1) our `sensorRegionSize` hook -- the collapse animation and the compact views use
+other SystemAperture constants (NOTES: 213.33, 45.0, 185.33, 66.67 ... next to the pill's) that still assume Apple's
+125 pt pill; (2) the effect itself not rendering on this GPU path at all. Test in progress: preset `apple-14pro`
+(no hook) to tell the two apart. If it works there, presets other than `apple-14pro` keep this limitation until the
+other constants are hooked too.
+
+
 With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
 checked at Apple's width. Likely the trailing label is laid out against the narrower sensor region.
 
