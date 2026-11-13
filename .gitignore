@@ -6,6 +6,13 @@
 !/README.md
 !/CONTRIBUTING.md
 !/ci/
+!/.github/
+!/.editorconfig
+!/.gitattributes
+!/build.sh
+!/run.sh
+!/SECURITY.md
+!/SHIPPING.md
 !/README.uk.md
 !/README.zh.md
 !/Makefile
@@ -119,3 +126,10 @@ __pycache__/
 # secrets and fetched prefixes (2026-11-06): never in the repository
 /ssh/
 /jb/
+
+# Private release inputs, caches, local identities and generated payloads.
+/.cache/
+/inputs/
+/dist/
+**/.DS_Store
+**/*.local.conf

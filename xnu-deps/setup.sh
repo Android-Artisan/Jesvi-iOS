@@ -61,7 +61,8 @@ update() {
 # macOS: no theos, but Xcode has the same cctools and the SDK can be had from github.com/theos/sdks.
 # theos-mac/ is laid out like theos so that the rest of this script does not care.
 theos_mac() {
-	local tool
+	local tool sdk_rev
+	sdk_rev=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sources"]["ios-sdk"]["commit"])' "$HERE/../ci/sources.lock.json")
 	mkdir -p "$THEOS/toolchain/linux/iphone/bin" "$THEOS/sdks"
 	for tool in ld nm otool strip lipo libtool nmedit ctf_insert codesign_allocate install_name_tool; do
 		link "$(/usr/bin/xcrun -f $tool)" "$THEOS/toolchain/linux/iphone/bin/$tool"
@@ -69,9 +70,15 @@ theos_mac() {
 	if [ ! -d "$THEOS/sdks-git/iPhoneOS16.5.sdk/usr/include" ]; then
 		log "fetching iPhoneOS16.5.sdk from github.com/theos/sdks (about 220 MB)"
 		rm -rf "$THEOS/sdks-git"
-		git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks-git" &&
-			git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk || die "cannot fetch the SDK"
+		git init -q "$THEOS/sdks-git"
+		git -C "$THEOS/sdks-git" remote add origin https://github.com/theos/sdks.git
+		git -C "$THEOS/sdks-git" sparse-checkout init --cone
+		git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
+		git -C "$THEOS/sdks-git" fetch -q --depth 1 --filter=blob:none origin "$sdk_rev"
+		git -C "$THEOS/sdks-git" checkout -q --detach "$sdk_rev" || die "cannot fetch the pinned SDK"
 	fi
+	[ "$(git -C "$THEOS/sdks-git" rev-parse HEAD)" = "$sdk_rev" ] ||
+		die "SDK differs from ci/sources.lock.json; use a fresh isolated THEOS directory"
 	link ../sdks-git/iPhoneOS16.5.sdk "$THEOS/sdks/iPhoneOS16.5.sdk"
 }
 

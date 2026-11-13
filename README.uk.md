@@ -1,3 +1,5 @@
+> Historical upstream translation. Samsung Exynos 990 instructions and current status: [English README](README.md). These Qualcomm flashing instructions do not apply to this port.
+
 # HakiOS
 
 [English](README.md) · [中文](README.zh.md) · Українська

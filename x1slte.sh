@@ -143,7 +143,7 @@ PY
 }
 
 cmd_embed() {
-	local src=${1:-$HOME/ios-port-research/build/uefi/Mu-x1slte.img}
+	local src=${1:-${UEFI_IMAGE:-inputs/x1slte/Mu-x1slte.img}}
 	[ -f "$src" ] || die "no $src: download the x1slte-uefi artifact of github.com/jesvi-eulah/g980f-uefi"
 	mkdir -p out
 	python3 - "$src" "$PAYLOAD_AT" "$PAYLOAD_MAX" <<'PY'
@@ -238,8 +238,8 @@ PY
 	# hash covers only the boot image (shim + UEFI + payload), which nothing changes at runtime; the kernel (32 MiB),
 	# root.apfs (52 MiB) and the log lie outside the hashed range. Signed like TWRP's, with AOSP's public test key
 	# (external/avb/test/data/testkey_rsa4096.pem): the key matters not, the footer does.
-	local avb=$HOME/ios-port-research/tools/bin/avbtool.py key=$HOME/ios-port-research/tools/dl/avb/testkey_rsa4096.pem
-	[ -f "$avb" ] && [ -f "$key" ] || die "avbtool.py or testkey_rsa4096.pem missing (ios-port-research/tools)"
+	local avb=${AVBTOOL:-inputs/tools/avbtool.py} key=${AVB_TEST_KEY:-inputs/tools/testkey_rsa4096.pem}
+	[ -f "$avb" ] && [ -f "$key" ] || die "set AVBTOOL and AVB_TEST_KEY to the pinned AOSP tool and public test key"
 	python3 - out/x1slte-recovery.img out/.avb-head.img <<'PY'
 import struct, sys
 d = open(sys.argv[1], 'rb').read()

@@ -18,8 +18,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
-SDK=${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk
-DYN="$ROOT/xnu-deps/host-macos/bin/xnu-clang -arch arm64 -isysroot $SDK -O1"
+set +u # Legacy environment setup reads optional unset variables.
+source ../xnu-env.sh
+set -u
+SDK=$THEOS/sdks/iPhoneOS16.5.sdk
+mkdir -p obj ../prebuilt/userland
+DYN="xnu-clang -arch arm64 -isysroot $SDK -O1"
 M=$ROOT/xnu-deps/build/mesa/out
 
 if [ "$(cat $M/built-from 2>/dev/null)" != "$(cat ../tools/mesa/*.patch ../tools/mesa/redwood-drm/* | sha256sum)" ] ||
@@ -71,11 +75,11 @@ for lib in libredwood libredwood-sb; do
 	mv obj/$lib.dylib.new ../prebuilt/userland/$lib.dylib
 done
 # process 1 (src/init.c), static against libmini as build.sh would with ld64; Apple's ld makes the same layout
-STATIC="$ROOT/xnu-deps/host-macos/bin/xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin"
+STATIC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin"
 $STATIC -Ilibmini -c libmini/mini.c -o obj/mini.o
 $STATIC -c libmini/start.S -o obj/start.o
 $STATIC -Ilibmini -Wl,-e,_start -Wl,-pagezero_size,0x100000000 -o obj/init.new src/init.c obj/mini.o obj/start.o
 [ -f ../prebuilt/userland/init.orig ] || [ ! -f ../prebuilt/userland/init ] || cp ../prebuilt/userland/init ../prebuilt/userland/init.orig
 cmp -s obj/init.new ../prebuilt/userland/init && rm obj/init.new || mv obj/init.new ../prebuilt/userland/init
 
-PATH=$ROOT/xnu-deps/host-macos/bin:$PATH REST=${REST:-1} GL=1 EXTRA="${EXTRA:-} obj/mali_test" ./build.sh
+REST=${REST:-1} GL=1 EXTRA="${EXTRA:-} obj/mali_test" ./build.sh

@@ -74,14 +74,14 @@
 #   CHECK=1          check every image (every container) as it is made: apfsck has to find it clean and
 #                    the kernel's apfs_lib has to read every volume back as the directory it was made of
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
-set -e
+set -e -o pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
 
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
 LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
 DYN="xnu-clang -arch arm64 -isysroot ${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk -O1"
-IOS=../ios165
+IOS=${IOS_INPUT_DIR:-../sysimage}
 CACHE=$IOS/20F66__iPhone10,3_6
 # ios165/rootfs and ios165/cryptex must be this copy's own directories of hard links, the way
 # tools/new-workspace.sh makes them. A symlink to another copy's tree makes sysroot a symlink too, because
@@ -830,6 +830,17 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 fi
 
 # --- the system image -----------------------------------------------------------------------------
+SYSTEM_CACHE_HIT=0
+if [ -n "${HACKIOS_IMAGE_CACHE:-}" ]; then
+	cache_rc=0
+	python3 ../tools/release/system_cache.py restore --ios "$IOS" ${SYSTEM:+--force} || cache_rc=$?
+	case "$cache_rc" in
+		0) SYSTEM_CACHE_HIT=1 ;;
+		10) SYSTEM=1 ;; # An input changed: do not trust the legacy mtime shortcut.
+		*) exit "$cache_rc" ;;
+	esac
+fi
+if [ "$SYSTEM_CACHE_HIT" = 0 ]; then
 if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	{ [ ! -f system.apfs ] || [ obj/stage0 -nt system.apfs ] || [ obj/LocalFilesHost -nt system.apfs ] ||
 	  [ ../tools/storage/stage-provider.py -nt system.apfs ] || [ $IOS/system.manifest -nt system.apfs ] ||
@@ -963,4 +974,8 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=obj/system-files.manifest | tail -1
 	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=obj/system-files.manifest
 	rm -rf sysroot
+fi
+if [ -n "${HACKIOS_IMAGE_CACHE:-}" ]; then
+	python3 ../tools/release/system_cache.py store --ios "$IOS"
+fi
 fi

@@ -1,3 +1,5 @@
+# Samsung release entry point: ./build.sh (see docs/release/building.md).
+# The legacy Qualcomm/QEMU targets below are not Samsung flashing instructions.
 # HakiOS: one Makefile at the top, the way an Android tree has one. Every target is a script
 # below it; run the script itself for its options.
 #
@@ -29,7 +31,7 @@ IMAGE_OPTS ?= REST=1
 .PHONY: help fetch images kernel loader loader-open hello qemu qemu-open phone prebuilt clean all
 
 help:
-	@sed -n '2,23p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,25p' Makefile | sed 's/^# \{0,1\}//'
 
 all: kernel loader images
 
