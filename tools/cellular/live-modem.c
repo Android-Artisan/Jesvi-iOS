@@ -274,7 +274,7 @@ static int ap2cp(unsigned cmd)
     printf("cellular live DL: AP -> CP cmd %#x (msg %#x)\n",cmd,0xc0u|cmd);fflush(stdout);
     return doorbell(0);
 }
-static void fmt_dump(void)
+__attribute__((unused)) static void fmt_dump(void)
 {
     uint32_t rh,rt;if (ipc_load(0x10,&rh) || ipc_load(0x14,&rt)) return;
     while (rh!=rt && rt<0x1000 && rh<0x1000) {
@@ -283,6 +283,77 @@ static void fmt_dump(void)
         uint32_t show=len<64?len:64,first=0x1000-rt<show?0x1000-rt:show;ipc_read(0x2000+rt,b,first);if (show>first) ipc_read(0x2000,b+first,show-first);
         printf("cellular live DL: FMT RX frame (%u bytes):",len);for (unsigned i=0;i<show;i++) printf(" %02x",b[i]);printf("\n");
         rt=(rt+total)%0x1000;ipc_store(0x14,rt);
+    }
+    fflush(stdout);
+}
+
+/* ---- SBD rings (link_device_memory_sbd.c create_sbd_mem_map + init_sbd_link), this board's DT iodevs in
+ * order, minus non-IPC/PS channels and the kor_skt/usa_spr option-region ones; MULTI_RAW -> QoS ch 10,11 ---- */
+struct sbd_ch {unsigned ch,ul_len,ul_size,dl_len,dl_size;};
+static const struct sbd_ch sbd_chs[]={
+    {35,16,0x800,16,0x800},{235,16,0x1000,32,0x1000},{236,16,0x1000,32,0x1000},{245,16,0x800,512,0x800},
+    {1,32,0x800,64,0x800},{25,16,0x800,16,0x800},{28,16,0x800,128,0x800},{244,16,0x800,32,0x800},
+    {10,1024,0x800,256,0x800},{11,512,0x800,1024,0x800}};
+#define SBD_N (sizeof(sbd_chs)/sizeof(sbd_chs[0]))
+static uint32_t sbd_rpwp,sbd_pos[SBD_N][2],sbd_lenarr[SBD_N][2],sbd_buf[SBD_N][2];
+static uint32_t sbd_rp(unsigned id,unsigned dir) {return sbd_rpwp+2*(id+SBD_N*(dir*2));}
+static uint32_t sbd_wp(unsigned id,unsigned dir) {return sbd_rpwp+2*(id+SBD_N*(dir*2+1));}
+static int ipc_load16(uint32_t off,uint16_t *v) {uint32_t w;if (ipc_load(off&~3u,&w)) return -1;*v=(uint16_t)(w>>((off&2)*8));return 0;}
+static int ipc_store16(uint32_t off,uint16_t v)
+{uint32_t w;if (ipc_load(off&~3u,&w)) return -1;unsigned sh=(off&2)*8;w=(w&~(0xffffu<<sh))|((uint32_t)v<<sh);return ipc_store(off&~3u,w);}
+static int sbd_init(void)
+{
+    uint8_t zero[2048]={0};
+    for (uint32_t o=0x800;o<0x10000;o+=sizeof(zero)) if (ipc_write(o,zero,sizeof(zero))) return -1;
+    uint32_t g=0x800,desc=g+12+32*2*8+32*2*20,buff=0x10000;
+    sbd_rpwp=desc;desc+=2*2*2*SBD_N;
+    for (unsigned i=0;i<SBD_N;i++) for (unsigned dir=0;dir<2;dir++) {
+        unsigned len=dir?sbd_chs[i].dl_len:sbd_chs[i].ul_len,size=dir?sbd_chs[i].dl_size:sbd_chs[i].ul_size;
+        sbd_pos[i][dir]=desc;desc+=len*4;sbd_lenarr[i][dir]=desc;desc+=len*4;
+        sbd_buf[i][dir]=buff;buff+=len*size;
+    }
+    if (desc>0x10000 || buff>0x800000) {printf("cellular live DL: SBD layout overflow desc %x buff %x\n",desc,buff);return -1;}
+    if (ipc_store(g,1) || ipc_store(g+4,SBD_N) || ipc_store(g+8,sbd_rpwp)) return -1;
+    for (unsigned i=0;i<SBD_N;i++) for (unsigned dir=0;dir<2;dir++) {
+        unsigned len=dir?sbd_chs[i].dl_len:sbd_chs[i].ul_len,size=dir?sbd_chs[i].dl_size:sbd_chs[i].ul_size;
+        for (unsigned k=0;k<len;k++) if (ipc_store(sbd_pos[i][dir]+4*k,sbd_buf[i][dir]+k*size)) return -1;
+        uint32_t chd=g+12+(i*2+dir)*8,rbd=g+12+32*2*8+(i*2+dir)*20;
+        uint8_t d[20];memset(d,0,sizeof(d));
+        d[0]=sbd_chs[i].ch;d[4]=dir;d[6]=1;d[8]=0x81;d[12]=len&0xff;d[13]=len>>8;d[14]=i;d[16]=size&0xff;d[17]=size>>8;
+        if (ipc_write(rbd,d,20) || ipc_store(chd,rbd) || ipc_store(chd+4,sbd_pos[i][dir])) return -1;
+    }
+    printf("cellular live DL: SBD: %u channels, rpwp %x, descriptors end %x, buffers end %x\n",(unsigned)SBD_N,sbd_rpwp,desc,buff);fflush(stdout);
+    return 0;
+}
+/* one SIPC5 frame into channel id's UL ring, then MASK_SEND_DATA to the CP */
+static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
+{
+    uint16_t rp,wp;unsigned len=sbd_chs[id].ul_len;
+    if (ipc_load16(sbd_rp(id,0),&rp) || ipc_load16(sbd_wp(id,0),&wp) || (unsigned)(wp+1)%len==rp) return -1;
+    if (n>sbd_chs[id].ul_size || ipc_write(sbd_buf[id][0]+wp*sbd_chs[id].ul_size,frame,n) ||
+        ipc_store(sbd_lenarr[id][0]+4*wp,n)) return -1;
+    __sync_synchronize();
+    if (ipc_store16(sbd_wp(id,0),(uint16_t)((wp+1)%len))) return -1;
+    if (ipc_store(0x400,0x81)) return -1;
+    return doorbell(0);
+}
+static void sbd_dump_dl(void)
+{
+    static int said;
+    if (!said++) {      /* what the CP sees: g_desc and the ipc0/dm0 descriptors, as written */
+        uint8_t g[48];ipc_read(0x800,g,12);
+        printf("cellular live DL: g_desc:");for (unsigned k=0;k<12;k++) printf(" %02x",g[k]);printf("\n");
+    }
+    for (unsigned id=0;id<SBD_N;id++) {
+        uint16_t rp,wp;unsigned len=sbd_chs[id].dl_len;
+        if (ipc_load16(sbd_rp(id,1),&rp) || ipc_load16(sbd_wp(id,1),&wp)) return;
+        if (rp>=len || wp>=len) continue;      /* (not a valid index: reported by the rp/wp dump) */
+        for (unsigned guard=0;rp!=wp && guard<len;guard++) {
+            uint32_t n=0;uint8_t b[96];ipc_load(sbd_lenarr[id][1]+4*rp,&n);
+            uint32_t show=48;ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,b,show);
+            printf("cellular live DL: SBD RX ch %u (%u bytes):",sbd_chs[id].ch,n);for (unsigned k=0;k<show;k++) printf(" %02x",b[k]);printf("\n");
+            rp=(uint16_t)((rp+1)%len);ipc_store16(sbd_rp(id,1),rp);
+        }
     }
     fflush(stdout);
 }
@@ -297,9 +368,15 @@ static int online_handshake(unsigned seconds)
         if (m!=last || u!=lastu || msi!=lastmsi) {
             printf("cellular live DL: cp2ap_msg %08x cp2ap_united %08x MSI status %08x GPIO %x\n",m,u,msi,in);fflush(stdout);
             if (msi) {char r[8192],c[64];snprintf(c,sizeof(c),"w 0x13800830 0x%x",msi);request(c,r);}
+            static unsigned repeats;
+            if (m==last && msi && (m&0xff)==0xc8 && online && repeats<5) {
+                repeats++;printf("cellular live DL: PHONE_START repeated (MSI) -> INIT_END again (%u)\n",repeats);ap2cp(0x02);
+            }
+            if (online) {uint16_t urp=0,uwp=0;ipc_load16(sbd_rp(1,0),&urp);ipc_load16(sbd_wp(1,0),&uwp);
+                printf("cellular live DL: umts_ipc0 UL rp %u wp %u (rp moving = CP read our request)\n",urp,uwp);fflush(stdout);}
             if (m!=last && (m&0x80) && (m&0x40)) {
                 unsigned cmd=m&0x3f;
-                if (cmd==0x01) {phase("CP: INIT_START -> PIF_INIT_DONE");ap2cp(0x0d);}
+                if (cmd==0x01) {phase("CP: INIT_START -> SBD rings, PIF_INIT_DONE");if (sbd_init()) return -1;ipc_store(0x408,(2u<<14)|(1u<<1)|(1u<<5));ap2cp(0x0d);}
                 else if (cmd==0x08) {
                     phase("CP: PHONE_START -> IPC link (magic AA, queues zero) and INIT_END");
                     for (uint32_t o=8;o<0x28;o+=4) ipc_store(o,0);
@@ -309,7 +386,25 @@ static int online_handshake(unsigned seconds)
             }
             last=m;lastu=u;lastmsi=msi;
         }
-        if (online) fmt_dump();
+        if (online) {
+            static int asked;static uint64_t shown;
+            if (now_us(NULL)-shown>1000000) {
+                shown=now_us(NULL);uint8_t a[2*2*2*SBD_N];
+                if (!ipc_read(sbd_rpwp,a,sizeof(a))) {
+                    printf("cellular live DL: rpwp ulrp|ulwp|dlrp|dlwp:");
+                    for (unsigned k=0;k<sizeof(a)/2;k++) printf("%s%u",k%SBD_N?",":" | ",a[2*k]|(a[2*k+1]<<8));
+                    printf("\n");fflush(stdout);
+                }
+            }
+            sbd_dump_dl();
+            if (!asked && now_us(NULL)+15000000ull<deadline) {
+                /* Samsung IPC on umts_ipc0 (ch 235, SBD id 1): IPC_MISC_ME_VERSION GET (0a 01, type 02), data ff */
+                uint8_t f[16]={0xf8,235,0,0, 8,0, 1,0, 0x0a,0x01,0x02, 0xff};
+                f[2]=12;asked=1;
+                int e=sbd_send(1,f,12);
+                printf("cellular live DL: IPC MISC_ME_VERSION GET on umts_ipc0: %s\n",e?"send failed":"sent");fflush(stdout);
+            }
+        }
         usleep(1000);
     }
     printf("cellular live DL: handshake %s\n",online?"ONLINE (INIT_END sent)":"no PHONE_START seen");fflush(stdout);

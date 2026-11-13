@@ -275,3 +275,27 @@ dl 32x4K), umts_rfs0, csd, router, dm0, cass ... carry attrs 0x82 = SIPC5|SBD_IP
 goes over SBD rings: create_sbd_link_device + init_sbd_link (link_device_memory_sbd.c, 616 lines)
 must write the descriptor region into shmem at INIT_START, before PIF_INIT_DONE (we skipped it).
 rmnet* (attrs 0x180) = packet processor (pktproc) for data. Port SBD layout to the live helper next.
+
+### SBD rings, first live tries — Nov13 ~06:00 (session A)
+
+live-modem now writes Samsung's SBD layout at INIT_START (before PIF_INIT_DONE), from this board's DT
+iodevs (create_sbd_mem_map/init_sbd_link): 10 link channels in DT order -- cass 35, ipc0 235, ipc1 236,
+rfs0 245, csd 1, router 25, dm0 28, loopback 244, multipdp_hiprio -> QoS ch 10, multipdp -> 11 (rmnet*
+PS channels and the kor_skt/usa_spr option-region smd4/ciq0 skipped). g_desc at IPC+0x800 (version 1,
+10 channels, rpwp_array_offset 0xf0c), buff_pos/len arrays to 0x85dc, buffers 0x10000..0x7a8000.
+ap2cp_united = ds_det 2<<14 | ap_status 1<<1 | pda_active 1<<5. One request sent on umts_ipc0 UL:
+SIPC5 f8 eb 0c 00 + IPC fmt (len 8, mseq 1, MISC 0a ME_VERSION 01 GET 02, ff), ap2cp 0x81 + doorbell.
+
+Seen: CP keeps raising MSI after INIT_END (cp2ap_msg stays c8 -- data MSIs or PHONE_START repeats;
+INIT_END resent up to 5x does not change it). ipc0 UL rp stays 0 (request NOT consumed). The 4th rpwp
+block (DL wp) gets values that are not ring indices (256, ~10264 rising, 13184, 19918, 4096, 65535)
+while the DL buffers stay zero: the CP writes some structure of its own there, i.e. our SBD layout does
+not match the CP's (version, table sizes, or a region offset). dm0 DL wp=4 looked valid but its buffer
+is zero too.
+
+Next checks (live, no restart): read back the region after FIN and before INIT_START to see what the CP
+itself writes (it may publish its own layout/version); compare with Samsung's g_desc for SIT/other
+versions (sbd.h variants), try placing the SBD area elsewhere (mld->base may not be the IPC base for
+SBD: check cp_shmem_get_nc_region / SZ_2M split in link_device.c ~3926) -- the 2 MB "nc region" hint
+suggests the SBD base could be IPC+0 but sized 2 MB, or a different SHMEM index. Loop bug fixed: the
+DL dump skips out-of-range indices (one run spun; tool killed, CP held off by hand, restarted).
