@@ -733,3 +733,15 @@ redwood-ims (3f7ea76, 6c061c5) with /var/root/cell-answer: the caller's phone ri
 media yet), the network's session-timer UPDATE is answered, and the call ends by our BYE (sent on the registration
 connection from port-c: on the P-CSCF's own connection it was dropped) or by the caller's. Without the switch file:
 486 Busy as before. Next: the CP voice channel (CPVE 16/06, 16/01, 16/02, 16/03 after the ACK), then the ABOX route.
+
+### 16/01 SetChannel, fully decoded (2026-11-13 23:00, A)
+CPVEInterface::CreateChannel(phone, localIp, localPort, remoteIp, remotePort, ...) -> SAE_SetSendIP(ch, remote, local),
+SAE_SetSendPort(remote RTP), SAE_SetRecPort (local RTP), SAE_SetRTCPSendPort, SAE_SetRTCPRecPort, SAE_SetStreamType ->
+the channel record (+0xc remote IPv6 / +8 v4, +0x20 local IPv6 / +0x1c v4, +0x30 ipver, +0x38 remote RTP, +0x3c local
+RTP, +0x40 remote RTCP, +0x44 local RTCP, +0x48 stream type) -> VoIpEngineProxy::SetChannel(phone, ch, op, x) ->
+ImsSetChannel. Payload (47 bytes, little-endian u16):
+    p0  u8  channel            p1  u8  op (1 = set up; 2/3 the other cases; else ff = delete)
+    p2  u16 local RTCP port    p4  u16 remote RTCP port    p6  u16 local RTP port    p8  u16 remote RTP port
+    p10 u8  ipver (2 = IPv6)   p11 16 bytes remote IP      p27 u8  ipver           p28 16 bytes local IP
+    p44 u8  stream type        p45 u16 x (VoIpEngineProxy::SetChannel's 4th argument)
+For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=/m= (RTCP = RTP + 1).
