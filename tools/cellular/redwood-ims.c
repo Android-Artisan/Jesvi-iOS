@@ -550,7 +550,7 @@ static void sms_outbox(int sock,int portc)
  * the caller hears silence. One call at a time; a second INVITE gets 486.
  */
 #define CALL_ANSWER_S 3
-#define CALL_MAX_S 45
+#define CALL_MAX_S 90
 #define CALL_RTP_PORT 50010
 static struct {
     int state;                          /* 0 none, 1 ringing, 2 answered (200 sent), 3 confirmed (ACK) */
@@ -560,6 +560,7 @@ static struct {
     unsigned bye_cseq;
 } call;
 static char call_ip6[64];
+static void call_media(int start);
 static int call_ports, call_sock = -1, call_portc;
 static const char *call_user;
 
@@ -614,8 +615,76 @@ static void
 call_end(const char *why)
 {
     printf("call: ended (%s) after %lds\n",why,(long)(time(NULL)-call.at));
+    call_media(0);
     call.state=0;
     unlink("/var/tmp/redwood-cell/call");
+}
+
+
+/*
+ * Calls, step 2 (2026-11-13, A): the CP's own voice engine (CPVE) carries RTP and the codec. Commands go to the modem
+ * through redwood-cellulard's command pipe ("fmt GRP IDX TYPE HEX", /var/tmp/redwood-cell/cmd), as Samsung's
+ * libsec-ims sends them (docs/cellular-download-plan.md: 16/06 SetPdnIp, 16/01 SetChannel, 16/02 SetCodec,
+ * 16/03 SetRtpMedia; every one acknowledged 0x8000 by this modem, tested without a call 2026-11-13 23:20).
+ * Channel 0; AMR-NB 12.2 (PT 100) at 8 kHz, 20 ms. The remote address/port are the INVITE's SDP c=/m=.
+ */
+static void
+call_cmd(const char *grp_idx_type,const uint8_t *p,size_t n)
+{
+    char line[600];size_t o=(size_t)snprintf(line,sizeof(line),"fmt %s ",grp_idx_type);
+    for (size_t i=0;i<n && o+3<sizeof(line);i++) o+=(size_t)snprintf(line+o,sizeof(line)-o,"%02x",p[i]);
+    line[o++]='\n';
+    int f=open("/var/tmp/redwood-cell/cmd",O_WRONLY|O_NONBLOCK);
+    if (f<0) {printf("call: media: the cellular command pipe: %s\n",strerror(errno));return;}
+    if (write(f,line,o)!=(ssize_t)o) printf("call: media: write: %s\n",strerror(errno));
+    close(f);
+    usleep(300000);                     /* (redwood-cellulard takes one line per poll) */
+}
+
+static void
+call_put16(uint8_t *p,unsigned v) {p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
+
+static int
+call_channel(int op,const char *remote,unsigned rport)
+{
+    uint8_t c[47]={0},loc[16],rem[16];
+    if (inet_pton(AF_INET6,call_ip6,loc)!=1 || inet_pton(AF_INET6,remote,rem)!=1) {printf("call: media: bad address\n");return -1;}
+    c[0]=0;c[1]=(uint8_t)op;
+    call_put16(c+2,CALL_RTP_PORT+1);call_put16(c+4,rport+1);call_put16(c+6,CALL_RTP_PORT);call_put16(c+8,rport);
+    c[10]=2;memcpy(c+11,rem,16);c[27]=2;memcpy(c+28,loc,16);
+    call_cmd("16 01 03",c,sizeof(c));
+    return 0;
+}
+
+static void
+call_media(int start)
+{
+    static int open;
+    unsigned rport=(unsigned)atoi(call.sdp_m);
+    if (start) {
+        if (!call.sdp_c[0] || !rport) {printf("call: media: no remote address in the SDP\n");return;}
+        uint8_t pdn[38]={0},ip[16];
+        if (inet_pton(AF_INET6,call_ip6,ip)!=1) return;
+        pdn[0]=2;memcpy(pdn+1,ip,16);pdn[17]=6;memcpy(pdn+21,"rmnet1",6);
+        call_cmd("16 06 03",pdn,sizeof(pdn));
+        if (call_channel(1,call.sdp_c,rport)) return;
+        uint8_t c[58]={0};
+        c[0]=0;c[1]=1;                  /* channel 0; 1 codec */
+        c[5]=6;c[6]=100;call_put16(c+7,8000);
+        c[9]=0x00;c[10]=0x02;           /* 12.2 kbps: 0x200 (convertBitRateToIpc) */
+        c[13]=20;c[14]=80;c[15]=1;c[28]=100;
+        call_cmd("16 02 03",c,sizeof(c));
+        uint8_t m[4]={1,0,0,0};         /* SAE_StartFDSR: 1 start */
+        call_cmd("16 03 03",m,sizeof(m));
+        open=1;
+        printf("call: media: CP voice channel 0 up to [%s]:%u, AMR-NB 12.2\n",call.sdp_c,rport);
+    } else if (open) {
+        uint8_t m[4]={2,0,0,0};         /* SAE_StopFDSR: 2 stop */
+        call_cmd("16 03 03",m,sizeof(m));
+        call_channel(2,call.sdp_c[0]?call.sdp_c:"::1",rport?rport:9);
+        open=0;
+        printf("call: media: CP voice channel 0 closed\n");
+    }
 }
 
 /* an INVITE; returns 1 when handled here (answer mode), 0 for the old busy path */
@@ -654,7 +723,7 @@ call_request(int fd,const char *r)
     char ci[200];
     if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
     if (!strncmp(r,"ACK ",4)) {
-        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up (no media yet)\n");}
+        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");call_media(1);}
         return 1;
     }
     char m[2048],via[1200],fr[400],to[400],cq[80];int o;
