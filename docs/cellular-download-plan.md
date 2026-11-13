@@ -359,3 +359,25 @@ SIM status / NET_REGIST properly (libsamsung-ipc tables as a guide), then data: 
 Next: make AT work past the first command (check the router UL/DL ring indices after each command, try
 "\r\n" endings, check whether results arrive on another channel, e.g. umts_csd/ipc1), serve real EFS files
 (FLL.bin), then AT attach -> IPC activate -> 0d09 IP config -> packet path (pktproc DL, multipdp UL) -> utun.
+
+### Nov13 ~08:50: exact S20 message layouts from the stock radio library (session A)
+
+Source: the user's local stock firmware G980FXXSNHYB7 (CP G980FXXSNHYB1 = our modem): AP tar -> super.img.lz4
+streamed (LZ4 + sparse) -> vendor (ext4, super bytes 6268387328..7727595520) -> lib64/libsec-ril.so, bin/cbd,
+kept private in out/cellular/private-ril (gitignored; never commit). Disassembled with llvm-objdump:
+- Radio power: group 01 idx 07 **type 01 (EXEC)**, data 02 02 (on) / 01 (off). (SET -> 0x8001; EXEC -> 0x8005 =
+  already on.)
+- LTE attach profile (IpcTxSetLteAttachProfile): 0d 14 SET, 337 B frame / 330 data: d0 mode 1, d1 profile id,
+  d2 pdp type (IPv4v6 = 6), d3..102 APN, user @frame 0x86, pass @0xea, d[0x147] auth, d[0x148] roaming type.
+- PS attach (IpcTxPsAttach): 0d 03 SET, 10 B: 01 00 00.
+- Define (IpcTxDefinePdpContext): 0d 01 SET, **149 B** frame / 142 data: 01 cid pdp apn[100] ... (Note 8: 134).
+- Activate (IpcTxSetPdpContext): 0d 04 SET, **248 B** / 241 data: d0 = 1 (activate; jump table by request),
+  d1 cid, d2..5 u32 user/pass flags, user @frame 0xd, pass @0x71 (Note 8: 112).
+- If GetModemType()==0x40 the RIL routes data calls through another protocol object (IIL variant, same
+  0d01/0d04 headers and sizes).
+Results: all accepted (0x8000). Sent before the network attach (fresh CP), the attach profile changes the
+registration notices (08 05 ... "21 03 07" -> "21 03 01" -> "21 01 02"), but define+activate still give no
+0d09 IP configuration and no new 0d10 within ~60 s. With the old sizes the CP answered 0d10 "01 03" (cid 1,
+not active) at once. Next: decode IpcRx for 08 05 (NET_REGIST) and 0d 10 from the library to know the PS
+state; find what the RIL sends between attach and setup-data-call (IpcTxSetDataCallEstablish 03 02? data
+profile 0d 1b?), deactivate before re-activate; also serve real EFS files (FLL.bin).
