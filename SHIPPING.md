@@ -50,6 +50,16 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Status bar padding for real, island presets 1/2, pickup wake kept (2026-11-13 22:05, A) — `4eac8b5`, `88cadbd`, `06105a2`
+- Status bar: the phone uses UIKit's notch layout (_UIStatusBarVisualProvider_Split1125: the screen is the iPhone X's),
+  not the island one the earlier hooks targeted (they never ran). The time moves left by lead/2 through
+  +leadingCenteringOffset (-0.67 -> -10.67), and the right side, which UIKit derives from the left, is given that back
+  (+trailingCenteringOffset 1 -> 11); `trail=` adds right padding. User-verified ("padding is working").
+- Island: preset 1 `punch-21` (built-in default), preset 2 `punch-live18` (81 x 36.67 while a Live Activity runs; on
+  the phone now). Entry into the live size: the first animation (0.4 s UIKit, 04f9b79), the user's choice.
+- codex-motion's table-pickup wake (2a082cf, only on x1slte-cellular) cherry-picked into x1slte (06105a2): running.
+- Flashed 22:04; cellular, VoLTE and motion wake checked after the boot.
+
 ### Punch-hole island, taller for Live Activities; status bar time at the left (2026-11-13 21:05, A) — `b383af6`
 - Island default is now the 21 x 21 pt punch hole, 6 pt from the top (preset `punch-21`). While any Live Activity /
   system element is minimal, compact or expanded (SAUI layout modes 1-3), the island is `lh` tall (32 pt) and at
