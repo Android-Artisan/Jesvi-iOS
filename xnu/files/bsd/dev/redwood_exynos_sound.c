@@ -1623,6 +1623,9 @@ calliope_boot(void)
 				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((pci_phys + ((uint64_t)mb << 20)) >> 4) | 2;
 			}
 			if (cpcall) {
+				/* our own playback ring (RDMA3 is given its physical address, snd_dma 0xFEFF0000): once Calliope turns
+				 * the SysMMU on, RDMA3's reads go through it too and fault (FAULT_VA 0xfeff0b40 seen): map that MB 1:1 */
+				*(volatile uint32_t *)(pt + 4 * (0xFEF00000U >> 20)) = (uint32_t)(0xFEF00000ULL >> 4) | 2;
 				/* the doorbell: a 1 KB second-level table right after the first-level one (exynos-iommu.h:
 				 * mk_lv1ent_page(pa) = pa >> 4 | 1, lv2 small page pa >> 4 | 2, 256 entries, 1 KB aligned) */
 				uint64_t l2_phys = pt_phys + 0x4000;
@@ -1937,8 +1940,10 @@ calliope_settle(const char *what, unsigned ms)
 		    v[12], v[13], v[14], v[15]);
 	}
 	if (rd(mmu, 0x060) != 0) {
-		snd_log("snd: calliope: %s: SysMMU fault: INT %#x FAULT_VA %#x %#x (INFO %#x)\n", what, rd(mmu, 0x060), rd(mmu, 0x1000),
-		    rd(mmu, 0x0070), rd(mmu, 0x1004));
+		/* only INT and FAULT_VA (0x1000), as the boot-time line reads them: 0x0070 is no register on this SysMMU and its
+		 * read is a synchronous external abort (A, 2026-11-13: kernel data abort ESR 0x96000210 far ...0070, twice,
+		 * the first time Calliope faulted after START_VSS) */
+		snd_log("snd: calliope: %s: SysMMU fault: INT %#x FAULT_VA %#x\n", what, rd(mmu, 0x060), rd(mmu, 0x1000));
 	}
 }
 

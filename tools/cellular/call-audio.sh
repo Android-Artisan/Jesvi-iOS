@@ -12,7 +12,7 @@
 # ABOX_SET_TYPE (0x60) VOICE (0). The UAIF2 / SPUS / amp side (RDMA3 -> SIFS0 -> UAIF2) is our own playback path.
 set -u
 SSH=${SSH:-ssh s20}
-send() { $SSH "/var/root/rwsys kern.redwood.snd_poke 'send $*'" 2>&1 | head -1; }
+send() { $SSH "/var/root/rwsys kern.redwood.poke 'snd.send $*'" 2>&1 | head -1; }
 ctl() { send 1 193 "$1" "$2" 0 "$3"; }          # gid id value
 G=0xab0c; GO=0xc291                              # default gid, OEM gid
 
@@ -54,7 +54,7 @@ off)
   $SSH 'kill $(cat /var/tmp/call-mic.pid) 2>/dev/null; pkill -f "cat /dev/redwood-mic"; rm -f /var/tmp/call-mic.pid' 
   ;;
 status)
-  $SSH "/var/root/rwsys kern.redwood.snd_poke log" 2>&1 | tail -40
+  $SSH "/var/root/rwsys kern.redwood.poke snd.log" 2>&1 | tail -40
   ;;
 *) echo "usage: $0 on|off|status"; exit 1 ;;
 esac
