@@ -41,6 +41,9 @@ static double island_w = 21.0, island_h = 21.0, island_y = 6.0;  /* punch hole "
 /* lh: the island's height while a Live Activity shows (compact / minimal views), user 2026-11-13: "when a live
  * activity is there it should increase its height". Default 32 pt; conf lh=; <= 0: the same rules as the pill. */
 static double island_lh = 32.0;
+/* lw: the pill's width while a Live Activity shows (conf lw=; <= 0: the resting width, at least lh). 2026-11-13 user's
+ * experiment: lw=81 lh=36.667, the "18pro" pill, while an activity runs. */
+static double island_lw = 0;
 static struct island_size (*island_orig_size)(id, SEL);
 static double (*island_orig_top)(id, SEL);
 
@@ -93,7 +96,7 @@ island_size_imp(id self, SEL cmd)
 	}
 	if (island_live()) {
 		s.height = island_lh;
-		s.width = s.width > island_lh ? s.width : island_lh;
+		s.width = island_lw > 0 ? island_lw : s.width > island_lh ? s.width : island_lh;
 	}
 	return s;
 }
@@ -218,6 +221,9 @@ static double
 island_eff_w(void)
 {
 	double w = island_w > 0 ? island_w : 125.0;
+	if (island_live() && island_lw > 0) {
+		return island_lw;
+	}
 	return island_live() && w < island_lh ? island_lh : w;
 }
 
@@ -379,6 +385,8 @@ island_read_conf(void)
 			island_y = atof(p + 2);
 		} else if (strncmp(p, "lh=", 3) == 0) {
 			island_lh = atof(p + 3);
+		} else if (strncmp(p, "lw=", 3) == 0) {
+			island_lw = atof(p + 3);
 		}
 	}
 	return 1;
