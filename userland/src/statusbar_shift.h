@@ -8,6 +8,7 @@
  */
 #include <dispatch/dispatch.h>
 #include <objc/runtime.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +28,41 @@ sbs_edge_insets(id self, SEL cmd)
 	return v;
 }
 
+/*
+ * The cutout the status bar lays itself out around (user 2026-11-13: "still has padding to the left"). The time is
+ * centred in the area between the left edge and the island; with the S20's small punch-hole pill (21 pt) that area
+ * is far wider than a 14 Pro's, so the time sat near the middle of it. The cutout width the status bar uses is held
+ * at least `cut` points (default 125, Apple's pill; "cut=0" in the conf: as iOS computes it), which puts the time
+ * where an iPhone has it; `lead` then moves it further left. Only the status bar's layout: the island is untouched.
+ */
+struct sbs_rect { double x, y, w, h; };
+static double sbs_cut = 125.0;
+static bool (*sbs_orig_avoid)(id, SEL, struct sbs_rect, double *, double *);
+
+static bool
+sbs_avoid(id self, SEL cmd, struct sbs_rect frame, double *offset, double *width)
+{
+	bool changed = sbs_orig_avoid(self, cmd, frame, offset, width);
+
+	if (width != NULL && *width > 0 && *width < sbs_cut) {
+		*width = sbs_cut;
+		changed = true;
+	}
+	return changed;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class dc = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
+		Method am = dc ? class_getInstanceMethod(dc,
+		    sel_registerName("_needsUpdateOfConstraintsForAvoidanceFrame:cutoutOffset:cutoutWidth:")) : NULL;
+		if (am != NULL && sbs_orig_avoid == NULL && sbs_cut > 0) {
+			sbs_orig_avoid = (bool (*)(id, SEL, struct sbs_rect, double *, double *))method_setImplementation(am,
+			    (IMP)sbs_avoid);
+		}
+	}
 	Class c = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
 	Method m = c ? class_getInstanceMethod(c, sel_registerName("edgeInsets")) : NULL;
 
@@ -53,8 +86,12 @@ statusbar_shift_start(void)
 		if (p != NULL) {
 			sbs_lead = atof(p + 5);
 		}
+		p = strstr(b, "cut=");
+		if (p != NULL) {
+			sbs_cut = atof(p + 4);
+		}
 	}
-	if (sbs_lead <= 0) {
+	if (sbs_lead <= 0 && sbs_cut <= 0) {
 		return;
 	}
 	/* (UIKitCore is loaded by the time the main queue runs, in SpringBoard and in apps) */

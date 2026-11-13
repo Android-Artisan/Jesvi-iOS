@@ -60,18 +60,111 @@ island_say(const char *fmt, ...)
 	fclose(f);
 }
 
+/*
+ * Live Activities (2026-11-13, user: "when a live activity is going on the height should increase"). SpringBoard
+ * sizes a compact or minimal activity from the resting pill's own size (sensorRegionSize; it never asks
+ * minimumCompactSize), so a small round pill made every activity 21 pt tall. Here the elements' layout modes are
+ * followed (-[SAUILayoutSpecifyingElementViewController setLayoutMode:reason:], SAUIStringFromElementViewLayoutMode:
+ * -1 removed, 0 none, 1 minimal, 2 compact, 3 custom/expanded) and while any element is minimal or more the pill is
+ * lh tall and at least lh wide; back to w x h when they are all gone.
+ */
+#define ISLAND_TRACK 24
+static struct { void *vc; long mode; } island_elements[ISLAND_TRACK];
+static bool island_active;
+static unsigned long island_size_calls;
+
+static bool
+island_live(void)
+{
+	return island_active && island_lh > 0;
+}
+
 static struct island_size
 island_size_imp(id self, SEL cmd)
 {
 	struct island_size s = island_orig_size(self, cmd);
 
+	island_size_calls++;
 	if (island_w > 0) {
 		s.width = island_w;
 	}
 	if (island_h > 0) {
 		s.height = island_h;
 	}
+	if (island_live()) {
+		s.height = island_lh;
+		s.width = s.width > island_lh ? s.width : island_lh;
+	}
 	return s;
+}
+
+static void
+island_note_mode(id vc, long mode)
+{
+	static int told;
+	int free_slot = -1, found = -1;
+	bool was = island_active;
+
+	for (int i = 0; i < ISLAND_TRACK; i++) {
+		if (island_elements[i].vc == (void *)vc) {
+			found = i;
+		} else if (island_elements[i].vc == NULL && free_slot < 0) {
+			free_slot = i;
+		}
+	}
+	if (mode >= 1) {
+		int i = found >= 0 ? found : free_slot;
+		if (i >= 0) {
+			island_elements[i].vc = (void *)vc;
+			island_elements[i].mode = mode;
+		}
+	} else if (found >= 0) {
+		island_elements[found].vc = NULL;
+	}
+	island_active = false;
+	for (int i = 0; i < ISLAND_TRACK; i++) {
+		island_active |= island_elements[i].vc != NULL;
+	}
+	if (told < 60 || was != island_active) {
+		told++;
+		island_say("island: %s %p layout mode %ld -> %s (size asked %lu times so far)", object_getClassName(vc),
+		    (void *)vc, mode, island_active ? "live height" : "resting", island_size_calls);
+	}
+}
+
+static void (*island_orig_set_mode)(id, SEL, long, long);
+static void (*island_orig_set_mode_t)(id, SEL, long, long, id);
+
+static void
+island_set_mode_imp(id self, SEL cmd, long mode, long reason)
+{
+	island_note_mode(self, mode);
+	island_orig_set_mode(self, cmd, mode, reason);
+}
+
+static void
+island_set_mode_t_imp(id self, SEL cmd, long mode, long reason, id target)
+{
+	island_note_mode(self, mode);
+	island_orig_set_mode_t(self, cmd, mode, reason, target);
+}
+
+static void
+island_hook_modes(void)
+{
+	Class c = objc_getClass("SAUILayoutSpecifyingElementViewController");
+	Method a = c ? class_getInstanceMethod(c, sel_registerName("setLayoutMode:reason:")) : NULL;
+	Method b = c ? class_getInstanceMethod(c, sel_registerName("setLayoutMode:reason:forTargetWithOverrider:")) : NULL;
+
+	if (a != NULL) {
+		island_orig_set_mode = (void (*)(id, SEL, long, long))method_setImplementation(a, (IMP)island_set_mode_imp);
+	}
+	if (b != NULL) {
+		island_orig_set_mode_t = (void (*)(id, SEL, long, long, id))method_setImplementation(b,
+		    (IMP)island_set_mode_t_imp);
+	}
+	island_say("island: Live Activity height lh=%g: layout modes %s%s", island_lh, a ? "followed" : "NOT found",
+	    b ? " (+ overrider)" : "");
 }
 
 static double
@@ -116,15 +209,16 @@ island_orig(SEL cmd)
 }
 
 static double
-island_eff_w(void)
+island_eff_h(void)
 {
-	return island_w > 0 ? island_w : 125.0;
+	return island_live() ? island_lh : island_h > 0 ? island_h : ISLAND_APPLE_H;
 }
 
 static double
-island_eff_h(void)
+island_eff_w(void)
 {
-	return island_h > 0 ? island_h : ISLAND_APPLE_H;
+	double w = island_w > 0 ? island_w : 125.0;
+	return island_live() && w < island_lh ? island_lh : w;
 }
 
 /* live: a getter of the compact / minimal (Live Activity) layout: its height is lh, its widths stay Apple's (a
@@ -346,6 +440,7 @@ island_hook(void *unused)
 	}
 	if (island_w > 0 || island_h > 0 || island_y >= 0) {
 		island_hook_geometry();
+		island_hook_modes();
 	}
 }
 
