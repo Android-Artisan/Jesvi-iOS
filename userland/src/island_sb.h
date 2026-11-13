@@ -10,7 +10,7 @@
  * Both are found by address among the classes of SpringBoardUIServices and replaced, from the main
  * queue once SpringBoard runs, and only when SpringBoardUIServices is already loaded on its own.
  *
- * Default: top 5 pt (covers the top of the hole), width 81 pt ("iPhone 18 Pro"), user-chosen 2026-11-12.
+ * Default: top 5 pt, 75 x 28 pt (preset "18pro-small"), user-chosen 2026-11-13 (was 81 x 36.67).
  * /var/jb/etc/redwood-island.conf overrides it, read when SpringBoard starts (a respring applies it):
  *     y=5 w=81 h=36.667     points; any left out keep Apple's value
  *     off                   Apple's pill
@@ -33,7 +33,7 @@
 
 struct island_size { double width, height; };   /* CGSize */
 
-static double island_w = 81.0, island_h = -1, island_y = 5.0;  /* 81: "iPhone 18 Pro" pill (user-chosen) */
+static double island_w = 75.0, island_h = 28.0, island_y = 5.0;  /* the "18pro-small" pill (user-chosen 2026-11-13) */
 static struct island_size (*island_orig_size)(id, SEL);
 static double (*island_orig_top)(id, SEL);
 
@@ -86,6 +86,7 @@ island_read_conf(void)
 	}
 	island_y = -1;
 	island_w = -1;
+	island_h = -1;   /* (a conf names what it changes: what it leaves out is Apple's) */
 	n = fread(buf, 1, sizeof(buf) - 1, f);
 	fclose(f);
 	buf[n] = 0;
