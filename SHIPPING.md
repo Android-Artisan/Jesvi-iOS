@@ -26,6 +26,20 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Not done: grey backup/media tabs in Finder; `tools/run-visible.sh` did not start its command in this session (check before
   trusting build/NAME.log).
 
+## 2026-11-13 — Cellular: the S20's modem runs under iOS; signal and operator in the status bar (user-verified)
+- The S5123 modem (external, PCIe) is brought up by our own service at boot (`com.redwood.cellular`,
+  `/redwood/bin/redwood-cellulard`, built in branch `x1slte-cellular`): SPI BOOT, PCIe link, hypervisor
+  S2MPU grant, firmware download (TOC/MAIN/APM/VSS/NV/FIN) through the reserved shared memory, Samsung's
+  INIT_START/PHONE_START handshake, packet-processor info and SBD rings, then Samsung IPC.
+- The modem reads the SIM and camps on the network; the service writes its signal, operator and
+  registration to `/var/tmp/redwood-cell/state`, and SpringBoard's telephony provider answers from it
+  (`userland/src/cell_sb.h`): bars + "Jio" in the status bar and on the lock screen (user-verified).
+- Waits for the system to settle after boot (BOOT's byte transfer misses the modem ROM's window under load),
+  retries BOOT; a newer `/var/root/redwood-cellulard` runs instead of the image copy.
+- Off switches: `cellular=0` (modem stays off), `cellbar=0` (status bar hook off).
+- Not yet: mobile data, SMS, calls (calls on Jio need VoLTE/IMS). Commits 98e8abe, 75bbaf7, 6f00bc0, 72bda73
+  (x1slte) and 2b0f509..fdd886d (x1slte-cellular).
+
 ## 2026-11-12 — OpenGL ES games run (Angry Birds Space, Leo's Fortune); screen sleeps on its own (user-verified)
 - **OpenGL ES games draw.** iOS's OpenGL ES runs on Metal and gives Metal its shaders in Apple's private GLIR form,
   which only Apple's GPU compiler reads: games showed black or died at once. `libredwood-eagl`
