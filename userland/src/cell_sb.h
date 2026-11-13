@@ -11,6 +11,7 @@
  * modem's bars, operator, registered status and LTE. Every three seconds the file is looked at, and on a
  * change the provider's observers (the status bar's data provider among them) are told.
  * Without the file everything answers as before. Boot-arg cellbar=0: not even hooked.
+ * Also hides the satellite (Stewie) glyph: cell_hide_satellite() below, boot-arg cellsat=0 keeps it.
  * The values of the registration/data-type enums are found by name through SystemStatusServer's own
  * STTelephonyRegistrationStatusDebugName() / STTelephonyDataConnectionTypeDebugName(), not assumed.
  */
@@ -222,6 +223,42 @@ cell_tick(void *context)
 	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, cell_tick);
 }
 
+/*
+ * The satellite (Stewie) glyph. With no CommCenter, SystemStatus decides there is no cellular service and
+ * offers emergency SOS via satellite, and the status bar and Control Center draw the satellite. This phone
+ * has no satellite radio: STStewieStatusDomainData answers inactive / not connected and
+ * STTelephonyStatusDomainData not using Stewie for SOS. Boot-arg cellsat=0: left alone.
+ */
+static BOOL
+cell_no(id self, SEL _cmd)
+{
+	(void)self;
+	(void)_cmd;
+	return NO;
+}
+
+static void
+cell_hide_satellite(void)
+{
+	struct { const char *cls, *sel; } off[] = {
+		{ "STStewieStatusDomainData", "isStewieActive" },
+		{ "STStewieStatusDomainData", "isStewieConnected" },
+		{ "STTelephonyStatusDomainData", "isUsingStewieForSOS" },
+	};
+	unsigned done = 0;
+
+	for (unsigned i = 0; i < sizeof(off) / sizeof(off[0]); i++) {
+		Class c = objc_getClass(off[i].cls);
+		Method m = c != Nil ? class_getInstanceMethod(c, sel_registerName(off[i].sel)) : NULL;
+
+		if (m != NULL && method_getTypeEncoding(m) != NULL && method_getTypeEncoding(m)[0] == 'B') {
+			method_setImplementation(m, (IMP)cell_no);
+			done++;
+		}
+	}
+	say("redwood: cellular: satellite glyph off (%u of 3 answers)\n", done);
+}
+
 static void
 cell_hook(void *context)
 {
@@ -235,6 +272,15 @@ cell_hook(void *context)
 	};
 
 	(void)context;
+	{
+		char args[1024];
+		size_t size = sizeof(args) - 1;
+
+		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || (args[size < sizeof(args) ? size : sizeof(args) - 1] = 0,
+		    strstr(args, "cellsat=0") == NULL)) {
+			cell_hide_satellite();
+		}
+	}
 	if (provider == Nil || objc_getClass("STMutableTelephonySubscriptionInfo") == Nil) {
 		say("redwood: cellular: no STTelephonyStateProvider here; status bar left alone\n");
 		return;
