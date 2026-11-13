@@ -7,6 +7,7 @@
  *   out  /dev/redwood-mic (48 kHz mono, docs/x1slte-audio.md) -> 8 kHz -> AMR-NB 12.2 -> RTP to the SDP's c=/m=
  * opencore-amr 0.1.6 (Apache-2.0), built static for iOS: work/third_party/amr-build/out (see tools/cellular/build-ims.sh).
  */
+#include <math.h>
 #include <pthread.h>
 #include <net/if_dl.h>
 #include <opencore-amrnb/interf_dec.h>
@@ -25,7 +26,8 @@ static pthread_mutex_t fifo_mx = PTHREAD_MUTEX_INITIALIZER;
 static struct {
     volatile int run;
     pthread_t play;
-    unsigned underruns;
+    unsigned underruns, concealed;
+    float mic_gain;
     int sock, spk, mic;
     struct sockaddr_in6 peer;
     pthread_t rx, tx;
@@ -46,12 +48,37 @@ static void putbits(uint8_t *b, size_t *pos, unsigned v, int n)
     }
 }
 
+
+/* (A, 2026-11-14, quality) a windowed-sinc low-pass at 3.6 kHz for 48 kHz: the anti-alias filter before 48 -> 8 kHz
+ * (was the mean of 6) and the interpolation filter after 8 -> 48 kHz (was linear), 72 taps (12 per phase), Hamming */
+#define FIR_N 72
+static float fir[FIR_N];
+static void fir_init(void)
+{
+    double sum = 0;
+    for (int i = 0; i < FIR_N; i++) {
+        double x = i - (FIR_N - 1) / 2.0, fc = 3600.0 / 48000.0;
+        double h = x == 0 ? 2 * fc : sin(2 * M_PI * fc * x) / (M_PI * x);
+        h *= 0.54 - 0.46 * cos(2 * M_PI * i / (FIR_N - 1));
+        fir[i] = (float)h; sum += h;
+    }
+    for (int i = 0; i < FIR_N; i++) fir[i] = (float)(fir[i] / sum);
+}
+static int16_t sat16(float v) { return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)lrintf(v); }
+static void rt_thread(int pri)
+{   /* real-time priority: the audio threads may not wait behind the rest of the phone */
+    struct sched_param sp = { .sched_priority = pri };
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+}
+
 static void *media_rx(void *arg)
 {
     (void)arg;
     void *dec = Decoder_Interface_init();
     uint8_t pkt[1500];
     int16_t pcm[160];
+    int have_seq = 0; uint16_t next_seq = 0;
+    rt_thread(46);
     while (med.run) {
         struct pollfd p = { .fd = med.sock, .events = POLLIN };
         if (poll(&p, 1, 200) <= 0) continue;
@@ -59,6 +86,22 @@ static void *media_rx(void *arg)
         if (n < 13 || (pkt[0] >> 6) != 2) { med.rx_bad++; continue; }
         if ((pkt[1] & 0x7f) != MEDIA_PT) continue;          /* (telephone-event, comfort noise of other types) */
         med.rx_pkts++;
+        uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
+        if (have_seq) {
+            int16_t gap = (int16_t)(seq - next_seq);
+            if (gap < 0) continue;                          /* (late or repeated: already concealed) */
+            /* lost packets (1..5): the decoder conceals them (a bad-frame call per missing 20 ms), not silence */
+            for (int g = 0; g < gap && g < 5; g++) {
+                uint8_t nd[1] = { (uint8_t)(15 << 3) };
+                Decoder_Interface_Decode(dec, nd, pcm, 1);
+                med.concealed++;
+                pthread_mutex_lock(&fifo_mx);
+                for (int s2 = 0; s2 < 160; s2++) fifo[(fifo_w + (unsigned)s2) % FIFO_N] = pcm[s2];
+                fifo_w += 160;
+                pthread_mutex_unlock(&fifo_mx);
+            }
+        }
+        have_seq = 1; next_seq = (uint16_t)(seq + 1);
         size_t h = 12 + 4 * (size_t)(pkt[0] & 0x0f);
         if (pkt[0] & 0x10) {                                /* header extension */
             if ((size_t)n < h + 4) continue;
@@ -101,7 +144,9 @@ static void *media_play(void *arg)
     struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     unsigned long played = 0;                               /* 8 kHz samples */
     int primed = 0;
-    int16_t last = 0, pcm[80], out[80 * 6 * 2];
+    int16_t pcm[80], out[80 * 6 * 2];
+    float hist[FIR_N / 6] = { 0 };                          /* the last 12 input samples (8 kHz) */
+    rt_thread(47);
     while (med.run) {
         struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
         unsigned long due = (unsigned long)((now.tv_sec - t0.tv_sec) * 8000L + (now.tv_nsec - t0.tv_nsec) / 125000L);
@@ -117,19 +162,20 @@ static void *media_play(void *arg)
             memset(pcm, 0, sizeof(pcm));
         }
         pthread_mutex_unlock(&fifo_mx);
-        for (int s = 0; s < 80; s++) {
+        for (int s = 0; s < 80; s++) {                      /* 8 -> 48 kHz: polyphase FIR, gain 6 */
+            memmove(hist + 1, hist, sizeof(hist) - sizeof(hist[0])); hist[0] = pcm[s];
             for (int k = 0; k < 6; k++) {
-                int v = last + (pcm[s] - last) * (k + 1) / 6;
-                out[2 * (6 * s + k)] = out[2 * (6 * s + k) + 1] = (int16_t)v;
+                float a = 0;
+                for (int j = 0; j < FIR_N / 6; j++) a += hist[j] * fir[k + 6 * j];
+                out[2 * (6 * s + k)] = out[2 * (6 * s + k) + 1] = sat16(6 * a);
             }
-            last = pcm[s];
         }
         if (med.spk >= 0) (void)!write(med.spk, out, sizeof(out));
         played += 80;
         if (played % 40000 == 0)                            /* every 5 s */
-            {printf("call: media (AP): in %u pkts, out %u pkts (%u failed: %s), mic %u bytes, %u underruns, buffered %u ms\n",
+            {printf("call: media (AP): in %u pkts, out %u pkts (%u failed: %s), mic %u bytes, %u underruns, %u concealed, mic gain %.1f, buffered %u ms\n",
                 med.rx_pkts, med.tx_pkts, med.tx_err, med.tx_err ? strerror(med.tx_errno) : "-", med.mic_bytes, med.underruns,
-                (fifo_w - fifo_r) / 8); fflush(stdout);}
+                med.concealed, med.mic_gain, (fifo_w - fifo_r) / 8); fflush(stdout);}
         if (due > played + 800) played = due;               /* (stalled over 100 ms: skip ahead, do not burst) */
     }
     return NULL;
@@ -139,8 +185,10 @@ static void *media_tx(void *arg)
 {
     (void)arg;
     void *enc = Encoder_Interface_init(0);
-    int16_t in[960], pcm[160];
+    int16_t in[960], pcm[160], prev[FIR_N] = { 0 };
+    float dec8[160], gain = 2;
     size_t have = 0;
+    rt_thread(45);
     uint16_t seq = (uint16_t)arc4random();
     uint32_t ts = arc4random(), ssrc = arc4random();
     int first = 1;
@@ -154,11 +202,23 @@ static void *media_tx(void *arg)
             continue;
         }
         have = 0;
-        for (int s = 0; s < 160; s++) {                     /* 48 -> 8 kHz: the mean of 6 */
-            int a = 0;
-            for (int k = 0; k < 6; k++) a += in[6 * s + k];
-            pcm[s] = (int16_t)(a / 6);
+        float peak = 0;
+        for (int s = 0; s < 160; s++) {                     /* 48 -> 8 kHz: FIR low-pass, every 6th */
+            float a = 0;
+            for (int j = 0; j < FIR_N; j++) {
+                int idx = 6 * s + 5 - j;
+                a += (idx >= 0 ? in[idx] : prev[FIR_N + idx]) * fir[j];
+            }
+            dec8[s] = a; if (fabsf(a) > peak) peak = fabsf(a);
         }
+        memcpy(prev, in + 960 - FIR_N, sizeof(prev));
+        /* AGC: speech peaks toward 12000, gain 1..6, fast down, slow up; quiet frames (noise) do not raise it */
+        if (peak > 400) {
+            float want = 12000.0f / peak; if (want > 6) want = 6; if (want < 1) want = 1;
+            gain += (want - gain) * (want < gain ? 0.5f : 0.02f);
+        }
+        med.mic_gain = gain;
+        for (int s = 0; s < 160; s++) pcm[s] = sat16(dec8[s] * gain);
         uint8_t st[64];
         int len = Encoder_Interface_Encode(enc, MR122, pcm, st, 0);
         if (len < 1) continue;
@@ -214,7 +274,8 @@ static int media_start(int sock, const char *remote, unsigned rport)
     med.spk = open("/dev/redwood-audio", O_WRONLY | O_NONBLOCK);
     med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
     med.rx_pkts = med.rx_frames = med.tx_pkts = med.rx_bad = med.tx_err = med.mic_bytes = 0; med.tx_errno = 0;
-    fifo_w = fifo_r = 0; med.underruns = 0;
+    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2;
+    fir_init();
     med.run = 1;
     pthread_create(&med.play, NULL, media_play, NULL);
     pthread_create(&med.rx, NULL, media_rx, NULL);
