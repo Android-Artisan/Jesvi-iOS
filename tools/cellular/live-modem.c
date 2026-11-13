@@ -151,6 +151,9 @@ static int inputs(uint32_t *value)
 /* ---- firmware download (A, 2026-11-12): legacy RAW queues in the reserved IPC memory, Samsung's
  * link_start_normal_boot + xmit_to_legacy_link + cbd's SIPC UDL. Only with --download TOC. ---- */
 #include <sys/sysctl.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
 #include "../../xnu/files/bsd/sys/redwood_cp_ipc.h"
@@ -757,7 +760,26 @@ int main(int argc,char **argv)
     if ((argc<4 || argc>8) || strcmp(argv[1],"--reserved-base-verified")) return 2;
     if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
     if (argc==6) {if (strcmp(argv[4],"--download")) return 2;link_requested=1;download_toc=argv[5];}
-    if (argc==8 && !strcmp(argv[7],"--stay")) {stay_mode=1;argc=7;}
+    if (argc==8 && !strcmp(argv[7],"--stay")) {
+        char args[1024]="";size_t al=sizeof(args)-1;
+        if (!sysctlbyname("kern.bootargs",args,&al,NULL,0) && strstr(args,"cellular=0")) {puts("cellular=0: modem left off");return 0;}
+        stay_mode=1;argc=7;
+        /* a newer copy in /var/root (root only) runs instead of the image's: updates without a new image */
+        if (strcmp(argv[0],"/var/root/redwood-cellulard") && access("/var/root/redwood-cellulard",X_OK)==0) {
+            argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
+        }
+        unlink("/var/tmp/redwood-cell/state");    /* (/var/tmp survives a restart: no stale bars before the modem is up) */
+        /* right after boot the phone is too busy for the SPI BOOT's byte PIO (the CP's ROM times out):
+         * wait until 60 s after boot and a load average under 8, at most 4 minutes */
+        for (unsigned waited=0;waited<240;waited+=5) {
+            struct timeval boot;size_t bl=sizeof(boot);double load[3]={99,99,99};
+            int up=!sysctlbyname("kern.boottime",&boot,&bl,NULL,0)?(int)(time(NULL)-boot.tv_sec):999;
+            getloadavg(load,3);
+            if (up>=60 && load[0]<8.0) break;
+            if (waited==0) {printf("cellular: waiting for the system to settle (up %d s, load %.0f)\n",up,load[0]);fflush(stdout);}
+            sleep(5);
+        }
+    }
     if (argc==7) {if (strcmp(argv[4],"--download-all")) return 2;link_requested=1;download_toc=argv[5];download_plan=argv[6];}
     uint8_t image[131073],info[25];size_t length,info_length;uint32_t fields[5];
     if (read_file(argv[2],image,sizeof(image),&length) || read_file(argv[3],info,sizeof(info),&info_length) ||
@@ -770,6 +792,12 @@ int main(int argc,char **argv)
     struct modem m={0};struct s5123_boot_result result={0};
     struct s5123_boot_ops ops={&m,ready,prepare,output,delay,route,send_boot,park,restore,quiescent};
     int error=s5123_boot_once(&ops,&result,image,length,fields[2]);
+    for (unsigned attempt=2;stay_mode && !stopped && attempt<=3 && error && result.cleanup_safe && result.phase<=5;attempt++) {
+        printf("cellular live BOOT: attempt %u in 15 s (error %d at phase %u)\n",attempt,error,result.phase);fflush(stdout);
+        sleep(15);
+        memset(&m,0,sizeof(m));memset(&result,0,sizeof(result));cleanup=0;ipc_mapped=0;
+        error=s5123_boot_once(&ops,&result,image,length,fields[2]);
+    }
     printf("cellular live BOOT: error %d attempted %u power_requested %u phase %u completed %u cleanup_verified %u; acceptance unproven\n",
         error,result.attempted,result.power_requested,result.phase,result.spi_completed,result.cleanup_safe);fflush(stdout);
     return result.attempted && result.cleanup_safe ? (error?1:0):2;
