@@ -143,9 +143,14 @@ static void rw_probe(void)
 }
 
 /* ---- incoming: real subclasses of BlastDoor's classes, built at run time, getters answering from associated values ---- */
-static id rw_get_obj(id self, SEL _cmd) { return objc_getAssociatedObject(self, (const void *)_cmd); }
-static long rw_get_int(id self, SEL _cmd) { return [objc_getAssociatedObject(self, (const void *)_cmd) longValue]; }
-static BOOL rw_get_bool(id self, SEL _cmd) { return [objc_getAssociatedObject(self, (const void *)_cmd) boolValue]; }
+static void rw_trace(id self, SEL _cmd, id v)
+{   /* which getters the plugin reads (names only), while /var/tmp/redwood-cell/sms-trace exists */
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/sms-trace"])
+        rw_log(@"read %s.%s -> %@", class_getName(object_getClass(self)) + 3, sel_getName(_cmd), v ? NSStringFromClass([v class]) : @"nil");
+}
+static id rw_get_obj(id self, SEL _cmd) { id v = objc_getAssociatedObject(self, (const void *)_cmd); rw_trace(self, _cmd, v); return v; }
+static long rw_get_int(id self, SEL _cmd) { id v = objc_getAssociatedObject(self, (const void *)_cmd); rw_trace(self, _cmd, v); return [v longValue]; }
+static BOOL rw_get_bool(id self, SEL _cmd) { id v = objc_getAssociatedObject(self, (const void *)_cmd); rw_trace(self, _cmd, v); return [v boolValue]; }
 static id rw_make(const char *base, NSDictionary *values)
 {
     Class super = objc_getClass(base);
@@ -173,7 +178,7 @@ static id rw_make(const char *base, NSDictionary *values)
 }
 static id rw_sms(NSString *guid, NSString *from, NSDate *date, NSString *text)
 {
-    long ptype = 1;   /* the wrapper's code for "plain" (BlastDoorSMSCTPartContentWrapper -type): from a file while it is unknown */
+    long ptype = 0;   /* BlastDoorSMSCTPartContentWrapper -type: 0 plain (1 is SMIL: the plugin then reads -smil); a file overrides */
     NSString *pt = [NSString stringWithContentsOfFile:@"/var/tmp/redwood-cell/sms-plain-type" encoding:NSUTF8StringEncoding error:nil];
     if (pt.length) ptype = pt.integerValue;
     id plain = rw_make("BlastDoorSMSCTPartPlain", @{@"plainTextContentBody": text});
