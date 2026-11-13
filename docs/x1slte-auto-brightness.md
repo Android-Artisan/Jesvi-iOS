@@ -43,6 +43,13 @@ implementation. The kernel now accepts/applies/publishes `brightness-nits`
 (16.16 nits), while legacy manual-slider writes remain active. A previous cached-
 nits ownership experiment blocked the slider; that rule was removed.
 
+## Light sensor timing (2026-11-13)
+
+The sensor hub (kernel, `redwood_ssp.c`) reads the light sensor every 1 s while the display is on and stops it
+while the display is off (`shub_light_ms=`). Do not put the light sensor on a burst schedule: this controller
+needs 5-8 s of steady, fresh readings before it moves the brightness, and with 2 s bursts every 30 s it never did.
+Only proximity (an IR LED) runs in bursts (`shub_burst_on=2000`, `shub_burst_every=30000`).
+
 ## CPU, GPU and sleep
 
 Brightness interpolation runs at up to 20 updates/s only while ramping. When
