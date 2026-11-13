@@ -17,6 +17,12 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - **Kernel `c7e2856` (on the phone since 06:50, kernel 06:45:20; booted, 90 s stable, hand-back to Log access worked at 06:49 on the old kernel by luck, camera flips still to be tried by the user):** camera ring freed under a reader (panic in camdev_read); printf with
   interrupts off in `redwood_usbmux_link` (panic on every hand-back to the loader: `/menu?to=1` bounced into iOS); link
   restart once when lockdownd first answers (Finder lost the phone after every restart).
+- **Camera off at boot (`b494677`):** `device_request_streams` started frames at every reservation; mediaserverd reserves
+  both streams at start just to list the cameras, so every boot powered the rear sensor and streamed the front one.
+  Now only a stream with a PixelBufferHandler begins. On the phone's image since 07:00: "only listed ... its sensor
+  stays off" at boot; Camera.app 365 pictures of 366 frames on the dev copy.
+- Phone at 07:03: kernel 06:45:20, root with the helper + this media library, system image with the host; Mac: 0 refused
+  connects after the restart, 1 file-sharing app. Rollback images: `proposals/finder-host/deploy/`.
 - Not done: grey backup/media tabs in Finder; `tools/run-visible.sh` did not start its command in this session (check before
   trusting build/NAME.log).
 
