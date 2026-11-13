@@ -768,3 +768,11 @@ For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=
   SYSTEM_CALL state (abox_vss_notify_call), mixer route "incall-handset" (vendor mixer_paths.xml), the virtual PCMs
   104/113 the audio proxy opens -- kernel work, needs reboots.
 - P-CSCF reconnects: a resent INVITE on the new connection carries the call on (1453c42).
+- **Found (23:20):** redwood_exynos_sound.c maps Calliope's VSS IOVA window (CAL_IOVA_VSS 0xA0000000: VSS firmware,
+  parameter +16 MB, PCI +32 MB, doorbell +48 MB) to CAL_VSS_SPARE_PHYS 0xF5200000, one cleared spare MB -- a
+  placeholder from the sound bring-up. Samsung maps it to the CP's shared-memory VSS region (cpif shm_ipc.c
+  SHMEM_VSS, offsets from the CP's TOC; cp_rmem 0xf0000000+8M / cp_rmem_2 0xd0000000+64M), so ABOX and the CP never
+  meet here. Next (kernel, reboot, behind a boot-arg): find SHMEM_VSS's physical range (the CP TOC that
+  redwood-cellulard loads / cell-toc.bin), map CAL_IOVA_VSS there, zero the abox-vss magic word (+0x700000), send
+  Calliope SYSTEM_CALL on/off at call start/end (abox_vss_notify_call -> abox_set_system_state), set the
+  "incall-handset" routes. Then the caller should hear the S20's mic and vice versa.
