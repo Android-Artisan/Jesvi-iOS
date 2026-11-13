@@ -13,6 +13,15 @@
   MMS (pictures/groups), calls. A stalled first modem start after boot is restarted by the registration watchdog.
 - Details: work/hackios-cellular/docs/cellular-download-plan.md, sessions/A.md.
 
+### Cellular stability (2026-11-13 18:30, B) — `9f4c792`, `6a8ea5c`, `e005b29`, `d08bc68`
+- VoLTE now starts after every reboot: a stale `/var/tmp/redwood-cell/ims.pid` (reused pid) no longer looks like a
+  running client (it left the phone 34 min without VoLTE after the 18:00 boot).
+- Downlink ring: every used buffer goes back to the modem (fore follows done) -- suspected cause of the "downlink
+  silent" automatic modem restarts. A health line per minute in /var/tmp/redwood-cellular.log tracks it.
+- Incoming calls get "486 Busy Here" instead of a bare 200 OK (which would have connected callers to silence).
+- `echo restart > /var/tmp/redwood-cell/cmd` restarts the modem cleanly.
+- Live on the phone (/var/root binaries) and in prebuilt/userland for the next boot image.
+
 ## 2026-11-12 — cellular IPC memory audit (built, not deployed)
 - Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
 - Root `cp.memory` audits existing XNU translations and cache attributes without
