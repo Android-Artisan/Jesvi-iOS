@@ -8,6 +8,7 @@
  * opencore-amr 0.1.6 (Apache-2.0), built static for iOS: work/third_party/amr-build/out (see tools/cellular/build-ims.sh).
  */
 #include <math.h>
+#include <sys/sysctl.h>
 #include <pthread.h>
 #include <net/if_dl.h>
 #include <opencore-amrnb/interf_dec.h>
@@ -275,6 +276,11 @@ static int media_start(int sock, const char *remote, unsigned rport)
     med.spk = open("/dev/redwood-audio", O_WRONLY | O_NONBLOCK);
     med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
     med.rx_pkts = med.rx_frames = med.tx_pkts = med.rx_bad = med.tx_err = med.mic_bytes = 0; med.tx_errno = 0;
+    {   /* the earpiece (top amplifier only) unless the call screen says speaker; iOS's own audio leaves the device to us */
+        int one = 1;
+        sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
+        sysctlbyname("kern.redwood.snd_route", NULL, NULL, &one, sizeof(one));
+    }
     fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0;
     fir_init();
     med.run = 1;
@@ -297,4 +303,6 @@ static void media_stop(void)
     if (med.mic >= 0) close(med.mic);
     if (med.sock >= 0) close(med.sock);
     med.spk = med.mic = med.sock = -1;
+    {int zero = 0; sysctlbyname("kern.redwood.snd_call", NULL, NULL, &zero, sizeof(zero));
+     sysctlbyname("kern.redwood.snd_route", NULL, NULL, &zero, sizeof(zero));}
 }

@@ -55,6 +55,7 @@ static void rp_cmd_quiet(NSString *line)
 @property (copy) NSString *lastState;
 @property (strong) NSMutableDictionary<NSString *, NSUUID *> *dialing;   /* tag -> UUID until redwood-ims names the call */
 @property (strong) NSMutableSet<NSUUID *> *outgoing;
+@property (strong) AVAudioEngine *engine;
 @end
 
 @implementation RP
@@ -140,8 +141,14 @@ static void rp_cmd_quiet(NSString *line)
 
 - (void)providerDidReset:(CXProvider *)p { rp_log(@"provider reset"); }
 - (void)providerDidBegin:(CXProvider *)p { rp_log(@"provider ready"); }
+static void rp_session_for_call(void)
+{
+    AVAudioSession *as = [AVAudioSession sharedInstance];
+    [as setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeVoiceChat options:0 error:nil];
+}
 - (void)provider:(CXProvider *)p performAnswerCallAction:(CXAnswerCallAction *)a
 {
+    rp_session_for_call();
     NSNumber *cid = [self idFor:a.callUUID];
     if (cid) rp_cmd([NSString stringWithFormat:@"answer %@", cid]);
     [a fulfill];
@@ -161,6 +168,7 @@ static void rp_cmd_quiet(NSString *line)
 /* a call from the Phone app (its dial goes to us: see the dial hook in libredwood, tools/cellular/RedwoodPhone/README) */
 - (void)provider:(CXProvider *)p performStartCallAction:(CXStartCallAction *)a
 {
+    rp_session_for_call();
     NSString *num = a.handle.value ?: @"";
     NSString *tag = [[a.callUUID UUIDString] substringToIndex:8];
     self.dialing[tag] = a.callUUID;
@@ -172,8 +180,30 @@ static void rp_cmd_quiet(NSString *line)
     [p reportCallWithUUID:a.callUUID updated:up];
 }
 - (void)provider:(CXProvider *)p performSetHeldCallAction:(CXSetHeldCallAction *)a { [a fail]; }
-- (void)provider:(CXProvider *)p didActivateAudioSession:(AVAudioSession *)s { rp_log(@"audio session on"); }
-- (void)provider:(CXProvider *)p didDeactivateAudioSession:(AVAudioSession *)s { rp_log(@"audio session off"); }
+/* The call's audio session: silence played through it, so that iOS's route (Receiver = earpiece by default, Speaker
+ * from the call screen's button) runs the audio plug-in's device of that name, which tells the kernel the route.
+ * The voice itself goes past iOS (redwood-ims -> /dev/redwood-audio). */
+- (void)provider:(CXProvider *)p didActivateAudioSession:(AVAudioSession *)s
+{
+    rp_log(@"audio session on");
+    if (!self.engine) {
+        self.engine = [AVAudioEngine new];
+        AVAudioFormat *f = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:1];
+        AVAudioSourceNode *src = [[AVAudioSourceNode alloc] initWithFormat:f renderBlock:^OSStatus(BOOL *silence, const AudioTimeStamp *ts, AVAudioFrameCount n, AudioBufferList *out) {
+            for (UInt32 i = 0; i < out->mNumberBuffers; i++) memset(out->mBuffers[i].mData, 0, out->mBuffers[i].mDataByteSize);
+            *silence = YES;
+            return noErr;
+        }];
+        [self.engine attachNode:src];
+        [self.engine connect:src to:self.engine.mainMixerNode format:f];
+    }
+    NSError *e = nil;
+    if (![self.engine startAndReturnError:&e]) rp_log(@"route player: %@", e);
+    [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+        rp_log(@"route now %@", [AVAudioSession sharedInstance].currentRoute.outputs.firstObject.portType);
+    }];
+}
+- (void)provider:(CXProvider *)p didDeactivateAudioSession:(AVAudioSession *)s { rp_log(@"audio session off"); [self.engine stop]; }
 @end
 
 /* When a call is answered iOS also launches the provider's app through FrontBoard (UIKitApplication:com.redwood.phone):
