@@ -745,3 +745,16 @@ ImsSetChannel. Payload (47 bytes, little-endian u16):
     p10 u8  ipver (2 = IPv6)   p11 16 bytes remote IP      p27 u8  ipver           p28 16 bytes local IP
     p44 u8  stream type        p45 u16 x (VoIpEngineProxy::SetChannel's 4th argument)
 For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=/m= (RTCP = RTP + 1).
+
+### VoLTE calls, first media test (2026-11-13 23:00, A)
+- During an answered call: 16/06, 16/01 (open), 16/02 (AMR-NB 12.2, third field = 1: 0 is refused 0x8001) all 0x8000.
+- The network's dedicated bearer arrives as an unsolicited **16/0b type 03** (74 bytes at setup: `01 01 01`, four
+  u32 0x78, then TFT filters with exactly our RTP/RTCP ports and the remote's; 22 bytes `01 01 03 ...` at release).
+  In libsec-ims this is the NetworkQoS path (CPVEInterface::HandleNetworkQoSEvent -> CallManager::OnNetworkQosEvent).
+- **16/03 SetRtpMedia [1][ch][x][0] answers 0x0064 (100)** for x = 0, 1, 5, 7: start not understood yet. The caller
+  heard dead silence (no comfort noise): no evidence of RTP from the CP yet.
+- **Do not send 16/05 GET with an all-zero 71-byte struct**: no reply, the IMS handler stopped answering (stop/close
+  unacknowledged) and the watchdog restarted the modem (~1 min without data).
+- Next: what 16/03's code 100 means (OemIPCHandler / VoIpEngineProxy::IpcCallback 0x7cf340 decode the 0x80 codes);
+  whether the CP needs the audio path first (IPC group 0x09 SND AUDIO_PATH / CLOCK) or 16/09 EngineSet before it
+  starts encoding; the ABOX VSS route.
