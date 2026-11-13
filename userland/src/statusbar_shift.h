@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
 static double sbs_lead = 20.0;   /* (user-verified 2026-11-13 with cut=125; was 3) */
@@ -44,7 +45,17 @@ sbs_avoid(id self, SEL cmd, struct sbs_rect frame, double *offset, double *width
 {
 	bool changed = sbs_orig_avoid(self, cmd, frame, offset, width);
 
+	static int told;
+
 	if (width != NULL && *width > 0 && *width < sbs_cut) {
+		if (told < 3 && getpid() > 0) {
+			FILE *f = fopen("/var/mobile/Library/Logs/redwood-statusbar.log", "a");   /* (apps' sandbox: fails, fine) */
+			if (f != NULL) {
+				fprintf(f, "statusbar: pid %d cutout %.1f -> %.1f (lead %.1f)\n", getpid(), *width, sbs_cut, sbs_lead);
+				fclose(f);
+			}
+			told++;
+		}
 		*width = sbs_cut;
 		changed = true;
 	}
@@ -94,6 +105,12 @@ statusbar_shift_start(void)
 	if (sbs_lead <= 0 && sbs_cut <= 0) {
 		return;
 	}
-	/* (UIKitCore is loaded by the time the main queue runs, in SpringBoard and in apps) */
+	/*
+	 * At once, from the library's constructor: UIKitCore is mapped (a dependency of every UI process) and its classes
+	 * are registered before any constructor runs. (2026-11-13: hooked from the main queue only, the status bar could
+	 * be laid out first; the cutout is only re-measured when the island changes, so after a boot the time stayed at
+	 * Apple's place until a Live Activity came and went.) The main queue again as a fallback.
+	 */
+	sbs_hook(NULL);
 	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_hook);
 }
