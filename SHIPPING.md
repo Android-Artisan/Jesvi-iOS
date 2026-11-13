@@ -28,8 +28,9 @@
   rwlogd saves it every minute, so the clock never starts at 1970 again.
 - Texts over VoLTE: SIP + TCP keep-alive; the idle connection was dropped and texts got no answer. Sent and received
   texts verified 18:51.
-- Sensor hub: proximity off by default (no more flashing next to the camera), light/pressure 1 s, motion 60 ms, hub
-  debug text only with shub_text=1 (was 482 log lines a minute). Kernel built in hackios-cellular (18:46).
+- Sensor hub: light + proximity run in bursts, 2 s every 30 s with the display on, fully off with it off (the
+  proximity LED flashed 5 times a second); pressure 1 s, motion 60 ms; hub debug text only with shub_text=1 (was 482
+  log lines a minute). Kernel built in hackios-cellular (19:07).
 - Cellular service log quiet by default (was 38 KB/min); tools/bg-status.sh and docs/x1slte-background.md list every
   background service and debug switch.
 - Status bar: the left side 3 pt nearer the edge (statusbar_shift.h, `lead=` in /var/jb/etc/redwood-statusbar.conf).
