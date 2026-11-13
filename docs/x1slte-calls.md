@@ -1,0 +1,85 @@
+# Phone calls on the S20 (VoLTE) — how they work today
+
+Status (2026-11-14): incoming and outgoing VoLTE calls work on Jio, both ways, on iOS's own call screen and from the
+Phone app, with the voice on the earpiece (Speaker button to switch). This page says plainly **what this is and what it
+is not**.
+
+## The short version
+
+**The call's voice does not go through the modem's voice engine, and not through the phone's audio DSP (ABOX/Calliope).**
+The modem (Shannon S5123) is used only as a data pipe: LTE, the IMS PDN, and the dedicated voice bearer. Everything that
+a phone's modem and audio DSP normally do for a call is done in software on the application processor (AP):
+
+| Job | On a stock S20 | Here (today) |
+|---|---|---|
+| SIP signalling (register, INVITE, BYE…) | modem / Samsung IMS stack | `redwood-ims` on the AP |
+| IPsec to the P-CSCF | Samsung IMS stack | `redwood-ims` (PF_KEY) on the AP |
+| RTP / voice packets | modem's voice engine (CPVE) | `redwood-ims` on the AP (`tools/cellular/ims-media.h`) |
+| AMR-NB codec | modem's voice engine | opencore-amr (Apache-2.0), on the AP |
+| Jitter buffer, loss concealment | modem / DSP | `ims-media.h` on the AP |
+| Echo cancellation, noise suppression | ABOX/Calliope DSP | **none yet** |
+| Earpiece / speaker / mic routing | ABOX "incall" paths | the kernel's own speaker and mic drivers (`/dev/redwood-audio`, `/dev/redwood-mic`, `kern.redwood.snd_route`) |
+| Call screen | CommCenter + Phone app | CallKit: RedwoodPhone.app + callservicesd, with small hooks (libredwood) |
+
+It is, honestly, **a patched-together VoIP phone** that happens to speak VoLTE: the voice is handled the way a VoIP app
+(WhatsApp, a SIP softphone) handles it, and iOS is told about calls through CallKit, the way third-party calling apps do,
+with hooks so that iOS treats them as the phone's own calls.
+
+## Why it was done this way
+
+- The modem accepted every voice-engine command we sent (CPVE: SetPdnIp, SetChannel, SetCodec, SetRtpMedia — all
+  `0x8000` OK), but never took the RTP stream: the caller's voice packets arrived at the AP as ordinary data.
+- On the S20 (external S5123 modem over PCIe) the modem's voice reaches the audio DSP through ABOX's PCI path
+  (`abox-pci-rmem` 0xF4200000, the modem's PCIe doorbell) and topology controls in Calliope's firmware. We mapped that
+  path (`snd=3` / `cpcall=1`, kept off) and drove the stock routes (`tools/cellular/call-audio.sh`), but no audio flowed:
+  the missing piece is on the modem's side (how Samsung's IMS stack tells the voice engine to use that path).
+- Doing the voice on the AP worked within hours and needs nothing from the modem's undocumented internals.
+
+## What this means
+
+**Good:**
+- **Portable.** Nothing in the voice path is specific to the S5123 or Exynos: any device where this port has a data
+  connection to the IMS PDN, a speaker/earpiece output and a microphone can run the same `redwood-ims` + RedwoodPhone.
+  The device-specific parts are small: how IMS packets reach the AP (here: redwood-cellulard, SBD channels 10/11 and the
+  IMS utun), and the earpiece route in the kernel's speaker driver.
+- Fully visible and debuggable: every call's packets, counters and timings are in `/var/tmp/redwood-ims.log`.
+
+**Limits (until the native path exists):**
+- No acoustic echo cancellation or noise suppression (the DSP does that on a stock phone). Use the earpiece; on the
+  speaker the other side may hear an echo.
+- AMR-NB 12.2 only (narrowband). No AMR-WB / EVS (HD voice) yet — possible on the AP too (opencore-amr has AMR-WB
+  decode; an encoder is needed).
+- Voice runs on the AP's CPU and the phone's own audio drivers: a little more power than the modem's voice engine.
+- No emergency-call (SOS) handling, no supplementary services (hold, call waiting, conference, call forwarding), no
+  video calls (ViLTE), no Wi-Fi calling (VoWiFi needs an IKEv2/EAP-AKA tunnel to Jio's ePDG).
+- Dynamic Island / Control Center show no live mic level (the voice bypasses iOS's audio system).
+
+## The native path (later)
+
+For a fully native phone, the modem and the audio DSP have to be reverse-engineered further so that they carry the
+call the way stock Android does:
+1. **Modem side:** how Samsung's IMS stack (`libsec-ims`: CallManager -> CPVEInterface -> OemIPCHandler, IPC group
+   0x16) makes the voice engine take the RTP stream and hand PCM to ABOX — the commands we send are accepted but the
+   stream is not taken; something (an ordering, a mode, a bearer binding) is still missing.
+   See `docs/cellular-download-plan.md` (CPVE command table, payload layouts).
+2. **Audio side:** ABOX/Calliope's VSS/PCI voice path and its topology controls (`abox_tplg.conf` ids, stock
+   `mixer_paths.xml` "incall_*" routes, `tools/cellular/call-audio.sh`), plus Calliope's own echo canceller.
+3. Then RedwoodPhone stays (it is iOS's side of the call), and `redwood-ims` keeps signalling but hands media to the
+   modem instead of doing it itself.
+
+Until then, the AP path is what makes calls work, and it is the one to keep when porting to other devices.
+
+## Where the pieces are
+
+- `tools/cellular/redwood-ims.c` — IMS client: registration (fixed ports 50060/50062), calls in and out, SMS.
+- `tools/cellular/ims-media.h` — the voice: RTP, AMR, jitter buffer, resampling, AGC, routes.
+- `tools/cellular/build-ims.sh` — builds it with opencore-amr (static).
+- `tools/cellular/RedwoodPhone/` — the CallKit provider app (+ install.sh, which also puts callservicesd in place).
+- `userland/src/phone_dial.h` — hooks: Phone-app dials to RedwoodPhone, our calls as phone calls, the Speaker button.
+- `userland/src/audio_plugin.c` — iOS's audio plug-in (hands the mic to the call; no route changes during a call).
+- `xnu-src/.../bsd/dev/redwood_exynos_sound.c` — `kern.redwood.snd_route` (earpiece = top amplifier only),
+  `kern.redwood.snd_call`; also the ABOX PCI voice mapping (`cpcall`, off).
+- `tools/cellular/live-modem.c` (redwood-cellulard) — hands the voice bearer's packets to the IMS interface;
+  registers RedwoodPhone with LaunchServices at boot.
+- Debug: `/var/tmp/redwood-ims.log` (call lines are timestamped; voice counters every 5 s),
+  `/var/mobile/Library/Logs/redwood-phone.log`, `/var/tmp/redwood-cell/call-ui/` (state between the two).
