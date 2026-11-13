@@ -538,7 +538,13 @@ static struct {int up;uint8_t ip6[16],dns6[16];unsigned mtu;} pdn;
 static unsigned ul_ch=11,ul_ring=8;     /* QoS high-priority multipdp ring carries UL (ring 9 is consumed but not sent) */
 static unsigned pp_done;
 static uint64_t pp_rx,pp_tx;
+static int poke_read1(uint32_t pa,uint32_t *w,unsigned n);
 static int poke_read(uint32_t pa,uint32_t *w,unsigned n)
+{   /* the kernel peek returns at most 64 words per call */
+    for (unsigned o=0;o<n;o+=64) if (poke_read1(pa+4*o,w+o,n-o>64?64:n-o)) return -1;
+    return 0;
+}
+static int poke_read1(uint32_t pa,uint32_t *w,unsigned n)
 {
     char c[64],r[8192];snprintf(c,sizeof(c),"r 0x%x %u",pa,n);if (request(c,r)) return -1;
     unsigned got=0;char *save=NULL;
@@ -602,11 +608,94 @@ static void ping6(const char *dst)
     uint16_t c=csum16(ic,24,s0);ic[2]=(uint8_t)(c>>8);ic[3]=(uint8_t)c;
     int e=pkt_tx(pk,64);printf("cellular: ping6 %s sent (%s)\n",dst,e?"UL ring refused":"ok");fflush(stdout);
 }
+static void utun_deliver(const uint8_t *p,unsigned n);
 static void pkt_rx(const uint8_t *p,unsigned n)
 {
+    utun_deliver(p,n);
     if (n>=40 && (p[0]>>4)==6 && p[6]==58 && n>=48 && p[40]==129)
         {printf("cellular: ping6 REPLY from %02x%02x:%02x%02x:... (%u bytes)\n",p[8],p[9],p[10],p[11],n);fflush(stdout);}
     else if (pp_rx<20) {printf("cellular: DL packet %u bytes, IP v%u next %u\n",n,p[0]>>4,p[6]);fflush(stdout);}
+}
+
+/* ---- utun: the data PDN as an iOS network interface (IPv6) ---- */
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+/* (not in the iOS SDK; the kernel ABI is macOS's: sys/kern_control.h, sys/sys_domain.h, net/route.h) */
+#define AF_SYSTEM 32
+#define PF_SYSTEM AF_SYSTEM
+#define AF_SYS_CONTROL 2
+#define SYSPROTO_CONTROL 2
+struct ctl_info {uint32_t ctl_id;char ctl_name[96];};
+#define CTLIOCGINFO _IOWR('N',3,struct ctl_info)
+struct sockaddr_ctl {u_char sc_len,sc_family;uint16_t ss_sysaddr;uint32_t sc_id,sc_unit,sc_reserved[5];};
+struct rt_metrics {uint32_t rmx_locks,rmx_mtu,rmx_hopcount;int32_t rmx_expire;uint32_t rmx_recvpipe,rmx_sendpipe,rmx_ssthresh,rmx_rtt,rmx_rttvar,rmx_pksent,rmx_state,rmx_filler[3];};
+struct rt_msghdr {u_short rtm_msglen;u_char rtm_version,rtm_type;u_short rtm_index;int rtm_flags,rtm_addrs;pid_t rtm_pid;int rtm_seq,rtm_errno,rtm_use;uint32_t rtm_inits;struct rt_metrics rtm_rmx;};
+#define RTM_VERSION 5
+#define RTM_ADD 0x1
+#define RTF_UP 0x1
+#define RTF_STATIC 0x800
+#define RTA_DST 0x1
+#define RTA_GATEWAY 0x2
+#define RTA_NETMASK 0x4
+#include <netinet/in.h>
+#ifndef UTUN_OPT_IFNAME
+#define UTUN_OPT_IFNAME 2
+#endif
+struct rw_in6_addrlifetime {time_t ia6t_expire,ia6t_preferred;uint32_t ia6t_vltime,ia6t_pltime;};
+struct rw_in6_aliasreq {char ifra_name[IFNAMSIZ];struct sockaddr_in6 ifra_addr,ifra_dstaddr,ifra_prefixmask;int ifra_flags;struct rw_in6_addrlifetime ifra_lifetime;};
+#define RW_SIOCAIFADDR_IN6 _IOW('i',26,struct rw_in6_aliasreq)
+static int utun_fd=-1;static char utun_name[IFNAMSIZ];
+static void utun_up(void)
+{
+    if (utun_fd>=0 || !pdn.up) return;
+    int fd=socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL);if (fd<0) {perror("cellular: utun socket");return;}
+    struct ctl_info ci;memset(&ci,0,sizeof(ci));strlcpy(ci.ctl_name,"com.apple.net.utun_control",sizeof(ci.ctl_name));
+    if (ioctl(fd,CTLIOCGINFO,&ci)<0) {perror("cellular: CTLIOCGINFO");close(fd);return;}
+    struct sockaddr_ctl sc;memset(&sc,0,sizeof(sc));sc.sc_len=sizeof(sc);sc.sc_family=AF_SYSTEM;sc.ss_sysaddr=AF_SYS_CONTROL;sc.sc_id=ci.ctl_id;sc.sc_unit=0;
+    if (connect(fd,(struct sockaddr *)&sc,sizeof(sc))<0) {perror("cellular: utun connect");close(fd);return;}
+    socklen_t nl=sizeof(utun_name);getsockopt(fd,SYSPROTO_CONTROL,UTUN_OPT_IFNAME,utun_name,&nl);
+    fcntl(fd,F_SETFL,O_NONBLOCK);
+    int s6=socket(AF_INET6,SOCK_DGRAM,0);
+    struct rw_in6_aliasreq ar;memset(&ar,0,sizeof(ar));strlcpy(ar.ifra_name,utun_name,IFNAMSIZ);
+    ar.ifra_addr.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_addr.sin6_family=AF_INET6;memcpy(&ar.ifra_addr.sin6_addr,pdn.ip6,16);
+    ar.ifra_prefixmask.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_prefixmask.sin6_family=AF_INET6;memset(&ar.ifra_prefixmask.sin6_addr,0xff,8);
+    ar.ifra_lifetime.ia6t_vltime=ar.ifra_lifetime.ia6t_pltime=0xffffffff;
+    if (ioctl(s6,RW_SIOCAIFADDR_IN6,&ar)<0) perror("cellular: SIOCAIFADDR_IN6");
+    struct ifreq ifr;memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);ifr.ifr_mtu=(int)(pdn.mtu?pdn.mtu:1500);
+    if (ioctl(s6,SIOCSIFMTU,&ifr)<0) perror("cellular: SIOCSIFMTU");
+    memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);
+    if (!ioctl(s6,SIOCGIFFLAGS,&ifr)) {ifr.ifr_flags|=IFF_UP|IFF_RUNNING;ioctl(s6,SIOCSIFFLAGS,&ifr);}
+    close(s6);
+    /* IPv6 default route through the interface (fails harmlessly if Wi-Fi already holds one) */
+    int rs=socket(PF_ROUTE,SOCK_RAW,0);
+    if (rs>=0) {
+        struct {struct rt_msghdr h;struct sockaddr_in6 dst;struct sockaddr_dl gw;struct sockaddr_in6 mask;} m;memset(&m,0,sizeof(m));
+        m.h.rtm_msglen=sizeof(m);m.h.rtm_version=RTM_VERSION;m.h.rtm_type=RTM_ADD;m.h.rtm_flags=RTF_UP|RTF_STATIC;
+        m.h.rtm_addrs=RTA_DST|RTA_GATEWAY|RTA_NETMASK;m.h.rtm_seq=1;
+        m.dst.sin6_len=sizeof(m.dst);m.dst.sin6_family=AF_INET6;
+        m.gw.sdl_len=sizeof(m.gw);m.gw.sdl_family=AF_LINK;m.gw.sdl_index=(u_short)if_nametoindex(utun_name);
+        m.mask.sin6_len=sizeof(m.mask);m.mask.sin6_family=AF_INET6;
+        if (write(rs,&m,sizeof(m))<0) perror("cellular: default route");
+        close(rs);
+    }
+    utun_fd=fd;
+    printf("cellular: %s up (index %u), IPv6 from the modem, MTU %u\n",utun_name,if_nametoindex(utun_name),pdn.mtu);fflush(stdout);
+}
+static void utun_poll(void)
+{
+    if (utun_fd<0) return;
+    uint8_t b[2100];
+    for (int k=0;k<32;k++) {
+        ssize_t n=read(utun_fd,b,sizeof(b));if (n<=4) break;
+        if (pkt_tx(b+4,(unsigned)(n-4))) break;
+    }
+}
+static void utun_deliver(const uint8_t *p,unsigned n)
+{
+    if (utun_fd<0 || n>2048) return;
+    uint8_t b[2100];uint32_t af=htonl((p[0]>>4)==6?AF_INET6:AF_INET);memcpy(b,&af,4);memcpy(b+4,p,n);
+    (void)write(utun_fd,b,n+4);
 }
 static int ctl_fd=-1;static uint8_t ipc_mseq=0x40;
 static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
@@ -701,7 +790,7 @@ static int online_handshake(unsigned seconds)
             last=m;lastu=u;lastmsi=msi;
         }
         if (online && stay_mode) ctl_poll();
-        if (online && stay_mode && pdn.up) pp_poll();
+        if (online && stay_mode && pdn.up) {utun_up();pp_poll();utun_poll();}
         if (online && stay_mode) {      /* heartbeat: SpringBoard treats a state older than two minutes as no modem */
             static uint64_t beat;
             if (now_us(NULL)-beat>20000000ull) {beat=now_us(NULL);if (cell.plmn[0] || cell.have_rssi) cell_publish();}
