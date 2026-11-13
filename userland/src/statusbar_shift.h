@@ -154,9 +154,41 @@ sbs_lco(id self, SEL cmd)
 	return r;
 }
 
+/*
+ * UIKit derives the right side from the left: trailingCenteringEdgeInset = leadingCenteringEdgeInset +
+ * +trailingCenteringOffset (UIKitCore 0x189ab0cd0). Moving the time left therefore pushed the battery side right by
+ * the same amount (user 2026-11-13: "the battery ... too much to the right"). It is given back here, plus `trail`
+ * points more inward (conf trail=, default 0). Added on Split1125's own metaclass (the method is inherited).
+ */
+static double sbs_trail = 0;
+static double (*sbs_orig_tco)(id, SEL);
+
+static double
+sbs_tco(id self, SEL cmd)
+{
+	double v = sbs_orig_tco(self, cmd), r = v + sbs_lead / 2 + sbs_trail;
+	static int told;
+
+	if (told++ < 2) {
+		sbs_log("Split1125 trailingCenteringOffset %.2f -> %.2f", v, r);
+	}
+	return r;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+		SEL ts = sel_registerName("trailingCenteringOffset");
+		Method tm = sc ? class_getClassMethod(sc, ts) : NULL;
+		if (tm != NULL && sbs_orig_tco == NULL && (sbs_lead > 0 || sbs_trail != 0)) {
+			sbs_orig_tco = (double (*)(id, SEL))method_getImplementation(tm);
+			if (!class_addMethod(object_getClass((id)sc), ts, (IMP)sbs_tco, method_getTypeEncoding(tm))) {
+				method_setImplementation(class_getClassMethod(sc, ts), (IMP)sbs_tco);   /* (it was Split1125's own) */
+			}
+		}
+	}
 	{
 		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
 		Method lm = sc ? class_getClassMethod(sc, sel_registerName("leadingCenteringOffset")) : NULL;
@@ -206,7 +238,7 @@ static void
 statusbar_shift_start(void)
 {
 	FILE *f = fopen("/var/jb/etc/redwood-statusbar.conf", "r");
-	char b[64];
+	char b[128];
 
 	if (f != NULL) {
 		size_t n = fread(b, 1, sizeof(b) - 1, f);
@@ -215,6 +247,10 @@ statusbar_shift_start(void)
 		char *p = strstr(b, "lead=");
 		if (p != NULL) {
 			sbs_lead = atof(p + 5);
+		}
+		p = strstr(b, "trail=");
+		if (p != NULL) {
+			sbs_trail = atof(p + 6);
 		}
 		p = strstr(b, "cut=");
 		if (p != NULL) {
