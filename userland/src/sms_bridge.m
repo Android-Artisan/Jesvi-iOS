@@ -269,8 +269,14 @@ static void rw_check_results(void)
         if (!sent && !failed) continue;
         id session = p[0], item = p[1];
         if (sent) {
-            ((void (*)(id, SEL, id, id, unsigned char))objc_msgSend)(session, sel_registerName("didSendMessage:forChat:style:"),
-                item, p[2], (unsigned char)[p[3] unsignedCharValue]);
+            /* keep the message's own time: the confirmation can come after a reply (texting yourself), which must sort below */
+            id when = [item respondsToSelector:sel_registerName("time")] ? ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("time")) : nil;
+            SEL forced = sel_registerName("didSendMessage:forChat:style:forceDate:");
+            if (when && [session respondsToSelector:forced])
+                ((void (*)(id, SEL, id, id, unsigned char, id))objc_msgSend)(session, forced, item, p[2], (unsigned char)[p[3] unsignedCharValue], when);
+            else
+                ((void (*)(id, SEL, id, id, unsigned char))objc_msgSend)(session, sel_registerName("didSendMessage:forChat:style:"),
+                    item, p[2], (unsigned char)[p[3] unsignedCharValue]);
             rw_log(@"send: delivered to the SMSC");
         } else {
             ((void (*)(id, SEL, unsigned int, id, BOOL))objc_msgSend)(session, sel_registerName("didReceiveError:forMessageID:forceError:"),
