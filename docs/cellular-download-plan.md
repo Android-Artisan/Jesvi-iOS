@@ -706,3 +706,10 @@ Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RT
   17][flag u8]. From CpAudioEngineClient::SAE_SetPdnIp(phone, ipText, flag, ifname, ifnameLen) (inet_pton v4 then v6;
   "SetPdnIp failed. Interface name is null"). The name is Android's IMS PDN interface (Exynos: rmnetN; which N for the
   IMS PDN = the CP context the IMS bearer uses -- redwood-cellulard knows it) -- to confirm against stock behaviour.
+- 16/02 SET SetCodec (frame 0x41, payload 58): built from _stSAE_CodecInfo (x22) at OemIPCHandler::ImsSetCodec
+  0x7d2910; payload byte = frame offset - 7. Frame: +7 u8 channel(w24), +0xc u8, +0xd u8, +0xe u16, +0x14 u8 (info+0x18),
+  +0x15 u32 (info+0x24), +0x1d u8, +0x1e u16 (info+0x38), +0x20 u8 (+0x3a), +0x21 u16, +0x23 u8, +0x24 u8 (+0x45),
+  +0x25 u8 (+0x4a), +0x26 u8 (+0x47), +0x27 u16 (+0x48), +0x29 u8 (+0x4c), +0x2a/+0x2e/+0x32/+0x36 u32 (table-mapped
+  enums of info+0x50/54/58/5c/60: codec, mode set, bandwidths ...), +0x3a u8 (+0x64), +0x3b u8 (+0x68), +0x40 u8 (+0x6c).
+  Field meanings: from CPVEInterface::SetCodecInfo's arguments (codec name, payload types, mode-set, ptime, octet-align,
+  EVS bandwidth range ...) -- the next RE step; then fill it from Jio's SDP.
