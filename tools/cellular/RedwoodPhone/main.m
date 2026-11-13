@@ -40,6 +40,8 @@ static void rp_cmd(NSString *line)
 @property (strong) NSMutableDictionary<NSNumber *, NSUUID *> *calls;   /* redwood-ims call id -> CallKit UUID */
 @property (strong) NSMutableSet<NSNumber *> *done;                       /* ids already reported ended */
 @property (copy) NSString *lastState;
+@property (strong) NSMutableDictionary<NSString *, NSUUID *> *dialing;   /* tag -> UUID until redwood-ims names the call */
+@property (strong) NSMutableSet<NSUUID *> *outgoing;
 @end
 
 @implementation RP
@@ -56,6 +58,8 @@ static void rp_cmd(NSString *line)
         [_provider setDelegate:self queue:nil];
         _calls = [NSMutableDictionary new];
         _done = [NSMutableSet new];
+        _dialing = [NSMutableDictionary new];
+        _outgoing = [NSMutableSet new];
         [[NSFileManager defaultManager] createDirectoryAtPath:Dir withIntermediateDirectories:YES attributes:nil error:nil];
     }
     return self;
@@ -94,7 +98,7 @@ static void rp_cmd(NSString *line)
         [self.provider reportNewIncomingCallWithUUID:u update:up completion:^(NSError *e) {
             if (e) { rp_log(@"call %@: the call screen refused it: %@", cid, e); rp_cmd([NSString stringWithFormat:@"end %@", cid]); }
         }];
-    } else if ([w[0] isEqualToString:@"ended"]) {
+    } else if ([w[0] isEqualToString:@"ended"] && cid.integerValue != 0) {
         NSUUID *u = self.calls[cid];
         if (u && ![self.done containsObject:cid]) {
             [self.done addObject:cid];
@@ -105,7 +109,18 @@ static void rp_cmd(NSString *line)
             rp_log(@"call %@ ended (%@)", cid, why);
             [self.provider reportCallWithUUID:u endedAtDate:[NSDate date] reason:r];
         }
+    } else if ([w[0] isEqualToString:@"dialing"] && w.count >= 3) {
+        NSUUID *u = self.dialing[w[2]];
+        if (u) { self.calls[cid] = u; [self.dialing removeObjectForKey:w[2]]; [self.outgoing addObject:u];
+            [self.provider reportOutgoingCallWithUUID:u startedConnectingAtDate:[NSDate date]]; rp_log(@"call %@ dialing", cid); }
+    } else if ([w[0] isEqualToString:@"ended"] && [w[1] isEqualToString:@"0"] && w.count >= 4) {
+        NSUUID *u = self.dialing[w[3]];                     /* refused before it had a number (busy with another call) */
+        if (u) { [self.dialing removeObjectForKey:w[3]]; [self.provider reportCallWithUUID:u endedAtDate:[NSDate date] reason:CXCallEndedReasonFailed]; }
+    } else if ([w[0] isEqualToString:@"alerting"]) {
+        rp_log(@"call %@ ringing at the other end", cid);
     } else if ([w[0] isEqualToString:@"up"]) {
+        NSUUID *u = self.calls[cid];
+        if (u && [self.outgoing containsObject:u]) [self.provider reportOutgoingCallWithUUID:u connectedAtDate:[NSDate date]];
         rp_log(@"call %@ up", cid);
     }
 }
@@ -129,6 +144,19 @@ static void rp_cmd(NSString *line)
     NSNumber *cid = [self idFor:a.callUUID];
     if (cid) rp_cmd([NSString stringWithFormat:@"mute %@ %d", cid, a.muted ? 1 : 0]);
     [a fulfill];
+}
+/* a call from the Phone app (its dial goes to us: see the dial hook in libredwood, tools/cellular/RedwoodPhone/README) */
+- (void)provider:(CXProvider *)p performStartCallAction:(CXStartCallAction *)a
+{
+    NSString *num = a.handle.value ?: @"";
+    NSString *tag = [[a.callUUID UUIDString] substringToIndex:8];
+    self.dialing[tag] = a.callUUID;
+    rp_log(@"dialling (from the Phone app)");
+    rp_cmd([NSString stringWithFormat:@"dial %@ %@", tag, [[num componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""]]);
+    CXCallUpdate *up = [CXCallUpdate new];
+    up.remoteHandle = a.handle; up.hasVideo = NO; up.supportsHolding = NO; up.supportsDTMF = NO;
+    [a fulfill];
+    [p reportCallWithUUID:a.callUUID updated:up];
 }
 - (void)provider:(CXProvider *)p performSetHeldCallAction:(CXSetHeldCallAction *)a { [a fail]; }
 - (void)provider:(CXProvider *)p didActivateAudioSession:(AVAudioSession *)s { rp_log(@"audio session on"); }
