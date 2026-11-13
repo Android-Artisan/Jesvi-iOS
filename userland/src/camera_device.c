@@ -2800,8 +2800,24 @@ device_request_streams(CMBaseObjectRef o, CFArrayRef streams, CFDictionaryRef op
 		for (CFIndex i = 0; i < n; i++) {
 			CMBaseObjectRef st = (CMBaseObjectRef)CFArrayGetValueAtIndex(streams, i);
 
+			/* ... but only a stream the graph has configured: one of its outputs has a PixelBufferHandler.
+			 * mediaserverd also reserves both streams as it starts, only to list the cameras
+			 * (FigCaptureSourceServerStart -> FigCaptureCreateSourceInfoArrayFromDeviceAndPlist, seen by a
+			 * backtrace 2026-11-13), and beginning there powered the rear sensor and then streamed the front
+			 * one for seconds at every start of the phone, with nobody looking -- where the kernel's
+			 * read/free race stopped the phone. */
 			if (st != NULL) {
-				(void)stream_begin(st, false);
+				struct stream *s = stream_of(st);
+				bool wanted = false;
+
+				for (int k = 0; k < OUTPUTS; k++) {
+					wanted = wanted || s->out[k].handler != NULL;
+				}
+				if (wanted) {
+					(void)stream_begin(st, false);
+				} else if (requests <= 3) {
+					say("device: the %s only listed (no output handler): its sensor stays off", s->camera->name);
+				}
 			}
 		}
 	}
