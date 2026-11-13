@@ -684,3 +684,21 @@ run Samsung's own vendor RIL + IMS + audio HAL blobs: they show the wiring, not 
 5. iOS: incoming call UI (CallKit-like path or SpringBoard banner + answer/end), then outgoing dialling.
 Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RTP running (check RTP stats event
 16/05); (c) ABOX VSS route -> hear the caller; (d) mic; (e) UI.
+
+### VoLTE calls, 2026-11-13 22:40 (A): the CP voice engine answers
+- Live, no reboot: redwood-cellulard's command pipe sends any IPC frame -- `echo "fmt GRP IDX TYPE HEXBYTES" >
+  /var/tmp/redwood-cell/cmd`; replies are logged in /var/tmp/redwood-cellular.log when /var/root/cell-verbose
+  existed at the daemon's start (touch it, then `echo restart > /var/tmp/redwood-cell/cmd`: ~1 min without data).
+- `fmt 16 1b 02` (CPVE GetVersion) -> `IPC <- group 16 index 1b type 02: 00 00 28 00`. The IMS group is live.
+- The chain inside stock libsec-ims (symbols intact): CallManager -> CPVEInterface (CreateChannel, StartChannel,
+  SetCodecInfo, SetPdnInfo) -> CpAudioEngineClient::SAE_* (SetPdnIp, CreateChannel, SetSendPort/SetRecPort,
+  SetRTCPSendPort/SetRTCPRecPort, StartFDSR/StopFDSR, SetCodec ...; 196 functions) -> VoIpEngineProxy (per-channel
+  state at this+0x505+8*ch; SetChannel/SetCodec/StartRtpMedia/SetPdnIp/SetEngine) -> OemIPCHandler::Ims* (IPC 16/xx).
+- Decoded payloads (frame = [u16 len][mseq][aseq][16][idx][type] + payload; offsets below are payload bytes):
+    16/09 SET EngineSet(phone, a2, a3):           [a2 u8][a3 u8]
+    16/03 SET SetRtpMedia(phone, a2, a3, a4, a5): [a2 u8][a3 u8][a4 u8][a5 u8]; VoIpEngineProxy::StartRtpMedia(ph,
+          ch, x) calls it as (ph, x, ch, channel->field_0xbc, ?): [x][ch][cp channel id][?]
+    16/01 SET SetChannel: see the table above (47 bytes: ports, ipver, two IPs, op 1/3; op else = delete)
+- Next: SAE_SetPdnIp -> 16/06 layout (0x7ca9f4 -> VoIpEngineProxy::SetPdnIp 0x7cea4c -> 0x7d3d34), 16/02 SetCodec
+  (_stSAE_CodecInfo; 0x7d2910, 0x4c4 bytes), then try on the phone in order: 16/06 (our IMS IPv6), 16/01 op 1,
+  16/02 AMR-WB, 16/03 start -- watch for 16/xx notifications (RTP stats 16/05). Needs Jio's SDP from a test call.
