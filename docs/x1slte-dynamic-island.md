@@ -82,14 +82,19 @@ and island-install.sh are that withdrawn version.)
 
 ## Known issue
 
-**An app does not shrink ("minimise") into the island** when you leave it with a Live Activity running (user report
-2026-11-13 with the `circle` preset; the user says it also happened before, with the earlier pill sizes -- never
-written down until now). Nothing crashes (no SpringBoard report, liveactivitiesd and ClockAngel keep running): it
-is layout/animation. Suspects: (1) our `sensorRegionSize` hook -- the collapse animation and the compact views use
-other SystemAperture constants (NOTES: 213.33, 45.0, 185.33, 66.67 ... next to the pill's) that still assume Apple's
-125 pt pill; (2) the effect itself not rendering on this GPU path at all. Test in progress: preset `apple-14pro`
-(no hook) to tell the two apart. If it works there, presets other than `apple-14pro` keep this limitation until the
-other constants are hooked too.
+**An app does not shrink ("minimise") into the island** with a resized pill (user report 2026-11-13 with `circle`;
+the user says it also happened earlier with other sizes). Test 2026-11-13: with `apple-14pro` (no hook) the app DOES
+shrink into the island -- so the cause is our size hook, not rendering. Why: iOS has ~20 island sizes in
+SBUISystemApertureLayoutMetrics and only `sensorRegionSize` (and the top inset) are changed; the minimal/compact sizes,
+`_inertSize`, the corner radius and the inter-sensor rect stay at the 14 Pro's 125 x 36.67, so the transition no longer
+lines up. Apple's values (read on the phone): sensorRegionSize/_inertSize/minimumCompactSize 125 x 36.667,
+minimumMinimalSize/compactConcentricAreaSize 36.667 x 36.667, maximumHorizontalMinimalViewSize 45 x 36.667,
+maximumLeadingTrailingViewSize 88.333 x 36.667, maximumCompactSize 301.667 x 36.667, minimumContinuousCornerRadius 18.333,
+interSensorRegionInWindowSpace {213.333, 11.333, 9, 36.667}, minimumScreenEdgeInsets 11.333.
+Fix written, built, NOT tested (user chose not to reboot for it): `proposals/notch/island-geometry-hooks.patch` maps
+every geometry getter by value (36.667 -> h, 125 -> w, 18.333 -> h/2, 11.333 -> y). Needs a root.apfs (libredwood-sb)
+flash + reboot, then `tools/island-preset.sh circle` and the timer test. Until then: `apple-14pro` keeps the animation,
+the other presets lose it. Phone left on `18pro-small` (user: "our last working size").
 
 
 With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
