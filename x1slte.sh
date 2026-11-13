@@ -102,7 +102,9 @@ cmd_payload() {
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_LEN")
 	# the loader: super's real tail always; super+0..ROOT_SUPER_LEN when the conf has it (iOS only, 2026-11-06: the
 	# system volume where Android's system/vendor were); userdata only in system.img's extent while that is in use
-	env GIC_V2=1 SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
+	# CELLULAR_RESERVE_CP=1 by default (2026-11-13: two flashes built without it left cellular with "IPC map refused":
+	# no LTE, no VoLTE). CELLULAR_RESERVE_CP= (empty) builds the loader without the CP reservation.
+	env GIC_V2=1 CELLULAR_RESERVE_CP="${CELLULAR_RESERVE_CP-1}" SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
 		${ROOT_UD_LEN:+USERDATA_WIN_OFF="$(printf '0x%x' "$ROOT_UD_OFF")" USERDATA_WIN_LEN="$(printf '0x%x' "$ROOT_UD_LEN")"} \
 		xnuloader/build.sh > /dev/null
 	# the placeholders of x1slte.cmdline: the root window (read only) and /private/var's write window

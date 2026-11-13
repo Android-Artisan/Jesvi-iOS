@@ -1517,6 +1517,11 @@ redwood_springboard_init(void)
 	if (name == NULL) {
 		return;
 	}
+	/* Wallpaper/UI motion uses CoreMotion in this process too. SpringBoard
+	 * loads this library instead of libredwood.dylib, so the app fix must
+	 * run here before UIKit caches the iPhone X's SPU capabilities. */
+	extern void redwood_coremotion_fixes(void);
+	redwood_coremotion_fixes();
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
 

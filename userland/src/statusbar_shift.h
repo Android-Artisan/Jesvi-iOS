@@ -21,7 +21,9 @@ sbs_edge_insets(id self, SEL cmd)
 {
 	struct sbs_insets v = sbs_orig(self, cmd);
 
-	v.leading = v.leading > sbs_lead ? v.leading - sbs_lead : 0;
+	/* (allowed below 0: the time is centred in the left area, so the area's start must go past the edge for the
+	 * time to move by more than half of what is taken off -- user 2026-11-13: "push it further left") */
+	v.leading -= sbs_lead;
 	return v;
 }
 

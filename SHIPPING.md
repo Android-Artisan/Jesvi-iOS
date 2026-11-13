@@ -50,6 +50,20 @@ Local branch `x1slte` only (not pushed). One entry per **verified** change: what
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
 
+### Cellular restored, sleep = lock screen only, punch-hole island grows for Live Activities (2026-11-13 20:56, A)
+- **Cellular/VoLTE back:** the two flashes from this tree (20:30, 20:40) built the loader without
+  `CELLULAR_RESERVE_CP`, so the modem got "IPC map refused" (no LTE, no VoLTE, no texts). `x1slte.sh payload` now
+  builds it with the reservation by default. Verified after the 20:56 boot: LTE data up (Jio, 3 bars), IMS registered.
+- **Sleep:** `idle_lock` default 1 (was 2): the screen times out on the lock screen only (10 s after an untouched
+  wake); unlocked it stays on. `/var/jb/etc/redwood-idle.conf` `mode=0|1|2` switches it, read at every wake.
+- **Island:** B's geometry hooks (proposals/notch) in, so resizes reach every island getter (minimise animation);
+  while a Live Activity shows, the compact/minimal island is `lh` tall (default 32 pt; conf `lh=`), widths Apple's.
+  Conf keys are case-insensitive now. Presets `punch-21` (y=6 w=21 h=21, on the phone) and `favorite-pill`
+  (w=75 h=28 at Apple's top gap: the pill the user liked). Live Activity height: **not yet seen by the user**.
+- **Status bar:** `lead=` may now take the left area past the edge (the time is centred in it, so it moves by
+  about half of `lead`); phone at lead=24.
+- codex-motion's motion routing (CoreMotion fixes in backboardd and SpringBoard) kept in this root image.
+
 ### Auto-brightness back in Settings, faster; perceptual slider (2026-11-13 20:45, A + codex-brightness)
 - **Auto-Brightness switch is back** (Settings > Accessibility > Display & Text Size): MobileGestalt's
   `ambient-light-sensor` asks IOKit for a {PrimaryUsagePage 0xff00, PrimaryUsage 4} entry, which the virtual HID light
