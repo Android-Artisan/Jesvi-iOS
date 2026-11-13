@@ -46,9 +46,30 @@ queue once SpringBoard runs, only with `island=1`.
 | --- | --- | --- |
 | top gap `y` | **5 pt** (pill covers the top of the S20 hole; user-checked 2026-11-12) | 11.33 |
 | width `w` | **81 pt** ("iPhone 18 Pro" look, user-chosen; in the conf now, built-in from the next boot image) | 125.33 |
-| height `h` | Apple's | 36.67 |
+| height `h` | Apple's (presets change it, see below) | 36.67 |
 
 Override in `/var/jb/etc/redwood-island.conf` (e.g. `y=5 w=81`; `off` = Apple's pill), then respring.
+
+### Presets (2026-11-13, user-chosen names)
+
+Saved in the repo (`tools/island-presets/*.conf`) and on the phone (`/var/jb/etc/redwood-island.presets/`).
+Switch from the Mac with `tools/island-preset.sh NAME` (copies the preset to the conf, resprings; no reboot);
+`tools/island-preset.sh` alone lists them and shows what the phone uses now.
+
+| Preset | Conf | Size (w x h, top gap) | Notes |
+| --- | --- | --- | --- |
+| `apple-14pro` | `off` | 125.33 x 36.67, 11.33 pt | Apple's 14 Pro pill, no adjustment ("no dynamic config") |
+| `18pro` | `y=5 w=81` | 81 x 36.67, 5 pt | first "iPhone 18 Pro" look |
+| `18pro-adapted` | `y=5 w=81 h=30.67` | 81 x 30.67, 5 pt | 6 pt shorter (~1 mm) |
+| `18pro-small` | `y=5 w=75 h=28` | 75 x 28, 5 pt | a little smaller all round; on the phone since 2026-11-13 18:10 |
+
+On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/etc/redwood-island.conf; /var/jb/usr/bin/sbreload`.
+Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
+`sbreload` restarts SpringBoard twice in a row here; the second start (~10 s) is the one that reads the conf.
+Keep the pill over the camera hole: the hole's bottom edge sits roughly 25-28 pt below the top, so heights much
+below ~22 pt with `y=5` would show the hole under the pill (estimate, not measured).
+The conf is on the data volume: it survives reboots and new boot images, but a fresh install starts with the
+built-in default (the table above).
 Log: `/var/mobile/Library/Logs/redwood-island.log`. 1 pt on the S20 panel ~ 0.18 mm.
 
 Not as a /var/jb tweak: any library from /var/jb loaded into SpringBoard fails the kernel's
