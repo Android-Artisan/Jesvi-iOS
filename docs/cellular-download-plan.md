@@ -584,3 +584,35 @@ in Messages, no calls.
 - Incoming delivery is on by default; off: /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
 - From boot (no hands): image inject.conf has `libredwood-tweaks.dylib Preferences imagent`; RedwoodSMS in /var/jb;
   redwood-ims (/var/root) started by redwood-cellulard; SMSC in /var/root/cell-smsc.
+
+## 2026-11-13 18:35 — stability fixes; calls: groundwork (session B)
+
+Stability (all on main, prebuilt redwood-cellulard + redwood-ims updated, live on the phone):
+- **VoLTE off after a reboot (fixed, 9f4c792):** /var/tmp survives a restart; the stale `ims.pid` named another
+  process (installd), cellulard took it for a running client and never started redwood-ims (34 min without VoLTE).
+  The pid is now checked with proc_pidpath and a wrong/dead one removed.
+- **"downlink silent" modem restarts (suspected fix, 6a8ea5c):** pp_poll returned on a failed read before adding the
+  handed count to `fore`; the CP's free-buffer count could only shrink until the downlink stopped. `fore` is now
+  derived from `pp_done` on every exit (pp_give_back). Not yet proven: watch `cellular: health HH:MM:SS rx tx ring rear
+  done fore dbm bars ims` (one line a minute in /var/tmp/redwood-cellular.log). A stall with `fore` != `done-1` = the
+  old bug elsewhere; with fore right and rear frozen = the CP side.
+- Weak signal seen at -116 dBm (0 bars) once; usually -89 (4 bars) here.
+- Pipe command `restart` (echo restart > /var/tmp/redwood-cell/cmd) = the watchdog's clean modem restart.
+  `launchctl kickstart -k system/com.redwood.cellular` also works (stop + start, picks /var/root's binary).
+- **Incoming calls answered busy (e005b29):** before, redwood-ims answered every request with a bare 200 -- an INVITE
+  would have connected the caller to silence (and billed them). Now 100 Trying + 486 Busy Here; the INVITE is saved
+  root-only as /var/root/ims-invite-<time>.txt for the call work.
+
+Calls: how Samsung does VoLTE voice on Exynos (stock libsec-ims.so / libmediarelayengine.so / libSamsungAPVoiceEngine.so,
+extracted to B's scratchpad from out/cellular/private-rom/stock-system.img):
+- **CPVE = "CP Voice Engine": the modem runs RTP and the AMR-WB/EVS codec itself.** libsec-ims (the AP IMS stack)
+  does SIP only and drives the CP through `CPVEInterface`: InitEngine, SetPdnInfo, CreateChannel(local/remote IP+port),
+  SetCodecInfo(codec, payload types, mode-set, ptime ...), StartChannel, SetAudioPath, StopChannel, EnableSRTP,
+  HandleDtmf; events back: DTMF, RTP/RTCP timeout, RTP stats. ("don't initialize CPVE for softphone": the AP engine
+  libSamsungAPVoiceEngine is for VoWiFi/softphone only.)
+- So for a call: (1) SIP INVITE/183/PRACK/UPDATE/200/ACK/BYE with an AMR-WB SDP in redwood-ims; (2) the CPVE messages to
+  the CP -- transport not found yet (no /dev/umts path in libsec-ims; look at how CPVEInterface sends: an IPC
+  group in libsec-ril / a secril-client request / a separate SBD channel); (3) the CP's voice to the speaker/earpiece and
+  mic: an ABOX route CP <-> codec (redwood audio); (4) the iOS call UI.
+- Next concrete step: the user calls the S20 -> /var/root/ims-invite-*.txt gives Jio's SDP (codecs, preconditions,
+  100rel) -> decide the INVITE answer path. Then disassemble CPVEInterface::CreateChannel/StartChannel in libsec-ims.
