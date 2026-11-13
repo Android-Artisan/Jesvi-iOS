@@ -1,3 +1,10 @@
+## 2026-11-12 — cellular IPC memory audit (built, not deployed)
+- Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
+- Root `cp.memory` audits existing XNU translations and cache attributes without
+  reading IPC contents or enabling DMA. Refuses absent certificate/outside aperture.
+- Kernel and loader builds pass;42 Python tests and all C ASan/UBSan checks pass.
+- Hardware validation pending a batched restart. No new phone restart or service claim.
+
 # x1slte (iOS 16.5 on the Galaxy S20, SM-G980F) — shipping log
 
 Local branch `x1slte` only (not pushed). One entry per **verified** change: what it does, the commit(s), the boot
@@ -183,6 +190,14 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Not yet: live preview in Camera.app (still the synthetic bridge), rear cameras, exposure/colour tuning.
 
 ## Open (known issues)
+- S20 LTE/calls remain unimplemented. Cellular is isolated on `x1slte-cellular`;
+  see `docs/cellular-s20.md`. Native Settings UI is installed/user-confirmed.
+  CP memory reservations/live cache policy, SPI BOOT64496-byte transfer with
+  safe shutdown, and9 PCIe UEFI mappings passed on phone. Nov12 live CP-off
+  root-port identity access/cleanup passed without reboot. Endpoint link,
+  remaining modem firmware, SIM/network/packet service and VoLTE are pending.
+- Camera: front only, photos only. Video recording, microphone in video, full resolution, colour tuning, rear
+  cameras, zoom switching and flash are open (`tools/camera/CHECKLIST.md`, section ROADMAP).
 - Camera: rear 12 MP mode off (row-1912 band; binned 2016x1512 used), ultra-wide/tele not brought up
   (`tools/camera/CHECKLIST.md`, OPEN ITEMS).
 - OpenGL ES games work only when named in build.sh `EAGL_APPS` (executable name); others still use iOS's

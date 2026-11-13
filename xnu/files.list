@@ -53,6 +53,8 @@ bsd/dev/redwood_buttons.c
 bsd/dev/redwood_camera.c
 bsd/dev/redwood_camera_regdump.h
 bsd/dev/redwood_camera_s20.c
+bsd/dev/redwood_camera_s20_2ld.h
+bsd/dev/redwood_camera_s20_2ld_ret.h
 bsd/dev/redwood_camera_s20_3j1.h
 bsd/dev/redwood_cpufreq.c
 bsd/dev/redwood_cs40l25.c
@@ -228,6 +230,8 @@ bsd/sys/redwood_apfs_check.h
 bsd/sys/redwood_audio.h
 bsd/sys/redwood_bbi2c.h
 bsd/sys/redwood_camera.h
+bsd/sys/redwood_cp_ipc.h
+bsd/sys/redwood_cp_memory.h
 bsd/sys/redwood_dbgport.h
 bsd/sys/redwood_exynos_spi.h
 bsd/sys/redwood_input.h
@@ -239,6 +243,7 @@ bsd/sys/redwood_qmi.h
 bsd/sys/redwood_qrtr.h
 bsd/sys/redwood_sensors.h
 bsd/sys/redwood_sparse.h
+bsd/sys/redwood_spi8_debug.h
 bsd/sys/redwood_sta.h
 bsd/sys/redwood_virtio_blk.h
 iokit/Kernel/GenericARMPE.cpp

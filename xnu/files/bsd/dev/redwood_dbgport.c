@@ -18,14 +18,26 @@
 #include <sys/errno.h>
 #include <sys/systm.h>
 #include <kern/locks.h>
+#include <sys/redwood_spi8_debug.h>
+#include <sys/redwood_cp_memory.h>
+#include <sys/redwood_cp_ipc.h>
+#include <vm/memory_types.h>
+#include <pexpert/device_tree.h>
+#include <machine/machine_routines.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+extern void ml_io_unmap(vm_offset_t addr, vm_size_t size);
 
 #define SMC_CMD_REG     0xFFFFFFFFFFFFFF9BULL
 
 static char out_buf[8192];
 static struct { uint64_t page; volatile uint8_t *va; } maps[64];
 static unsigned nmaps;
+#ifdef GENERIC_GIC_V2_IRQ
+static vm_offset_t cp_ipc_va; /* fixed retained IPC, protected by dbgport_mtx */
+static vm_offset_t cp_pp_va;  /* pktproc window (CP_IPC_PP_FLAG), Normal-NC, protected by dbgport_mtx */
+#endif
 static struct { char name[32]; const char *help; redwood_dbgport_fn fn; } cmds[96];
 static unsigned ncmds;
 static LCK_GRP_DECLARE(dbgport_grp, "redwood_dbgport");
@@ -48,6 +60,10 @@ static volatile uint8_t *
 pmap_pa(uint64_t pa)
 {
 	uint64_t page = pa & ~0x3fffULL;
+#ifdef GENERIC_GIC_V2_IRQ
+    if (cp_ipc_va && page>=CP_IPC_BASE && page<CP_IPC_BASE+CP_IPC_SIZE) return NULL;
+    if (cp_pp_va && page>=CP_IPC_PP_BASE && page<CP_IPC_PP_BASE+CP_IPC_PP_SPAN) return NULL;
+#endif
 
 	for (unsigned i = 0; i < nmaps; i++) {
 		if (maps[i].page == page) {
@@ -64,6 +80,95 @@ pmap_pa(uint64_t pa)
 	maps[nmaps].page = page;
 	return maps[nmaps++].va + (pa - page);
 }
+
+#ifdef GENERIC_GIC_V2_IRQ
+static int
+cp_memory_certified(void)
+{
+    DTEntry chosen;void *property;unsigned length;uint64_t values[3];
+    const char *names[]={"cellular-memory-version","cellular-ipc-base","cellular-ipc-size"};
+    if (SecureDTLookupEntry(NULL,"/chosen",&chosen)!=kSuccess) return 0;
+    for (unsigned i=0;i<3;i++) {
+        if (SecureDTGetProperty(chosen,names[i],&property,&length)!=kSuccess || length!=8) return 0;
+        memcpy(&values[i],property,8);
+    }
+    return cp_memory_certificate(values[0],values[1],values[2]);
+}
+
+static uint64_t
+cp_memory_translation(vm_offset_t va)
+{
+    uint64_t saved,par;
+    boolean_t interrupts=ml_set_interrupts_enabled(FALSE);
+    __asm__ volatile("mrs %0, par_el1\n\tat s1e1r, %2\n\tisb\n\tmrs %1, par_el1\n\tmsr par_el1, %0\n\tisb"
+        : "=&r"(saved),"=&r"(par) : "r"(va) : "memory");
+    ml_set_interrupts_enabled(interrupts);
+    return par;
+}
+
+
+/* cp.s2mpu: Samsung's hypervisor lets the modem's PCIe block (HSI2, S2MPU instance 25, VID 0) read and
+ * write the two CP shared-memory regions, as s5100_poweron_pcie() does with exynos_set_dev_stage2_ap(
+ * "hsi2", 0, base, size, ATTR_RW) for every CP shmem region but MSI. Only with the loader's certificate;
+ * only these fixed regions; the hypervisor's return per region is reported. */
+#define CP_HVC_SET_S2MPU 0xc6000100ULL
+#define CP_S2MPU_HSI2    ((0ULL << 16) | 25ULL)
+#define CP_S2MPU_RW      3ULL
+static uint64_t
+cp_hvc5(uint64_t function,uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4)
+{
+    register uint64_t x0 __asm__("x0")=function;
+    register uint64_t x1 __asm__("x1")=a1;
+    register uint64_t x2 __asm__("x2")=a2;
+    register uint64_t x3 __asm__("x3")=a3;
+    register uint64_t x4 __asm__("x4")=a4;
+    __asm__ volatile("dsb sy\n\thvc #0\n\tdsb sy" : "+r"(x0),"+r"(x1),"+r"(x2),"+r"(x3),"+r"(x4) : :
+        "x5","x6","x7","x8","x9","x10","x11","x12","x13","x14","x15","x16","x17","memory");
+    return x0;
+}
+static void
+cp_s2mpu_grant(void)
+{
+    static const uint64_t regions[][2]={{0xf0000000ULL,0x800000ULL},{0xd0000000ULL,0x4000000ULL}};
+    uint64_t ret[2];
+    if (!cp_memory_certified()) {
+        snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: missing/invalid loader reservation certificate; nothing granted\n");return;
+    }
+    for (unsigned i=0;i<2;i++) ret[i]=cp_hvc5(CP_HVC_SET_S2MPU,CP_S2MPU_HSI2,regions[i][0],regions[i][1],CP_S2MPU_RW);
+    snprintf(out_buf,sizeof(out_buf),"cp.s2mpu: HSI2 RW f0000000+800000 ret %#llx, d0000000+4000000 ret %#llx\n",
+        (unsigned long long)ret[0],(unsigned long long)ret[1]);
+}
+
+/* Audit the existing direct-map alias first. No RAM read/write, new mapping,
+ * HVC, CP power or DMA operation. A cached alias requires resolution before
+ * a NormalNC mapping is allowed. The debug mutex serializes commands. */
+static void
+cp_memory_audit(void)
+{
+    if (!cp_memory_certified()) goto missing;
+    /* phystokv panics for a PA outside the kernel's physical aperture. */
+    extern unsigned long gPhysBase,real_phys_size;
+    if (CP_IPC_BASE<gPhysBase || CP_IPC_BASE-gPhysBase>real_phys_size ||
+        CP_IPC_SIZE>real_phys_size-(CP_IPC_BASE-gPhysBase)) {
+        snprintf(out_buf,sizeof(out_buf),"cp.memory: IPC outside physical aperture; no translation attempted\n");return;
+    }
+    unsigned nc=0,cached_or_device=0,fault=0,wrong_pa=0,debug_alias=0;
+    for (unsigned i=0;i<nmaps;i++)
+        if (maps[i].page>=CP_IPC_BASE && maps[i].page<CP_IPC_BASE+CP_IPC_SIZE) debug_alias++;
+    for (uint64_t pa=CP_IPC_BASE;pa<CP_IPC_BASE+CP_IPC_SIZE;pa+=0x1000) {
+        uint64_t par=cp_memory_translation(ml_static_ptovirt((vm_offset_t)pa));
+        if (par&1) fault++;
+        else if (!cp_memory_par_matches(par,pa)) wrong_pa++;
+        else if (cp_memory_par_nc(par,pa)) nc++;
+        else cached_or_device++;
+    }
+    snprintf(out_buf,sizeof(out_buf),"cp.memory: certificate1 pages2048 nc%u other_cache%u unmapped%u wrong_pa%u debug_alias%u; audit only, no DMA\n",
+        nc,cached_or_device,fault,wrong_pa,debug_alias);
+    return;
+missing:
+    snprintf(out_buf,sizeof(out_buf),"cp.memory: missing/invalid loader reservation certificate; no access\n");
+}
+#endif
 
 static uint64_t
 smc(uint64_t f, uint64_t a1, uint64_t a2, uint64_t *x2out)
@@ -121,6 +226,46 @@ parse(const char *s, char *cmd, size_t cmdlen, uint64_t *v, unsigned max)
 	return n;
 }
 
+#ifdef GENERIC_GIC_V2_IRQ
+/* Fixed SPI16 byte FIFO bursts, no DMA. Complete input validation before I/O.
+ * The caller holds dbgport_mtx; TX requires channels off and enough FIFO room.
+ * RX reads exactly the requested bytes from the same FIFO address.
+ */
+static void
+spi8_command(int transmit,const char *hex,uint64_t requested)
+{
+    uint8_t data[64];
+    unsigned count=transmit?spi8_decode(hex,data):(requested>=1&&requested<=64?(unsigned)requested:0);
+    if (!count) {snprintf(out_buf,sizeof(out_buf),"spi8: invalid byte count/hex\n");return;}
+    volatile uint32_t *usi=(volatile uint32_t *)pmap_pa(0x10721048);
+    volatile uint32_t *gate0=(volatile uint32_t *)pmap_pa(0x107020fc);
+    volatile uint32_t *gate1=(volatile uint32_t *)pmap_pa(0x1070208c);
+    if (!usi || !gate0 || !gate1 || *usi!=2 || !(*gate0&(1u<<21)) || !(*gate1&(1u<<21))) {
+        snprintf(out_buf,sizeof(out_buf),"spi8: USI/clock guard refused\n");return;
+    }
+    volatile uint8_t *base=pmap_pa(0x10960000);
+    if (!base) {snprintf(out_buf,sizeof(out_buf),"spi8: unmappable\n");return;}
+    uint32_t mode=*(volatile uint32_t *)(base+8),channel=*(volatile uint32_t *)base;
+    uint32_t status=*(volatile uint32_t *)(base+0x14);
+    if (!spi8_fifo_ready(*usi,mode,channel,status,count,transmit)) {
+        snprintf(out_buf,sizeof(out_buf),"spi8: FIFO/mode/channel guard refused\n");return;
+    }
+    if (transmit) {
+        for (unsigned i=0;i<count;i++) *(volatile uint8_t *)(base+0x18)=data[i];
+        __asm__ volatile ("dsb sy" ::: "memory");
+        snprintf(out_buf,sizeof(out_buf),"spi8.tx: wrote %u\n",count);
+    } else {
+        size_t offset=0;
+        for (unsigned i=0;i<count;i++) {
+            uint8_t value=*(volatile uint8_t *)(base+0x1c);
+            offset+=(size_t)snprintf(out_buf+offset,sizeof(out_buf)-offset,"%02x",value);
+        }
+        __asm__ volatile ("dsb sy" ::: "memory");
+        snprintf(out_buf+offset,sizeof(out_buf)-offset,"\n");
+    }
+}
+#endif
+
 static void
 run(const char *line)
 {
@@ -130,6 +275,16 @@ run(const char *line)
 	size_t cap = sizeof(out_buf), o = 0;
 
 	out_buf[0] = 0;
+#ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
+    if (strcmp(cmd,"cp.s2mpu")==0 && n==0) {cp_s2mpu_grant();return;}
+    if (strcmp(cmd,"spi8.tx")==0) {
+        const char *payload=line;while (*payload==' ') payload++;
+        payload+=7;while (*payload==' ') payload++;
+        spi8_command(1,payload,0);return;
+    }
+    if (strcmp(cmd,"spi8.rx")==0) {spi8_command(0,"",n==1?v[0]:0);return;}
+#endif
 	if (strcmp(cmd, "r") == 0 && n >= 1) {
 		unsigned cnt = n >= 2 ? (unsigned)v[1] : 1;
 
@@ -210,6 +365,92 @@ poke_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int 
 }
 
 SYSCTL_DECL(_kern_redwood);
+#ifdef GENERIC_GIC_V2_IRQ
+/* Binary, bounded IPC access for a single root bring-up helper. The external
+ * phone lock owns the full transaction. This mutex serializes each operation
+ * with generic debug mappings. No HVC, power, DMA grant, index reset or firmware
+ * command occurs automatically. UNMAP drops only the AP mapping, not reservation.
+ */
+static int
+cp_ipc_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
+    __unused int arg2, struct sysctl_req *req)
+{
+    struct cp_ipc_request q={.version=CP_IPC_API,.op=CP_IPC_INFO};
+    struct cp_ipc_reply reply={.version=CP_IPC_API};
+    int error=0;
+    size_t input_size=CP_IPC_HEADER;
+    if (req->newptr!=USER_ADDR_NULL) {
+        input_size=req->newlen;
+        if (input_size<CP_IPC_HEADER || input_size>sizeof(q)) return EINVAL;
+        if ((error=SYSCTL_IN(req,&q,input_size))) return error;
+    }
+    if (!cp_ipc_request_valid(&q,input_size)) return EINVAL;
+    size_t read_size=(q.op==CP_IPC_READ || q.op==CP_IPC_LOAD32)?q.length:0;
+    /* A too-small reply buffer must not cause a hidden partial operation. */
+    if (req->oldptr==USER_ADDR_NULL || req->oldlen<CP_IPC_HEADER+read_size) return ENOMEM;
+    lck_mtx_lock(&dbgport_mtx);
+    if (q.op==CP_IPC_MAP && !cp_ipc_va) {
+        extern unsigned long gPhysBase,real_phys_size;
+        if (!cp_memory_certified() || !cp_ipc_aperture_disjoint(gPhysBase,real_phys_size)) {
+            error=EPERM;goto done;
+        }
+        for (unsigned i=0;i<nmaps;i++) {
+            if (maps[i].page>=CP_IPC_BASE && maps[i].page<CP_IPC_BASE+CP_IPC_SIZE) {
+                error=EBUSY;goto done;
+            }
+        }
+        vm_offset_t mapped=ml_io_map_unmappable(CP_IPC_BASE,CP_IPC_SIZE,VM_WIMG_WCOMB);
+        if (!mapped) {error=ENOMEM;goto done;}
+        for (uint64_t off=0;off<CP_IPC_SIZE;off+=0x1000) {
+            if (!cp_memory_par_nc(cp_memory_translation(mapped+off),CP_IPC_BASE+off)) {
+                ml_io_unmap(mapped,CP_IPC_SIZE);error=EIO;goto done;
+            }
+        }
+        cp_ipc_va=mapped;
+    } else if (q.op==CP_IPC_UNMAP) {
+        if (cp_ipc_va) {ml_io_unmap(cp_ipc_va,CP_IPC_SIZE);cp_ipc_va=0;}
+        if (cp_pp_va) {ml_io_unmap(cp_pp_va,CP_IPC_PP_SPAN);cp_pp_va=0;}
+    } else if (q.op>=CP_IPC_READ) {
+        uint8_t *at;
+        if (q.offset&CP_IPC_PP_FLAG) {
+            /* the packet area: mapped on first use, only with the loader's reservation certificate */
+            if (!cp_pp_va) {
+                if (!cp_memory_certified()) {error=EPERM;goto done;}
+                /* Normal non-cacheable like the IPC window (memcpy may access unaligned: never Device memory);
+                 * refused while the debug peek holds a page of it (no mixed-attribute aliases) */
+                for (unsigned i=0;i<nmaps;i++)
+                    if (maps[i].page>=CP_IPC_PP_BASE && maps[i].page<CP_IPC_PP_BASE+CP_IPC_PP_SPAN) {error=EBUSY;goto done;}
+                cp_pp_va=ml_io_map_unmappable((vm_offset_t)CP_IPC_PP_BASE,CP_IPC_PP_SPAN,VM_WIMG_WCOMB);
+                if (!cp_pp_va) {error=ENOMEM;goto done;}
+            }
+            at=(uint8_t *)cp_pp_va+(q.offset&~CP_IPC_PP_FLAG);
+        } else {
+            if (!cp_ipc_va) {error=ENXIO;goto done;}
+            at=(uint8_t *)cp_ipc_va+q.offset;
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+        switch(q.op) {
+        case CP_IPC_READ: memcpy(reply.data,at,q.length);break;
+        case CP_IPC_WRITE: memcpy(at,q.data,q.length);break;
+        case CP_IPC_LOAD32: {
+            uint32_t v=*(volatile uint32_t *)at;memcpy(reply.data,&v,4);break;
+        }
+        case CP_IPC_STORE32: {
+            uint32_t v;memcpy(&v,q.data,4);*(volatile uint32_t *)at=v;break;
+        }
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
+    reply.mapped=cp_ipc_va!=0;reply.length=(uint32_t)read_size;
+    error=SYSCTL_OUT(req,&reply,CP_IPC_HEADER+read_size);
+done:
+    lck_mtx_unlock(&dbgport_mtx);
+    return error;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, cp_ipc, CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_LOCKED,
+    NULL, 0, cp_ipc_sysctl, "S,cp_ipc_reply", "root-only bounded retained modem IPC memory");
+#endif
+
 extern void dbg_fb_warm(const uint64_t *, unsigned, char *, size_t);
 
 /* backboardd runs as mobile. Expose only the bounded display preference,

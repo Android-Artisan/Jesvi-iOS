@@ -10,6 +10,7 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 
 | Component | Path | Origin | License | Notes |
 |---|---|---|---|---|
+| Samsung Exynos9830 EVT1 PCIe PHY sequence | `tools/cellular/s5123-phy-evt1.h`, combined `live-pcie` helper | [ExtremeXT kernel, pinned69515fbb](https://github.com/ExtremeXT/android_kernel_samsung_exynos990/blob/69515fbb7a4395898c05a8624f76a12afbac11c5/drivers/pci/controller/dwc/pcie-exynos9830-rc-cal.c) | GPL-2.0-only | Samsung Electronics2019; ordered124-operation CP-off diagnostic sequence, see `tools/cellular/LICENSE.GPL-2.0`; no vendor firmware included |
 | Files / HFS+ compatibility | `userland/src/inject_files.c` | [Angelpro09xd/ios-sapphire](https://github.com/Angelpro09xd/ios-sapphire/commit/04f94d5c6577d65bf9e112ed801c8b1fce9fff47), `userland/tweaks/fileprovider/fpfix.c` | **to verify** | author signed the upstream commit; no file-specific license notice; nested `userland/hackios/LICENSE` does not establish coverage of this sibling directory |
 | XNU modifications | `xnu/hakios.patch`, `xnu/files/` | derivative of Apple XNU | APSL 2.0 (`LICENSE.APSL`) | base tag `xnu-8796.121.2`, fetched by `xnu/apply.sh` |
 | libdeflate | `xnu/files/bsd/miscfs/apfs/libdeflate/` | Eric Biggers | MIT | see its `COPYING` |
@@ -45,3 +46,9 @@ This supersedes the summary in `NOTICE`, which stays as the short, canonical lis
 
 If a component's origin is uncertain, it is marked **to verify** above and must be treated as not
 yet cleared for redistribution until confirmed with its owner.
+
+S20 live modem link helper: tools/cellular/s5123-live-link.h adapts Samsung
+Electronics (2019) pcie-exynos-rc.c IA/link sequence and DesignWare root setup
+from the same pinned Linux source as s5123-phy-evt1.h, GPL-2.0-only. See
+tools/cellular/LICENSE.GPL-2.0. Combined live-modem binary is GPL-2.0-only;
+original standalone SPI/lifecycle portions retain MIT source license.

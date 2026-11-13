@@ -40,7 +40,7 @@ typedef struct efi_text_output {
 	void *mode;
 } efi_text_output;
 
-enum { EfiLoaderData = 2, EfiConventionalMemory = 7 };
+enum { EfiReservedMemoryType = 0, EfiLoaderData = 2, EfiBootServicesData = 4, EfiConventionalMemory = 7 };
 enum { AllocateAnyPages = 0, AllocateMaxAddress = 1, AllocateAddress = 2 };
 enum { ByProtocol = 2 };
 
@@ -50,7 +50,8 @@ typedef struct {
 
 typedef struct {
 	efi_table_header hdr;
-	void *raise_tpl, *restore_tpl;
+	uint64_t (EFIAPI *raise_tpl)(uint64_t new_tpl);
+	void (EFIAPI *restore_tpl)(uint64_t old_tpl);
 	efi_status (EFIAPI *allocate_pages)(int type, int mem_type, uint64_t pages, uint64_t *addr);
 	efi_status (EFIAPI *free_pages)(uint64_t addr, uint64_t pages);
 	efi_status (EFIAPI *get_memory_map)(uint64_t *size, void *map, uint64_t *key, uint64_t *desc_size, uint32_t *desc_ver);
@@ -63,7 +64,10 @@ typedef struct {
 	void *install_protocol_interface, *reinstall_protocol_interface, *uninstall_protocol_interface;
 	efi_status (EFIAPI *handle_protocol)(efi_handle h, const efi_guid *guid, void **iface);
 	void *reserved, *register_protocol_notify, *locate_handle, *locate_device_path, *install_configuration_table;
-	void *load_image, *start_image, *exit, *unload_image;
+	efi_status (EFIAPI *load_image)(uint8_t boot_policy, efi_handle parent, void *path,
+	    void *source, uint64_t size, efi_handle *handle);
+	efi_status (EFIAPI *start_image)(efi_handle image, uint64_t *exit_size, char16 **exit_data);
+	void *exit, *unload_image;
 	efi_status (EFIAPI *exit_boot_services)(efi_handle image, uint64_t map_key);
 	void *get_next_monotonic_count;
 	efi_status (EFIAPI *stall)(uint64_t microseconds);
@@ -107,6 +111,23 @@ typedef struct {
 	uint64_t nr_tables;                     /* the configuration tables: ACPI, a device tree, ... */
 	struct { efi_guid guid; void *table; } *tables;
 } efi_system_table;
+
+/* PI DXE services: memory ownership stays in boot services; these services
+ * report/apply CPU cache attributes while preserving the other GCD bits. */
+typedef struct {
+	uint64_t base, length, capabilities, attributes;
+	uint32_t type, pad;
+	efi_handle image, device;
+} efi_gcd_memory_descriptor;
+typedef struct {
+	efi_table_header hdr;
+	efi_status (EFIAPI *add_memory_space)(uint32_t type, uint64_t base, uint64_t size, uint64_t capabilities);
+	void *allocate_memory_space, *free_memory_space, *remove_memory_space;
+	efi_status (EFIAPI *get_memory_space_descriptor)(uint64_t address, efi_gcd_memory_descriptor *descriptor);
+	efi_status (EFIAPI *set_memory_space_attributes)(uint64_t address, uint64_t size, uint64_t attributes);
+} efi_dxe_services;
+_Static_assert(sizeof(efi_gcd_memory_descriptor) == 56, "PI GCD descriptor ABI");
+_Static_assert(offsetof(efi_dxe_services, set_memory_space_attributes) == 64, "PI DXE service ABI");
 
 /* a device path is a list of these, each followed by its data, ending with type 0x7f subtype 0xff */
 typedef struct {

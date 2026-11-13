@@ -12,7 +12,11 @@ gMemoryDescriptor[] = {
   {"UEFI FD",            0xE8000000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
   {"DXE Heap",           0xE8200000, 0x03C00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK},
   {"UEFI Stack",         0xEBE00000, 0x00040000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
-  {"XNU Download",       0xF0000000, 0x01000000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK}, // staging for the kernel/root image the host sends
+  // S5123 CP regions from exynos9830.dts. Downloads now use UEFI-allocated
+  // staging in xnuloader; keep these out of firmware, display and Wi-Fi pools.
+  {"CP IPC",             0xF0000000, 0x00800000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, UNCACHED_UNBUFFERED},
+  {"CP MSI",             0xF6200000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, UNCACHED_UNBUFFERED},
+  {"CP Packet Memory",   0xD0000000, 0x04000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, UNCACHED_UNBUFFERED},
   {"Display Reserved",   0xF1000000, 0x01194000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH},
   {"RAM Partition",      0xF2194000, 0x00001000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK}, // TEMP: Needed for MMU to Pass.
   {"EL2 Early Memory",   0x9FEC00000,0x01400000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK},

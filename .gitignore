@@ -40,6 +40,8 @@ __pycache__/
 !/xnuloader/build.sh
 !/xnuloader/efi.h
 !/xnuloader/loader.c
+!/xnuloader/s20_memory.h
+!/xnuloader/s20_efi_memory.h
 !/xnuloader/mkidentity.py
 !/xnuloader/mkpayload.py
 
