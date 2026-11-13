@@ -588,6 +588,9 @@ int main(int argc,char **argv)
     }
     if (pfk<0) {perror("PF_KEY");return 1;}
     int udp=flag(argc,argv,"--udp"),tcp=!udp,pci=atoi(opt(argc,argv,"--pcscf","0"))%cfg.npc;
+    if (!opt(argc,argv,"--pcscf",NULL)) {   /* the P-CSCF that answered last time, or the next one after a silent one */
+        FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","r");int v=0;if (q) {if (fscanf(q,"%d",&v)==1 && v>=0) pci=v%cfg.npc;fclose(q);}
+    }
     const char *ua=opt(argc,argv,"--ua","Samsung_SM-G980F_G980FXXSNHYB7_IMS_6.0"),*pani=opt(argc,argv,"--pani","");
     struct in6_addr me6,pc6;inet_pton(AF_INET6,cfg.ip6,&me6);inet_pton(AF_INET6,cfg.pcscf[pci],&pc6);
     ipsec_flush();
@@ -647,7 +650,9 @@ int main(int argc,char **argv)
     printf("--> REGISTER 1 to [%s]:5060 over %s, port-c %d port-s %d\n",cfg.pcscf[pci],T,portc,ports);
     if (send(s,m,(size_t)n,0)<0) {perror("send");isim_close();return 1;}
     do n=recv_msg(s,r,sizeof(r),8); while (n>0 && !strncmp(r,"SIP/2.0 1",9));
-    if (n<=0) {printf("no answer\n");isim_close();return 1;}
+    if (n<=0) {   /* this P-CSCF is silent: the next start (redwood-cellulard, 30 s) tries the other */
+        FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","w");if (q) {fprintf(q,"%d\n",(pci+1)%cfg.npc);fclose(q);}
+        printf("no answer from P-CSCF %d; the next start tries P-CSCF %d\n",pci,(pci+1)%cfg.npc);isim_close();return 1;}
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);
     if (strncmp(r,"SIP/2.0 401",11)) {show(r);isim_close();return 1;}
     char www[900],secs[900],nonce[300]={0};

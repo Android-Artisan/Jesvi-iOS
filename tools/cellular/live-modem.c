@@ -1040,6 +1040,13 @@ static int online_handshake(unsigned seconds)
              * (fresh registration every ~110 min, or a lost connection), at most every 30 s. /var/root/cell-noimsclient: never */
             static pid_t ims_pid;static uint64_t ims_spawned;struct stat st2;
             if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {printf("cellular: IMS client left\n");fflush(stdout);ims_pid=0;}
+            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull) {
+                /* a client already running (e.g. started before this process was exec'd again by a watchdog): keep it */
+                FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int other=0;
+                if (q) {if (fscanf(q,"%d",&other)!=1) other=0;fclose(q);}
+                if (other>1 && !kill(other,0)) {ims_spawned=now_us(NULL);other=-1;}
+                if (other==-1) goto ims_done;
+            }
             if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
                 posix_spawn_file_actions_t fa;posix_spawn_file_actions_init(&fa);
                 posix_spawn_file_actions_addopen(&fa,1,"/var/tmp/redwood-ims.log",O_WRONLY|O_CREAT|O_APPEND,0600);
@@ -1050,6 +1057,7 @@ static int online_handshake(unsigned seconds)
                 posix_spawn_file_actions_destroy(&fa);ims_spawned=now_us(NULL);
             }
             if (stopped && ims_pid>0) {kill(ims_pid,SIGTERM);ims_pid=0;}
+            ims_done:;
         }
         if (online && stay_mode) {
             /* registration watchdog: after a boot the CP has been seen to stay at "no service" (PLMN 000000, no RSSI
