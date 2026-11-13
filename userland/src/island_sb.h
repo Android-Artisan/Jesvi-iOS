@@ -19,6 +19,7 @@
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <mach/mach_time.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdarg.h>
@@ -77,10 +78,48 @@ static struct { void *vc; long mode; } island_elements[ISLAND_TRACK];
 static bool island_active;
 static unsigned long island_size_calls;
 
+/*
+ * Growing into the live size (2026-11-13, user: "the transition into the live island is sudden"). A UIKit animation
+ * around a re-layout did nothing: SystemAperture sizes the island in its own layout passes. So the size itself is
+ * eased: for ISLAND_GROW_S after an activity appears, island_mix() goes 0 -> 1 (ease-out cubic) and a 16 ms timer lays
+ * the element's window out again each step, so every pass sees a slightly bigger island. Leaving is immediate (iOS's
+ * own collapse animation already looks smooth).
+ */
+#define ISLAND_GROW_S 0.35
+static uint64_t island_grow_at;         /* mach time the growth began; 0: none */
+
+static double
+island_mix(void)
+{
+	if (!island_active || island_lh <= 0) {
+		return 0;
+	}
+	if (island_grow_at == 0) {
+		return 1;
+	}
+	static mach_timebase_info_data_t tb;
+	if (tb.denom == 0) {
+		mach_timebase_info(&tb);
+	}
+	double t = (double)(mach_absolute_time() - island_grow_at) * tb.numer / tb.denom / 1e9 / ISLAND_GROW_S;
+	if (t >= 1) {
+		island_grow_at = 0;
+		return 1;
+	}
+	t = 1 - t;
+	return 1 - t * t * t;
+}
+
 static bool
 island_live(void)
 {
-	return island_active && island_lh > 0;
+	return island_mix() > 0;
+}
+
+static double
+island_lerp(double a, double b)
+{
+	return a + (b - a) * island_mix();
 }
 
 static struct island_size
@@ -96,8 +135,9 @@ island_size_imp(id self, SEL cmd)
 		s.height = island_h;
 	}
 	if (island_live()) {
-		s.height = island_lh;
-		s.width = island_lw > 0 ? island_lw : s.width > island_lh ? s.width : island_lh;
+		double lw = island_lw > 0 ? island_lw : s.width > island_lh ? s.width : island_lh;
+		s.width = island_lerp(s.width, lw);
+		s.height = island_lerp(s.height, island_lh);
 	}
 	return s;
 }
@@ -130,33 +170,36 @@ island_note_mode(id vc, long mode)
 		any |= island_elements[i].vc != NULL;
 	}
 	if (any && !island_active && island_lh > 0) {
-		/*
-		 * Entering (2026-11-13, user: "can the size transition smoothly? the entry alone"): the size switched here
-		 * landed before iOS's own transition, so the island jumped to the live size. Switched on the main queue's next
-		 * turn instead, inside a 0.4 s UIKit animation that lays the element's window out again, so it grows. Leaving
-		 * is left as it was (iOS animates that one itself).
-		 */
+		/* entering: grow over ISLAND_GROW_S (island_mix), the window laid out again every 16 ms meanwhile */
 		id view = ((id (*)(id, SEL))objc_msgSend)(vc, sel_registerName("viewIfLoaded"));
 		id window = view ? ((id (*)(id, SEL))objc_msgSend)(view, sel_registerName("window")) : nil;
+
+		island_grow_at = mach_absolute_time();
+		island_active = true;
 		if (window != nil) {
+			static dispatch_source_t timer;
+			static int ticks;
 			CFRetain((CFTypeRef)window);
-			dispatch_async(dispatch_get_main_queue(), ^{
-				void (^grow)(void) = ^{
-					island_active = true;
-					((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("setNeedsLayout"));
-					((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("layoutIfNeeded"));
-				};
-				((void (*)(id, SEL, double, id))objc_msgSend)((id)objc_getClass("UIView"),
-				    sel_registerName("animateWithDuration:animations:"), 0.4, (id)grow);
-				if (!island_active) {
-					island_active = true;            /* (no animation happened: at least the size) */
+			if (timer != NULL) {
+				dispatch_source_cancel(timer);
+			}
+			ticks = 0;
+			timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+			dispatch_source_t me = timer;
+			dispatch_source_set_timer(me, dispatch_time(DISPATCH_TIME_NOW, 0), 16 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
+			dispatch_source_set_event_handler(me, ^{
+				((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("setNeedsLayout"));
+				((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("layoutIfNeeded"));
+				if (++ticks > (int)(ISLAND_GROW_S * 1000 / 16) + 2 || island_grow_at == 0) {
+					dispatch_source_cancel(me);
 				}
+			});
+			dispatch_source_set_cancel_handler(me, ^{
 				CFRelease((CFTypeRef)window);
 			});
-			any = false;                             /* stays resting until the block runs */
-			island_active = false;
-			goto said;
+			dispatch_resume(me);
 		}
+		goto said;
 	}
 	island_active = any;
 said:
@@ -246,17 +289,18 @@ island_orig(SEL cmd)
 static double
 island_eff_h(void)
 {
-	return island_live() ? island_lh : island_h > 0 ? island_h : ISLAND_APPLE_H;
+	double h = island_h > 0 ? island_h : ISLAND_APPLE_H;
+	return island_live() ? island_lerp(h, island_lh) : h;
 }
 
 static double
 island_eff_w(void)
 {
 	double w = island_w > 0 ? island_w : 125.0;
-	if (island_live() && island_lw > 0) {
-		return island_lw;
+	if (!island_live()) {
+		return w;
 	}
-	return island_live() && w < island_lh ? island_lh : w;
+	return island_lerp(w, island_lw > 0 ? island_lw : w < island_lh ? island_lh : w);
 }
 
 /* live: a getter of the compact / minimal (Live Activity) layout: its height is lh, its widths stay Apple's (a
