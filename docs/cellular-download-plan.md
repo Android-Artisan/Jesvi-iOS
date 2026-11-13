@@ -607,3 +607,102 @@ in Messages, no calls.
 - 17:58: the whole Control Center attempt was REMOVED at the user's request (main 5146306): no hooks in
   ConnectivityModule, no module-load callback, no sb-dump/sb-hook. The notes above stay for a later attempt;
   the code is in main's history (5588958 and before).
+## 2026-11-13 18:35 — stability fixes; calls: groundwork (session B)
+
+Stability (all on main, prebuilt redwood-cellulard + redwood-ims updated, live on the phone):
+- **VoLTE off after a reboot (fixed, 9f4c792):** /var/tmp survives a restart; the stale `ims.pid` named another
+  process (installd), cellulard took it for a running client and never started redwood-ims (34 min without VoLTE).
+  The pid is now checked with proc_pidpath and a wrong/dead one removed.
+- **"downlink silent" modem restarts (suspected fix, 6a8ea5c):** pp_poll returned on a failed read before adding the
+  handed count to `fore`; the CP's free-buffer count could only shrink until the downlink stopped. `fore` is now
+  derived from `pp_done` on every exit (pp_give_back). Not yet proven: watch `cellular: health HH:MM:SS rx tx ring rear
+  done fore dbm bars ims` (one line a minute in /var/tmp/redwood-cellular.log). A stall with `fore` != `done-1` = the
+  old bug elsewhere; with fore right and rear frozen = the CP side.
+- Weak signal seen at -116 dBm (0 bars) once; usually -89 (4 bars) here.
+- Pipe command `restart` (echo restart > /var/tmp/redwood-cell/cmd) = the watchdog's clean modem restart.
+  `launchctl kickstart -k system/com.redwood.cellular` also works (stop + start, picks /var/root's binary).
+- **Incoming calls answered busy (e005b29):** before, redwood-ims answered every request with a bare 200 -- an INVITE
+  would have connected the caller to silence (and billed them). Now 100 Trying + 486 Busy Here; the INVITE is saved
+  root-only as /var/root/ims-invite-<time>.txt for the call work.
+
+Calls: how Samsung does VoLTE voice on Exynos (stock libsec-ims.so / libmediarelayengine.so / libSamsungAPVoiceEngine.so,
+extracted to B's scratchpad from out/cellular/private-rom/stock-system.img):
+- **CPVE = "CP Voice Engine": the modem runs RTP and the AMR-WB/EVS codec itself.** libsec-ims (the AP IMS stack)
+  does SIP only and drives the CP through `CPVEInterface`: InitEngine, SetPdnInfo, CreateChannel(local/remote IP+port),
+  SetCodecInfo(codec, payload types, mode-set, ptime ...), StartChannel, SetAudioPath, StopChannel, EnableSRTP,
+  HandleDtmf; events back: DTMF, RTP/RTCP timeout, RTP stats. ("don't initialize CPVE for softphone": the AP engine
+  libSamsungAPVoiceEngine is for VoWiFi/softphone only.)
+- So for a call: (1) SIP INVITE/183/PRACK/UPDATE/200/ACK/BYE with an AMR-WB SDP in redwood-ims; (2) the CPVE messages to
+  the CP -- transport not found yet (no /dev/umts path in libsec-ims; look at how CPVEInterface sends: an IPC
+  group in libsec-ril / a secril-client request / a separate SBD channel); (3) the CP's voice to the speaker/earpiece and
+  mic: an ABOX route CP <-> codec (redwood audio); (4) the iOS call UI.
+- Next concrete step: the user calls the S20 -> /var/root/ims-invite-*.txt gives Jio's SDP (codecs, preconditions,
+  100rel) -> decide the INVITE answer path. Then disassemble CPVEInterface::CreateChannel/StartChannel in libsec-ims.
+
+## 2026-11-13 21:45 (A): the CP voice commands (from stock libsec-ims.so, symbols intact; extracted privately)
+OemIPCHandler builds a full Samsung IPC frame ([u16 len][mseq][aseq][grp][idx][type][payload], len = whole frame) and
+sends it through 0x81e750 -> RIL OEM hook -> libsec-ril -> CP. IMS group = 0x16. Table (grp idx type len):
+    0x7d2364 OemIPCHandler::ImsSetChannel(int, int, int, int, int, int, i grp #0x16 idx #1 type #3 len #0x36
+    0x7d24c0 OemIPCHandler::ImsGetCodecList(int, int*, _stSAE_CodecInfo*) grp #0x16 idx #2 type #2 len #9
+    0x7d2d24 OemIPCHandler::ImsSetCodec(int, int, int, _stSAE_CodecInfo*) grp #0x16 idx #2 type #3 len #0x41
+    0x7d3400 OemIPCHandler::ImsSetRtpMedia(int, int, int, int, int)       grp #0x16 idx #3 type #3 len #0xb
+    0x7d3630 OemIPCHandler::ImsSetDtmf(int, int, int, int, int, unsigned  grp #0x16 idx #4 type #3 len #0xd
+    0x7d37f8 OemIPCHandler::ImsHandleDtmf(int, int, int, int, int)        grp #0x16 idx #4 type #1 len #0xb
+    0x7d3980 OemIPCHandler::ImsGetOption(int, int, _SAE_RTPStatistics*)   grp #0x16 idx #5 type #2 len #0x4e
+    0x7d3c80 OemIPCHandler::ImsSetOption(int, int, int, IPCIMSOptionParam grp #0x16 idx #5 type #3 len #0x4e
+    0x7d3eac OemIPCHandler::ImsSetPdnIp(int, int, unsigned char, void*, c grp #0x16 idx #6 type #3 len #0x2d
+    0x7d4034 OemIPCHandler::ImsStopSessRefresh(int, int)                  grp #0x16 idx #7 type #1 len #0xc
+    0x7d424c OemIPCHandler::ImsStartSessRefresh(int, int, void*, void*, u grp #0x16 idx #7 type #1 len None
+    0x7d43d8 OemIPCHandler::ImsInitSessRefresh(int, int, int, int, int)   grp #0x16 idx #7 type #1 len #0x47a
+    0x7d450c OemIPCHandler::ImsStartEvent(int, unsigned char)             grp #0x16 idx #1 type #5 len #8
+    0x7d463c OemIPCHandler::ImsSimInfo(int, int)                          grp #0x16 idx #0x20 type #3 len #8
+    0x7d4794 OemIPCHandler::ImsSessRefreshGetCseq(int, int)               grp #0x16 idx #7 type #2 len #0xb
+    0x7d48f0 OemIPCHandler::ImsSessRefreshSetCseq(int, int, int)          grp #0x16 idx #7 type #3 len #0xf
+    0x7d4a70 OemIPCHandler::ImsEngineSet(int, int, int)                   grp #0x16 idx #9 type #3 len #9
+    0x7d4bf4 OemIPCHandler::ImsFrameTimeGet(int, int, int, _SAE_RTCPRepor grp #0x16 idx #0xa type #2 len #9
+    0x7d4d78 OemIPCHandler::ImsFrameTimeSet(int, int, int, _SAE_TimeStamp grp #0x16 idx #0xa type #3 len #0x11
+    0x7d559c OemIPCHandler::ImsNotiInfo(int, char*, int)                  grp #0x16 idx #0xc type #5 len #0x6c
+    0x7d5684 OemIPCHandler::ImsSIPInfoForACB(int, int)                    grp #0x16 idx #0x11 type #5 len #8
+    0x7d57b4 OemIPCHandler::ImsGetNetworkInfo(int, _SAE_NetworkInfoReport grp #0x16 idx #0x18 type #2 len #8
+    0x7d5ba4 OemIPCHandler::GetVersion(int, char*, int)                   grp #0x16 idx #0x1b type #2 len #7
+    0x7d5d1c OemIPCHandler::GetEVSRateAdapt(int)                          grp #0x16 idx #0x23 type #2 len #8
+    0x7d5ec8 OemIPCHandler::ImsDeleteCpClientSocket(int, int)             grp #0x16 idx #0x1c type #3 len #9
+    0x7d6028 OemIPCHandler::ImsGetRadioEnvironmentInfo(int, _SAE_RadioEnv grp #0x16 idx #0x21 type #2 len #8
+    0x7d6418 OemIPCHandler::ImsSendIPC(int, char*, int)                   grp #0x16 idx #0xf type #2 len #0x6c
+    0x7d6d38 DefaultOemIPCHandler::ImsSetCSTuneAway(int, unsigned char)   grp #0x16 idx #0x12 type #3 len #8
+    0x7d6e90 DefaultOemIPCHandler::ImsSignalingInfo(int, int, int, int)   grp #0x16 idx #0x19 type #3 len #0xa
+ImsSetChannel(phoneId, a2, a3, a4, a5, a6, a7, a8, ipver, void *ipA, void *ipB, a12) -> IPC 16/01 SET, frame 0x36:
+    +7 u8 a2 (channel)   +8 u8 a4 (op: only 1 or 3 fill the rest; anything else = ff: delete)
+    +9 u16 a5  +0xb u16 a6  +0xd u16 a7  +0xf u16 a8   (the RTP/RTCP ports, local and remote: order to confirm
+    against CPVEInterface::CreateChannel)   +0x11 u8 ipver (2: 16-byte IPv6, else 4-byte IPv4)
+    +0x12 ipB (16 of 36 bytes)   +0x22 u8 ipver   +0x23 ipA (16 of 19)   +0x33 u8 a12   +0x34 u16 a3
+Next: the layouts of 16/02 SetCodec (_stSAE_CodecInfo, 0x41), 16/06 SetPdnIp (0x2d), 16/03 SetRtpMedia (0x0b),
+16/09 EngineSet (0x09); CPVEInterface::CreateChannel/StartChannel for the call order; then send them from
+redwood-cellulard (it already frames IPC: live-modem.c ipc()). Audio: CPVEInterface::SetAudioPath is a stub (8 bytes):
+the voice route CP <-> codec is the audio HAL's (RIL sound path IPC + ABOX), still to find. Test call still needed
+(/var/root/ims-invite-*.txt for Jio's SDP).
+
+### VoLTE calls: the full path, cross-checked (A, 2026-11-13 22:00; no phone changes)
+Sources: stock G980FXXSNHYB7 libsec-ims.so / libsec-ril.so / vendor mixer_paths.xml (private extracts under
+work/hackios-cellular/out/cellular/private-rom/{voice,audio}); Samsung's Exynos audio proxy (open source, carried by
+the AOSP Exynos 990 tree sneedxynos/android_device_samsung_exynos990-common hardware/audio/proxy, copy in
+git/_ref-exynos990-audio); ExtremeXT exynos990 kernel sound/soc/samsung/abox/abox_vss.c, drivers/soc/samsung/cpif/
+shm_ipc.c; libsamsung-ipc (Replicant) for IPC group 0x09. AOSP ROMs (Lineage exynos9820-common, the x1slte trees)
+run Samsung's own vendor RIL + IMS + audio HAL blobs: they show the wiring, not a re-implementation.
+
+1. SIP (redwood-ims): INVITE -> 100/180/183 (+SDP AMR-WB, preconditions, 100rel) -> PRACK/UPDATE -> 200 -> ACK; BYE.
+   Needs Jio's real INVITE: user calls the S20 (486 answer saves /var/root/ims-invite-*.txt).
+2. Media in the CP (CPVE), IMS IPC group 0x16 through redwood-cellulard's ipc(): 16/06 SetPdnIp (our IMS address),
+   16/01 SetChannel (IPs + RTP/RTCP ports, layout above), 16/02 SetCodec (_stSAE_CodecInfo, 0x41), 16/03 SetRtpMedia
+   (start/stop), 16/09 EngineSet; 16/04 DTMF. Order: CPVEInterface::CreateChannel / StartChannel (to read next).
+3. The CP's audio route: IPC group 0x09 (SND): AUDIO_PATH_CTRL, CLOCK_CTRL, SPKR_VOLUME_CTRL, MIC_MUTE_CTRL
+   (libsec-ril IpcTxSndSetAudioPath; numbering per libsamsung-ipc, to confirm in libsec-ril).
+4. ABOX (redwood_audio): voice runs in Calliope's VSS between the CP and ABOX through the CP's shared memory region
+   SHMEM_VSS (cpif shm_ipc.c; in the CP rmem 0xf0000000+8M / 0xd0000000+64M per the CP TOC; abox-vss magic-offset
+   0x700000 zeroed at probe). At call start: abox_set_system_state(SYSTEM_CALL, true) to the firmware
+   (abox_vss_notify_call), the mixer path "incall-handset"/"incall-speaker" (ABOX Path Change ID 12, media path,
+   route-vssrxif-vssbridge-rxse-to-srccom4, route-vpcmoutdai4-to-srccom4_b; mic: route-seriallif-cpcall-mic into the
+   VSS adapter), and the proxy's virtual PCMs 104 (VRX playback) / 113 (VTX capture) opened.
+5. iOS: incoming call UI (CallKit-like path or SpringBoard banner + answer/end), then outgoing dialling.
+Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RTP running (check RTP stats event
+16/05); (c) ABOX VSS route -> hear the caller; (d) mic; (e) UI.

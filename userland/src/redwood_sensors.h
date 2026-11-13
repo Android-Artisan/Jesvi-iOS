@@ -21,6 +21,9 @@
 #define _SYS_REDWOOD_SENSORS_H_
 
 #include <stdint.h>
+#include <sys/ioccom.h>
+
+#define REDWOOD_SENSORS_PROXIMITY _IOW('R', 1, uint32_t)
 
 #define REDWOOD_SENSORS_NAME    "redwood-sensors"
 #define REDWOOD_SENSORS_DEVICE  "/dev/redwood-sensors"

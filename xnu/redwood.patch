@@ -2907,6 +2907,18 @@ index e76e7e70ab9c..22e7052a724c 100644
  }
  
  void
+diff --git a/osfmk/arm64/machine_routines_asm.s b/osfmk/arm64/machine_routines_asm.s
+index 2449334f5c97..46e364d6b453 100644
+--- a/osfmk/arm64/machine_routines_asm.s
++++ b/osfmk/arm64/machine_routines_asm.s
+@@ -427,6 +427,7 @@ LEXT(mmu_kvtop_wpreflight)
+ 	mrs		x2, DAIF									// Load current DAIF
+ 	msr		DAIFSet, #(DAIFSC_IRQF | DAIFSC_FIQF)		// Disable IRQ
+ 	at		s1e1w, x0									// Translation Stage 1 EL1
++	isb		sy											// (redwood, from UniXNU via Scion 2026-11-08: PAR_EL1 holds the result only after a context synchronization, as in mmu_kvtop)
+ 	mrs		x1, PAR_EL1									// Read result
+ 	msr		DAIF, x2									// Restore interrupt state
+ 	tbnz	x1, #0, L_mmu_kvtop_wpreflight_invalid		// Test Translation not valid
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 index 2cc442e05791..50a9cd78ac33 100644
 --- a/osfmk/arm64/sleh.c

@@ -20,6 +20,16 @@ struct modem {
     uint32_t mux,divider,mode,pins,pulls,pad_dat,saved[8];
     int clock_changed,mode_changed,controller_saved,pads_changed;
 };
+/* Debug log volume (2026-11-13: the log grew 38 KB a minute, ~55 MB a day, mostly one line per doorbell and per IPC
+ * message -- disk and CPU for nothing). Default quiet; /var/root/cell-verbose (or "verbose on" on the pipe) brings the
+ * per-message lines back. Milestones, errors, health and watchdog lines are always written. */
+#include <sys/stat.h>
+static int cell_verbose=-1;
+static int verbose(void)
+{
+    if (cell_verbose<0) {struct stat vs;cell_verbose=!stat("/var/root/cell-verbose",&vs);}
+    return cell_verbose;
+}
 static void phase(const char *s) {printf("cellular live BOOT: %s\n",s);fflush(stdout);}
 static int link_read(uint64_t address,uint32_t *value)
 {
@@ -285,7 +295,7 @@ static int doorbell(unsigned num)
         doorbell_ready=1;
     }
     snprintf(c,sizeof(c),"w 0x14d60000 0x%x",0x10000u+num);
-    int e=request(c,r);printf("cellular live DL: doorbell %#x: %s",0x10000u+num,e?"failed\n":r);fflush(stdout);return e;
+    int e=request(c,r);if (e || verbose()) {printf("cellular live DL: doorbell %#x: %s",0x10000u+num,e?"failed\n":r);fflush(stdout);}return e;
 }
 static int ap2cp(unsigned cmd)
 {
@@ -459,6 +469,7 @@ static void sbd_dump_dl(void)
                 printf("cellular: AT <- ");for (unsigned k=4;k<show;k++) putchar(big[k]=='\r'?' ':big[k]=='\n'?'|':(big[k]>=32&&big[k]<127?big[k]:'.'));printf("\n");fflush(stdout);
                 show=0;
             }
+            if (sbd_chs[id].ch==235 && show>=11 && !verbose()) show=0;  /* (quiet: the per-message dump only when verbose) */
             if (sbd_chs[id].ch==235 && show>=11) {
                 printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
                     big[8],big[9],big[10],big[6],big[7],show-11);
@@ -644,15 +655,25 @@ static void pkt_rx(const uint8_t *p,unsigned n);
 static void ims_deliver(const uint8_t *p,unsigned n);
 static uint32_t pp_fore=PP_NDESC-1;   /* AP-owned: the CP only reads it */
 static unsigned pp_lost;
+static uint32_t pp_last_rear;
+static void pp_give_back(void)
+{   /* fore follows done: every descriptor up to the one before pp_done is the CP's to fill again. Kept as a
+     * function of pp_done, not a running sum: a read that failed half-way through pp_poll used to return before
+     * the handed count reached fore, the CP's free count shrank for good, and the downlink stopped when it hit
+     * zero -- the "downlink silent" modem restarts of 2026-11-13 (suspected; the health line shows it). */
+    uint32_t want=(pp_done+PP_NDESC-1)%PP_NDESC;
+    if (want!=pp_fore && !pp_writes(0xd0000010,&want,1)) pp_fore=want;
+}
 static void pp_poll(void)
 {
-    uint32_t rear=0;if (pp_read(0xd0000014,&rear,1) || rear>=PP_NDESC) return;
+    uint32_t rear=0;if (pp_read(0xd0000014,&rear,1) || rear>=PP_NDESC) {pp_give_back();return;}
+    pp_last_rear=rear;
     unsigned handed=0;
     while (pp_done!=rear) {
         /* the new descriptors up to the ring's end (or rear) in one read */
         unsigned cnt=rear>pp_done?rear-pp_done:PP_NDESC-pp_done;if (cnt>64) cnt=64;
         static uint32_t dw[64*4];uint32_t a0=0xd0000100u+16*pp_done;
-        if (pp_read(a0,dw,4*cnt)) return;
+        if (pp_read(a0,dw,4*cnt)) {pp_give_back();return;}
         for (unsigned k=0;k<cnt;k++) {
             uint32_t *d=dw+4*k;unsigned idx=pp_done+k;
             unsigned len=d[2]&0xffff,ch=(d[3]>>16)&0xff;uint32_t addr=d[0];
@@ -665,10 +686,10 @@ static void pp_poll(void)
             /* hand the buffer back: same address, status cleared */
             d[0]=0x28100000u+idx*PP_CELL+64u;d[1]=idx==0?0x8000u:0;d[2]=d[3]=0;
         }
-        if (pp_writes(a0,dw,4*cnt)) return;
+        if (pp_writes(a0,dw,4*cnt)) {pp_give_back();return;}
         pp_done=(pp_done+cnt)%PP_NDESC;handed+=cnt;
     }
-    if (handed) {pp_fore=(pp_fore+handed)%PP_NDESC;pp_writes(0xd0000010,&pp_fore,1);}
+    (void)handed;pp_give_back();
 }
 static int pkt_tx_ch(const uint8_t *p,unsigned n,unsigned ch);
 static int pkt_tx(const uint8_t *p,unsigned n) {return pkt_tx_ch(p,n,ul_ch);}
@@ -942,6 +963,10 @@ static void ctl_line(char *l)
         memset(d,0,sizeof(d));d[0]=1;d[1]=(uint8_t)cid;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
         memset(d,0,sizeof(d));d[0]=1;d[1]=(uint8_t)cid;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
         printf("cellular: PDN cid %u requested on APN %s\n",cid,apn);fflush(stdout);
+    } else if (!strncmp(l,"verbose ",8)) {  /* verbose on|off: the per-message debug lines (not kept across restarts: /var/root/cell-verbose is) */
+        cell_verbose=!strcmp(l+8,"on");printf("cellular: verbose log %s\n",cell_verbose?"on":"off");fflush(stdout);
+    } else if (!strcmp(l,"restart")) {      /* restart: a clean modem restart, as the watchdogs do (exec of /var/root's binary) */
+        printf("cellular: restart asked on the command pipe\n");fflush(stdout);restart_wanted=1;stopped=1;
     } else if (!strncmp(l,"nodata",6)) {
         data_off=1;close(open("/var/root/cell-nodata",O_CREAT|O_WRONLY,0644));utun_down();cell_publish();
     } else if (!strncmp(l,"data",4) && data_off) {
@@ -986,7 +1011,7 @@ static void ctl_line(char *l)
         while (*h && d<1900) {while (*h==' ') h++;unsigned b;if (sscanf(h,"%2x",&b)!=1) break;f[11+d++]=(uint8_t)b;h+=2;}
         size_t n=11+d;f[0]=0xf8;f[1]=235;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         f[4]=(uint8_t)(n-4);f[5]=(uint8_t)((n-4)>>8);f[6]=ipc_mseq++;f[7]=0;f[8]=(uint8_t)g;f[9]=(uint8_t)i;f[10]=(uint8_t)t;
-        int e=sbd_send(1,f,(uint32_t)n);printf("cellular: IPC -> %02x %02x %02x (%zu data bytes) %s\n",g,i,t,d,e?"(send failed)":"");fflush(stdout);
+        int e=sbd_send(1,f,(uint32_t)n);if (e || verbose()) printf("cellular: IPC -> %02x %02x %02x (%zu data bytes) %s\n",g,i,t,d,e?"(send failed)":"");fflush(stdout);
     }
 }
 static void ctl_poll(void)
@@ -1044,7 +1069,13 @@ static int online_handshake(unsigned seconds)
                 /* a client already running (e.g. started before this process was exec'd again by a watchdog): keep it */
                 FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int other=0;
                 if (q) {if (fscanf(q,"%d",&other)!=1) other=0;fclose(q);}
-                if (other>1 && !kill(other,0)) {ims_spawned=now_us(NULL);other=-1;}
+                /* (only if that pid IS redwood-ims: /var/tmp survives a restart, and after one the old pid was
+                 *  installd's -- the client was never started again, no VoLTE after the 18:00 boot, 2026-11-13) */
+                if (other>1 && !kill(other,0)) {
+                    extern int proc_pidpath(int,void *,uint32_t);char path[4096];
+                    if (proc_pidpath(other,path,sizeof(path))>0 && strstr(path,"redwood-ims")) {ims_spawned=now_us(NULL);other=-1;}
+                    else unlink("/var/tmp/redwood-cell/ims.pid");
+                } else if (other>1) unlink("/var/tmp/redwood-cell/ims.pid");
                 if (other==-1) goto ims_done;
             }
             if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
@@ -1078,6 +1109,15 @@ static int online_handshake(unsigned seconds)
             if (!last_rx) last_rx=now;
             if (pp_rx!=prev_rx) {prev_rx=pp_rx;last_rx=now;probe=0;}
             if (pp_tx!=prev_tx) {prev_tx=pp_tx;last_tx=now;}
+            {   /* health, once a minute, with the wall clock: enough to line a stall up with signal and the ring */
+                static uint64_t said;
+                if (now-said>60000000ull) {said=now;time_t t=time(NULL);struct tm tm;localtime_r(&t,&tm);
+                    struct stat ls;if (!fstat(1,&ls) && S_ISREG(ls.st_mode) && ls.st_size>8*1024*1024 && !ftruncate(1,0)) {
+                        lseek(1,0,SEEK_SET);printf("cellular: log cut back at 8 MB\n");}
+                    printf("cellular: health %02d:%02d:%02d rx %llu tx %llu ring rear %u done %u fore %u dbm %d bars %d ims %s\n",
+                        tm.tm_hour,tm.tm_min,tm.tm_sec,(unsigned long long)pp_rx,(unsigned long long)pp_tx,pp_last_rear,pp_done,pp_fore,
+                        cell.rssi_dbm,cell.bars,ims.up?"up":"down");fflush(stdout);}
+            }
             if (!probe && last_tx>last_rx && now-last_rx>60000000ull) {
                 char d[64];inet_ntop(AF_INET6,pdn.dns6,d,sizeof(d));
                 printf("cellular: watchdog: nothing received for %llu s while sending; pinging %s\n",(unsigned long long)((now-last_rx)/1000000),d);fflush(stdout);

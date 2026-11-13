@@ -1074,20 +1074,59 @@ static void
 island_cache_sync(void)
 {
 	const char *arg = boot_arg("island");
-	char now = arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', last[4];
+	/* Version the hardware capability cache too: old builds cached ALS=false
+	 * because their light sensor existed only in virtual HID, not IORegistry.
+	 * Invalidate once before launchd (and when the ALS boot configuration changes),
+	 * so Settings and CoreBrightness both obtain the real kernel capability. */
+	char now[3] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2' }, last[4];
 	int fd;
+	arg = boot_arg("shub");
+	if (arg != NULL && strcmp(arg, "6") == 0) now[1] = '1';
+	arg = boot_arg("sens_als");
+	if (arg != NULL && strcmp(arg, "0") == 0) now[1] = '0';
 
-	if (read_whole(ISLAND_MARK, last, sizeof(last)) == 1 && last[0] == now) {
+	if (read_whole(ISLAND_MARK, last, sizeof(last)) == sizeof(now) && !memcmp(last, now, sizeof(now))) {
 		return;
 	}
 	if (unlink(MG_CACHE) == 0) {
-		printf("  island=%c (changed): MobileGestalt's cache removed, rebuilt from the device tree\n", now);
+		printf("  hardware capabilities changed (island=%c ALS=%c): rebuilding MobileGestalt cache\n", now[0], now[1]);
 	}
 	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd >= 0) {
-		write(fd, &now, 1);
+		write(fd, now, sizeof(now));
 		close(fd);
 	}
+}
+
+/*
+ * The clock. The S20 starts every boot at 1970 (no RTC is read) until the network sets it, and iOS's daemons
+ * write what happens in between with 1970 dates. powerlog's daily archiver (inside aggregated) then made one
+ * archive per day since 1970: 12,691 files, 596 MB, a core at 92 % for good (2026-11-13: "it feels laggy").
+ * rwlogd saves the time every minute once it is real; here, before launchd starts iOS, a clock still in 1970
+ * is set to that saved time (minutes old at worst; the network corrects it).
+ */
+#define TIME_MARK "/private/var/db/redwood-time"
+static void
+clock_restore(void)
+{
+	char b[24];
+	long saved = 0;
+	int n = read_whole(TIME_MARK, b, sizeof(b) - 1);
+	struct timeval tv;
+
+	if (n <= 0 || gettimeofday(&tv, NULL) != 0 || tv.tv_sec > 1700000000) {
+		return;
+	}
+	b[n] = 0;
+	for (int i = 0; b[i] >= '0' && b[i] <= '9'; i++) {
+		saved = saved * 10 + (b[i] - '0');
+	}
+	if (saved < 1700000000) {
+		return;
+	}
+	tv.tv_sec = saved;
+	tv.tv_usec = 0;
+	printf("  clock: %s from the saved time %ld\n", settimeofday(&tv, NULL) == 0 ? "set" : "NOT set", saved);
 }
 
 static void
@@ -1111,6 +1150,7 @@ mount_writable(void)
 	}
 	if (ok) {
 		island_cache_sync();
+		clock_restore();
 	}
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */

@@ -44,11 +44,40 @@ queue once SpringBoard runs, only with `island=1`.
 
 | Setting | Default | Apple |
 | --- | --- | --- |
-| top gap `y` | **5 pt** (pill covers the top of the S20 hole; user-checked 2026-11-12) | 11.33 |
-| width `w` | **81 pt** ("iPhone 18 Pro" look, user-chosen; in the conf now, built-in from the next boot image) | 125.33 |
-| height `h` | Apple's | 36.67 |
+| top gap `y` | **6 pt** (punch hole `punch-21`, user-chosen 2026-11-13 evening) | 11.33 |
+| width `w` | **21 pt** (same; before: 75, preset `18pro-small`) | 125.33 |
+| height `h` | **21 pt** (same; before: 28) | 36.67 |
+| Live Activity height `lh` | **32 pt** (see "Live Activity height" below) | -- |
 
-Override in `/var/jb/etc/redwood-island.conf` (e.g. `y=5 w=81`; `off` = Apple's pill), then respring.
+Override in `/var/jb/etc/redwood-island.conf` (e.g. `y=5 w=81 lh=34`; `off` = Apple's pill), then respring.
+Keys are case-insensitive since 2026-11-13 (`Y=5` used to be ignored silently).
+
+### Presets (2026-11-13, user-chosen names)
+
+Saved in the repo (`tools/island-presets/*.conf`) and on the phone (`/var/jb/etc/redwood-island.presets/`).
+Switch from the Mac with `tools/island-preset.sh NAME` (copies the preset to the conf, resprings; no reboot);
+`tools/island-preset.sh` alone lists them and shows what the phone uses now.
+
+| Preset | Conf | Size (w x h, top gap) | Notes |
+| --- | --- | --- | --- |
+| `apple-14pro` | `off` | 125.33 x 36.67, 11.33 pt | Apple's 14 Pro pill, no adjustment ("no dynamic config") |
+| `18pro` | `y=5 w=81` | 81 x 36.67, 5 pt | first "iPhone 18 Pro" look |
+| `18pro-adapted` | `y=5 w=81 h=30.67` | 81 x 30.67, 5 pt | 6 pt shorter (~1 mm) |
+| `18pro-small` | `y=5 w=75 h=28` | 75 x 28, 5 pt | a little smaller all round (the built-in default until 2026-11-13 21:05) |
+| `favorite-pill` | `w=75 h=28` | 75 x 28, Apple's 11.33 pt | the pill the user liked most (2026-11-13): 18pro-small at Apple's top gap |
+| `circle-24` | `y=5 w=24 h=24` | 24 x 24, 5 pt | round, just over the camera hole (user: good) |
+| `circle` | `y=6 w=22 h=22` | 22 x 22, 6 pt | round, a bit smaller, same centre |
+| `punch-21` | `y=6 w=21 h=21 lw=0 lh=32` | 21 x 21, 6 pt | punch hole, 32 pt tall during activities (the default 21:05..22:10) |
+| `punch-live18` | `y=6 w=21 h=21 lw=81 lh=36.667` | 21 x 21 at rest; **81 x 36.67 while a Live Activity runs** (the `18pro` pill) | user's "preset 2"; **the built-in default** since 2026-11-13 22:10 |
+
+On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/etc/redwood-island.conf; /var/jb/usr/bin/sbreload`.
+Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
+`sbreload` restarts SpringBoard twice in a row here; the second start (~10 s) is the one that reads the conf.
+Keep the pill over the camera hole: the hole's bottom edge sits roughly 25-28 pt below the top, so a round pill much
+below ~22 pt would show the hole's edge (estimate; 24 pt user-checked as covering it, 22 pt to be checked).
+The conf is on the data volume: it survives reboots and new boot images, but a fresh install starts with the
+built-in default, which is `punch-21` from the boot image after 2026-11-13 21:05. A conf file defines the whole pill:
+what it leaves out (e.g. `h`) is Apple's value, not the built-in default.
 Log: `/var/mobile/Library/Logs/redwood-island.log`. 1 pt on the S20 panel ~ 0.18 mm.
 
 Not as a /var/jb tweak: any library from /var/jb loaded into SpringBoard fails the kernel's
@@ -57,7 +86,70 @@ SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking 
 SpringBoardUI.framework" and SpringBoard crash-loops (timing-dependent). (userland/src/island_tweak.m
 and island-install.sh are that withdrawn version.)
 
+### The user's two punch-hole presets (2026-11-13)
+
+| | Preset | At rest | While a Live Activity / system element shows |
+| --- | --- | --- | --- |
+| **1** | `punch-21` | 21 x 21 pt round, 6 pt from the top | 32 pt tall, at least 32 wide (`lh` default) |
+| **2** (built-in default since 2026-11-13 22:10) | `punch-live18` | the same | 81 x 36.67 pt: the iPhone 18 Pro pill (`lw=81 lh=36.667`) |
+
+Switch: `tools/island-preset.sh punch-21` or `tools/island-preset.sh punch-live18` (a respring, no reboot).
+
+**Changing the active (Live Activity) size:** edit `lw=` (width) and `lh=` (height) in
+`/var/jb/etc/redwood-island.conf`, then respring. Examples: `lw=75 lh=28` (18pro-small), `lw=81 lh=30.67`
+(18pro-adapted), `lw=125 lh=36.667` (Apple's 14 Pro). Without `lw` the width is the resting width (at least `lh`);
+`lh=0` keeps activities as small as the pill. To keep a new combination, save it as a file in `tools/island-presets/`
+and on the phone in `/var/jb/etc/redwood-island.presets/`.
+
+**Entry animation** (user's choice, 2026-11-13 22:00): only the way in (punch hole -> live size) is handled; the way
+out is iOS's own. The switch to the live size is made on the main queue's next turn inside a 0.4 s UIKit animation of
+the element's window (island_note_mode, commit 04f9b79): the user preferred it to an immediate switch (it reads as two
+pills, the small one jumping) and to an eased-size version (919b123: the height did not apply properly).
+
+### Live Activity height (`lh`, 2026-11-13, user-verified)
+
+SpringBoard sizes a compact or minimal Live Activity from the resting pill's own size (`sensorRegionSize`); it never
+asks `minimumCompactSize` (not among SpringBoard's selectors). With a 21 pt punch hole every activity was 21 pt tall.
+`island_sb.h` follows the elements' layout modes (`-[SAUILayoutSpecifyingElementViewController setLayoutMode:reason:]`
+and the `forTargetWithOverrider:` variant; `SAUIStringFromElementViewLayoutMode`: -1 removed, 0 none, 1 minimal,
+2 compact, 3 custom/expanded). While any element is 1-3 the pill is `lh` tall and at least `lh` wide, and every mapped
+getter (corner radius, inter-sensor rect, minimal sizes) follows; when all are 0/-1 it is the w x h circle again.
+SpringBoard asks the size again on every layout pass (137 calls in the first minute), so the change shows at once.
+System elements (charging, silent switch) grow the same way. `lh=0` in the conf: activities as small as the pill.
+The log shows each change: `island: SAUIElementViewController 0x... layout mode 2 -> live height`.
+
+The rest of the geometry (minimise animation, radius, minimal views) follows the pill by value since 2026-11-13
+(B's proposals/notch/island-geometry-hooks.patch, now in `island_sb.h`).
+
+## Status bar: the time at the left
+
+`src/statusbar_shift.h` (in libredwood for apps and libredwood-sb for the home screen), two settings in
+`/var/jb/etc/redwood-statusbar.conf`, applied by a respring (reopen apps):
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `cut=` | **125** pt | iOS centres the time in the space between the left edge and the island. With a 21 pt hole that space is far wider than a 14 Pro's, so the time sat near its middle ("too much padding"). The status bar lays itself out around a cutout of at least this width (`_needsUpdateOfConstraintsForAvoidanceFrame:cutoutOffset:cutoutWidth:`); the island itself is untouched. `cut=0`: iOS's own width. |
+| `lead=` | **20** pt | taken off `-[_UIStatusBarVisualProvider_DynamicSplit edgeInsets]`'s leading gap (Apple 17); may go below 0. The time moves by about half of it. `lead=0`: Apple's. |
+
+User-verified 2026-11-13 21:05 with `cut=125 lead=20` ("all worked").
+
 ## Known issue
+
+**An app does not shrink ("minimise") into the island** with a resized pill (user report 2026-11-13 with `circle`;
+the user says it also happened earlier with other sizes). Test 2026-11-13: with `apple-14pro` (no hook) the app DOES
+shrink into the island -- so the cause is our size hook, not rendering. Why: iOS has ~20 island sizes in
+SBUISystemApertureLayoutMetrics and only `sensorRegionSize` (and the top inset) are changed; the minimal/compact sizes,
+`_inertSize`, the corner radius and the inter-sensor rect stay at the 14 Pro's 125 x 36.67, so the transition no longer
+lines up. Apple's values (read on the phone): sensorRegionSize/_inertSize/minimumCompactSize 125 x 36.667,
+minimumMinimalSize/compactConcentricAreaSize 36.667 x 36.667, maximumHorizontalMinimalViewSize 45 x 36.667,
+maximumLeadingTrailingViewSize 88.333 x 36.667, maximumCompactSize 301.667 x 36.667, minimumContinuousCornerRadius 18.333,
+interSensorRegionInWindowSpace {213.333, 11.333, 9, 36.667}, minimumScreenEdgeInsets 11.333.
+**Status 2026-11-13 21:05:** the fix is in `island_sb.h` and on the phone; the user reported everything working.
+Original note: `proposals/notch/island-geometry-hooks.patch` maps
+every geometry getter by value (36.667 -> h, 125 -> w, 18.333 -> h/2, 11.333 -> y). Needs a root.apfs (libredwood-sb)
+flash + reboot, then `tools/island-preset.sh circle` and the timer test. Until then: `apple-14pro` keeps the animation,
+the other presets lose it. Phone on `18pro-small` (user's choice, 2026-11-13 18:27).
+
 
 With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
 checked at Apple's width. Likely the trailing label is laid out against the narrower sensor region.

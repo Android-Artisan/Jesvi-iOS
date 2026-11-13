@@ -1176,7 +1176,9 @@ brightness_registry_fix(void)
     if (memcmp(stub, expected, sizeof(expected))) {
         say("redwood: ALS registry bridge: unexpected stub %08x %08x %08x\n", stub[0], stub[1], stub[2]); return;
     }
-    io_service_t backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
+    io_service_t backing = IOServiceGetMatchingService(0, IOServiceNameMatching("RedwoodAmbientLightSensor"));
+    /* Compatibility with older kernels while updating the bridge independently. */
+    if (!backing) backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
     uint64_t id = 0;
     if (!backing || IORegistryEntryGetRegistryEntryID(backing, &id) != KERN_SUCCESS) {
         if (backing) IOObjectRelease(backing);
@@ -1481,8 +1483,8 @@ input_thread(__unused void *arg)
  *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
  * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
  * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
- * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s), 2 also Auto-Lock when in use (default since
- * 2026-11-12, the user's wish; the boot line is at its 550-character limit, so the default is here).
+ * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s; the default since 2026-11-13, the user's wish), 2 also
+ * Auto-Lock when in use (the default 2026-11-12..13). /var/jb/etc/redwood-idle.conf "mode=N" overrides it at every wake.
  */
 static int
 auto_lock_seconds(void)
@@ -1523,7 +1525,7 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_s = 10, auto_s = 60, mode = 2;
+	int lock_s = 10, auto_s = 60, mode = 1;     /* (default 1 since 2026-11-13, the user's wish; was 2) */
 	uint64_t woke_at = 0;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
@@ -1566,6 +1568,20 @@ idle_thread(__unused void *argument)
 			was_on = true;
 			last_input_at = woke_at = now;
 			auto_s = auto_lock_seconds();
+			/* /var/jb/etc/redwood-idle.conf "mode=0|1|2" switches it without a rebuild, read at every wake */
+			{
+				FILE *f = fopen("/var/jb/etc/redwood-idle.conf", "r");
+				char b[32] = "";
+				if (f != NULL) {
+					size_t n = fread(b, 1, sizeof(b) - 1, f);
+					fclose(f);
+					b[n] = 0;
+					char *p = strstr(b, "mode=");
+					if (p != NULL && p[5] >= '0' && p[5] <= '2') {
+						mode = p[5] - '0';
+					}
+				}
+			}
 			continue;
 		}
 		/*
@@ -1573,6 +1589,9 @@ idle_thread(__unused void *argument)
 		 * used: woken and not touched since -> lock_s (a glance, a wake in the pocket); touched since -> Auto-Lock.
 		 */
 		locked = last_input_at <= woke_at;
+		if (mode == 0) {
+			continue;                       /* (redwood-idle.conf mode=0: off) */
+		}
 		if (!locked && mode < 2) {
 			continue;                       /* idle_lock=1: only a wake that nobody touched */
 		}
@@ -1754,6 +1773,8 @@ camera_front_by_default(void)
 	say("redwood: Camera: opens on the front camera in Photo after its reset time\n");
 }
 
+#include "statusbar_shift.h"
+
 __attribute__((constructor))
 static void
 redwood_init(void)
@@ -1824,5 +1845,6 @@ redwood_init(void)
 		redwood_location_fixes();
 	} else {
 		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
+		statusbar_shift_start();        /* the status bar's left side (src/statusbar_shift.h) */
 	}
 }

@@ -1,3 +1,42 @@
+## 2026-11-13 — cellular: data, VoLTE, texts in Messages (merge dfef1d3; verified on the phone)
+- **LTE data** for all apps: redwood-cellulard (utun + configd, Jio DNS/DNS64), kernel packet window (CP_IPC_PP_FLAG);
+  ~3 MB/s over LTE. Starts by itself at boot (~65 s to data). Watchdogs: registration (75 s), downlink (max 1 restart/15 min).
+- **Status bar**: signal bars, Jio, LTE glyph (when Wi-Fi is off), satellite glyph hidden (boot-arg cellsat=0 keeps it).
+- **Settings > Cellular**: live network/signal/SIM, working Cellular Data switch, VoLTE status (RedwoodCellular tweak).
+- **VoLTE (IMS) on Jio**: redwood-ims registers (ISIM AKA, IPsec ESP), re-registers every ~110 min, one instance.
+- **Texts in the Messages app**: send (Delivered on SMSC confirmation), receive with notification, long texts (parts),
+  reactions as their SMS text (RedwoodSMS tweak in imagent; image inject.conf has imagent).
+- Tested: end to end S20 -> own number -> SMSC -> back -> Messages; texts from another phone; sends from Messages;
+  cold boot. Kill switches: /var/root/cell-nodata, cell-noims, cell-noimsclient, cell-nocommcenter;
+  /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
+- Open: Control Center data button (an attempt was removed; notes in the cellular docs), hotspot (IPv6-only Jio needs 464XLAT),
+  MMS (pictures/groups), calls. A stalled first modem start after boot is restarted by the registration watchdog.
+- Details: work/hackios-cellular/docs/cellular-download-plan.md, sessions/A.md.
+
+### Cellular stability (2026-11-13 18:30, B) — `9f4c792`, `6a8ea5c`, `e005b29`, `d08bc68`
+- VoLTE now starts after every reboot: a stale `/var/tmp/redwood-cell/ims.pid` (reused pid) no longer looks like a
+  running client (it left the phone 34 min without VoLTE after the 18:00 boot).
+- Downlink ring: every used buffer goes back to the modem (fore follows done) -- suspected cause of the "downlink
+  silent" automatic modem restarts. A health line per minute in /var/tmp/redwood-cellular.log tracks it.
+- Incoming calls get "486 Busy Here" instead of a bare 200 OK (which would have connected callers to silence).
+- `echo restart > /var/tmp/redwood-cell/cmd` restarts the modem cleanly.
+- Live on the phone (/var/root binaries) and in prebuilt/userland for the next boot image.
+
+### Smoother phone, texts, sensors, status bar (2026-11-13 19:00, B) — `8d684ae`, `effab2b`, `9c742e6`, `573cce0`/`d1e21e4`, `99f1ff5`
+- Lag: aggregated (powerlog's daily archiver) was making one archive per day since 1970 (12,691 files, a core at 92 %).
+  Fixed on the phone (archive moved to /var/root/powerlog-backup-*); init now restores the saved time at boot and
+  rwlogd saves it every minute, so the clock never starts at 1970 again.
+- Texts over VoLTE: SIP + TCP keep-alive; the idle connection was dropped and texts got no answer. Sent and received
+  texts verified 18:51.
+- Sensor hub: light every 1 s while the display is on (auto-brightness needs steady readings); proximity in bursts,
+  2 s every 30 s (its IR LED flashed 5 times a second); both fully off with the display off; pressure 1 s, motion 60 ms; hub debug text only with shub_text=1 (was 482
+  log lines a minute). Kernel built in hackios-cellular (19:12).
+- Cellular service log quiet by default (was 38 KB/min); tools/bg-status.sh and docs/x1slte-background.md list every
+  background service and debug switch.
+- Status bar: the left side 3 pt nearer the edge (statusbar_shift.h, `lead=` in /var/jb/etc/redwood-statusbar.conf).
+- Island: built-in pill 18pro-small (75 x 28), presets in tools/island-presets.
+- All flashed and running on the phone (kernel 18:46, boot volume 18:57).
+
 ## 2026-11-12 — cellular IPC memory audit (built, not deployed)
 - Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
 - Root `cp.memory` audits existing XNU translations and cache attributes without
@@ -10,6 +49,58 @@
 Local branch `x1slte` only (not pushed). One entry per **verified** change: what it does, the commit(s), the boot
 args that control it (default in **bold**), and how it was tested on the phone. Newest first. When cutting a release,
 this file is the changelog; "Open" lists what a release must mention as known issues.
+
+### Status bar padding for real, island presets 1/2, pickup wake kept (2026-11-13 22:05, A) — `4eac8b5`, `88cadbd`, `06105a2`
+- Status bar: the phone uses UIKit's notch layout (_UIStatusBarVisualProvider_Split1125: the screen is the iPhone X's),
+  not the island one the earlier hooks targeted (they never ran). The time moves left by lead/2 through
+  +leadingCenteringOffset (-0.67 -> -10.67), and the right side, which UIKit derives from the left, is given that back
+  (+trailingCenteringOffset 1 -> 11); `trail=` adds right padding. User-verified ("padding is working").
+- Island: preset 1 `punch-21` (built-in default), preset 2 `punch-live18` (81 x 36.67 while a Live Activity runs; on
+  the phone now). Entry into the live size: the first animation (0.4 s UIKit, 04f9b79), the user's choice.
+- codex-motion's table-pickup wake (2a082cf, only on x1slte-cellular) cherry-picked into x1slte (06105a2): running.
+- Flashed 22:04; cellular, VoLTE and motion wake checked after the boot.
+
+### Punch-hole island, taller for Live Activities; status bar time at the left (2026-11-13 21:05, A) — `b383af6`
+- Island default is now the 21 x 21 pt punch hole, 6 pt from the top (preset `punch-21`). While any Live Activity /
+  system element is minimal, compact or expanded (SAUI layout modes 1-3), the island is `lh` tall (32 pt) and at
+  least that wide; back to the circle when they end. User-verified.
+- Status bar: laid out around a cutout of at least 125 pt (`cut=`), so the time sits where an iPhone has it instead
+  of centred in the wide space left of a small hole; `lead=` 20 by default. User-verified ("all worked").
+- Sleep (`idle_lock=1`) confirmed on the phone: the display turns off 10 s after an untouched wake on the lock screen.
+- Tunables, all in /var/jb/etc, applied by a respring: redwood-island.conf (`y= w= h= lh=`, `off`),
+  redwood-statusbar.conf (`lead= cut=`), redwood-idle.conf (`mode=0|1|2`).
+
+### Cellular restored, sleep = lock screen only, punch-hole island grows for Live Activities (2026-11-13 20:56, A)
+- **Cellular/VoLTE back:** the two flashes from this tree (20:30, 20:40) built the loader without
+  `CELLULAR_RESERVE_CP`, so the modem got "IPC map refused" (no LTE, no VoLTE, no texts). `x1slte.sh payload` now
+  builds it with the reservation by default. Verified after the 20:56 boot: LTE data up (Jio, 3 bars), IMS registered.
+- **Sleep:** `idle_lock` default 1 (was 2): the screen times out on the lock screen only (10 s after an untouched
+  wake); unlocked it stays on. `/var/jb/etc/redwood-idle.conf` `mode=0|1|2` switches it, read at every wake.
+- **Island:** B's geometry hooks (proposals/notch) in, so resizes reach every island getter (minimise animation);
+  while a Live Activity shows, the compact/minimal island is `lh` tall (default 32 pt; conf `lh=`), widths Apple's.
+  Conf keys are case-insensitive now. Presets `punch-21` (y=6 w=21 h=21, on the phone) and `favorite-pill`
+  (w=75 h=28 at Apple's top gap: the pill the user liked). Live Activity height: **not yet seen by the user**.
+- **Status bar:** `lead=` may now take the left area past the edge (the time is centred in it, so it moves by
+  about half of `lead`); phone at lead=24.
+- codex-motion's motion routing (CoreMotion fixes in backboardd and SpringBoard) kept in this root image.
+
+### Auto-brightness back in Settings, faster; perceptual slider (2026-11-13 20:45, A + codex-brightness)
+- **Auto-Brightness switch is back** (Settings > Accessibility > Display & Text Size): MobileGestalt's
+  `ambient-light-sensor` asks IOKit for a {PrimaryUsagePage 0xff00, PrimaryUsage 4} entry, which the virtual HID light
+  never had; the kernel now publishes `RedwoodAmbientLightSensor` once the hub finds the light sensor, and init rebuilds
+  the stale MobileGestalt cache once. User-verified: the switch shows and auto-brightness follows the room.
+- **Slider is perceptual** (`fb_bl_curve=1`, **on**; 0 = old linear): the slider's legacy value went to the panel as
+  value x 420 nits (50 % = 210, 100 % = 420: "50-100 % feels the same"). Now 2 + 418 s^2.2: 10 % 4.7 nits, 25 % 22,
+  50 % 93, 75 % 224, 100 % 420 (measured on the panel target). Auto-brightness's manual anchor uses the same curve.
+- **Faster auto-brightness:** light sensor every 250 ms (`shub_light_ms=`, was 1000); brighten after 1.5 s, dim after 3 s
+  (were 3 / 5), big changes (4x) after 0.5 / 1.5 s; wake hold 1 s (was 5); ramps 0.5 / 1.2 s (were 0.9 / 2). The manual
+  anchor holds only within 1.5x lux (was 2x or 20 lux: a level set at 30 lux kept a dark room at 167 nits).
+  Tests: tools/tests/brightness_policy.c. User: "feels much much better".
+- **Proximity on demand only:** no more 2 s bursts every 30 s; the IR emitter turns on only for backboardd's native
+  active/monitoring modes (calls), never for lock-screen passive/pocket checks, and both sensors are off with the
+  display off (`shub.prox` poke shows the state). Idle: light on, proximity off -- verified. Call-time proximity: **not
+  yet verified** (no calls yet).
+- Kernel 20:40 + boot volume flashed 20:42.
 
 ### Files, Finder and fresh installs (2026-11-13, B) — `8cd6c3b`, `dd577f2`, `dc1cea2`, `c7e2856`
 - **Why it broke:** after a restart LaunchServices no longer knew `org.hakios.LocalFilesHost`, the hidden app that carries
@@ -32,6 +123,20 @@ this file is the changelog; "Open" lists what a release must mention as known is
   connects after the restart, 1 file-sharing app. Rollback images: `proposals/finder-host/deploy/`.
 - Not done: grey backup/media tabs in Finder; `tools/run-visible.sh` did not start its command in this session (check before
   trusting build/NAME.log).
+
+## 2026-11-13 — Cellular: the S20's modem runs under iOS; signal and operator in the status bar (user-verified)
+- The S5123 modem (external, PCIe) is brought up by our own service at boot (`com.redwood.cellular`,
+  `/redwood/bin/redwood-cellulard`, built in branch `x1slte-cellular`): SPI BOOT, PCIe link, hypervisor
+  S2MPU grant, firmware download (TOC/MAIN/APM/VSS/NV/FIN) through the reserved shared memory, Samsung's
+  INIT_START/PHONE_START handshake, packet-processor info and SBD rings, then Samsung IPC.
+- The modem reads the SIM and camps on the network; the service writes its signal, operator and
+  registration to `/var/tmp/redwood-cell/state`, and SpringBoard's telephony provider answers from it
+  (`userland/src/cell_sb.h`): bars + "Jio" in the status bar and on the lock screen (user-verified).
+- Waits for the system to settle after boot (BOOT's byte transfer misses the modem ROM's window under load),
+  retries BOOT; a newer `/var/root/redwood-cellulard` runs instead of the image copy.
+- Off switches: `cellular=0` (modem stays off), `cellbar=0` (status bar hook off).
+- Not yet: mobile data, SMS, calls (calls on Jio need VoLTE/IMS). Commits 98e8abe, 75bbaf7, 6f00bc0, 72bda73
+  (x1slte) and 2b0f509..fdd886d (x1slte-cellular).
 
 ## 2026-11-12 — OpenGL ES games run (Angry Birds Space, Leo's Fortune); screen sleeps on its own (user-verified)
 - **OpenGL ES games draw.** iOS's OpenGL ES runs on Metal and gives Metal its shaders in Apple's private GLIR form,
