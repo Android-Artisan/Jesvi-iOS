@@ -68,6 +68,7 @@ Switch from the Mac with `tools/island-preset.sh NAME` (copies the preset to the
 | `circle-24` | `y=5 w=24 h=24` | 24 x 24, 5 pt | round, just over the camera hole (user: good) |
 | `circle` | `y=6 w=22 h=22` | 22 x 22, 6 pt | round, a bit smaller, same centre |
 | `punch-21` | `y=6 w=21 h=21` | 21 x 21, 6 pt | punch hole; **the built-in default** since 2026-11-13 21:05 (user: "all worked") |
+| `punch-live18` | `y=6 w=21 h=21 lw=81 lh=36.667` | 21 x 21 at rest; **81 x 36.67 while a Live Activity runs** (the `18pro` pill) | user's "preset 2" (2026-11-13 21:45: "little bigger during live activities") |
 
 On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/etc/redwood-island.conf; /var/jb/usr/bin/sbreload`.
 Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
@@ -84,6 +85,25 @@ Not as a /var/jb tweak: any library from /var/jb loaded into SpringBoard fails t
 SpringBoardUI's +load, SpringBoardUI throws "This process should not be linking or loading
 SpringBoardUI.framework" and SpringBoard crash-loops (timing-dependent). (userland/src/island_tweak.m
 and island-install.sh are that withdrawn version.)
+
+### The user's two punch-hole presets (2026-11-13)
+
+| | Preset | At rest | While a Live Activity / system element shows |
+| --- | --- | --- | --- |
+| **1** (built-in default) | `punch-21` | 21 x 21 pt round, 6 pt from the top | 32 pt tall, at least 32 wide (`lh` default) |
+| **2** | `punch-live18` | the same | 81 x 36.67 pt: the iPhone 18 Pro pill (`lw=81 lh=36.667`) |
+
+Switch: `tools/island-preset.sh punch-21` or `tools/island-preset.sh punch-live18` (a respring, no reboot).
+
+**Changing the active (Live Activity) size:** edit `lw=` (width) and `lh=` (height) in
+`/var/jb/etc/redwood-island.conf`, then respring. Examples: `lw=75 lh=28` (18pro-small), `lw=81 lh=30.67`
+(18pro-adapted), `lw=125 lh=36.667` (Apple's 14 Pro). Without `lw` the width is the resting width (at least `lh`);
+`lh=0` keeps activities as small as the pill. To keep a new combination, save it as a file in `tools/island-presets/`
+and on the phone in `/var/jb/etc/redwood-island.presets/`.
+
+**Entry animation** (2026-11-13 21:45): the switch to the live size is made on the main queue's next turn inside a
+0.4 s UIKit animation of the element's window (`island_note_mode`), so the island grows instead of jumping; the way
+back is iOS's own animation.
 
 ### Live Activity height (`lh`, 2026-11-13, user-verified)
 

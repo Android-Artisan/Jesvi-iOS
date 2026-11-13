@@ -17,6 +17,7 @@
  *     off                   Apple's pill
  * Log: /var/mobile/Library/Logs/redwood-island.log
  */
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
@@ -124,10 +125,41 @@ island_note_mode(id vc, long mode)
 	} else if (found >= 0) {
 		island_elements[found].vc = NULL;
 	}
-	island_active = false;
+	bool any = false;
 	for (int i = 0; i < ISLAND_TRACK; i++) {
-		island_active |= island_elements[i].vc != NULL;
+		any |= island_elements[i].vc != NULL;
 	}
+	if (any && !island_active && island_lh > 0) {
+		/*
+		 * Entering (2026-11-13, user: "can the size transition smoothly? the entry alone"): the size switched here
+		 * landed before iOS's own transition, so the island jumped to the live size. Switched on the main queue's next
+		 * turn instead, inside a 0.4 s UIKit animation that lays the element's window out again, so it grows. Leaving
+		 * is left as it was (iOS animates that one itself).
+		 */
+		id view = ((id (*)(id, SEL))objc_msgSend)(vc, sel_registerName("viewIfLoaded"));
+		id window = view ? ((id (*)(id, SEL))objc_msgSend)(view, sel_registerName("window")) : nil;
+		if (window != nil) {
+			CFRetain((CFTypeRef)window);
+			dispatch_async(dispatch_get_main_queue(), ^{
+				void (^grow)(void) = ^{
+					island_active = true;
+					((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("setNeedsLayout"));
+					((void (*)(id, SEL))objc_msgSend)(window, sel_registerName("layoutIfNeeded"));
+				};
+				((void (*)(id, SEL, double, id))objc_msgSend)((id)objc_getClass("UIView"),
+				    sel_registerName("animateWithDuration:animations:"), 0.4, (id)grow);
+				if (!island_active) {
+					island_active = true;            /* (no animation happened: at least the size) */
+				}
+				CFRelease((CFTypeRef)window);
+			});
+			any = false;                             /* stays resting until the block runs */
+			island_active = false;
+			goto said;
+		}
+	}
+	island_active = any;
+said:
 	if (told < 60 || was != island_active) {
 		told++;
 		island_say("island: %s %p layout mode %ld -> %s (size asked %lu times so far)", object_getClassName(vc),
