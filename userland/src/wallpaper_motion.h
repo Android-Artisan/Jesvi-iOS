@@ -1,68 +1,38 @@
-/* iOS 16's home wallpaper is a snapshot in PBUIPosterHomeViewController,
- * not the legacy PBUIWallpaperView. Attach UIKit motion effects only to that
- * snapshot's image view. Icons, lock-screen content, and other windows stay
- * under their native controllers. All calls below run on the main queue. */
+/* The iOS 16 home background is a poster composite (snapshot + blur/portals).
+ * Move that whole home-only view using normal public CoreMotion device motion.
+ * UIKit's gyro-only parallax path is not used. All UI work stays on main. */
 #ifndef REDWOOD_WALLPAPER_MOTION_H
 #define REDWOOD_WALLPAPER_MOTION_H
 #include <math.h>
-
+#include <mach/mach_time.h>
+#include "wallpaper_pose.h"
 struct rw_wall_affine { double a,b,c,d,tx,ty; };
+struct rw_wall_t3d { double m[16]; };
 struct rw_wall_rect { double x,y,w,h; };
 struct rw_wall_point { double x,y; };
+struct rw_wall_gravity { double x,y,z; };
 #define WM_SEND(type,obj,name) ((type(*)(id,SEL))objc_msgSend)((id)(obj),sel_registerName(name))
 #define WM_SEND1(type,obj,name,t,arg) ((type(*)(id,SEL,t))objc_msgSend)((id)(obj),sel_registerName(name),arg)
-
-/* Shared keys also prevent duplicates if this code is loaded as a tweak and
- * later included in the built-in SpringBoard bridge. */
-static const void *wallpaper_effect_key(void) { return (const void*)sel_registerName("redwoodWallpaperMotionEffect"); }
-static const void *wallpaper_transform_key(void) { return (const void*)sel_registerName("redwoodWallpaperMotionOriginalTransform"); }
-static const void *wallpaper_timer_key(void) { return (const void*)sel_registerName("redwoodWallpaperMotionTimerStarted"); }
-
-static bool
-wallpaper_kind(id object,const char *name)
+static const void *wallpaper_effect_key(void) { return (const void*)sel_registerName("redwoodHomePosterMotionV2"); }
+static const void *wallpaper_transform_key(void) { return (const void*)sel_registerName("redwoodHomePosterOriginalTransformV2"); }
+static const void *wallpaper_timer_key(void) { return (const void*)sel_registerName("redwoodHomePosterMotionTimerV2"); }
+static bool wallpaper_kind(id object,const char *name)
 {
     Class cls=objc_getClass(name);
     return object && cls && WM_SEND1(BOOL,object,"isKindOfClass:",Class,cls);
 }
-
-static id
-wallpaper_image_in(id view,unsigned depth)
-{
-    if(!view || depth>5 || WM_SEND(BOOL,view,"isHidden")) return nil;
-    if(wallpaper_kind(view,"UIImageView")) return view;
-    id children=WM_SEND(id,view,"subviews");
-    for(unsigned long i=0;i<WM_SEND(unsigned long,children,"count");i++) {
-        id image=wallpaper_image_in(WM_SEND1(id,children,"objectAtIndex:",unsigned long,i),depth+1);
-        if(image) return image;
-    }
-    return nil;
-}
-
-static id
-wallpaper_home_image(id view,unsigned depth)
+static id wallpaper_home_view(id view,unsigned depth)
 {
     if(!view || depth>18) return nil;
-    if(wallpaper_kind(WM_SEND(id,view,"nextResponder"),"PBUIPosterHomeViewController")) {
-        id children=WM_SEND(id,view,"subviews");
-        for(unsigned long i=0;i<WM_SEND(unsigned long,children,"count");i++) {
-            id child=WM_SEND1(id,children,"objectAtIndex:",unsigned long,i);
-            if(wallpaper_kind(child,"PBUISnapshotReplicaView")) {
-                id image=wallpaper_image_in(child,0);
-                if(image) return image;
-            }
-        }
-        return nil;
-    }
+    if(wallpaper_kind(WM_SEND(id,view,"nextResponder"),"PBUIPosterHomeViewController")) return view;
     id children=WM_SEND(id,view,"subviews");
     for(unsigned long i=0;i<WM_SEND(unsigned long,children,"count");i++) {
-        id image=wallpaper_home_image(WM_SEND1(id,children,"objectAtIndex:",unsigned long,i),depth+1);
-        if(image) return image;
+        id found=wallpaper_home_view(WM_SEND1(id,children,"objectAtIndex:",unsigned long,i),depth+1);
+        if(found) return found;
     }
     return nil;
 }
-
-static id
-wallpaper_current_image(void)
+static id wallpaper_current_view(void)
 {
     id app=WM_SEND(id,objc_getClass("UIApplication"),"sharedApplication");
     id windows=WM_SEND(id,app,"windows");
@@ -70,111 +40,164 @@ wallpaper_current_image(void)
         id window=WM_SEND1(id,windows,"objectAtIndex:",unsigned long,i);
         if(!wallpaper_kind(window,"_SBWallpaperSecureWindow")) continue;
         id controller=WM_SEND(id,window,"rootViewController");
-        id image=wallpaper_home_image(WM_SEND(id,controller,"view"),0);
-        if(image) return image;
+        id found=wallpaper_home_view(WM_SEND(id,controller,"view"),0);
+        if(found) return found;
     }
     return nil;
 }
-
-static bool
-wallpaper_motion_enabled(void)
+static bool wallpaper_motion_enabled(void)
 {
     bool (*reduce_motion)(void)=dlsym(RTLD_DEFAULT,"UIAccessibilityIsReduceMotionEnabled");
     if(!reduce_motion || reduce_motion()) return false;
     id process=WM_SEND(id,objc_getClass("NSProcessInfo"),"processInfo");
     if(WM_SEND(BOOL,process,"isLowPowerModeEnabled")) return false;
-    CFTypeRef value=CFPreferencesCopyAppValue(CFSTR("WallpaperMotionEnabled"),CFSTR("com.redwood.motion"));
+    CFTypeRef value=CFPreferencesCopyAppValue(CFSTR("HomePosterMotionEnabled"),CFSTR("com.redwood.motion"));
     bool enabled=true;
     if(value) {
         if(CFGetTypeID(value)==CFBooleanGetTypeID()) enabled=CFBooleanGetValue(value);
         else if(CFGetTypeID(value)==CFNumberGetTypeID()) {
-            int n=0; enabled=CFNumberGetValue(value,kCFNumberIntType,&n) && n!=0;
+            int n=0;enabled=CFNumberGetValue(value,kCFNumberIntType,&n)&&n!=0;
         } else enabled=false;
         CFRelease(value);
     }
     return enabled;
 }
-
-static void
-wallpaper_motion_apply(id image,bool enabled)
+/* Live tunables (com.redwood.motion, re-read every second): HomePosterMotionAmplitude (pt, 24),
+ * HomePosterMotionRange (degrees of tilt for full travel, 20), HomePosterMotionRecenter (s, 3). */
+static double wallpaper_pref(CFStringRef key,double fallback,double lo,double hi)
 {
-    if(!image) return;
-    id group=objc_getAssociatedObject(image,wallpaper_effect_key());
+    CFTypeRef v=CFPreferencesCopyAppValue(key,CFSTR("com.redwood.motion"));
+    double d=fallback;
+    if(v) { if(CFGetTypeID(v)==CFNumberGetTypeID()) CFNumberGetValue(v,kCFNumberDoubleType,&d); CFRelease(v); }
+    return isfinite(d)?fmax(lo,fmin(hi,d)):fallback;
+}
+static double wallpaper_scale=1.15;
+static bool wallpaper_original(id view,struct rw_wall_affine *original)
+{
+    CFDataRef saved=(CFDataRef)objc_getAssociatedObject(view,wallpaper_transform_key());
+    if(!saved || CFDataGetLength(saved)!=sizeof(*original)) return false;
+    CFDataGetBytes(saved,CFRangeMake(0,sizeof(*original)),(UInt8*)original);
+    return true;
+}
+static void wallpaper_motion_apply(id view,bool enabled)
+{
+    if(!view) return;
+    bool attached=objc_getAssociatedObject(view,wallpaper_effect_key())!=nil;
     if(!enabled) {
-        if(!group) return;
-        WM_SEND1(void,image,"removeMotionEffect:",id,group);
-        CFDataRef saved=(CFDataRef)objc_getAssociatedObject(image,wallpaper_transform_key());
-        if(saved && CFDataGetLength(saved)==sizeof(struct rw_wall_affine)) {
-            struct rw_wall_affine original;
-            CFDataGetBytes(saved,CFRangeMake(0,sizeof(original)),(UInt8*)&original);
-            WM_SEND1(void,image,"setTransform:",struct rw_wall_affine,original);
-        }
-        objc_setAssociatedObject(image,wallpaper_effect_key(),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(image,wallpaper_transform_key(),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        fprintf(stderr,"redwood: wallpaper motion: suspended; original image transform restored\n");
+        if(!attached) return;
+        struct rw_wall_affine original;
+        if(wallpaper_original(view,&original)) WM_SEND1(void,view,"setTransform:",struct rw_wall_affine,original);
+        struct rw_wall_t3d identity={{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}};
+        WM_SEND1(void,WM_SEND(id,view,"layer"),"setSublayerTransform:",struct rw_wall_t3d,identity);
+        objc_setAssociatedObject(view,wallpaper_effect_key(),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(view,wallpaper_transform_key(),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
-    if(group) return;
-    Class effect_class=objc_getClass("UIInterpolatingMotionEffect"),group_class=objc_getClass("UIMotionEffectGroup");
-    if(!effect_class || !group_class) return;
-    struct rw_wall_rect bounds=WM_SEND(struct rw_wall_rect,image,"bounds");
-    if(bounds.w<40 || bounds.h<40) return;
-    double amplitude=fmin(9,.02*fmin(bounds.w,bounds.h));
-    CFNumberRef low=CFNumberCreate(NULL,kCFNumberDoubleType,&(double){-amplitude});
-    CFNumberRef high=CFNumberCreate(NULL,kCFNumberDoubleType,&amplitude);
-    id effects[2]={nil,nil};
-    for(long axis=0;axis<2;axis++) {
-        id allocated=WM_SEND(id,effect_class,"alloc");
-        effects[axis]=((id(*)(id,SEL,id,long))objc_msgSend)(allocated,
-            sel_registerName("initWithKeyPath:type:"),(id)(axis?CFSTR("center.y"):CFSTR("center.x")),axis);
-        WM_SEND1(void,effects[axis],"setMinimumRelativeValue:",id,(id)low);
-        WM_SEND1(void,effects[axis],"setMaximumRelativeValue:",id,(id)high);
-    }
-    group=WM_SEND(id,WM_SEND(id,group_class,"alloc"),"init");
-    if(group && effects[0] && effects[1]) {
-        CFArrayRef array=CFArrayCreate(NULL,(const void**)effects,2,&kCFTypeArrayCallBacks);
-        WM_SEND1(void,group,"setMotionEffects:",id,(id)array);
-        CFRelease(array);
-        struct rw_wall_affine original=WM_SEND(struct rw_wall_affine,image,"transform"),overscan=original;
-        CFDataRef saved=CFDataCreate(NULL,(const UInt8*)&original,sizeof(original));
-        objc_setAssociatedObject(image,wallpaper_transform_key(),(id)saved,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        CFRelease(saved);
-        /* 3% margin on each edge exceeds the <=2% translation range. */
-        overscan.a*=1.06;overscan.b*=1.06;overscan.c*=1.06;overscan.d*=1.06;
-        WM_SEND1(void,image,"setTransform:",struct rw_wall_affine,overscan);
-        WM_SEND1(void,image,"addMotionEffect:",id,group);
-        objc_setAssociatedObject(image,wallpaper_effect_key(),group,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        fprintf(stderr,"redwood: wallpaper motion: attached to home %s, +/-%.2f pt\n",object_getClassName(image),amplitude);
-    }
-    for(unsigned i=0;i<2;i++) WM_SEND(void,effects[i],"release");
-    WM_SEND(void,group,"release");
-    CFRelease(low);CFRelease(high);
+    if(attached) return;
+    struct rw_wall_affine original=WM_SEND(struct rw_wall_affine,view,"transform");
+    CFDataRef saved=CFDataCreate(NULL,(const UInt8*)&original,sizeof(original));
+    objc_setAssociatedObject(view,wallpaper_transform_key(),(id)saved,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CFRelease(saved);
+    objc_setAssociatedObject(view,wallpaper_effect_key(),(id)kCFBooleanTrue,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
-
-static void
-wallpaper_motion_start(void)
+/* Move the layer's sublayers, not the view: a view transform makes PosterBoard's
+ * PBUIEffectTrackingReplicaView lay itself out against it and cancel the movement. */
+static void wallpaper_motion_translate(id view,double x,double y)
+{
+    if(!view) return;
+    struct rw_wall_t3d t={{wallpaper_scale,0,0,0, 0,wallpaper_scale,0,0, 0,0,1,0, x,y,0,1}};
+    id layer=WM_SEND(id,view,"layer");
+    WM_SEND1(void,layer,"setSublayerTransform:",struct rw_wall_t3d,t);
+}
+static bool wallpaper_visible(id view)
+{
+    if(!view || !WM_SEND(id,view,"window")) return false;
+    for(id v=view;v;v=WM_SEND(id,v,"superview"))
+        if(WM_SEND(BOOL,v,"isHidden") || WM_SEND(double,v,"alpha")<.01) return false;
+    return true;
+}
+static void wallpaper_motion_start(void)
 {
     static dispatch_source_t timer;
-    static int token;
+    static id manager,current;
+    static bool active,allowed;
+    static double amplitude,x,y,last_clock,last_sample,scan_at;
+    static unsigned samples;
+    static struct rw_wall_pose pose;
+    static int display_token=-1,status_token;
+    static mach_timebase_info_data_t tb;
     Class app_class=objc_getClass("UIApplication");
-    if(timer || !app_class || objc_getAssociatedObject((id)app_class,wallpaper_timer_key()) ||
-        access("/dev/redwood-sensors",F_OK)!=0) return;
+    if(timer || !app_class || objc_getAssociatedObject((id)app_class,wallpaper_timer_key()) || access("/dev/redwood-sensors",F_OK)) return;
     char args[1024]={0};size_t n=sizeof(args)-1;
     if(!sysctlbyname("kern.bootargs",args,&n,NULL,0) && strstr(args,"sens_wallpaper_motion=0")) return;
+    /* Retire the earlier experimental image-only effect if an older built-in
+     * bridge still runs it. Preserve an explicit user disable on migration. */
+    CFTypeRef old=CFPreferencesCopyAppValue(CFSTR("WallpaperMotionEnabled"),CFSTR("com.redwood.motion"));
+    CFTypeRef setting=CFPreferencesCopyAppValue(CFSTR("HomePosterMotionEnabled"),CFSTR("com.redwood.motion"));
+    if(!setting) CFPreferencesSetAppValue(CFSTR("HomePosterMotionEnabled"),old?old:kCFBooleanTrue,CFSTR("com.redwood.motion"));
+    if(old) CFRelease(old);if(setting)CFRelease(setting);
+    CFPreferencesSetAppValue(CFSTR("WallpaperMotionEnabled"),kCFBooleanFalse,CFSTR("com.redwood.motion"));
+    CFPreferencesAppSynchronize(CFSTR("com.redwood.motion"));
+    dlopen("/System/Library/Frameworks/CoreMotion.framework/CoreMotion",RTLD_NOW|RTLD_LOCAL);
+    Class cls=objc_getClass("CMMotionManager");
+    if(!cls) return;
+    manager=WM_SEND(id,WM_SEND(id,cls,"alloc"),"init");
+    WM_SEND1(void,manager,"setDeviceMotionUpdateInterval:",double,.05);
+    if(notify_register_check("com.apple.iokit.hid.displayStatus",&display_token)!=NOTIFY_STATUS_OK) return;
+    mach_timebase_info(&tb);
     timer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());
-    dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),2*NSEC_PER_SEC,250*NSEC_PER_MSEC);
+    dispatch_source_set_timer(timer,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),50*NSEC_PER_MSEC,5*NSEC_PER_MSEC);
     dispatch_source_set_event_handler(timer,^{
-        wallpaper_motion_apply(wallpaper_current_image(),wallpaper_motion_enabled());
+        double now=mach_absolute_time()*(double)tb.numer/tb.denom/1e9;
+        if(now-scan_at>1) {
+            scan_at=now;allowed=wallpaper_motion_enabled();
+            CFPreferencesAppSynchronize(CFSTR("com.redwood.motion"));
+            amplitude=wallpaper_pref(CFSTR("HomePosterMotionAmplitude"),24,0,60);
+            pose.range=wallpaper_pref(CFSTR("HomePosterMotionRange"),20,3,60)*M_PI/180;
+            pose.tau=wallpaper_pref(CFSTR("HomePosterMotionRecenter"),3,0,60);
+            id found=wallpaper_current_view();
+            if(found!=current) {
+                wallpaper_motion_apply(current,false);WM_SEND(void,current,"release");
+                current=WM_SEND(id,found,"retain");pose.ready=false;x=y=0;
+                if(current) fprintf(stderr,"redwood: wallpaper motion v2: found home poster composite %p\n",current);
+            }
+        }
+        uint64_t display=0;notify_get_state(display_token,&display);
+        bool wanted=allowed && display!=0 && wallpaper_visible(current);
+        if(wanted!=active) {
+            active=wanted;pose.ready=false;x=y=0;last_sample=0;
+            if(active) WM_SEND1(void,manager,"startDeviceMotionUpdatesUsingReferenceFrame:",unsigned long,1);
+            else {WM_SEND(void,manager,"stopDeviceMotionUpdates");wallpaper_motion_apply(current,false);}
+            fprintf(stderr,"redwood: wallpaper motion v2: fused updates %s\n",active?"on":"off");
+        }
+        double dt=last_clock?fmin(.25,fmax(0,now-last_clock)):.05;last_clock=now;
+        if(!active) return;
+        id motion=WM_SEND(id,manager,"deviceMotion");
+        if(!motion) return;
+        double timestamp=WM_SEND(double,motion,"timestamp");
+        if(timestamp!=last_sample) {
+            struct rw_wall_gravity g=WM_SEND(struct rw_wall_gravity,motion,"gravity");
+            struct rw_wall_rect b=WM_SEND(struct rw_wall_rect,current,"bounds");
+            /* overscan so the moved picture never shows an edge */
+            wallpaper_scale=b.w>0?1+2.2*amplitude/fmin(b.w,b.h):1.15;
+            if(rw_wall_pose_update(&pose,timestamp,g.x,g.y,g.z,amplitude)) samples++;
+            last_sample=timestamp;
+        }
+        if(!pose.ready) return;
+        double ease=1-exp(-dt/.12),nx=x+(pose.x-x)*ease,ny=y+(pose.y-y)*ease;
+        if(fabs(nx-x)+fabs(ny-y)<.02 && objc_getAssociatedObject(current,wallpaper_effect_key())) return;
+        x=nx;y=ny;
+        wallpaper_motion_apply(current,true);wallpaper_motion_translate(current,x,y);
     });
     dispatch_resume(timer);
     objc_setAssociatedObject((id)app_class,wallpaper_timer_key(),(id)kCFBooleanTrue,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    notify_register_dispatch("com.redwood.wallpaper.motion.status",&token,dispatch_get_main_queue(),^(__unused int t){
-        id image=wallpaper_current_image();
-        id layer=image?WM_SEND(id,image,"layer"):nil;
+    notify_register_dispatch("com.redwood.wallpaper.motion.status",&status_token,dispatch_get_main_queue(),^(__unused int t){
+        id layer=current?WM_SEND(id,current,"layer"):nil;
         id presentation=layer?WM_SEND(id,layer,"presentationLayer"):nil;
         struct rw_wall_point point=presentation?WM_SEND(struct rw_wall_point,presentation,"position"):(struct rw_wall_point){0};
-        fprintf(stderr,"redwood: wallpaper motion: image=%p effect=%p enabled=%d presentation=(%.2f,%.2f)\n",
-            image,image?objc_getAssociatedObject(image,wallpaper_effect_key()):nil,wallpaper_motion_enabled(),point.x,point.y);
+        struct rw_wall_affine transform=presentation?WM_SEND(struct rw_wall_affine,presentation,"affineTransform"):(struct rw_wall_affine){0};
+        struct rw_wall_t3d sub=presentation?WM_SEND(struct rw_wall_t3d,presentation,"sublayerTransform"):(struct rw_wall_t3d){{0}};transform.tx=sub.m[12];transform.ty=sub.m[13];
+        fprintf(stderr,"redwood: wallpaper motion v2: view=%p active=%d samples=%u offset=(%.2f,%.2f) presentation=(%.2f,%.2f) matrix_translation=(%.2f,%.2f)\n",current,active,samples,x,y,point.x,point.y,transform.tx,transform.ty);
     });
 }
 #undef WM_SEND
