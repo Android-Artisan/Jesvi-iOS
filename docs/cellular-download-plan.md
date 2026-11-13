@@ -659,3 +659,28 @@ Next: the layouts of 16/02 SetCodec (_stSAE_CodecInfo, 0x41), 16/06 SetPdnIp (0x
 redwood-cellulard (it already frames IPC: live-modem.c ipc()). Audio: CPVEInterface::SetAudioPath is a stub (8 bytes):
 the voice route CP <-> codec is the audio HAL's (RIL sound path IPC + ABOX), still to find. Test call still needed
 (/var/root/ims-invite-*.txt for Jio's SDP).
+
+### VoLTE calls: the full path, cross-checked (A, 2026-11-13 22:00; no phone changes)
+Sources: stock G980FXXSNHYB7 libsec-ims.so / libsec-ril.so / vendor mixer_paths.xml (private extracts under
+work/hackios-cellular/out/cellular/private-rom/{voice,audio}); Samsung's Exynos audio proxy (open source, carried by
+the AOSP Exynos 990 tree sneedxynos/android_device_samsung_exynos990-common hardware/audio/proxy, copy in
+git/_ref-exynos990-audio); ExtremeXT exynos990 kernel sound/soc/samsung/abox/abox_vss.c, drivers/soc/samsung/cpif/
+shm_ipc.c; libsamsung-ipc (Replicant) for IPC group 0x09. AOSP ROMs (Lineage exynos9820-common, the x1slte trees)
+run Samsung's own vendor RIL + IMS + audio HAL blobs: they show the wiring, not a re-implementation.
+
+1. SIP (redwood-ims): INVITE -> 100/180/183 (+SDP AMR-WB, preconditions, 100rel) -> PRACK/UPDATE -> 200 -> ACK; BYE.
+   Needs Jio's real INVITE: user calls the S20 (486 answer saves /var/root/ims-invite-*.txt).
+2. Media in the CP (CPVE), IMS IPC group 0x16 through redwood-cellulard's ipc(): 16/06 SetPdnIp (our IMS address),
+   16/01 SetChannel (IPs + RTP/RTCP ports, layout above), 16/02 SetCodec (_stSAE_CodecInfo, 0x41), 16/03 SetRtpMedia
+   (start/stop), 16/09 EngineSet; 16/04 DTMF. Order: CPVEInterface::CreateChannel / StartChannel (to read next).
+3. The CP's audio route: IPC group 0x09 (SND): AUDIO_PATH_CTRL, CLOCK_CTRL, SPKR_VOLUME_CTRL, MIC_MUTE_CTRL
+   (libsec-ril IpcTxSndSetAudioPath; numbering per libsamsung-ipc, to confirm in libsec-ril).
+4. ABOX (redwood_audio): voice runs in Calliope's VSS between the CP and ABOX through the CP's shared memory region
+   SHMEM_VSS (cpif shm_ipc.c; in the CP rmem 0xf0000000+8M / 0xd0000000+64M per the CP TOC; abox-vss magic-offset
+   0x700000 zeroed at probe). At call start: abox_set_system_state(SYSTEM_CALL, true) to the firmware
+   (abox_vss_notify_call), the mixer path "incall-handset"/"incall-speaker" (ABOX Path Change ID 12, media path,
+   route-vssrxif-vssbridge-rxse-to-srccom4, route-vpcmoutdai4-to-srccom4_b; mic: route-seriallif-cpcall-mic into the
+   VSS adapter), and the proxy's virtual PCMs 104 (VRX playback) / 113 (VTX capture) opened.
+5. iOS: incoming call UI (CallKit-like path or SpringBoard banner + answer/end), then outgoing dialling.
+Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RTP running (check RTP stats event
+16/05); (c) ABOX VSS route -> hear the caller; (d) mic; (e) UI.
