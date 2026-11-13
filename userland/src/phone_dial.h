@@ -90,3 +90,42 @@ phone_system_hook(void)
 	if (!phone_orig_system) phone_orig_system = method_setImplementation(a, (IMP)phone_system);
 	if (!phone_orig_tel) phone_orig_tel = method_setImplementation(b, (IMP)phone_tel);
 }
+
+/*
+ * The call screen's Speaker button (A, 2026-11-14). The audio plug-in has no receiver port that iOS knows, so the
+ * button has nothing to switch between; in InCallService a tap on it (TURouteController pickRoute:) toggles our route
+ * instead: notify com.redwood.call.speaker / .earpiece, which redwood-ims follows (kern.redwood.snd_route), and the
+ * button shows it (TURoute isSpeaker). Every call starts on the earpiece (redwood-ims posts com.redwood.call.started).
+ */
+#include <notify.h>
+static int phone_speaker;
+static IMP phone_orig_pick, phone_orig_pick_id, phone_orig_is_speaker;
+
+static void
+phone_toggle_speaker(void)
+{
+	phone_speaker = !phone_speaker;
+	notify_post(phone_speaker ? "com.redwood.call.speaker" : "com.redwood.call.earpiece");
+}
+static void phone_pick(id self, SEL _cmd, id route) { phone_toggle_speaker(); ((void (*)(id, SEL, id))phone_orig_pick)(self, _cmd, route); }
+static void phone_pick_id(id self, SEL _cmd, id ident) { phone_toggle_speaker(); ((void (*)(id, SEL, id))phone_orig_pick_id)(self, _cmd, ident); }
+static BOOL phone_is_speaker(id self, SEL _cmd) { return ((BOOL (*)(id, SEL))phone_orig_is_speaker)(self, _cmd) ? (BOOL)phone_speaker : NO; }
+
+static void
+phone_speaker_hook(void)
+{
+	static int tries;
+	Class rc = objc_getClass("TURouteController"), r = objc_getClass("TURoute");
+	Method a = rc ? class_getInstanceMethod(rc, sel_registerName("pickRoute:")) : NULL;
+	Method b = rc ? class_getInstanceMethod(rc, sel_registerName("pickRouteWithUniqueIdentifier:")) : NULL;
+	Method c = r ? class_getInstanceMethod(r, sel_registerName("isSpeaker")) : NULL;
+	if (!a || !b || !c) {
+		if (tries++ < 20) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ phone_speaker_hook(); });
+		return;
+	}
+	if (!phone_orig_pick) phone_orig_pick = method_setImplementation(a, (IMP)phone_pick);
+	if (!phone_orig_pick_id) phone_orig_pick_id = method_setImplementation(b, (IMP)phone_pick_id);
+	if (!phone_orig_is_speaker) phone_orig_is_speaker = method_setImplementation(c, (IMP)phone_is_speaker);
+	int t;
+	notify_register_dispatch("com.redwood.call.started", &t, dispatch_get_main_queue(), ^(int tok) { (void)tok; phone_speaker = 0; });
+}

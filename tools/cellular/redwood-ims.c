@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1066,6 +1067,13 @@ static void call_cancel(int sock)
 static void
 call_ui_poll(void)
 {
+    /* the call screen's Speaker button (libredwood in InCallService posts these) */
+    static int tsp=-1,tea=-1;
+    if (tsp<0) {notify_register_check("com.redwood.call.speaker",&tsp);notify_register_check("com.redwood.call.earpiece",&tea);}
+    int ch=0;
+    if (tsp>=0 && notify_check(tsp,&ch)==0 && ch && call.state) {med.route=0;printf("%s call: screen -> speaker\n",ts_now());}
+    ch=0;
+    if (tea>=0 && notify_check(tea,&ch)==0 && ch && call.state) {med.route=1;printf("%s call: screen -> earpiece\n",ts_now());}
     DIR *d=opendir(CALL_UI_DIR);if (!d) return;
     struct dirent *e;
     while ((e=readdir(d))) {

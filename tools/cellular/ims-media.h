@@ -293,6 +293,7 @@ static int media_start(int sock, const char *remote, unsigned rport)
         sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
         sysctlbyname("kern.redwood.snd_route", NULL, NULL, &one, sizeof(one));
     }
+    notify_post("com.redwood.call.started");               /* the call screen's Speaker button back to off */
     fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0; med.route = 1;
     fir_init();
     med.run = 1;

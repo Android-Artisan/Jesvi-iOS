@@ -940,7 +940,7 @@ start_io(__unused AudioServerPlugInDriverRef driver, AudioObjectID object, __unu
 			written = refused = 0;
 			say("redwood: audio: playing\n");
 		}
-		if (d->object == OBJECT_RECEIVER || d->object == OBJECT_SPEAKER) {
+		if ((d->object == OBJECT_RECEIVER || d->object == OBJECT_SPEAKER) && !in_call()) {  /* (a call keeps its own route) */
 			int route = d->object == OBJECT_RECEIVER;
 			(void)sysctlbyname("kern.redwood.snd_route", NULL, NULL, &route, sizeof(route));
 			say("redwood: audio: route %s\n", route ? "earpiece" : "speakers");

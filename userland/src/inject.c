@@ -1796,6 +1796,7 @@ redwood_init(void)
 	}
 	if (strcmp(name, "InCallService") == 0) {
 		phone_system_hook();
+		phone_speaker_hook();
 	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
