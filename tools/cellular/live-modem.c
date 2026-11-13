@@ -194,6 +194,7 @@ static int ipc_read(uint32_t off,uint8_t *d,uint32_t n)
     return 0;
 }
 /* init_legacy_link + link_start_normal_boot: indices zero, access 1, magic BOOT */
+static int pktproc_info(void);
 static int ipc_boot_init(void)
 {
     if (ipc_op(CP_IPC_MAP,0,NULL,0,NULL)) {fprintf(stderr,"cellular live DL: IPC map refused\n");return -1;}
@@ -205,6 +206,7 @@ static int ipc_boot_init(void)
     }
     for (uint32_t o=0;o<0x28;o+=4) if (ipc_store(o,0)) return -1;
     for (uint32_t o=0x400;o<0x410;o+=4) if (ipc_store(o,0)) return -1;
+    if (pktproc_info()) return -1;   /* as pktproc_create() at probe: before the CP boots */
     if (ipc_store(0x408,2u<<14)) return -1;     /* init_control_messages: ap2cp_united_status ds_det=2 (dual SIM) */
     if (ipc_store(4,1) || ipc_store(0,0x424f4f54u)) return -1;
     uint32_t m=0,a=0;if (ipc_load(0,&m) || ipc_load(4,&a) || m!=0x424f4f54u || a!=1) return -1;
@@ -351,6 +353,7 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
     return doorbell(0);
 }
 static int stay_mode;
+static int dm_on;
 static void cell_ipc(const uint8_t *m,unsigned len);
 static void pdn_ipconfig(const uint8_t *d,unsigned n);
 static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
@@ -450,6 +453,16 @@ static void sbd_dump_dl(void)
                     big[8],big[9],big[10],big[6],big[7],show-11);
                 for (unsigned k=11;k<show;k++) printf(" %02x",big[k]);
                 printf("  |");for (unsigned k=11;k<show;k++) putchar(big[k]>=32&&big[k]<127?big[k]:'.');printf("|\n");
+            } else if (show && sbd_chs[id].ch==28 && stay_mode) {
+                if (dm_on) {          /* printable runs of 6+ characters */
+                    char run[256];unsigned rl=0;
+                    for (unsigned k=0;k<=show;k++) {
+                        int c=k<show?big[k]:0;
+                        if (c>=32 && c<127 && rl<sizeof(run)-1) run[rl++]=(char)c;
+                        else {if (rl>=6) {run[rl]=0;printf("cellular: CP dm: %s\n",run);}rl=0;}
+                    }
+                    fflush(stdout);
+                }
             } else if (show && (!stay_mode || sbd_chs[id].ch!=28)) {     /* (dm0 = the modem's own debug log) */
                 printf("cellular live DL: SBD RX ch %u (%u bytes):",sbd_chs[id].ch,show);for (unsigned k=0;k<show && k<48;k++) printf(" %02x",big[k]);printf("\n");
             }
@@ -522,7 +535,7 @@ static void cell_ipc(const uint8_t *m,unsigned len)
 /* ---- packets (A, 2026-11-13): data call cid 2 = rmnet1 = PS ch 11. DL through the packet processor's
  * descriptors (rear_ptr written by the CP), UL as raw IP in the multipdp SBD ring (id 9), buff_len|ch<<16 ---- */
 static struct {int up;uint8_t ip6[16],dns6[16];unsigned mtu;} pdn;
-static unsigned ul_ch=11,ul_ring=9;
+static unsigned ul_ch=11,ul_ring=8;     /* QoS high-priority multipdp ring carries UL (ring 9 is consumed but not sent) */
 static unsigned pp_done;
 static uint64_t pp_rx,pp_tx;
 static int poke_read(uint32_t pa,uint32_t *w,unsigned n)
@@ -614,6 +627,8 @@ static void ctl_line(char *l)
         memset(d,0,sizeof(d));d[0]=1;d[1]=2;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
         memset(d,0,sizeof(d));d[0]=1;d[1]=2;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
         printf("cellular: data call requested on APN %s\n",apn);fflush(stdout);
+    } else if (!strncmp(l,"dm",2)) {
+        dm_on=!dm_on;printf("cellular: modem debug strings %s\n",dm_on?"on":"off");fflush(stdout);
     } else if (!strncmp(l,"pch ",4)) {
         unsigned c2=0,r2=ul_ring;sscanf(l+4,"%u %u",&c2,&r2);if (c2) ul_ch=c2;if (r2==8||r2==9) ul_ring=r2;
         printf("cellular: UL channel %u ring %u\n",ul_ch,ul_ring);fflush(stdout);

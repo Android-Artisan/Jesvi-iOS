@@ -430,3 +430,10 @@ MASK_SEND_DATA. Then a utun interface in iOS with the IPv6 address, default rout
   the CP's own data counters / 0d message after UL), (2) DL needs IO coherency (HSI2 IOCC sysreg as the
   Samsung PCIe driver sets for use_hw_iocc) or the RINGEND/HEAD layout, (3) pktproc needs an MSI/doorbell
   "AP ready" kick (s51xx doorbell for pktproc), (4) DL delivered through a different queue index.
+
+### MILESTONE Nov13 ~11:00: LTE packets both ways (ping6 to Jio's DNS answered)
+UL on the multipdp QoS high-priority SBD ring (id 8, QoS ch 10) with buff_len = len | (11 << 16) (rmnet1 =
+cid 2); ring 9 is consumed by the CP but nothing goes out. DL arrives through the packet processor (rear_ptr
+advanced, descriptor len 64, ch 11, status e1, data in our buffer). Also: pktproc info is now written before
+the CP boots (as pktproc_create at probe) and again at INIT_START. Service FIFO: data, ping6, rs, pch, dm, stat.
+Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways; then make `data` automatic.
