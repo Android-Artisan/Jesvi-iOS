@@ -221,13 +221,83 @@ cell_notify(void)
 	    cell_state.bars, cell_state.max, cell_state.op, n);
 }
 
+/*
+ * Control Center's cellular data button (ConnectivityModule, loaded when Control Center first opens): iOS hides it
+ * because MobileGestalt says cellular-data false (no Apple baseband). Its own checks are answered here instead:
+ * -_isCellularCapable YES, -_isCellularDataEnabled from the modem service's data_on. The module's cellular methods are
+ * listed in the console once (to wire the tap next). Boot-arg cellcc=0: left alone.
+ */
+static BOOL cell_cc_yes(id self, SEL _cmd) { (void)self; (void)_cmd; return YES; }
+static BOOL cell_cc_data_on(id self, SEL _cmd)
+{
+	(void)self;
+	(void)_cmd;
+	FILE *f = fopen("/var/tmp/redwood-cell/state", "r");
+	char key[32], value[64];
+	int on = 0;
+
+	if (f != NULL) {
+		while (fscanf(f, "%31s %63s", key, value) == 2) {
+			if (!strcmp(key, "data_on")) on = atoi(value);
+		}
+		fclose(f);
+	}
+	return on ? YES : NO;
+}
+static void
+cell_cc_scan(void)
+{
+	static int done, off = -1;
+	unsigned n = 0, hooked = 0;
+
+	if (done) return;
+	if (off < 0) {
+		char args[1024];
+		size_t size = sizeof(args) - 1;
+
+		off = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
+		    (args[size < sizeof(args) ? size : sizeof(args) - 1] = 0, strstr(args, "cellcc=0") != NULL);
+	}
+	if (off || objc_getClass("CCUIConnectivityCellularDataViewController") == Nil) return;   /* module not loaded yet */
+	Class *all = objc_copyClassList(&n);
+	for (unsigned i = 0; i < n; i++) {
+		const char *cn = class_getName(all[i]);
+		if (strncmp(cn, "CCUIConnectivity", 16)) continue;
+		unsigned mc = 0;
+		Method *ms = class_copyMethodList(all[i], &mc);
+		for (unsigned j = 0; j < mc; j++) {
+			const char *sn = sel_getName(method_getName(ms[j]));
+			const char *t = method_getTypeEncoding(ms[j]);
+			if (strcasestr(sn, "ellular") != NULL || strcasestr(sn, "utton") != NULL || strcasestr(sn, "tap") != NULL)
+				say("redwood: cellular: CC %s -%s %s\n", cn, sn, t ? t : "");
+			if (t != NULL && t[0] == 'B' && method_getNumberOfArguments(ms[j]) == 2) {
+				if (!strcmp(sn, "_isCellularCapable") || !strcmp(sn, "isCellularCapable")) {
+					method_setImplementation(ms[j], (IMP)cell_cc_yes);
+					hooked++;
+				} else if (!strcmp(sn, "_isCellularDataEnabled") || !strcmp(sn, "isCellularDataEnabled")) {
+					method_setImplementation(ms[j], (IMP)cell_cc_data_on);
+					hooked++;
+				}
+			}
+		}
+		free(ms);
+	}
+	free(all);
+	done = 1;
+	say("redwood: cellular: Control Center module seen, %u check(s) answered\n", hooked);
+}
+
 static void
 cell_tick(void *context)
 {
+	static id told;
+
 	(void)context;
-	if (cell_read()) {
+	if (cell_read() || (cell_provider != nil && cell_provider != told)) {
 		cell_notify();
+		told = cell_provider;
 	}
+	cell_cc_scan();
 	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, cell_tick);
 }
 
@@ -290,7 +360,13 @@ cell_hook(void *context)
 		}
 	}
 	if (provider == Nil || objc_getClass("STMutableTelephonySubscriptionInfo") == Nil) {
-		say("redwood: cellular: no STTelephonyStateProvider here; status bar left alone\n");
+		/* SystemStatus not loaded yet: try again soon (hooking late lets SpringBoard cache "no cellular") */
+		static int tries;
+		if (++tries < 120) {
+			dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), NULL, cell_hook);
+		} else {
+			say("redwood: cellular: no STTelephonyStateProvider here; status bar left alone\n");
+		}
 		return;
 	}
 	for (unsigned i = 0; i < sizeof(hooks) / sizeof(hooks[0]); i++) {
@@ -323,5 +399,5 @@ cell_start(void)
 			return;
 		}
 	}
-	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, cell_hook);
+	dispatch_async_f(dispatch_get_main_queue(), NULL, cell_hook);   /* as early as SpringBoard's main queue runs */
 }
