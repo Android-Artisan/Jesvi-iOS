@@ -331,7 +331,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
 			-o obj/libredwood-finder.dylib src/inject_finder.c
 		$DYN -o obj/LocalFilesHost src/local_files_host.c
-		$DYN -fobjc-arc -framework Foundation -o obj/register_finder_host src/register_finder_host.m
+		$DYN -fobjc-arc -framework Foundation -framework Security -o obj/register_finder_host src/register_finder_host.m
 		${LDID:-ldid} -S../tools/storage/register-finder-host.entitlements obj/register_finder_host
 		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
