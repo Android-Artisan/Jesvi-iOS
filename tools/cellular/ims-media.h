@@ -28,6 +28,7 @@ static struct {
     pthread_t play;
     unsigned underruns, concealed;
     float mic_gain;
+    volatile int muted;
     int sock, spk, mic;
     struct sockaddr_in6 peer;
     pthread_t rx, tx;
@@ -218,7 +219,7 @@ static void *media_tx(void *arg)
             gain += (want - gain) * (want < gain ? 0.5f : 0.02f);
         }
         med.mic_gain = gain;
-        for (int s = 0; s < 160; s++) pcm[s] = sat16(dec8[s] * gain);
+        for (int s = 0; s < 160; s++) pcm[s] = med.muted ? 0 : sat16(dec8[s] * gain);
         uint8_t st[64];
         int len = Encoder_Interface_Encode(enc, MR122, pcm, st, 0);
         if (len < 1) continue;
@@ -274,7 +275,7 @@ static int media_start(int sock, const char *remote, unsigned rport)
     med.spk = open("/dev/redwood-audio", O_WRONLY | O_NONBLOCK);
     med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
     med.rx_pkts = med.rx_frames = med.tx_pkts = med.rx_bad = med.tx_err = med.mic_bytes = 0; med.tx_errno = 0;
-    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2;
+    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0;
     fir_init();
     med.run = 1;
     pthread_create(&med.play, NULL, media_play, NULL);

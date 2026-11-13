@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -558,17 +559,60 @@ static struct {
     time_t at, answered;
     char via[1200], from[400], to[400], cid[200], cq[80], rr[600], contact[400], sdp_c[96], sdp_m[96];
     unsigned bye_cseq;
+    int ui, answer_req;                 /* ui: the phone's call screen decides (RedwoodPhone); answer_req: it said answer */
+    unsigned id;                        /* this call's number, for the call screen */
 } call;
+static unsigned call_seq;
 static char call_ip6[64];
 static void call_media(int start);
+static void call_bye(void);
+static void call_ui_poll(void);
 static int call_ports, call_sock = -1, call_portc;
 static const char *call_user;
 
+/*
+ * Calls, step 4 (2026-11-14, A): the native call screen. RedwoodPhone.app (tools/cellular/RedwoodPhone) is the CallKit
+ * provider; it and redwood-ims talk through /var/tmp/redwood-cell/call-ui/ (mobile's):
+ *   state   (ours)    "ringing ID NUMBER", "connecting ID", "up ID", "ended ID REASON"
+ *   alive   (theirs)  touched every few seconds while the app runs
+ *   cmd.*   (theirs)  "answer ID" / "end ID", one per file, removed when read
+ * With /var/root/cell-answer the old auto-answer stays (tests).
+ */
+#define CALL_UI_DIR "/var/tmp/redwood-cell/call-ui"
 static int
-call_enabled(void)
+call_ui_alive(void)
+{
+    struct stat st;
+    return !stat(CALL_UI_DIR "/alive",&st) && time(NULL)-st.st_mtime<20;
+}
+static int
+call_auto(void)
 {
     struct stat st;
     return !stat("/var/root/cell-answer",&st);
+}
+static int
+call_enabled(void)
+{
+    return call_auto() || call_ui_alive();
+}
+static void
+call_ui_state(const char *fmt,...)
+{
+    char line[300];va_list ap;va_start(ap,fmt);vsnprintf(line,sizeof(line),fmt,ap);va_end(ap);
+    mkdir(CALL_UI_DIR,0755);chown(CALL_UI_DIR,501,501);
+    FILE *f=fopen(CALL_UI_DIR "/state.tmp","w");if (!f) return;
+    fprintf(f,"%s\n",line);fclose(f);chmod(CALL_UI_DIR "/state.tmp",0644);rename(CALL_UI_DIR "/state.tmp",CALL_UI_DIR "/state");
+    printf("call: screen <- %s\n",line);
+}
+/* the caller's number from From (sip:+91...@ or tel:+91...) */
+static void
+call_number(const char *from,char *out,size_t cap)
+{
+    const char *p=strstr(from,"sip:");if (!p) p=strstr(from,"tel:");
+    out[0]=0;if (!p) return;p+=4;
+    size_t o=0;while (*p && *p!='@' && *p!=';' && *p!='>' && o+1<cap) out[o++]=*p++;
+    out[o]=0;
 }
 
 static void
@@ -615,6 +659,7 @@ static void
 call_end(const char *why)
 {
     printf("call: ended (%s) after %lds\n",why,(long)(time(NULL)-call.at));
+    if (call.ui) call_ui_state("ended %u %s",call.id,why);
     call_media(0);
     call.state=0;
     unlink("/var/tmp/redwood-cell/call");
@@ -743,7 +788,12 @@ call_invite(int fd,const char *r)
         if (mm) sscanf(mm+9,"%95s",call.sdp_m);
     }
     {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"ringing %ld\n",(long)call.at);fclose(f);}}
-    printf("call: INCOMING (answer mode): remote media port %s; answering in %ds\n",call.sdp_m,CALL_ANSWER_S);
+    call.ui=!call_auto();call.id=++call_seq;
+    if (call.ui) {
+        char num[64];call_number(call.from,num,sizeof(num));
+        printf("call: INCOMING: remote media port %s; ringing on the call screen\n",call.sdp_m);
+        call_ui_state("ringing %u %s",call.id,num[0]?num:"unknown");
+    } else printf("call: INCOMING (answer mode): remote media port %s; answering in %ds\n",call.sdp_m,CALL_ANSWER_S);
     call_respond("100 Trying",NULL);
     call_respond("180 Ringing",NULL);
     return 1;
@@ -756,7 +806,8 @@ call_request(int fd,const char *r)
     char ci[200];
     if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
     if (!strncmp(r,"ACK ",4)) {
-        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");fflush(stdout);if (!med.run) call_media(1);fflush(stdout);}
+        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");fflush(stdout);if (!med.run) call_media(1);
+            if (call.ui) call_ui_state("up %u",call.id);fflush(stdout);}
         return 1;
     }
     char m[2048],via[1200],fr[400],to[400],cq[80];int o;
@@ -780,7 +831,11 @@ call_request(int fd,const char *r)
 static void
 call_tick(void)
 {
-    if (call.state==1 && time(NULL)-call.at>=CALL_ANSWER_S) {
+    call_ui_poll();
+    if (call.state==1 && call.ui && !call.answer_req && time(NULL)-call.at>=60) {
+        call_respond("480 Temporarily Unavailable",NULL);call_end("not answered in 60 s");return;
+    }
+    if (call.state==1 && (call.ui ? call.answer_req : time(NULL)-call.at>=CALL_ANSWER_S)) {
         char sdp[700];
         unsigned sid=arc4random();
         snprintf(sdp,sizeof(sdp),
@@ -791,6 +846,7 @@ call_tick(void)
             sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
         call_respond("200 OK",sdp);
         call.state=2;call.answered=time(NULL);
+        if (call.ui) call_ui_state("connecting %u",call.id);
         if (!med.run) {call_media(1);fflush(stdout);}  /* media from our 200 OK on: the ACK can come late or not at all */
         {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"answered %ld\n",(long)call.answered);fclose(f);}}
     } else if (call.state==2 && time(NULL)-call.answered>=30 && med.rx_pkts==0) {
@@ -798,7 +854,16 @@ call_tick(void)
          * every new call got 486 Busy): give it up */
         call_end("no ACK and no voice in 30 s after our 200 OK");
     } else if (call.state>=2 && time(NULL)-call.answered>=CALL_MAX_S) {
-        /* our BYE: Route from Record-Route, to the remote Contact */
+        call_bye();
+        call_end("our BYE (an hour reached)");
+    }
+}
+
+/* our BYE: Route from Record-Route, to the remote Contact */
+static void
+call_bye(void)
+{
+    {
         char m[3000],uri[400],route[700]="";int o;
         const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
         if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1); else snprintf(uri,sizeof(uri),"%s",call.contact);
@@ -813,8 +878,32 @@ call_tick(void)
             uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
         if (send(call_sock,m,(size_t)o,0)<0) printf("call: BYE send failed: %s\n",strerror(errno));
         else printf("call: --> BYE (on the registration connection)\n");
-        call_end("our BYE (test length reached)");
     }
+}
+
+/* the call screen's commands */
+static void
+call_ui_poll(void)
+{
+    DIR *d=opendir(CALL_UI_DIR);if (!d) return;
+    struct dirent *e;
+    while ((e=readdir(d))) {
+        if (strncmp(e->d_name,"cmd.",4)) continue;
+        char fn[300],line[100]="";unsigned id=0;
+        snprintf(fn,sizeof(fn),CALL_UI_DIR "/%s",e->d_name);
+        FILE *f=fopen(fn,"r");if (f) {if (!fgets(line,sizeof(line),f)) line[0]=0;fclose(f);}
+        unlink(fn);
+        char verb[20]="";if (sscanf(line,"%19s %u",verb,&id)<1) continue;
+        printf("call: screen -> %s %u\n",verb,id);
+        if (!call.state || id!=call.id) continue;           /* (an old call's button) */
+        if (!strcmp(verb,"answer") && call.state==1) call.answer_req=1;
+        else if (!strcmp(verb,"mute")) {unsigned on=0;sscanf(line,"%*s %*u %u",&on);med.muted=(int)on;}
+        else if (!strcmp(verb,"end")) {
+            if (call.state==1) {call_respond("603 Decline",NULL);call_end("declined here");}
+            else {call_bye();call_end("hung up here");}
+        }
+    }
+    closedir(d);
 }
 
 static int ims_cmd_fd=-1;
@@ -840,8 +929,12 @@ static void ims_cmd_poll(int sock,int portc)
 }
 
 static void ims_stop(int sig)
-{   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own) */
-    (void)sig;unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
+{   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own). A call in progress is closed
+     * first (A, 2026-11-14: a restart mid-call left it open on the network: every later call got "busy") */
+    (void)sig;
+    if (call.state==1) call_respond("480 Temporarily Unavailable",NULL);
+    else if (call.state>=2) call_bye();
+    if (call.state && call.ui) call_ui_state("ended %u the phone service restarted",call.id);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
 }
 
 int main(int argc,char **argv)
@@ -1003,7 +1096,7 @@ int main(int argc,char **argv)
         if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
-        if (poll(p,(nfds_t)k,1000)<0) break;
+        if (poll(p,(nfds_t)k,call.state?200:1000)<0) break;
         {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
