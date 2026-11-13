@@ -666,6 +666,9 @@ call_media(int start)
         uint8_t pdn[38]={0},ip[16];
         if (inet_pton(AF_INET6,call_ip6,ip)!=1) return;
         pdn[0]=2;memcpy(pdn+1,ip,16);pdn[17]=6;memcpy(pdn+21,"rmnet1",6);
+        /* the CP's audio first (IPC group 9, as libsec-ril's IpcProtocol41Sound): the path (09/03 SET, 1 = handset)
+         * and the voice clock (09/09 EXEC, 1 = on). Without them 16/03 start answered 100 (2026-11-13 23:08). */
+        {uint8_t one=1;call_cmd("09 03 03",&one,1);call_cmd("09 09 01",&one,1);}
         call_cmd("16 06 03",pdn,sizeof(pdn));
         if (call_channel(1,call.sdp_c,rport)) return;
         uint8_t c[58]={0};
@@ -682,6 +685,7 @@ call_media(int start)
         uint8_t m[4]={2,0,0,0};         /* SAE_StopFDSR: 2 stop */
         call_cmd("16 03 03",m,sizeof(m));
         call_channel(2,call.sdp_c[0]?call.sdp_c:"::1",rport?rport:9);
+        {uint8_t zero=0;call_cmd("09 09 01",&zero,1);}     /* voice clock off */
         open=0;
         printf("call: media: CP voice channel 0 closed\n");
     }
@@ -692,7 +696,18 @@ static int
 call_invite(int fd,const char *r)
 {
     if (!call_enabled()) return 0;
-    if (call.state) return 0;           /* (one call: the old path answers 486) */
+    if (call.state) {
+        /* the P-CSCF drops and reopens its connection and resends the INVITE (2026-11-13 23:10: our 100/180 went
+         * into the closed one, "Broken pipe"): the same Call-ID moves the call to the new connection */
+        char ci[200];
+        if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid)) {
+            call.fd=fd;printf("call: INVITE again on a new connection: carried on there\n");
+            if (call.state==1) {call_respond("100 Trying",NULL);call_respond("180 Ringing",NULL);}
+            else call.state=1;          /* (answered already: answer again from call_tick) */
+            return 1;
+        }
+        return 0;                       /* (another call: the old path answers 486) */
+    }
     memset(&call,0,sizeof(call));
     call.fd=fd;call.at=time(NULL);call.state=1;call.bye_cseq=1;
     call_copy_vias(r,call.via,sizeof(call.via));
