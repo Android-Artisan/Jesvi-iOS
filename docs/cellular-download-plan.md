@@ -702,3 +702,7 @@ Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RT
 - Next: SAE_SetPdnIp -> 16/06 layout (0x7ca9f4 -> VoIpEngineProxy::SetPdnIp 0x7cea4c -> 0x7d3d34), 16/02 SetCodec
   (_stSAE_CodecInfo; 0x7d2910, 0x4c4 bytes), then try on the phone in order: 16/06 (our IMS IPv6), 16/01 op 1,
   16/02 AMR-WB, 16/03 start -- watch for 16/xx notifications (RTP stats 16/05). Needs Jio's SDP from a test call.
+- 16/06 SET SetPdnIp, payload 38 bytes: [ipver u8: 1 v4 / 2 v6][IP 16 bytes][u32 len][interface name, <=15 chars, in
+  17][flag u8]. From CpAudioEngineClient::SAE_SetPdnIp(phone, ipText, flag, ifname, ifnameLen) (inet_pton v4 then v6;
+  "SetPdnIp failed. Interface name is null"). The name is Android's IMS PDN interface (Exynos: rmnetN; which N for the
+  IMS PDN = the CP context the IMS bearer uses -- redwood-cellulard knows it) -- to confirm against stock behaviour.
