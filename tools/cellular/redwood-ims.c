@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -695,6 +696,9 @@ int main(int argc,char **argv)
     s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,portc);if (s<0) {perror("bind port-c");ipsec_flush();return 1;}
     a.sin6_port=htons((uint16_t)pports);
     if (connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect (protected)");ipsec_flush();return 1;}
+    {int on=1,idle=30,intvl=10,cnt=3;setsockopt(s,SOL_SOCKET,SO_KEEPALIVE,&on,sizeof(on));
+     setsockopt(s,IPPROTO_TCP,TCP_KEEPALIVE,&idle,sizeof(idle));setsockopt(s,IPPROTO_TCP,TCP_KEEPINTVL,&intvl,sizeof(intvl));
+     setsockopt(s,IPPROTO_TCP,TCP_KEEPCNT,&cnt,sizeof(cnt));}
     n=snprintf(m,sizeof(m),
         "REGISTER %s SIP/2.0\r\n"
         "Via: SIP/2.0/%s [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
@@ -723,6 +727,12 @@ int main(int argc,char **argv)
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         if (poll(p,(nfds_t)k,1000)<0) break;
+        {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
+             * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
+             * ("send: failed", 2026-11-13 18:43 and 18:46). */
+            static time_t ka;time_t t=time(NULL);
+            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+        }
         ims_cmd_poll(s,portc);
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
