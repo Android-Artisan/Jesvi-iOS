@@ -307,3 +307,18 @@ wp array (0xf0c + 3*20). Legacy queue indices stay 0, SBD DL buffers zero. Our b
 rpwp array must not sit there: compare the S20's real g_desc size -- if the stock cpif has
 MAX_SBD_LINK_IDS 32 but an extra field, the rpwp array moves). Next: decode those 20 bytes, read the
 stock S20 kernel's cpif (Samsung opensource G980F kernel, not ExtremeXT) sbd.h.
+
+### MILESTONE Nov13 ~06:40: the modem talks Samsung IPC on umts_ipc0
+
+The missing piece was the packet processor v2 info block (stock S20 config: CONFIG_CP_PKTPROC_V2=y,
+JUMBO off, MODEM_IF_QOS=y): cp_rmem_2 (rmem_index 2) = d0000000+64MB = SHMEM_PKTPROC, CP view 0x28000000.
+At INIT_START, before the SBD rings and PIF_INIT_DONE: info[0] = num_queues 1 | mode 1 (SKTBUF) <<4 |
+max_packet 2048 <<8 = 00080011, q_info[0] = desc_base 28000100, num_desc 0x1933 (6451), data_base
+28100000, fore 0, rear 0. With that, all SBD channels come up; DL umts_ipc0 (ch 235) frames:
+  f8 eb 1d 00 | 19 00 00 00 13 05 03 0f 00 "\r\nAST_POWERON\r\n"
+  f8 eb 0c 00 | 08 00 01 00 01 01 03 ad          PWR_PHONE_PWR_UP noti
+  f8 eb 0d 00 | 09 00 02 00 0d 0f 03 06
+  f8 eb 0f 00 | 0b 00 03 ff 26 01 01 00
+  f8 eb 15 01 | 11 01 04 01 0a 01 02 ...         MISC_ME_VERSION response to our GET: "G980FXXSNHYB1 ... REV0"
+(SBD buff_len_array values are not lengths here; use the SIPC5 length.) The legacy-FMT duplicate request
+is not used by this CP (TX tail stays 0). Next: SIM status (SEC group), then radio power / registration.

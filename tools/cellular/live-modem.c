@@ -190,6 +190,11 @@ static int ipc_boot_init(void)
 {
     if (ipc_op(CP_IPC_MAP,0,NULL,0,NULL)) {fprintf(stderr,"cellular live DL: IPC map refused\n");return -1;}
     ipc_mapped=1;
+    {   /* the whole IPC area zeroed first: it holds whatever RAM held (SR info, kernel time at 0x424 ...) */
+        static const uint8_t zero[2048];uint64_t t0=now_us(NULL);
+        for (uint32_t o=0;o<0x800000;o+=sizeof(zero)) if (ipc_write(o,zero,sizeof(zero))) return -1;
+        printf("cellular live DL: IPC 8 MB zeroed in %llu ms\n",(unsigned long long)((now_us(NULL)-t0)/1000));fflush(stdout);
+    }
     for (uint32_t o=0;o<0x28;o+=4) if (ipc_store(o,0)) return -1;
     for (uint32_t o=0x400;o<0x410;o+=4) if (ipc_store(o,0)) return -1;
     if (ipc_store(0x408,2u<<14)) return -1;     /* init_control_messages: ap2cp_united_status ds_det=2 (dual SIM) */
@@ -274,7 +279,7 @@ static int ap2cp(unsigned cmd)
     printf("cellular live DL: AP -> CP cmd %#x (msg %#x)\n",cmd,0xc0u|cmd);fflush(stdout);
     return doorbell(0);
 }
-__attribute__((unused)) static void fmt_dump(void)
+static void fmt_dump(void)
 {
     uint32_t rh,rt;if (ipc_load(0x10,&rh) || ipc_load(0x14,&rt)) return;
     while (rh!=rt && rt<0x1000 && rh<0x1000) {
@@ -357,6 +362,19 @@ static void sbd_dump_dl(void)
     }
     fflush(stdout);
 }
+
+/* pktproc v2 info (link_rx_pktproc.c pktproc_create, CONFIG_CP_PKTPROC_V2): SHMEM_PKTPROC = cp_rmem_2
+ * d0000000+64MB, CP view 0x28000000. info 0x100: {num_queues 1, mode 1 SKTBUF, max_packet 2048} +
+ * q_info[0] {desc_base cp+0x100, num_desc (0x3f00000/2560)*25/100, data_base cp+0x100000, fore 0, rear 0} */
+static int pktproc_info(void)
+{
+    char r[8192],c[96];
+    for (unsigned o=0;o<0x100;o+=4) {snprintf(c,sizeof(c),"w 0x%x 0x0",0xd0000000u+o);if (request(c,r)) return -1;}
+    const uint32_t w[]={1u|(1u<<4)|(2048u<<8),0x28000100u,(0x3f00000u/2560u)*25u/100u,0x28100000u,0,0};
+    for (unsigned i=0;i<6;i++) {snprintf(c,sizeof(c),"w 0x%x 0x%x",0xd0000000u+4*i,w[i]);if (request(c,r)) return -1;}
+    printf("cellular live DL: pktproc v2 info at d0000000: %08x %08x %08x %08x\n",w[0],w[1],w[2],w[3]);fflush(stdout);
+    return 0;
+}
 static int online_handshake(unsigned seconds)
 {
     uint32_t last=0xffffffff,lastu=0xffffffff,msi=0,lastmsi=0xffffffff;int online=0;
@@ -376,7 +394,7 @@ static int online_handshake(unsigned seconds)
                 printf("cellular live DL: umts_ipc0 UL rp %u wp %u (rp moving = CP read our request)\n",urp,uwp);fflush(stdout);}
             if (m!=last && (m&0x80) && (m&0x40)) {
                 unsigned cmd=m&0x3f;
-                if (cmd==0x01) {phase("CP: INIT_START -> SBD rings, PIF_INIT_DONE");if (sbd_init()) return -1;ipc_store(0x408,(2u<<14)|(1u<<1)|(1u<<5));ap2cp(0x0d);}
+                if (cmd==0x01) {phase("CP: INIT_START -> SBD rings, PIF_INIT_DONE");if (pktproc_info() || sbd_init()) return -1;ipc_store(0x408,(2u<<14)|(1u<<1)|(1u<<5));ap2cp(0x0d);}
                 else if (cmd==0x08) {
                     phase("CP: PHONE_START -> IPC link (magic AA, queues zero) and INIT_END");
                     for (uint32_t o=8;o<0x28;o+=4) ipc_store(o,0);
@@ -388,6 +406,21 @@ static int online_handshake(unsigned seconds)
         }
         if (online) {
             static int asked;static uint64_t shown;
+            static int scanned;
+            if (!scanned && now_us(NULL)+8000000ull>deadline) {
+                scanned=1;uint8_t c[2048];uint32_t start=0,prev=0;int in_run=0;
+                printf("cellular live DL: scan IPC 0x10000..0x800000 for CP writes:\n");
+                for (uint32_t o=0x10000;o<0x800000;o+=sizeof(c)) {
+                    int nz=0;if (ipc_read(o,c,sizeof(c))) break;
+                    for (unsigned k=0;k<sizeof(c);k++) if (c[k]) {nz=1;break;}
+                    if (nz && !in_run) {start=o;in_run=1;
+                        printf("   %06x:",o);for (unsigned k=0;k<32;k++) printf(" %02x",c[k]);printf("\n");}
+                    if (!nz && in_run) {printf("   ... nonzero %06x..%06x\n",start,o);in_run=0;}
+                    prev=o;
+                }
+                if (in_run) printf("   ... nonzero %06x..%06x\n",start,prev+(uint32_t)sizeof(c));
+                fflush(stdout);
+            }
             static int rawn;
             if (rawn<3 && now_us(NULL)-shown>1000000) {
                 uint8_t r[256];rawn++;
@@ -410,8 +443,33 @@ static int online_handshake(unsigned seconds)
                 int e=sbd_send(1,f,12);
                 printf("cellular live DL: IPC MISC_ME_VERSION GET on umts_ipc0: %s\n",e?"send failed":"sent");fflush(stdout);
             }
+            static int legacy;
+            if (asked && !legacy && now_us(NULL)+12000000ull<deadline) {
+                /* the same request on the legacy FMT queue: TX buf 0x1000 (4 KB), head 0x8 tail 0xc; SEND_FMT 0x82 */
+                uint8_t f[12]={0xf8,235,12,0, 8,0, 2,0, 0x0a,0x01,0x02, 0xff};uint32_t h=0,t=0;legacy=1;
+                ipc_load(0x8,&h);ipc_load(0xc,&t);
+                if (h<0x1000 && h+12<=0x1000) {ipc_write(0x1000+h,f,12);__sync_synchronize();ipc_store(0x8,h+12);}
+                ipc_store(0x400,0x82);doorbell(0);
+                printf("cellular live DL: same request on legacy FMT (head %x tail %x -> %x)\n",h,t,h+12);fflush(stdout);
+            }
+            if (legacy) {
+                static uint64_t last;
+                if (now_us(NULL)-last>1000000) {
+                    last=now_us(NULL);uint32_t th=0,tt=0,rh=0,rt=0;ipc_load(0x8,&th);ipc_load(0xc,&tt);ipc_load(0x10,&rh);ipc_load(0x14,&rt);
+                    printf("cellular live DL: legacy FMT TX head %x tail %x, RX head %x tail %x\n",th,tt,rh,rt);fflush(stdout);
+                }
+                fmt_dump();
+            }
         }
         usleep(1000);
+    }
+    {
+        uint8_t r[0x800];
+        if (!ipc_read(0,r,sizeof(r))) {
+            printf("cellular live DL: IPC 0..800 at the end (nonzero 32-byte rows):\n");
+            for (unsigned o=0;o<sizeof(r);o+=32) {int nz=0;for (unsigned k=0;k<32;k++) nz|=r[o+k];
+                if (nz) {printf("   %04x:",o);for (unsigned k=0;k<32;k++) printf(" %02x",r[o+k]);printf("\n");}}
+        }
     }
     printf("cellular live DL: handshake %s\n",online?"ONLINE (INIT_END sent)":"no PHONE_START seen");fflush(stdout);
     return online?0:-1;
