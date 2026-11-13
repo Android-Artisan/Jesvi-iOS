@@ -194,7 +194,14 @@ static void *media_tx(void *arg)
     uint16_t seq = (uint16_t)arc4random();
     uint32_t ts = arc4random(), ssrc = arc4random();
     int first = 1;
+    unsigned long mic_try = 0;
     while (med.run) {
+        /* the mic may be held by iOS's own audio for a moment (the call's audio session opens its input: "mic NOT open",
+         * 2026-11-14 04:46): ask again every 200 ms; meanwhile silence goes out at 20 ms, so the stream never stops */
+        if (med.mic < 0 && (mic_try++ % 10) == 0) {
+            med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
+            if (med.mic >= 0) printf("%s call: media (AP): mic open\n", ts_now());
+        }
         ssize_t n = med.mic >= 0 ? read(med.mic, (uint8_t *)in + have, sizeof(in) - have) : -1;
         if (n > 0) { have += (size_t)n; med.mic_bytes += (unsigned)n; }
         if (med.mic < 0) {                                  /* no mic: send silence at 20 ms */

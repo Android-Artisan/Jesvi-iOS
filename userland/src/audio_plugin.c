@@ -885,6 +885,25 @@ codec_close(void)
 static void
 codec_read(int16_t *samples, UInt32 frames)
 {
+	/* a VoLTE call: the microphone is redwood-ims's (one reader at a time); iOS's input gets silence meanwhile */
+	if (in_call()) {
+		if (mic >= 0) {
+			close(mic);
+			mic = -1;
+			say("redwood: audio: the microphone handed to the call\n");
+		}
+		memset(samples, 0, (size_t)frames * 2);
+		return;
+	}
+	if (mic < 0) {                  /* (after a call: listen again, at most once a second) */
+		static UInt64 tried;
+		UInt64 now = mach_absolute_time();
+
+		if ((Float64)(now - tried) > ticks_per_frame * REDWOOD_AUDIO_RATE) {
+			tried = now;
+			codec_open();
+		}
+	}
 	ssize_t got = mic >= 0 ? read(mic, samples, (size_t)frames * 2) : -1;
 	UInt32 have = got > 0 ? (UInt32)got / 2 : 0;
 
