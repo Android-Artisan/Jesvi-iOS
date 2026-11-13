@@ -101,9 +101,10 @@ Switch: `tools/island-preset.sh punch-21` or `tools/island-preset.sh punch-live1
 `lh=0` keeps activities as small as the pill. To keep a new combination, save it as a file in `tools/island-presets/`
 and on the phone in `/var/jb/etc/redwood-island.presets/`.
 
-**Entry animation:** none -- the switch to the live size is immediate. Two tries on 2026-11-13 (a 0.4 s UIKit animation
-of the element's window, then an eased size with a 16 ms re-layout) were worse (the height did not apply properly);
-the user chose the immediate switch (reverted to e5a78e7's island_sb.h).
+**Entry animation** (user's choice, 2026-11-13 22:00): only the way in (punch hole -> live size) is handled; the way
+out is iOS's own. The switch to the live size is made on the main queue's next turn inside a 0.4 s UIKit animation of
+the element's window (island_note_mode, commit 04f9b79): the user preferred it to an immediate switch (it reads as two
+pills, the small one jumping) and to an eased-size version (919b123: the height did not apply properly).
 
 ### Live Activity height (`lh`, 2026-11-13, user-verified)
 
