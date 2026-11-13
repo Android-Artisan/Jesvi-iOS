@@ -1044,7 +1044,13 @@ static int online_handshake(unsigned seconds)
                 /* a client already running (e.g. started before this process was exec'd again by a watchdog): keep it */
                 FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int other=0;
                 if (q) {if (fscanf(q,"%d",&other)!=1) other=0;fclose(q);}
-                if (other>1 && !kill(other,0)) {ims_spawned=now_us(NULL);other=-1;}
+                /* (only if that pid IS redwood-ims: /var/tmp survives a restart, and after one the old pid was
+                 *  installd's -- the client was never started again, no VoLTE after the 18:00 boot, 2026-11-13) */
+                if (other>1 && !kill(other,0)) {
+                    extern int proc_pidpath(int,void *,uint32_t);char path[4096];
+                    if (proc_pidpath(other,path,sizeof(path))>0 && strstr(path,"redwood-ims")) {ims_spawned=now_us(NULL);other=-1;}
+                    else unlink("/var/tmp/redwood-cell/ims.pid");
+                } else if (other>1) unlink("/var/tmp/redwood-cell/ims.pid");
                 if (other==-1) goto ims_done;
             }
             if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
