@@ -1793,7 +1793,7 @@ redwood_init(void)
 	}
 	if (strcmp(name, "MobilePhone") == 0) {
 		phone_dial_hook();
-		phone_system_hook();        /* our calls are phone calls in Recents ("mobile", message button) */
+		/* (not phone_system_hook() here: in MobilePhone it broke dialling ("call failed") and emptied Recents, 05:18) */
 	}
 	if (strcmp(name, "InCallService") == 0) {
 		phone_system_hook();
