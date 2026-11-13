@@ -69,7 +69,7 @@ On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/e
 Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
 `sbreload` restarts SpringBoard twice in a row here; the second start (~10 s) is the one that reads the conf.
 Keep the pill over the camera hole: the hole's bottom edge sits roughly 25-28 pt below the top, so a round pill much
-below ~22 pt would show the hole's edge (estimate; 24 and 22 pt user-checked as covering it).
+below ~22 pt would show the hole's edge (estimate; 24 pt user-checked as covering it, 22 pt to be checked).
 The conf is on the data volume: it survives reboots and new boot images, but a fresh install starts with the
 built-in default (the table above).
 Log: `/var/mobile/Library/Logs/redwood-island.log`. 1 pt on the S20 panel ~ 0.18 mm.
