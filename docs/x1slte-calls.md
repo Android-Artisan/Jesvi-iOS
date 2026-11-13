@@ -4,6 +4,27 @@ Status (2026-11-14): incoming and outgoing VoLTE calls work on Jio, both ways, o
 Phone app, with the voice on the earpiece (Speaker button to switch). This page says plainly **what this is and what it
 is not**.
 
+## At a glance
+
+- **What it is:** a patched-together, VoIP-style phone that speaks VoLTE. The modem only carries data. The call's voice
+  never goes through the modem's voice engine or the phone's audio chip (ABOX/Calliope). Signalling, voice packets, the
+  voice codec and buffering all run in software on the main processor (AP). iOS hears about calls through CallKit, the
+  mechanism third-party calling apps use, plus a few hooks so it treats them as the phone's own calls.
+- **Why:** the modem accepted every voice-setup command but never took the voice packets, and the route into the audio
+  chip produced no sound. Doing the voice on the main processor worked within hours.
+- **Portable:** nothing in the voice path depends on this modem or chipset. Porting to another device needs only two
+  device-specific pieces: delivering the call's packets to the VoLTE service, and an earpiece route in the speaker driver.
+- **Current limits:**
+  - no echo cancellation or noise suppression;
+  - narrowband sound only (AMR-NB), no HD voice;
+  - no emergency calls, hold, call waiting or conference;
+  - no video calls and no Wi-Fi calling;
+  - no mic waveform in the Dynamic Island.
+- **The native path for later:** reverse-engineer how Samsung's software makes the modem's voice engine take the voice
+  stream, then the audio chip's call routes and its echo canceller. The call-screen app stays; only the voice handling
+  moves to the modem.
+- **Where everything lives:** the files involved and the debug logs to read are listed at the end of this page.
+
 ## The short version
 
 **The call's voice does not go through the modem's voice engine, and not through the phone's audio DSP (ABOX/Calliope).**
