@@ -228,6 +228,7 @@ cell_notify(void)
  * listed in the console once (to wire the tap next). Boot-arg cellcc=0: left alone.
  */
 static BOOL cell_cc_yes(id self, SEL _cmd) { (void)self; (void)_cmd; return YES; }
+static BOOL cell_cc_no(id self, SEL _cmd) { (void)self; (void)_cmd; return NO; }
 static BOOL cell_cc_data_on(id self, SEL _cmd)
 {
 	(void)self;
@@ -287,6 +288,68 @@ cell_cc_scan(void)
 	say("redwood: cellular: Control Center module seen, %u check(s) answered\n", hooked);
 }
 
+/*
+ * Inspection and live answers without a new image (root writes these files; each is consumed once):
+ *   /var/tmp/redwood-cell/sb-dump   "CLASSPART [METHODPART]": classes whose name contains CLASSPART, their methods
+ *                                   (containing METHODPART), and the loaded images whose path contains CLASSPART,
+ *                                   to the console;
+ *   /var/tmp/redwood-cell/sb-hook   lines "CLASS SELECTOR YES|NO|DATA": that BOOL getter answers yes, no, or data_on.
+ */
+static void
+cell_sb_tools(void)
+{
+	char a[128] = "", b[128] = "";
+	FILE *f = fopen("/var/tmp/redwood-cell/sb-dump", "r");
+
+	if (f != NULL) {
+		int got = fscanf(f, "%127s %127s", a, b);
+		fclose(f);
+		unlink("/var/tmp/redwood-cell/sb-dump");
+		if (got >= 1) {
+			uint32_t images = _dyld_image_count();
+			for (uint32_t i = 0; i < images; i++) {
+				const char *path = _dyld_get_image_name(i);
+				if (path != NULL && strcasestr(path, a) != NULL) say("redwood: sb-dump: image %s\n", path);
+			}
+			unsigned n = 0, shown = 0;
+			Class *all = objc_copyClassList(&n);
+			for (unsigned i = 0; i < n && shown < 400; i++) {
+				const char *cn = class_getName(all[i]);
+				if (strcasestr(cn, a) == NULL) continue;
+				unsigned mc = 0;
+				Method *ms = class_copyMethodList(all[i], &mc);
+				say("redwood: sb-dump: class %s (%u methods)\n", cn, mc);
+				for (unsigned j = 0; j < mc && shown < 400; j++) {
+					const char *sn = sel_getName(method_getName(ms[j]));
+					if (got < 2 || strcasestr(sn, b) != NULL) {
+						say("redwood: sb-dump:   -%s %s\n", sn, method_getTypeEncoding(ms[j]) ? method_getTypeEncoding(ms[j]) : "");
+						shown++;
+					}
+				}
+				free(ms);
+			}
+			free(all);
+			say("redwood: sb-dump: done (%s %s)\n", a, b);
+		}
+	}
+	f = fopen("/var/tmp/redwood-cell/sb-hook", "r");
+	if (f != NULL) {
+		char c[16];
+		while (fscanf(f, "%127s %127s %15s", a, b, c) == 3) {
+			Class k = objc_getClass(a);
+			Method m = k != Nil ? class_getInstanceMethod(k, sel_registerName(b)) : NULL;
+			if (m == NULL || method_getTypeEncoding(m) == NULL || method_getTypeEncoding(m)[0] != 'B') {
+				say("redwood: sb-hook: %s %s not a BOOL getter here\n", a, b);
+				continue;
+			}
+			method_setImplementation(m, !strcmp(c, "DATA") ? (IMP)cell_cc_data_on : !strcmp(c, "YES") ? (IMP)cell_cc_yes : (IMP)cell_cc_no);
+			say("redwood: sb-hook: %s %s -> %s\n", a, b, c);
+		}
+		fclose(f);
+		unlink("/var/tmp/redwood-cell/sb-hook");
+	}
+}
+
 static void
 cell_tick(void *context)
 {
@@ -298,6 +361,7 @@ cell_tick(void *context)
 		told = cell_provider;
 	}
 	cell_cc_scan();
+	cell_sb_tools();
 	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, cell_tick);
 }
 
