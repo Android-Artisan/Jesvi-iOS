@@ -270,7 +270,7 @@ static int recv_msg(int s,char *b,size_t cap,int secs)
 /* ---- SMS over IP: MESSAGE with application/vnd.3gpp.sms carries an RP message (TS 24.011): network -> UE RP-DATA
  * {0x01, ref, originator (SMSC) address, empty destination, user data len, TPDU SMS-DELIVER}; we answer the MESSAGE 200
  * and send RP-ACK {0x02, ref, 0x41, 2, SMS-DELIVER-REPORT 00 00} in a MESSAGE of our own back to the sender URI. */
-static char sms_route[1600],sms_impu[256];
+static char sms_route[1600],sms_impu[256],sms_sc_uri[128];static uint8_t sms_sc[12];static unsigned sms_scl,sms_mr,sms_rpref=1;
 static void sms_keep_registration(const char *ok)
 {   /* Service-Route(s) -> Route lines for our own requests; first P-Associated-URI as our identity */
     size_t o=0;const char *q=ok;sms_route[0]=sms_impu[0]=0;
@@ -289,10 +289,13 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     const char *hb=strstr(req,"\r\n\r\n");if (!hb) return 0;
     const uint8_t *b=(const uint8_t *)hb+4;size_t n=hdr(req,"Content-Length",cl,sizeof(cl))?(size_t)atoi(cl):0;
     if ((size_t)(hb+4-req)+n>len || n<2) {printf("SMS: body short\n");return 1;}
-    if (b[0]!=0x01) {printf("SMS: RP message type %u from the network (not RP-DATA), %zu bytes\n",b[0],n);return 1;}
+    if (b[0]==0x03) {printf("SMS: sent -- the SMSC confirmed (RP-ACK, ref %u)\n",b[1]);fflush(stdout);return 1;}
+    if (b[0]==0x05) {printf("SMS: NOT sent -- RP-ERROR ref %u, cause %u\n",b[1],n>3?b[3]&0x7f:0);fflush(stdout);return 1;}
+    if (b[0]!=0x01) {printf("SMS: RP message type %u from the network, %zu bytes\n",b[0],n);return 1;}
     unsigned ref=b[1],i=2;
     if (i>=n) return 1;
-    unsigned ol=b[i];i+=1+ol;if (i>=n) return 1;
+    unsigned ol=b[i];if (ol>=2 && ol<=sizeof(sms_sc) && i+1+ol<=n) {memcpy(sms_sc,b+i+1,ol);sms_scl=ol;}
+    i+=1+ol;if (i>=n) return 1;
     unsigned dl=b[i];i+=1+dl;if (i>=n) return 1;
     unsigned ul=b[i++];
     char from[64]="?",text[1600]="",when[32]="";uint8_t pdu[260];int ok=0;
@@ -305,6 +308,7 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     /* RP-ACK back to the sender (the SMSC's URI in From) */
     if (!hdr(req,"From",fr,sizeof(fr)) || !hdr(req,"Call-ID",ci,sizeof(ci))) return 1;
     const char *u1=strchr(fr,'<'),*u2=u1?strchr(u1,'>'):NULL;if (!u1 || !u2) return 1;
+    if (u2-u1-1<(long)sizeof(sms_sc_uri)) snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%.*s",(int)(u2-u1-1),u1+1);
     static const uint8_t ackbody_t[]={0x02,0,0x41,0x02,0x00,0x00};uint8_t ack[sizeof(ackbody_t)];memcpy(ack,ackbody_t,sizeof(ack));ack[1]=(uint8_t)ref;
     char m[4000];int o=snprintf(m,sizeof(m),
         "MESSAGE %.*s SIP/2.0\r\n"
@@ -327,6 +331,87 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     ssize_t w=send(sock,m,(size_t)o+sizeof(ack),0);
     printf("--> RP-ACK (ref %u) %s\n",ref,w>0?"sent":"NOT sent");fflush(stdout);
     return 1;
+}
+
+/* text -> TP-UD: GSM 7-bit when every character is in the basic table's ASCII-equal part, else UCS-2 */
+static int sms_ud(const char *t,uint8_t *ud,unsigned *udl,int *ucs2)
+{
+    static const char ok7[]=" !\"#%&'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\n\r";
+    int all7=1;for (const char *c=t;*c;c++) if (!strchr(ok7,*c)) {all7=0;break;}
+    if (all7) {
+        size_t n=strlen(t);if (n>160) return -1;memset(ud,0,140);
+        for (size_t k=0;k<n;k++) {unsigned bit=7*(unsigned)k;ud[bit/8]|=(uint8_t)(t[k]<<(bit%8));if (bit%8>1) ud[bit/8+1]|=(uint8_t)(t[k]>>(8-bit%8));}
+        *udl=(unsigned)n;*ucs2=0;return (int)((n*7+7)/8);
+    }
+    unsigned o=0;const unsigned char *u=(const unsigned char *)t;
+    while (*u) {
+        unsigned c;
+        if (*u<0x80) c=*u++;
+        else if ((*u&0xe0)==0xc0 && u[1]) {c=((u[0]&0x1fu)<<6)|(u[1]&0x3fu);u+=2;}
+        else if ((*u&0xf0)==0xe0 && u[1] && u[2]) {c=((u[0]&0x0fu)<<12)|((u[1]&0x3fu)<<6)|(u[2]&0x3fu);u+=3;}
+        else if ((*u&0xf8)==0xf0 && u[1] && u[2] && u[3]) {c=((u[0]&0x07u)<<18)|((u[1]&0x3fu)<<12)|((u[2]&0x3fu)<<6)|(u[3]&0x3fu);u+=4;
+            c-=0x10000;if (o+4>140) return -1;ud[o++]=(uint8_t)((0xd800+(c>>10))>>8);ud[o++]=(uint8_t)(0xd800+(c>>10));c=0xdc00+(c&0x3ff);}
+        else return -1;
+        if (o+2>140) return -1;ud[o++]=(uint8_t)(c>>8);ud[o++]=(uint8_t)c;
+    }
+    *udl=o;*ucs2=1;return (int)o;
+}
+static void sms_send(int sock,int portc,const char *number,const char *text)
+{
+    if (!sms_scl || !sms_sc_uri[0]) {printf("SMS: no SMSC known yet (it is learnt from the first incoming text)\n");fflush(stdout);return;}
+    char dig[24];size_t nd=0;for (const char *c=number;*c && nd<20;c++) if (*c>='0' && *c<='9') dig[nd++]=*c;dig[nd]=0;
+    if (nd<3) {printf("SMS: bad number\n");return;}
+    uint8_t ud[140];unsigned udl=0;int ucs2=0,udn=sms_ud(text,ud,&udl,&ucs2);
+    if (udn<0) {printf("SMS: text too long for one part (160 GSM / 70 other characters)\n");fflush(stdout);return;}
+    uint8_t tp[200];unsigned t=0;
+    tp[t++]=0x01;tp[t++]=(uint8_t)(sms_mr++);                     /* SMS-SUBMIT, no validity period; TP-MR */
+    tp[t++]=(uint8_t)nd;tp[t++]=number[0]=='+'?0x91:0x81;          /* destination: digits, international or unknown */
+    for (size_t k=0;k<nd;k+=2) tp[t++]=(uint8_t)((dig[k]-'0')|((k+1<nd?dig[k+1]-'0':15)<<4));
+    tp[t++]=0x00;tp[t++]=ucs2?0x08:0x00;tp[t++]=(uint8_t)udl;      /* PID, DCS, UDL */
+    memcpy(tp+t,ud,(size_t)udn);t+=(unsigned)udn;
+    uint8_t rp[260];unsigned r=0;unsigned ref=sms_rpref++&0xff;
+    rp[r++]=0x00;rp[r++]=(uint8_t)ref;rp[r++]=0x00;                  /* RP-DATA MS->network, ref, no originator */
+    rp[r++]=(uint8_t)sms_scl;memcpy(rp+r,sms_sc,sms_scl);r+=sms_scl;  /* destination: the SMSC */
+    rp[r++]=(uint8_t)t;memcpy(rp+r,tp,t);r+=t;
+    char m[4000];int o=snprintf(m,sizeof(m),
+        "MESSAGE %s SIP/2.0\r\n"
+        "Via: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+        "Max-Forwards: 70\r\n"
+        "%s"
+        "From: <%s>;tag=%08x\r\n"
+        "To: <%s>\r\n"
+        "Call-ID: %08x@[%s]\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "Request-Disposition: no-fork\r\n"
+        "Accept-Contact: *;+g.3gpp.smsip\r\n"
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: %u\r\n\r\n",
+        sms_sc_uri,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
+        sms_sc_uri,arc4random(),cfg.ip6,r);
+    if (o<0 || (size_t)o+r>sizeof(m)) return;
+    memcpy(m+o,rp,r);
+    ssize_t w=send(sock,m,(size_t)o+r,0);
+    printf("--> SMS to %s (%u characters, %s, RP ref %u) %s\n",number,ucs2?udl/2:udl,ucs2?"UCS-2":"GSM",ref,w>0?"handed to the network":"NOT sent");fflush(stdout);
+}
+/* command pipe for the client: "sms NUMBER TEXT" (root only) */
+static int ims_cmd_fd=-1;
+static void ims_cmd_poll(int sock,int portc)
+{
+    if (ims_cmd_fd<0) {
+        unlink("/var/tmp/redwood-cell/ims-cmd");
+        if (mkfifo("/var/tmp/redwood-cell/ims-cmd",0600)) return;
+        ims_cmd_fd=open("/var/tmp/redwood-cell/ims-cmd",O_RDWR|O_NONBLOCK);
+        if (ims_cmd_fd<0) return;
+    }
+    static char buf[2048];static size_t have;
+    ssize_t g=read(ims_cmd_fd,buf+have,sizeof(buf)-1-have);if (g<=0) return;have+=(size_t)g;buf[have]=0;
+    char *nl;
+    while ((nl=strchr(buf,'\n'))) {
+        *nl=0;
+        if (!strncmp(buf,"sms ",4)) {char *num=buf+4;while (*num==' ') num++;char *sp=strchr(num,' ');if (sp) {*sp=0;sms_send(sock,portc,num,sp+1);}}
+        size_t used=(size_t)(nl+1-buf);memmove(buf,nl+1,have-used+1);have-=used;
+    }
+    if (have>=sizeof(buf)-1) have=0;
 }
 
 int main(int argc,char **argv)
@@ -464,7 +549,8 @@ int main(int argc,char **argv)
     for (;;) {
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
-        if (poll(p,(nfds_t)k,60000)<0) break;
+        if (poll(p,(nfds_t)k,1000)<0) break;
+        ims_cmd_poll(s,portc);
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
             if (!(p[i].revents&(POLLIN|POLLHUP)) || (ls>=0 && i==2)) continue;

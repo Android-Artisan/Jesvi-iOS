@@ -519,3 +519,14 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
   A downlink watchdog was added anyway (fd66d71).
 - Not done: sending (RP-DATA MO with SMS-SUBMIT to the SMSC), concatenated parts, re-REGISTER before expiry (7200 s),
   launchd job, Messages app.
+
+## 2026-11-13 16:00 — SMS SEND over IMS works (A)
+
+- `echo "sms +91NUMBER text" > /var/tmp/redwood-cell/ims-cmd` (root-only pipe made by redwood-ims).
+- SMS-SUBMIT (GSM 7-bit if every character is plain ASCII-safe, else UCS-2; one part: 160 / 70 chars), TP-MR counter,
+  wrapped in RP-DATA MS->net {00 ref 00 | SMSC addr (the RP-originator of an incoming RP-DATA) | len | TPDU}, sent as
+  MESSAGE to the SMSC URI (the From of incoming texts, a tel: URI) with the Service-Route(s). Jio: 202, then a MESSAGE
+  with RP-ACK (03 ref) = delivered to the SMSC; RP-ERROR (05) is reported with its cause.
+- First test went to the user's other phone (+91…7988); the SIM's own number (P-Associated-URI) ends …3945.
+- The SMSC is only known after the first incoming text (the client learns it); TODO: read it from the SIM (EF_SMSP) or
+  the modem (IpcTxGetSmscAddress) at start.
