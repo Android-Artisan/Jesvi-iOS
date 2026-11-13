@@ -259,3 +259,19 @@ f6200000; we have no MSI handler yet -- poll the MSI page/INTR0 status and the F
 the link to IPC (magic MEM_IPC_MAGIC, FMT/RAW queues), then Samsung IPC (SIPC FMT, RIL protocol) for
 SIM status (SIM is out: expect "no SIM"), then radio power / registration, data (RAW channels),
 SMS, calls. Keep the CP off between runs; nothing here needs an AP restart.
+
+### MILESTONE Nov13 00:05: Samsung IPC handshake complete (INIT_START / PHONE_START / INIT_END)
+
+After FIN (polled, no MSI handler needed): control words at IPC+0x400 ap2cp_msg, +0x404 cp2ap_msg,
++0x408/+0x40c united status (DT DRAM_V1; int = 0x80|0x40|cmd). Before boot ap2cp_united = ds_det 2<<14.
+Doorbell AP->CP: iATU outbound region1 (DBI+0x300200: MEM 14d00000..14dfffff -> 14d00000 = EP BAR0),
+write 0x10000+n to 0x14d60000 (pci_db_addr; DOORBELL_INT_ADD 0x10000, int_ap2cp_msg 0).
+Seen live: cp2ap 0x83 (MSI status 1), then 0xC1 INIT_START -> AP 0xCD PIF_INIT_DONE + doorbell ->
+CP 0xC8 PHONE_START -> AP: queues zero, magic 0xAA, access 1, 0xC2 INIT_END + doorbell. CP stops
+repeating PHONE_START = accepted. MSI from CP arrives (RC 0x13800830 status bit0).
+
+NEXT (blocking IPC): link_attrs 0xfc9 has LINK_ATTR_SBD_IPC; umts_ipc0 (ch 0xEB, FMT, ul 16x4K,
+dl 32x4K), umts_rfs0, csd, router, dm0, cass ... carry attrs 0x82 = SIPC5|SBD_IPC. So FMT/RIL traffic
+goes over SBD rings: create_sbd_link_device + init_sbd_link (link_device_memory_sbd.c, 616 lines)
+must write the descriptor region into shmem at INIT_START, before PIF_INIT_DONE (we skipped it).
+rmnet* (attrs 0x180) = packet processor (pktproc) for data. Port SBD layout to the live helper next.

@@ -191,6 +191,8 @@ static int ipc_boot_init(void)
     if (ipc_op(CP_IPC_MAP,0,NULL,0,NULL)) {fprintf(stderr,"cellular live DL: IPC map refused\n");return -1;}
     ipc_mapped=1;
     for (uint32_t o=0;o<0x28;o+=4) if (ipc_store(o,0)) return -1;
+    for (uint32_t o=0x400;o<0x410;o+=4) if (ipc_store(o,0)) return -1;
+    if (ipc_store(0x408,2u<<14)) return -1;     /* init_control_messages: ap2cp_united_status ds_det=2 (dual SIM) */
     if (ipc_store(4,1) || ipc_store(0,0x424f4f54u)) return -1;
     uint32_t m=0,a=0;if (ipc_load(0,&m) || ipc_load(4,&a) || m!=0x424f4f54u || a!=1) return -1;
     phase("IPC: queues zeroed, access 1, magic BOOT");return 0;
@@ -246,6 +248,72 @@ static int udl_step(unsigned stage,enum s5123_udl_op op,const uint8_t *frame,siz
     printf("cellular live DL: stage %u op %u: %s\n",stage,op,a==S5123_UDL_ACK?"ACK":a==S5123_UDL_PEER_FAIL?"CP reports FAIL":"unexpected reply");
     fflush(stdout);
     return a==S5123_UDL_ACK?0:-1;
+}
+
+
+/* ---- after FIN: Samsung's shmem_cmd_handler, polled (A, 2026-11-13). cp2ap_msg +404, ap2cp_msg +400,
+ * united status +408/+40c (DT, DRAM_V1 at the IPC base). int = 0x80|0x40|cmd. AP->CP doorbell =
+ * write 0x10000+int_num into EP BAR0+0x60000 (pci_db_addr), through iATU outbound region 1. ---- */
+static int doorbell_ready;
+static int doorbell(unsigned num)
+{
+    char r[8192],c[96];
+    if (!doorbell_ready) {
+        /* iATU region1 (DBI+300000+0x200): MEM, 14d00000..14dfffff -> PCI 14d00000 (EP BAR0) */
+        if (request("w 0x13b00200 0x0",r) || request("w 0x13b00208 0x14d00000",r) || request("w 0x13b0020c 0x0",r) ||
+            request("w 0x13b00210 0x14dfffff",r) || request("w 0x13b00214 0x14d00000",r) || request("w 0x13b00218 0x0",r) ||
+            request("w 0x13b00204 0x80000000",r)) return -1;
+        doorbell_ready=1;
+    }
+    snprintf(c,sizeof(c),"w 0x14d60000 0x%x",0x10000u+num);
+    int e=request(c,r);printf("cellular live DL: doorbell %#x: %s",0x10000u+num,e?"failed\n":r);fflush(stdout);return e;
+}
+static int ap2cp(unsigned cmd)
+{
+    if (ipc_store(0x400,0xc0u|cmd)) return -1;__sync_synchronize();
+    printf("cellular live DL: AP -> CP cmd %#x (msg %#x)\n",cmd,0xc0u|cmd);fflush(stdout);
+    return doorbell(0);
+}
+static void fmt_dump(void)
+{
+    uint32_t rh,rt;if (ipc_load(0x10,&rh) || ipc_load(0x14,&rt)) return;
+    while (rh!=rt && rt<0x1000 && rh<0x1000) {
+        uint8_t h[4],b[64];if (ipc_read(0x2000+rt,h,4)) return;
+        uint32_t len=h[2]|(h[3]<<8),total=(len+3)&~3u;if (len<4 || len>0x1000) {printf("cellular live DL: FMT RX bad len %u at %x\n",len,rt);return;}
+        uint32_t show=len<64?len:64,first=0x1000-rt<show?0x1000-rt:show;ipc_read(0x2000+rt,b,first);if (show>first) ipc_read(0x2000,b+first,show-first);
+        printf("cellular live DL: FMT RX frame (%u bytes):",len);for (unsigned i=0;i<show;i++) printf(" %02x",b[i]);printf("\n");
+        rt=(rt+total)%0x1000;ipc_store(0x14,rt);
+    }
+    fflush(stdout);
+}
+static int online_handshake(unsigned seconds)
+{
+    uint32_t last=0xffffffff,lastu=0xffffffff,msi=0,lastmsi=0xffffffff;int online=0;
+    uint64_t deadline=now_us(NULL)+(uint64_t)seconds*1000000;
+    while (now_us(NULL)<deadline && !stopped) {
+        uint32_t m=0,u=0,in=0;
+        if (ipc_load(0x404,&m) || ipc_load(0x40c,&u)) return -1;
+        read_word(0x13800830,&msi);inputs(&in);
+        if (m!=last || u!=lastu || msi!=lastmsi) {
+            printf("cellular live DL: cp2ap_msg %08x cp2ap_united %08x MSI status %08x GPIO %x\n",m,u,msi,in);fflush(stdout);
+            if (msi) {char r[8192],c[64];snprintf(c,sizeof(c),"w 0x13800830 0x%x",msi);request(c,r);}
+            if (m!=last && (m&0x80) && (m&0x40)) {
+                unsigned cmd=m&0x3f;
+                if (cmd==0x01) {phase("CP: INIT_START -> PIF_INIT_DONE");ap2cp(0x0d);}
+                else if (cmd==0x08) {
+                    phase("CP: PHONE_START -> IPC link (magic AA, queues zero) and INIT_END");
+                    for (uint32_t o=8;o<0x28;o+=4) ipc_store(o,0);
+                    ipc_store(4,1);ipc_store(0,0xaa);ap2cp(0x02);online=1;
+                }
+                else if (cmd==0x07 || cmd==0x09) phase("CP: CRASH");
+            }
+            last=m;lastu=u;lastmsi=msi;
+        }
+        if (online) fmt_dump();
+        usleep(1000);
+    }
+    printf("cellular live DL: handshake %s\n",online?"ONLINE (INIT_END sent)":"no PHONE_START seen");fflush(stdout);
+    return online?0:-1;
 }
 
 /* --download-all PLAN: lines "STAGE FILE OFFSET SIZE CRC" (CRC 0 = no CRC step); "15" = FIN (START only) */
@@ -314,8 +382,9 @@ static int download_stages(void)
     }
     fclose(p);
     if (!error) {
-        phase("download complete: watch 10 s for the main firmware (PHONE_ACTIVE, IPC magic, FMT/RAW RX)");
-        for (unsigned i=0;i<20;i++) {
+        phase("download complete: Samsung's IPC handshake, 20 s");
+        error=online_handshake(20);
+        for (unsigned i=0;i<2;i++) {
             uint32_t in=0,w[10];inputs(&in);for (unsigned k=0;k<10;k++) ipc_load(k*4,&w[k]);
             printf("cellular live DL: +%ums GPIO %x IPC",i*500,in);for (unsigned k=0;k<10;k++) printf(" %08x",w[k]);printf("\n");fflush(stdout);
             usleep(500000);
