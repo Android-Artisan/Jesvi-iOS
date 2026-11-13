@@ -776,3 +776,13 @@ For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=
   redwood-cellulard loads / cell-toc.bin), map CAL_IOVA_VSS there, zero the abox-vss magic word (+0x700000), send
   Calliope SYSTEM_CALL on/off at call start/end (abox_vss_notify_call -> abox_set_system_state), set the
   "incall-handset" routes. Then the caller should hear the S20's mic and vice versa.
+
+
+## 2026-11-14 — calls work: the AP is the voice engine (A)
+The CP's CPVE accepted every command (16/06, 16/01, 16/02, 16/03) but never took the RTP stream: the caller's packets
+(dport 50010/50011) arrive at the AP on SBD channels 10/11 as bare IPv6. So the voice is done on the AP, as a VoIP app
+does it: redwood-ims (`tools/cellular/ims-media.h`) decodes/encodes AMR-NB with opencore-amr and plays/records through
+/dev/redwood-audio and /dev/redwood-mic; redwood-cellulard hands those packets to the IMS interface; redwood-ims adds a
+host route to the media peer (only the P-CSCFs were routed: "No route to host"). Verified both ways by the user.
+The ABOX/Calliope route (cpcall, call-audio.sh, abox_tplg ids) stays documented here and in SHIPPING.md but is unused.
+Testing rule learned: never restart redwood-ims/cellulard while a call is up (the network keeps the call: "busy").

@@ -1,3 +1,20 @@
+## 2026-11-14 — VoLTE calls with voice, both ways (user-verified on the phone, ~03:45)
+- **Incoming VoLTE calls carry voice**: the S20 answers (opt-in auto-answer: `touch /var/root/cell-answer`), the caller is
+  heard on the speaker, the S20's mic is heard by the caller; hang-up from either side; up to 1 h.
+- How: the S5123's own voice engine does not take the RTP stream, so redwood-ims is the voice engine (`tools/cellular/ims-media.h`):
+  RTP AMR-NB 12.2 (RFC 4867 bandwidth-efficient) <-> opencore-amr 0.1.6 (Apache-2.0, static; `tools/cellular/build-ims.sh`) <->
+  /dev/redwood-audio (speaker, 48 kHz) and /dev/redwood-mic. Jitter buffer (60 ms), FIR 8<->48 kHz resampling, loss
+  concealment on sequence gaps, mic AGC, real-time threads, host route to the media peer over the IMS interface.
+- redwood-cellulard: the dedicated bearer's RTP arrives on SBD channels 10/11 (and possibly the data PDN) as bare IPv6:
+  now handed to the IMS interface (it was only logged). Health line: `ims up (in N, sbd M)`.
+- Fixes on the way: the SDP's c= address lost its first digit; a call answered but never ACKed stayed "answered" and every
+  later call got 486 Busy (now: media from our 200 OK, give-up after 30 s with no ACK and no voice).
+- Tested: several calls from another phone on Jio, 30 s to 2.5 min; counters in /var/tmp/redwood-ims.log every 5 s.
+- Commits: x1slte 9de2da3 ce68be3 (prebuilt redwood-ims / redwood-cellulard updated), cellular branch bdee2b7 8ac445e.
+- Kernel side (tried first, kept off): `snd=3`/`cpcall=1` maps ABOX's PCI voice region + modem doorbell for Calliope
+  (fe4a46b 39d2768 e3589a1); not needed for calls. e3589a1 also fixes a panic in the Calliope fault report.
+- Open: iOS call UI (ring / answer / decline instead of auto-answer), outgoing calls, earpiece vs speaker, echo cancellation.
+
 ## 2026-11-13 — cellular: data, VoLTE, texts in Messages (merge dfef1d3; verified on the phone)
 - **LTE data** for all apps: redwood-cellulard (utun + configd, Jio DNS/DNS64), kernel packet window (CP_IPC_PP_FLAG);
   ~3 MB/s over LTE. Starts by itself at boot (~65 s to data). Watchdogs: registration (75 s), downlink (max 1 restart/15 min).
