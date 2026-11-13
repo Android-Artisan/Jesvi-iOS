@@ -1458,6 +1458,8 @@ control_center_fades(const char *arguments)
 
 /* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
 #include "island_sb.h"
+/* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
+#include "cell_sb.h"
 
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
@@ -1537,6 +1539,7 @@ redwood_springboard_init(void)
 	 */
 	mps_unsupported_returns_nil();
 	island_start();
+	cell_start();
 	load_tweaks();
 	/*
 	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output
