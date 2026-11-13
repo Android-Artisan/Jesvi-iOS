@@ -1,3 +1,20 @@
+## 2026-11-14 (05:10) — Native calls: iOS call screen, Phone app dialling, earpiece (user-verified)
+- Incoming VoLTE calls ring on iOS's own call screen (lock screen included): answer / decline / end / mute; the caller's
+  hang-up ends it here. Outgoing calls from the Phone app (keypad, Recents, Contacts) go out over VoLTE. Voice on the earpiece.
+- RedwoodPhone.app (`tools/cellular/RedwoodPhone`, /var/jb/Applications, run by launchd as mobile): the CallKit provider;
+  talks to redwood-ims through /var/tmp/redwood-cell/call-ui (state / cmd.* / alive). callservicesd (Apple's, left out of the
+  system image) runs from /var/jb/redwood (install.sh puts it there); its job and RedwoodPhone's are in root.apfs.
+- libredwood: MobilePhone's dials go to RedwoodPhone (TUDialRequest provider); InCallService/SpringBoard treat it as the
+  telephony provider (full call screen, not the Dynamic Island).
+- redwood-ims: outgoing INVITE (no 100rel: Jio 481'd our PRACK and the answer never came), ACK/CANCEL/BYE, early media;
+  fixed IMS ports 50060/50062 (a restart replaces the registration: before, dead contacts made calls late or "busy");
+  responses fall back to the registration connection; keep-alive on the P-CSCF's connections; call numbers unique across
+  restarts; country code from the SIM's MCC; timestamps on call logs; hangs up cleanly on SIGTERM.
+- Kernel: kern.redwood.snd_route (1 = earpiece: top amplifier only, snd_ear_below 18 dB down), snd_call; audio plug-in
+  hands the mic to the call. cellulard registers RedwoodPhone with LaunchServices at boot (it forgets /var/jb apps).
+- Open: speaker toggle on the call screen (iOS needs a receiver port from the audio plug-in), purple call-screen
+  background (GPU), Dynamic Island mic waveform, Recents cleared, Messages button greyed, de-register on stop.
+
 ## 2026-11-14 — VoLTE calls with voice, both ways (user-verified on the phone, ~03:45)
 - **Incoming VoLTE calls carry voice**: the S20 answers (opt-in auto-answer: `touch /var/root/cell-answer`), the caller is
   heard on the speaker, the S20's mic is heard by the caller; hang-up from either side; up to 1 h.
