@@ -531,6 +531,7 @@ static int pktproc_info(void)
 /* ---- stay mode (--stay): the CP stays up; state for iOS in /var/tmp/redwood-cell/state ---- */
 static int stay_mode;
 static struct {int rssi_dbm,bars,reg_raw,have_rssi;char plmn[8];uint64_t at;} cell;
+static int data_is_up(void);
 static void cell_publish(void)
 {
     char tmp[]="/var/tmp/redwood-cell/state.tmp";
@@ -540,6 +541,7 @@ static void cell_publish(void)
     /* ios_reg/ios_data: SystemStatusServer's STTelephonyRegistrationStatus (2 = registered, 3 = notRegistered)
      * and STTelephonyDataConnectionType (7 = lteConnection), as its debug-name functions list them */
     fprintf(f,"data_on %d\n",!data_off);
+    fprintf(f,"data_up %d\n",data_is_up());
     fprintf(f,"bars %d\nmax 4\ndbm %d\noperator %s\nplmn %s\nreg %d\nrat LTE\nios_reg %d\nios_data %d\nupdated %llu\n",
         cell.bars,cell.rssi_dbm,op,cell.plmn,cell.reg_raw,(cell.plmn[0] && strcmp(cell.plmn,"000000"))?2:3,7,(unsigned long long)time(NULL));
     fclose(f);chmod(tmp,0644);rename(tmp,"/var/tmp/redwood-cell/state");
@@ -764,6 +766,7 @@ struct rw_in6_addrlifetime {time_t ia6t_expire,ia6t_preferred;uint32_t ia6t_vlti
 struct rw_in6_aliasreq {char ifra_name[IFNAMSIZ];struct sockaddr_in6 ifra_addr,ifra_dstaddr,ifra_prefixmask;int ifra_flags;struct rw_in6_addrlifetime ifra_lifetime;};
 #define RW_SIOCAIFADDR_IN6 _IOW('i',26,struct rw_in6_aliasreq)
 static int utun_fd=-1;static char utun_name[IFNAMSIZ];
+static int data_is_up(void) {return pdn.up && utun_fd>=0 && !data_off;}
 /* configd: publish the cellular service (State:/Network/Service/redwood-cell/{IPv6,DNS}) so IPMonitor
  * installs the DNS resolver and ranks the interface like any other service. Loaded at runtime. */
 #include <dlfcn.h>
@@ -835,6 +838,7 @@ static void utun_up(void)
     utun_fd=fd;
     printf("cellular: %s up (index %u), IPv6 from the modem, MTU %u\n",utun_name,if_nametoindex(utun_name),pdn.mtu);fflush(stdout);
     sc_publish();
+    cell_publish();
 }
 static int ims_fd=-1;static char ims_name[IFNAMSIZ];
 static void ims_write(void)
@@ -890,6 +894,7 @@ static void utun_down(void)
     if (st && setm) {const void *k[]={CFSTR("State:/Network/Service/redwood-cell/IPv6"),CFSTR("State:/Network/Service/redwood-cell/DNS")};
         CFArrayRef rm=CFArrayCreate(NULL,k,2,&kCFTypeArrayCallBacks);setm(st,NULL,rm,NULL);CFRelease(rm);CFRelease(st);}
     printf("cellular: mobile data off (%s closed, configd service removed)\n",utun_name);fflush(stdout);
+    cell_publish();
 }
 static void utun_poll(void)
 {
