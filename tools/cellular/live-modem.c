@@ -151,6 +151,8 @@ static int inputs(uint32_t *value)
 /* ---- firmware download (A, 2026-11-12): legacy RAW queues in the reserved IPC memory, Samsung's
  * link_start_normal_boot + xmit_to_legacy_link + cbd's SIPC UDL. Only with --download TOC. ---- */
 #include <sys/sysctl.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/time.h>
 #include <stdlib.h>
@@ -350,6 +352,7 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
 }
 static int stay_mode;
 static void cell_ipc(const uint8_t *m,unsigned len);
+static void pdn_ipconfig(const uint8_t *d,unsigned n);
 static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
 
 /* ---- RFS server (umts_rfs0, ch 245, SBD id 3), after mifmon.c (postmarketOS Note 8, decoded from libsec-ril):
@@ -436,6 +439,7 @@ static void sbd_dump_dl(void)
             ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,big,show);
             uint32_t flen=big[2]|(big[3]<<8);if (big[0]>=0xf8 && flen>=4 && flen<show) show=flen;
             if (sbd_chs[id].ch==235 && show>=11) cell_ipc(big,show);
+            if (sbd_chs[id].ch==235 && show>=11 && big[8]==0x0d && big[9]==0x09) pdn_ipconfig(big+11,show-11);
             if (sbd_chs[id].ch==245 && show>4) {rfs_rx(big+4,show-4);show=0;}
             if (sbd_chs[id].ch==25 && show>4) {
                 printf("cellular: AT <- ");for (unsigned k=4;k<show;k++) putchar(big[k]=='\r'?' ':big[k]=='\n'?'|':(big[k]>=32&&big[k]<127?big[k]:'.'));printf("\n");fflush(stdout);
@@ -514,6 +518,83 @@ static void cell_ipc(const uint8_t *m,unsigned len)
  *   at <AT command>                  -> umts_router (ch 25, SBD id 5), "\r" appended
  *   fmt <group> <index> <type> [hex] -> umts_ipc0 Samsung IPC (ch 235, SBD id 1)
  * replies are logged ("AT <-" lines for ch 25, "IPC <-" for ch 235) ---- */
+
+/* ---- packets (A, 2026-11-13): data call cid 2 = rmnet1 = PS ch 11. DL through the packet processor's
+ * descriptors (rear_ptr written by the CP), UL as raw IP in the multipdp SBD ring (id 9), buff_len|ch<<16 ---- */
+static struct {int up;uint8_t ip6[16],dns6[16];unsigned mtu;} pdn;
+static unsigned ul_ch=11,ul_ring=9;
+static unsigned pp_done;
+static uint64_t pp_rx,pp_tx;
+static int poke_read(uint32_t pa,uint32_t *w,unsigned n)
+{
+    char c[64],r[8192];snprintf(c,sizeof(c),"r 0x%x %u",pa,n);if (request(c,r)) return -1;
+    unsigned got=0;char *save=NULL;
+    for (char *t=strtok_r(r," \n",&save);t && got<n;t=strtok_r(NULL," \n",&save)) {
+        size_t L=strlen(t);if (L && t[L-1]==':') continue;          /* "0xADDR:" line prefixes */
+        w[got++]=(uint32_t)strtoul(t,NULL,16);
+    }
+    return got==n?0:-1;
+}
+static int poke_write(uint32_t pa,uint32_t v) {char c[64],r[8192];snprintf(c,sizeof(c),"w 0x%x 0x%x",pa,v);return request(c,r);}
+static void pdn_ipconfig(const uint8_t *d,unsigned n)
+{
+    if (n<0x9a || d[0]!=2) return;
+    memcpy(pdn.ip6,d+0x23,16);memcpy(pdn.dns6,d+0x63,16);pdn.mtu=d[0x98]|(d[0x99]<<8);pdn.up=1;
+    printf("cellular: data PDN cid 2 up: IPv6 %02x%02x:%02x%02x:..., DNS %02x%02x:%02x%02x:..., MTU %u\n",
+        pdn.ip6[0],pdn.ip6[1],pdn.ip6[2],pdn.ip6[3],pdn.dns6[0],pdn.dns6[1],pdn.dns6[2],pdn.dns6[3],pdn.mtu);fflush(stdout);
+}
+static void pkt_rx(const uint8_t *p,unsigned n);
+static void pp_poll(void)
+{
+    uint32_t rear=0;if (poke_read(0xd0000014,&rear,1) || rear>=PP_NDESC) return;
+    while (pp_done!=rear) {
+        uint32_t dw[4];uint32_t a=0xd0000100u+16*pp_done;
+        if (poke_read(a,dw,4)) return;
+        unsigned len=dw[2]&0xffff,ch=(dw[3]>>16)&0xff;uint32_t addr=dw[0];
+        if (len && len<=2048 && addr>=0x28100000u && addr<0x2c000000u) {
+            uint32_t words[520];unsigned nw=(len+3)/4;
+            if (!poke_read(addr-0x28000000u+0xd0000000u,words,nw)) {pp_rx++;pkt_rx((const uint8_t *)words,len);}
+        }
+        if (pp_rx<20) {printf("cellular: DL desc %u len %u ch %u status %02x\n",pp_done,len,ch,(dw[1]>>16)&0xff);fflush(stdout);}
+        /* hand the buffer back: same address, status cleared, fore advanced */
+        uint32_t back=0x28100000u+pp_done*PP_CELL+64u;
+        poke_write(a,back);poke_write(a+4,pp_done==0?0x8000u:0);poke_write(a+8,0);poke_write(a+12,0);
+        uint32_t fore=0;if (!poke_read(0xd0000010,&fore,1)) poke_write(0xd0000010,(fore+1)%PP_NDESC);
+        pp_done=(pp_done+1)%PP_NDESC;
+    }
+}
+static int pkt_tx(const uint8_t *p,unsigned n)
+{
+    unsigned id=ul_ring;uint16_t rp,wp;unsigned len=sbd_chs[id].ul_len;
+    if (ipc_load16(sbd_rp(id,0),&rp) || ipc_load16(sbd_wp(id,0),&wp) || (unsigned)(wp+1)%len==rp) return -1;
+    if (n>sbd_chs[id].ul_size || ipc_write(sbd_buf[id][0]+wp*sbd_chs[id].ul_size,p,n) ||
+        ipc_store(sbd_lenarr[id][0]+4*wp,n|(ul_ch<<16))) return -1;
+    __sync_synchronize();
+    if (ipc_store16(sbd_wp(id,0),(uint16_t)((wp+1)%len))) return -1;
+    pp_tx++;ipc_store(0x400,0x81);return doorbell(0);
+}
+static uint16_t csum16(const uint8_t *p,size_t n,uint32_t sum)
+{
+    for (size_t i=0;i+1<n;i+=2) sum+=(p[i]<<8)|p[i+1];if (n&1) sum+=p[n-1]<<8;
+    while (sum>>16) sum=(sum&0xffff)+(sum>>16);return (uint16_t)~sum;
+}
+static void ping6(const char *dst)
+{
+    uint8_t ip[16];if (!pdn.up || inet_pton(AF_INET6,dst,ip)!=1) {printf("cellular: ping6: no PDN or bad address\n");return;}
+    uint8_t pk[48+16];memset(pk,0,sizeof(pk));
+    pk[0]=0x60;pk[4]=0;pk[5]=8+16;pk[6]=58;pk[7]=64;memcpy(pk+8,pdn.ip6,16);memcpy(pk+24,ip,16);
+    uint8_t *ic=pk+40;ic[0]=128;ic[4]=0x12;ic[5]=0x34;ic[7]=1;memcpy(ic+8,"redwood-s20-lte!",16);
+    uint8_t ph[40];memset(ph,0,sizeof(ph));memcpy(ph,pk+8,32);ph[35]=24;ph[39]=58;
+    uint32_t s0=0;for (int i=0;i<40;i+=2) s0+=(ph[i]<<8)|ph[i+1];
+    uint16_t c=csum16(ic,24,s0);ic[2]=(uint8_t)(c>>8);ic[3]=(uint8_t)c;
+    int e=pkt_tx(pk,64);printf("cellular: ping6 %s sent (%s)\n",dst,e?"UL ring refused":"ok");fflush(stdout);
+}
+static void pkt_rx(const uint8_t *p,unsigned n)
+{
+    if (n>=40 && (p[0]>>4)==6 && p[6]==58 && n>=48 && p[40]==129)
+        {printf("cellular: ping6 REPLY from %02x%02x:%02x%02x:... (%u bytes)\n",p[8],p[9],p[10],p[11],n);fflush(stdout);}
+    else if (pp_rx<20) {printf("cellular: DL packet %u bytes, IP v%u next %u\n",n,p[0]>>4,p[6]);fflush(stdout);}
+}
 static int ctl_fd=-1;static uint8_t ipc_mseq=0x40;
 static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
 static void ctl_line(char *l)
@@ -530,9 +611,23 @@ static void ctl_line(char *l)
         #define HEXOF(buf,n) do{for(size_t _k=0;_k<(n);_k++) snprintf(hex+2*_k,3,"%02x",(buf)[_k]);}while(0)
         memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);d[0x148]=6;HEXOF(d,330);snprintf(cmd,sizeof(cmd),"fmt 0d 14 03 %s",hex);ctl_line(cmd);
         ctl_line("fmt 0d 03 03 010000");
-        memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
-        memset(d,0,sizeof(d));d[0]=1;d[1]=1;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
+        memset(d,0,sizeof(d));d[0]=1;d[1]=2;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
+        memset(d,0,sizeof(d));d[0]=1;d[1]=2;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
         printf("cellular: data call requested on APN %s\n",apn);fflush(stdout);
+    } else if (!strncmp(l,"pch ",4)) {
+        unsigned c2=0,r2=ul_ring;sscanf(l+4,"%u %u",&c2,&r2);if (c2) ul_ch=c2;if (r2==8||r2==9) ul_ring=r2;
+        printf("cellular: UL channel %u ring %u\n",ul_ch,ul_ring);fflush(stdout);
+    } else if (!strncmp(l,"rs",2)) {
+        /* ICMPv6 router solicitation from our address to ff02::2 */
+        if (!pdn.up) return;
+        uint8_t pk[48];memset(pk,0,sizeof(pk));pk[0]=0x60;pk[5]=8;pk[6]=58;pk[7]=255;memcpy(pk+8,pdn.ip6,16);
+        pk[24]=0xff;pk[25]=0x02;pk[39]=2;pk[40]=133;
+        uint8_t ph[40];memset(ph,0,sizeof(ph));memcpy(ph,pk+8,32);ph[35]=8;ph[39]=58;
+        uint32_t s0=0;for (int i=0;i<40;i+=2) s0+=(ph[i]<<8)|ph[i+1];
+        uint16_t c=csum16(pk+40,8,s0);pk[42]=(uint8_t)(c>>8);pk[43]=(uint8_t)c;
+        printf("cellular: router solicitation %s\n",pkt_tx(pk,48)?"refused":"sent");fflush(stdout);
+    } else if (!strncmp(l,"ping6 ",6)) {
+        ping6(l+6);
     } else if (!strncmp(l,"stat",4)) {
         printf("cellular: rings id:ch ulrp/ulwp dlrp/dlwp:");
         for (unsigned i=0;i<SBD_N;i++) {uint16_t a1=0,a2=0,a3=0,a4=0;ipc_load16(sbd_rp(i,0),&a1);ipc_load16(sbd_wp(i,0),&a2);ipc_load16(sbd_rp(i,1),&a3);ipc_load16(sbd_wp(i,1),&a4);
@@ -591,6 +686,7 @@ static int online_handshake(unsigned seconds)
             last=m;lastu=u;lastmsi=msi;
         }
         if (online && stay_mode) ctl_poll();
+        if (online && stay_mode && pdn.up) pp_poll();
         if (online && stay_mode) {      /* heartbeat: SpringBoard treats a state older than two minutes as no modem */
             static uint64_t beat;
             if (now_us(NULL)-beat>20000000ull) {beat=now_us(NULL);if (cell.plmn[0] || cell.have_rssi) cell_publish();}

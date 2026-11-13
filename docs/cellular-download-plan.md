@@ -421,3 +421,12 @@ Service FIFO: `data [apn]` sends the whole sequence (currently cid 1 -- use cid 
 Next: packets. DL: CP fills pktproc descriptors (rear_ptr @ d0000000+0x14), AP reads and refills (fore_ptr).
 UL: raw IP into the multipdp SBD ring (id 9, ch 11 = rmnet1 = cid 2), buff_len = len | ch<<16, then
 MASK_SEND_DATA. Then a utun interface in iOS with the IPv6 address, default route and DNS.
+- Packet path, first tries (Nov13 ~10:40): service FIFO `data` (attach profile + PS attach + define/activate
+  cid 2) brings the PDN up reliably (0d09 parsed: IPv6, DNS, MTU). `ping6 <addr>`, `rs` (router solicitation)
+  and `pch <ch> [ring]` added. UL: the CP consumes our raw IPv6 packets from the multipdp ring 9 (rp/wp
+  advance) with ch 10, 11 or 12 in buff_len bits 16+. DL: nothing -- pktproc rear_ptr stays 0, SBD DL rings
+  0, even after RS (an RA must come back). DT cp_shmem confirms PKTPROC = rmem 2 (d0000000) offset 0,
+  64 MB, cached=1 (and pktproc_use_hw_iocc=1). Next suspects: (1) the UL never leaves the CP (check with
+  the CP's own data counters / 0d message after UL), (2) DL needs IO coherency (HSI2 IOCC sysreg as the
+  Samsung PCIe driver sets for use_hw_iocc) or the RINGEND/HEAD layout, (3) pktproc needs an MSI/doorbell
+  "AP ready" kick (s51xx doorbell for pktproc), (4) DL delivered through a different queue index.
