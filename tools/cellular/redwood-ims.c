@@ -573,6 +573,8 @@ static struct {
     int out;                            /* we called (state 10 dialling, then 2 alerting/answered, 3 up) */
     char branch[40];unsigned rseq_acked;
 } call;
+/* call numbers unique across restarts (the call screen remembers ended numbers: after a restart "call 1" was taken
+ * for an old one and an incoming call never rang, 2026-11-14 05:00) */
 static unsigned call_seq;
 static char call_ip6[64];
 static void call_media(int start);
@@ -1093,6 +1095,7 @@ static void ims_stop(int sig)
 int main(int argc,char **argv)
 {
     setvbuf(stdout,NULL,_IOLBF,0);
+    call_seq=(unsigned)(time(NULL)%1000000)*10;
     signal(SIGTERM,ims_stop);signal(SIGINT,ims_stop);signal(SIGPIPE,SIG_IGN);
     pfk=socket(PF_KEY,SOCK_RAW,PF_KEY_V2);
     if (argc>1 && !strcmp(argv[1],"--pfkey")) {printf("PF_KEY socket: %s\n",pfk>=0?"available":strerror(errno));return pfk<0;}
