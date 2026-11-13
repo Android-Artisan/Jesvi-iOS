@@ -468,3 +468,10 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
 - Samsung's Jio profile (stock imsservice.apk res/raw/imsprofile.json, "RJIL VoLTE"): pdn ims, transport tcp, ipsec, auth_algo hmac-md5-96, UA `Samsung_[MODEL]_[BUILD]_IMS_6.0`, PANI used, `reg_retry_pcscf_policy_on_403: next_pcscf`.
 - Jio P-CSCFs answer OPTIONS (200, Supported: sec-agree). REGISTER (UDP and TCP, with/without Samsung UA, IMEI +sip.instance, icsi tags, md5) → **403 Forbidden** without a challenge. Not yet tried: correct PANI (cell id from 08 05 bytes 6-9 LE, TAC bytes 10-11), fresh service (transport flaky after the cid 4 experiment), rate limits after repeated 403s.
 - Transport is intermittent (TCP stalls, some UDP lost); the sysctl-per-256-bytes DL path is the suspect (kernel window for the pktproc region is the fix, needs a reboot).
+
+## 2026-11-13 13:00 — packet window: data fast and steady
+
+- Kernel: `kern.redwood.cp_ipc` reads/writes with offset bit 31 (`CP_IPC_PP_FLAG`) go to a 2 MiB Normal-NC mapping of the pktproc area (0xd0000000), made on first use, certificate-gated, refused while the debug peek holds a page there. Before: every packet was 8-13 debug-peek sysctls (64 words each, 16 KiB page mappings kept in a 64-entry table) -> stalls under load.
+- Service: descriptors read in batches, one write back per batch, `fore` kept locally and written once per poll; falls back to the peek on an old kernel.
+- Measured over cellular only (IPV6_BOUND_IF utun1): 3 MB in ~1 s, connects in ~63 ms, 3/3 OK (was 1 MB in 3.4 s with stalls).
+- Boot: modem start at top priority 25 s after boot, 5 attempts 8 s apart (first attempt fails under boot load, second works); data ~40 s after the service starts.
