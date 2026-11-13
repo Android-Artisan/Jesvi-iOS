@@ -1051,6 +1051,18 @@ static int online_handshake(unsigned seconds)
             }
             if (stopped && ims_pid>0) {kill(ims_pid,SIGTERM);ims_pid=0;}
         }
+        if (online && stay_mode) {
+            /* registration watchdog: after a boot the CP has been seen to stay at "no service" (PLMN 000000, no RSSI
+             * reports) until restarted; registered within 2 minutes of coming online, or a clean restart */
+            static uint64_t online_at;uint64_t now=now_us(NULL);
+            if (!online_at) online_at=now;
+            int registered=cell.plmn[0] && strcmp(cell.plmn,"000000");
+            if (registered) online_at=~0ull>>1;        /* registered once: this watchdog is done */
+            else if (online_at!=(~0ull>>1) && now-online_at>75000000ull) {
+                printf("cellular: watchdog: not registered 75 s after the modem came up; restarting the modem\n");fflush(stdout);
+                restart_wanted=1;stopped=1;
+            }
+        }
         if (online && stay_mode && pdn.up && !data_off && utun_fd>=0) {
             /* downlink watchdog: the CP has been seen to stop delivering anything (ring idle, control IPC fine).
              * Traffic going out and nothing back for 60 s -> ping the PDN's DNS; still nothing 20 s later -> restart */
@@ -1064,8 +1076,17 @@ static int online_handshake(unsigned seconds)
                 ping6(d);probe=now;rx_at_probe=pp_rx;
             }
             if (probe && now-probe>20000000ull && pp_rx==rx_at_probe) {
-                printf("cellular: watchdog: downlink silent, restarting the modem\n");fflush(stdout);
-                restart_wanted=1;stopped=1;
+                /* pp_rx counts every downlink packet, IMS included: silent means nothing at all came back. The internet
+                 * can be blocked while the modem is fine (an expired data pack): at most one restart per 15 minutes */
+                struct stat ws;time_t last=stat("/var/tmp/redwood-cell/watchdog-restart",&ws)?0:ws.st_mtime;
+                if (time(NULL)-last<900) {
+                    if (probe!=1) {printf("cellular: watchdog: downlink silent, but a restart was made less than 15 min ago; waiting\n");fflush(stdout);}
+                    probe=1;
+                } else {
+                    printf("cellular: watchdog: downlink silent, restarting the modem\n");fflush(stdout);
+                    close(open("/var/tmp/redwood-cell/watchdog-restart",O_CREAT|O_WRONLY|O_TRUNC,0644));utimes("/var/tmp/redwood-cell/watchdog-restart",NULL);
+                    restart_wanted=1;stopped=1;
+                }
             }
         }
         if (online && stay_mode && pdn.up && !ims.up && ims.tries<6 && now_us(NULL)-ims.tried>20000000ull) {
@@ -1397,6 +1418,7 @@ int main(int argc,char **argv)
             argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
         }
         unlink("/var/tmp/redwood-cell/state");    /* (/var/tmp survives a restart: no stale bars before the modem is up) */
+        unlink("/var/tmp/redwood-cell/ims-registered");   /* VoLTE status for Settings: redwood-ims sets it again */
         /* right after boot the phone is busy and the SPI BOOT's byte PIO can starve (the CP's ROM times out).
          * Instead of waiting minutes for calm: the boot runs at top priority (dropped again once the CP is up),
          * starts 25 s after boot (or when the load is low), and is retried (5 attempts) */

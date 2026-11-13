@@ -564,7 +564,7 @@ static void ims_cmd_poll(int sock,int portc)
 
 static void ims_stop(int sig)
 {   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own) */
-    (void)sig;ipsec_flush();_exit(0);
+    (void)sig;unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
 }
 
 int main(int argc,char **argv)
@@ -575,6 +575,17 @@ int main(int argc,char **argv)
     if (argc>1 && !strcmp(argv[1],"--pfkey")) {printf("PF_KEY socket: %s\n",pfk>=0?"available":strerror(errno));return pfk<0;}
     if (argc>1 && !strcmp(argv[1],"--flush")) {ipsec_flush();printf("SAs and policies flushed\n");return 0;}
     if (load_cfg()) {fprintf(stderr,"redwood-ims: no IMS PDN yet (/var/tmp/redwood-cell/ims)\n");return 1;}
+    {   /* one client only: an older one (e.g. left by a restarted redwood-cellulard) is stopped first -- two clients
+         * flush each other's SAs and neither can send */
+        FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int old=0;
+        if (q) {if (fscanf(q,"%d",&old)!=1) old=0;fclose(q);}
+        if (old>1 && old!=getpid() && !kill(old,0)) {
+            printf("stopping the older client (pid %d)\n",old);kill(old,SIGTERM);
+            for (int i=0;i<50 && !kill(old,0);i++) usleep(100000);
+            if (!kill(old,0)) kill(old,SIGKILL);
+        }
+        q=fopen("/var/tmp/redwood-cell/ims.pid","w");if (q) {fprintf(q,"%d\n",getpid());fclose(q);}
+    }
     if (pfk<0) {perror("PF_KEY");return 1;}
     int udp=flag(argc,argv,"--udp"),tcp=!udp,pci=atoi(opt(argc,argv,"--pcscf","0"))%cfg.npc;
     const char *ua=opt(argc,argv,"--ua","Samsung_SM-G980F_G980FXXSNHYB7_IMS_6.0"),*pani=opt(argc,argv,"--pani","");
@@ -695,6 +706,7 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
+    {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)time(NULL));fclose(q);}}
     sms_keep_registration(r);
     if (flag(argc,argv,"--once")) return 0;
 
@@ -702,7 +714,7 @@ int main(int argc,char **argv)
     int cs[8];int ncs=0;time_t registered_at=time(NULL);
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");ipsec_flush();return 0;}
+        if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         if (poll(p,(nfds_t)k,1000)<0) break;
@@ -713,7 +725,7 @@ int main(int argc,char **argv)
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");ipsec_flush();return 0;} break;}
+            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
             printf("<-- %zd bytes\n",g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7)) {      /* a request: 200 with its Via/From/To/Call-ID/CSeq */
                 char via[900],fr[300],to[300],ci[200],cq[80];int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n");
