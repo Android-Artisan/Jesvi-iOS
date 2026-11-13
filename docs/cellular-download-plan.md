@@ -758,3 +758,13 @@ For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=
 - Next: what 16/03's code 100 means (OemIPCHandler / VoIpEngineProxy::IpcCallback 0x7cf340 decode the 0x80 codes);
   whether the CP needs the audio path first (IPC group 0x09 SND AUDIO_PATH / CLOCK) or 16/09 EngineSet before it
   starts encoding; the ABOX VSS route.
+
+### VoLTE calls, 2026-11-13 23:15 (A): the CP side is complete
+- Call flow now (1453c42): 09/03 SET path=1, 09/09 EXEC clock=1, 16/06, 16/01 open, 16/02 AMR-NB, 16/03 start -- every
+  one 0x8000 except 16/03 -> 100 while a channel is open over the bearer; with no channel open 16/03 is accepted
+  (32/32, 23:09). Reading: 100 = already running (the CP starts the stream at 16/01 once the bearer is up).
+- The caller still hears dead silence: the CP encodes what ABOX's VSS hands it and plays into VSS; without the ABOX
+  call state + routes it has nothing. Next is the ABOX side (redwood_audio): VSS shared-memory magic, Calliope
+  SYSTEM_CALL state (abox_vss_notify_call), mixer route "incall-handset" (vendor mixer_paths.xml), the virtual PCMs
+  104/113 the audio proxy opens -- kernel work, needs reboots.
+- P-CSCF reconnects: a resent INVITE on the new connection carries the call on (1453c42).
