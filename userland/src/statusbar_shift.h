@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 16.0;   /* (user 2026-11-13 22:10: a little more padding both sides; was 20) */
+static double sbs_lead = 0;      /* (off by default: user 2026-11-13 22:20, "go back to default"; was 3..20) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -57,7 +57,7 @@ sbs_edge_insets(id self, SEL cmd)
  * where an iPhone has it; `lead` then moves it further left. Only the status bar's layout: the island is untouched.
  */
 struct sbs_rect { double x, y, w, h; };
-static double sbs_cut = 125.0;
+static double sbs_cut = 0;
 static bool (*sbs_orig_avoid)(id, SEL, struct sbs_rect, double *, double *);
 
 static bool
@@ -140,6 +140,7 @@ sbs_setup(id self, SEL cmd, id container)
  * the island on. It centres the time in the 83 pt left of a 209 pt notch, nudged by +leadingCenteringOffset
  * (-0.667). That nudge is moved left by lead/2 (the same feel `lead` had: lead=20 -> about 10 pt left).
  */
+static double sbs_notch_shift;
 static double (*sbs_orig_lco)(id, SEL);
 
 static double
@@ -160,7 +161,7 @@ sbs_lco(id self, SEL cmd)
  * the same amount (user 2026-11-13: "the battery ... too much to the right"). It is given back here, plus `trail`
  * points more inward (conf trail=, default 0). Added on Split1125's own metaclass (the method is inherited).
  */
-static double sbs_trail = 2;     /* (same: the right side 2 pt further in) */
+static double sbs_trail = 0;
 static double (*sbs_orig_tco)(id, SEL);
 
 static double
@@ -183,9 +184,9 @@ sbs_tco(id self, SEL cmd)
  * so lco/tco take that back: the time and the battery stay where lead/trail put them.
  */
 struct sbs_size { double w, h; };
-static double sbs_notch = 125;
+static double sbs_notch = 0;
 static struct sbs_size (*sbs_orig_notch)(id, SEL);
-static double sbs_notch_shift;          /* (orig - notch) / 4, set once the original is known */
+
 
 static struct sbs_size
 sbs_notch_size(id self, SEL cmd)
@@ -300,8 +301,8 @@ statusbar_shift_start(void)
 			sbs_cut = atof(p + 4);
 		}
 	}
-	if (sbs_lead <= 0 && sbs_cut <= 0) {
-		return;
+	if (sbs_lead <= 0 && sbs_cut <= 0 && sbs_trail == 0 && sbs_notch <= 0) {
+		return;                         /* the default: Apple's status bar, nothing hooked */
 	}
 	/*
 	 * At once, from the library's constructor: UIKitCore is mapped (a dependency of every UI process) and its classes

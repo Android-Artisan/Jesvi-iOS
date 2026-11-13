@@ -121,17 +121,12 @@ The log shows each change: `island: SAUIElementViewController 0x... layout mode 
 The rest of the geometry (minimise animation, radius, minimal views) follows the pill by value since 2026-11-13
 (B's proposals/notch/island-geometry-hooks.patch, now in `island_sb.h`).
 
-## Status bar: the time at the left
+## Status bar
 
-`src/statusbar_shift.h` (in libredwood for apps and libredwood-sb for the home screen), two settings in
-`/var/jb/etc/redwood-statusbar.conf`, applied by a respring (reopen apps):
-
-| Key | Default | What it does |
-| --- | --- | --- |
-| `cut=` | **125** pt | iOS centres the time in the space between the left edge and the island. With a 21 pt hole that space is far wider than a 14 Pro's, so the time sat near its middle ("too much padding"). The status bar lays itself out around a cutout of at least this width (`_needsUpdateOfConstraintsForAvoidanceFrame:cutoutOffset:cutoutWidth:`); the island itself is untouched. `cut=0`: iOS's own width. |
-| `lead=` | **20** pt | taken off `-[_UIStatusBarVisualProvider_DynamicSplit edgeInsets]`'s leading gap (Apple 17); may go below 0. The time moves by about half of it. `lead=0`: Apple's. |
-
-User-verified 2026-11-13 21:05 with `cut=125 lead=20` ("all worked").
+Apple's layout, unchanged (user 2026-11-13 22:20: "go back to default"). The phone uses UIKit's notch layout
+(_UIStatusBarVisualProvider_Split1125; the screen is the iPhone X's). `src/statusbar_shift.h` can still move things
+(`lead=`, `trail=`, `notch=`, `cut=` in /var/jb/etc/redwood-statusbar.conf, respring), but every value is 0 = off by
+default and nothing is hooked then.
 
 ## Known issue
 
