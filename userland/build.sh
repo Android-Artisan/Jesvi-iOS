@@ -136,7 +136,7 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences
+/redwood/lib/libredwood-tweaks.dylib Preferences imagent
 /redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
 /redwood/lib/libredwood-finder.dylib lockdownd
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}"}
