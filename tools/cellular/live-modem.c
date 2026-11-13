@@ -158,6 +158,7 @@ static int inputs(uint32_t *value)
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <time.h>
 #include "../../xnu/files/bsd/sys/redwood_cp_ipc.h"
 #include "s5123-udl.h"
@@ -487,22 +488,38 @@ static void sbd_dump_dl(void)
  * q_info[0] {desc_base cp+0x100, num_desc (0x3f00000/2560)*25/100, data_base cp+0x100000, fore 0, rear 0} */
 #define PP_NDESC 256u
 #define PP_CELL 2560u
+/* the pktproc area: through the kernel's second IPC window (CP_IPC_PP_FLAG, one call per packet) when the
+ * kernel has it, else the debug peek ("r"/"w", 64 words a call, page mappings of its own) */
+static int poke_read(uint32_t pa,uint32_t *w,unsigned n);
+static int poke_write(uint32_t pa,uint32_t v);
+static int pp_win=-1;
+static int pp_window(void)
+{
+    if (pp_win<0) {uint32_t v;pp_win=ipc_op(CP_IPC_LOAD32,CP_IPC_PP_FLAG|0x14,NULL,4,&v)==0;
+        printf("cellular live DL: pktproc access through %s\n",pp_win?"the kernel's packet window":"the debug peek (old kernel)");fflush(stdout);}
+    return pp_win;
+}
+static int pp_read(uint32_t pa,uint32_t *w,unsigned n)
+{return pp_window()?ipc_read(CP_IPC_PP_FLAG|(pa-0xd0000000u),(uint8_t *)w,4*n):poke_read(pa,w,n);}
+static int pp_writes(uint32_t pa,const uint32_t *w,unsigned n)
+{
+    if (pp_window()) return ipc_write(CP_IPC_PP_FLAG|(pa-0xd0000000u),(const uint8_t *)w,4*n);
+    for (unsigned k=0;k<n;k++) if (poke_write(pa+4*k,w[k])) return -1;
+    return 0;
+}
 static int pktproc_info(void)
 {
-    char r[8192],c[96];
-    for (unsigned o=0;o<0x100;o+=4) {snprintf(c,sizeof(c),"w 0x%x 0x0",0xd0000000u+o);if (request(c,r)) return -1;}
+    static uint32_t z[64],ring[PP_NDESC*4];
+    if (pp_writes(0xd0000000u,z,64)) return -1;
     /* the descriptor ring (16 B each at +0x100): every entry but the last a free RX buffer, as
      * pktproc_fill_data_addr(): data_addr = CP data base + cell offset + NET_SKB_PAD(64); HEAD on the first */
     for (unsigned i=0;i<PP_NDESC;i++) {
-        uint32_t a=0xd0000100u+16*i,addr=i<PP_NDESC-1?0x28100000u+i*PP_CELL+64u:0,ctl=i==0?0x80u:0;
-        snprintf(c,sizeof(c),"w 0x%x 0x%x",a,addr);if (request(c,r)) return -1;
-        snprintf(c,sizeof(c),"w 0x%x 0x%x",a+4,ctl<<8);if (request(c,r)) return -1;
-        snprintf(c,sizeof(c),"w 0x%x 0x0",a+8);if (request(c,r)) return -1;
-        snprintf(c,sizeof(c),"w 0x%x 0x0",a+12);if (request(c,r)) return -1;
+        ring[4*i]=i<PP_NDESC-1?0x28100000u+i*PP_CELL+64u:0;ring[4*i+1]=(i==0?0x80u:0)<<8;ring[4*i+2]=ring[4*i+3]=0;
     }
+    if (pp_writes(0xd0000100u,ring,PP_NDESC*4)) return -1;
     /* info: {num_queues 1, mode 1 SKTBUF, max_packet 2048} + q_info[0] {desc_base, num_desc, data_base, fore, rear} */
     const uint32_t w[]={1u|(1u<<4)|(2048u<<8),0x28000100u,PP_NDESC,0x28100000u,PP_NDESC-1,0};
-    for (unsigned i=0;i<6;i++) {snprintf(c,sizeof(c),"w 0x%x 0x%x",0xd0000000u+4*i,w[i]);if (request(c,r)) return -1;}
+    if (pp_writes(0xd0000000u,w,6)) return -1;
     printf("cellular live DL: pktproc v2 at d0000000: %u descriptors, %u free RX buffers (fore %u)\n",PP_NDESC,PP_NDESC-1,PP_NDESC-1);fflush(stdout);
     return 0;
 }
@@ -666,24 +683,33 @@ static void pdn_ipconfig(const uint8_t *d,unsigned n)
 }
 static void pkt_rx(const uint8_t *p,unsigned n);
 static void ims_deliver(const uint8_t *p,unsigned n);
+static uint32_t pp_fore=PP_NDESC-1;   /* AP-owned: the CP only reads it */
+static unsigned pp_lost;
 static void pp_poll(void)
 {
-    uint32_t rear=0;if (poke_read(0xd0000014,&rear,1) || rear>=PP_NDESC) return;
+    uint32_t rear=0;if (pp_read(0xd0000014,&rear,1) || rear>=PP_NDESC) return;
+    unsigned handed=0;
     while (pp_done!=rear) {
-        uint32_t dw[4];uint32_t a=0xd0000100u+16*pp_done;
-        if (poke_read(a,dw,4)) return;
-        unsigned len=dw[2]&0xffff,ch=(dw[3]>>16)&0xff;uint32_t addr=dw[0];
-        if (len && len<=2048 && addr>=0x28100000u && addr<0x2c000000u) {
-            uint32_t words[520];unsigned nw=(len+3)/4;
-            if (!poke_read(addr-0x28000000u+0xd0000000u,words,nw)) {pp_rx++;if (ch==IMS_CH) ims_deliver((const uint8_t *)words,len);else pkt_rx((const uint8_t *)words,len);}
+        /* the new descriptors up to the ring's end (or rear) in one read */
+        unsigned cnt=rear>pp_done?rear-pp_done:PP_NDESC-pp_done;if (cnt>64) cnt=64;
+        static uint32_t dw[64*4];uint32_t a0=0xd0000100u+16*pp_done;
+        if (pp_read(a0,dw,4*cnt)) return;
+        for (unsigned k=0;k<cnt;k++) {
+            uint32_t *d=dw+4*k;unsigned idx=pp_done+k;
+            unsigned len=d[2]&0xffff,ch=(d[3]>>16)&0xff;uint32_t addr=d[0];
+            if (len && len<=2048 && addr>=0x28100000u && addr<0x2c000000u) {
+                uint32_t words[520];unsigned nw=(len+3)/4;
+                if (!pp_read(addr-0x28000000u+0xd0000000u,words,nw)) {pp_rx++;if (ch==IMS_CH) ims_deliver((const uint8_t *)words,len);else pkt_rx((const uint8_t *)words,len);}
+                else if (pp_lost++<20) {printf("cellular: DL desc %u: buffer %#x unreadable, packet lost\n",idx,addr);fflush(stdout);}
+            }
+            if (pp_rx<20) {printf("cellular: DL desc %u len %u ch %u status %02x\n",idx,len,ch,(d[1]>>16)&0xff);fflush(stdout);}
+            /* hand the buffer back: same address, status cleared */
+            d[0]=0x28100000u+idx*PP_CELL+64u;d[1]=idx==0?0x8000u:0;d[2]=d[3]=0;
         }
-        if (pp_rx<20) {printf("cellular: DL desc %u len %u ch %u status %02x\n",pp_done,len,ch,(dw[1]>>16)&0xff);fflush(stdout);}
-        /* hand the buffer back: same address, status cleared, fore advanced */
-        uint32_t back=0x28100000u+pp_done*PP_CELL+64u;
-        poke_write(a,back);poke_write(a+4,pp_done==0?0x8000u:0);poke_write(a+8,0);poke_write(a+12,0);
-        uint32_t fore=0;if (!poke_read(0xd0000010,&fore,1)) poke_write(0xd0000010,(fore+1)%PP_NDESC);
-        pp_done=(pp_done+1)%PP_NDESC;
+        if (pp_writes(a0,dw,4*cnt)) return;
+        pp_done=(pp_done+cnt)%PP_NDESC;handed+=cnt;
     }
+    if (handed) {pp_fore=(pp_fore+handed)%PP_NDESC;pp_writes(0xd0000010,&pp_fore,1);}
 }
 static int pkt_tx_ch(const uint8_t *p,unsigned n,unsigned ch);
 static int pkt_tx(const uint8_t *p,unsigned n) {return pkt_tx_ch(p,n,ul_ch);}
@@ -1038,7 +1064,7 @@ static int online_handshake(unsigned seconds)
                 else if (cmd==0x08) {
                     phase("CP: PHONE_START -> IPC link (magic AA, queues zero) and INIT_END");
                     for (uint32_t o=8;o<0x28;o+=4) ipc_store(o,0);
-                    ipc_store(4,1);ipc_store(0,0xaa);ap2cp(0x02);online=1;
+                    ipc_store(4,1);ipc_store(0,0xaa);ap2cp(0x02);online=1;setpriority(PRIO_PROCESS,0,0);   /* boot priority no longer needed */
                 }
                 else if (cmd==0x07 || cmd==0x09) phase("CP: CRASH");
             }
@@ -1053,7 +1079,7 @@ static int online_handshake(unsigned seconds)
         }
         if (online && stay_mode && !data_off && !pdn.up && cell.plmn[0] && strcmp(cell.plmn,"000000")) {
             static uint64_t tried;static unsigned tries;struct stat nd;
-            if (tries<5 && now_us(NULL)-tried>20000000ull && stat("/var/root/cell-nodata",&nd)) {
+            if (tries<12 && now_us(NULL)-tried>8000000ull && stat("/var/root/cell-nodata",&nd)) {
                 tried=now_us(NULL);tries++;printf("cellular: automatic data call, try %u\n",tries);fflush(stdout);ctl_line((char[]){"data"});
             }
         }
@@ -1375,13 +1401,15 @@ int main(int argc,char **argv)
             argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
         }
         unlink("/var/tmp/redwood-cell/state");    /* (/var/tmp survives a restart: no stale bars before the modem is up) */
-        /* right after boot the phone is too busy for the SPI BOOT's byte PIO (the CP's ROM times out):
-         * wait until 60 s after boot and a load average under 8, at most 4 minutes */
-        for (unsigned waited=0;waited<240;waited+=5) {
+        /* right after boot the phone is busy and the SPI BOOT's byte PIO can starve (the CP's ROM times out).
+         * Instead of waiting minutes for calm: the boot runs at top priority (dropped again once the CP is up),
+         * starts 25 s after boot (or when the load is low), and is retried (5 attempts) */
+        setpriority(PRIO_PROCESS,0,-20);
+        for (unsigned waited=0;waited<60;waited+=5) {
             struct timeval boot;size_t bl=sizeof(boot);double load[3]={99,99,99};
             int up=!sysctlbyname("kern.boottime",&boot,&bl,NULL,0)?(int)(time(NULL)-boot.tv_sec):999;
             getloadavg(load,3);
-            if (up>=60 && load[0]<8.0) break;
+            if (up>=25 || load[0]<8.0) break;
             if (waited==0) {printf("cellular: waiting for the system to settle (up %d s, load %.0f)\n",up,load[0]);fflush(stdout);}
             sleep(5);
         }
@@ -1398,9 +1426,9 @@ int main(int argc,char **argv)
     struct modem m={0};struct s5123_boot_result result={0};
     struct s5123_boot_ops ops={&m,ready,prepare,output,delay,route,send_boot,park,restore,quiescent};
     int error=s5123_boot_once(&ops,&result,image,length,fields[2]);
-    for (unsigned attempt=2;stay_mode && !stopped && attempt<=3 && error && result.cleanup_safe && result.phase<=5;attempt++) {
-        printf("cellular live BOOT: attempt %u in 15 s (error %d at phase %u)\n",attempt,error,result.phase);fflush(stdout);
-        sleep(15);
+    for (unsigned attempt=2;stay_mode && !stopped && attempt<=5 && error && result.cleanup_safe && result.phase<=5;attempt++) {
+        printf("cellular live BOOT: attempt %u in 8 s (error %d at phase %u)\n",attempt,error,result.phase);fflush(stdout);
+        sleep(8);
         memset(&m,0,sizeof(m));memset(&result,0,sizeof(result));cleanup=0;ipc_mapped=0;
         error=s5123_boot_once(&ops,&result,image,length,fields[2]);
     }

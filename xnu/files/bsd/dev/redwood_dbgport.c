@@ -36,6 +36,7 @@ static struct { uint64_t page; volatile uint8_t *va; } maps[64];
 static unsigned nmaps;
 #ifdef GENERIC_GIC_V2_IRQ
 static vm_offset_t cp_ipc_va; /* fixed retained IPC, protected by dbgport_mtx */
+static vm_offset_t cp_pp_va;  /* pktproc window (CP_IPC_PP_FLAG), Normal-NC, protected by dbgport_mtx */
 #endif
 static struct { char name[32]; const char *help; redwood_dbgport_fn fn; } cmds[96];
 static unsigned ncmds;
@@ -61,6 +62,7 @@ pmap_pa(uint64_t pa)
 	uint64_t page = pa & ~0x3fffULL;
 #ifdef GENERIC_GIC_V2_IRQ
     if (cp_ipc_va && page>=CP_IPC_BASE && page<CP_IPC_BASE+CP_IPC_SIZE) return NULL;
+    if (cp_pp_va && page>=CP_IPC_PP_BASE && page<CP_IPC_PP_BASE+CP_IPC_PP_SPAN) return NULL;
 #endif
 
 	for (unsigned i = 0; i < nmaps; i++) {
@@ -407,9 +409,25 @@ cp_ipc_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
         cp_ipc_va=mapped;
     } else if (q.op==CP_IPC_UNMAP) {
         if (cp_ipc_va) {ml_io_unmap(cp_ipc_va,CP_IPC_SIZE);cp_ipc_va=0;}
+        if (cp_pp_va) {ml_io_unmap(cp_pp_va,CP_IPC_PP_SPAN);cp_pp_va=0;}
     } else if (q.op>=CP_IPC_READ) {
-        if (!cp_ipc_va) {error=ENXIO;goto done;}
-        uint8_t *at=(uint8_t *)cp_ipc_va+q.offset;
+        uint8_t *at;
+        if (q.offset&CP_IPC_PP_FLAG) {
+            /* the packet area: mapped on first use, only with the loader's reservation certificate */
+            if (!cp_pp_va) {
+                if (!cp_memory_certified()) {error=EPERM;goto done;}
+                /* Normal non-cacheable like the IPC window (memcpy may access unaligned: never Device memory);
+                 * refused while the debug peek holds a page of it (no mixed-attribute aliases) */
+                for (unsigned i=0;i<nmaps;i++)
+                    if (maps[i].page>=CP_IPC_PP_BASE && maps[i].page<CP_IPC_PP_BASE+CP_IPC_PP_SPAN) {error=EBUSY;goto done;}
+                cp_pp_va=ml_io_map_unmappable((vm_offset_t)CP_IPC_PP_BASE,CP_IPC_PP_SPAN,VM_WIMG_WCOMB);
+                if (!cp_pp_va) {error=ENOMEM;goto done;}
+            }
+            at=(uint8_t *)cp_pp_va+(q.offset&~CP_IPC_PP_FLAG);
+        } else {
+            if (!cp_ipc_va) {error=ENXIO;goto done;}
+            at=(uint8_t *)cp_ipc_va+q.offset;
+        }
         __asm__ volatile("dsb sy" ::: "memory");
         switch(q.op) {
         case CP_IPC_READ: memcpy(reply.data,at,q.length);break;
