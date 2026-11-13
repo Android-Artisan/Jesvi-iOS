@@ -437,3 +437,13 @@ cid 2); ring 9 is consumed by the CP but nothing goes out. DL arrives through th
 advanced, descriptor len 64, ch 11, status e1, data in our buffer). Also: pktproc info is now written before
 the CP boots (as pktproc_create at probe) and again at INIT_START. Service FIFO: data, ping6, rs, pch, dm, stat.
 Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways; then make `data` automatic.
+
+## 2026-11-13 — LTE data usable by iOS
+
+- `redwood-cellulard` opens a **utun** (`com.apple.net.utun_control`), gives it the PDN IPv6 /64 and the modem MTU, adds `::/0` through it, and moves packets: utun → SBD ring 8 (QoS ch 11) uplink; pktproc descriptors → utun downlink.
+- Bug fixed: the kernel peek (`kern.redwood.poke r PA N`) returns at most **64 words**; packets over 256 bytes were silently dropped (TCP connected but no data). `poke_read` now reads in 64-word chunks.
+- **configd**: publishes `State:/Network/Service/redwood-cell/{IPv6,DNS}` (Router = own address, as VPN services do; `"::"` was rejected). IPMonitor then makes it `PrimaryService`, installs the Jio resolver (2405:200:800::1) and the default route — apps need nothing special.
+- **Automatic data**: once a PLMN is known the service sends `data` (APN jionet, cid 2), retried every 20 s up to 5 times. Kill switch: `touch /var/root/cell-nodata`.
+- Verified: `cell-get ipv6.google.com` → 200 OK, 94 KB; `cell-get github.com` → DNS64 `64:ff9b::87eb:9590` → 301 (IPv4-only sites work through Jio NAT64).
+- Test tools (phone /var/root): `cell-http IF ADDR HOST [PATH]` (pinned to one interface), `cell-get HOST [PATH]` (app-style), `sc-dump [regex]` (tiny scutil).
+- Throughput is limited by the sysctl peek path (one sysctl per 256 bytes); a kernel-side copy or direct mapping is the next speed step.

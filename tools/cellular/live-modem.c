@@ -646,6 +646,36 @@ struct rw_in6_addrlifetime {time_t ia6t_expire,ia6t_preferred;uint32_t ia6t_vlti
 struct rw_in6_aliasreq {char ifra_name[IFNAMSIZ];struct sockaddr_in6 ifra_addr,ifra_dstaddr,ifra_prefixmask;int ifra_flags;struct rw_in6_addrlifetime ifra_lifetime;};
 #define RW_SIOCAIFADDR_IN6 _IOW('i',26,struct rw_in6_aliasreq)
 static int utun_fd=-1;static char utun_name[IFNAMSIZ];
+/* configd: publish the cellular service (State:/Network/Service/redwood-cell/{IPv6,DNS}) so IPMonitor
+ * installs the DNS resolver and ranks the interface like any other service. Loaded at runtime. */
+#include <dlfcn.h>
+#include <CoreFoundation/CoreFoundation.h>
+static void sc_publish(void)
+{
+    void *sc=dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration",RTLD_NOW);
+    if (!sc) {printf("cellular: configd: no SystemConfiguration\n");return;}
+    void *(*create)(CFAllocatorRef,CFStringRef,void *,void *)=(void *(*)(CFAllocatorRef,CFStringRef,void *,void *))dlsym(sc,"SCDynamicStoreCreate");
+    Boolean (*setm)(void *,CFDictionaryRef,CFArrayRef,CFArrayRef)=(Boolean (*)(void *,CFDictionaryRef,CFArrayRef,CFArrayRef))dlsym(sc,"SCDynamicStoreSetMultiple");
+    if (!create || !setm) return;
+    static void *store;if (!store) store=create(NULL,CFSTR("redwood-cellulard"),NULL,NULL);
+    if (!store) {printf("cellular: configd: no store\n");return;}
+    char a[64],d[64];inet_ntop(AF_INET6,pdn.ip6,a,sizeof(a));inet_ntop(AF_INET6,pdn.dns6,d,sizeof(d));
+    CFStringRef ifn=CFStringCreateWithCString(NULL,utun_name,kCFStringEncodingUTF8);
+    CFStringRef sa=CFStringCreateWithCString(NULL,a,kCFStringEncodingUTF8),sd=CFStringCreateWithCString(NULL,d,kCFStringEncodingUTF8);
+    int pl=64;CFNumberRef pn=CFNumberCreate(NULL,kCFNumberIntType,&pl);
+    const void *av[]={sa},*pv[]={pn},*dv[]={sd};
+    CFArrayRef aa=CFArrayCreate(NULL,av,1,&kCFTypeArrayCallBacks),pa=CFArrayCreate(NULL,pv,1,&kCFTypeArrayCallBacks),da=CFArrayCreate(NULL,dv,1,&kCFTypeArrayCallBacks);
+    const void *k6[]={CFSTR("Addresses"),CFSTR("PrefixLength"),CFSTR("InterfaceName"),CFSTR("Router")};
+    const void *v6[]={aa,pa,ifn,sa};   /* point-to-point: router = our own address (as VPN services do) */
+    CFDictionaryRef ip6=CFDictionaryCreate(NULL,k6,v6,4,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+    const void *kd[]={CFSTR("ServerAddresses"),CFSTR("InterfaceName")},*vd[]={da,ifn};
+    CFDictionaryRef dns=CFDictionaryCreate(NULL,kd,vd,2,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+    const void *ks[]={CFSTR("State:/Network/Service/redwood-cell/IPv6"),CFSTR("State:/Network/Service/redwood-cell/DNS")},*vs[]={ip6,dns};
+    CFDictionaryRef all=CFDictionaryCreate(NULL,ks,vs,2,&kCFTypeDictionaryKeyCallBacks,&kCFTypeDictionaryValueCallBacks);
+    Boolean ok=setm(store,all,NULL,NULL);
+    printf("cellular: configd service redwood-cell %s (IPv6 %s, DNS %s on %s)\n",ok?"published":"REFUSED",a,d,utun_name);fflush(stdout);
+    CFRelease(all);CFRelease(dns);CFRelease(ip6);CFRelease(aa);CFRelease(pa);CFRelease(da);CFRelease(pn);CFRelease(sa);CFRelease(sd);CFRelease(ifn);
+}
 static void utun_up(void)
 {
     if (utun_fd>=0 || !pdn.up) return;
@@ -681,6 +711,7 @@ static void utun_up(void)
     }
     utun_fd=fd;
     printf("cellular: %s up (index %u), IPv6 from the modem, MTU %u\n",utun_name,if_nametoindex(utun_name),pdn.mtu);fflush(stdout);
+    sc_publish();
 }
 static void utun_poll(void)
 {
@@ -791,6 +822,12 @@ static int online_handshake(unsigned seconds)
         }
         if (online && stay_mode) ctl_poll();
         if (online && stay_mode && pdn.up) {utun_up();pp_poll();utun_poll();}
+        if (online && stay_mode && !pdn.up && cell.plmn[0] && strcmp(cell.plmn,"000000")) {
+            static uint64_t tried;static unsigned tries;struct stat nd;
+            if (tries<5 && now_us(NULL)-tried>20000000ull && stat("/var/root/cell-nodata",&nd)) {
+                tried=now_us(NULL);tries++;printf("cellular: automatic data call, try %u\n",tries);fflush(stdout);ctl_line((char[]){"data"});
+            }
+        }
         if (online && stay_mode) {      /* heartbeat: SpringBoard treats a state older than two minutes as no modem */
             static uint64_t beat;
             if (now_us(NULL)-beat>20000000ull) {beat=now_us(NULL);if (cell.plmn[0] || cell.have_rssi) cell_publish();}
