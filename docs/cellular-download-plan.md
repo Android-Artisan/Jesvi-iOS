@@ -490,3 +490,18 @@ Next: utun in iOS (IPv6 address, default route, DNS) carrying packets both ways;
   aes-cbc with CK); second REGISTER from port-c to the P-CSCF's port-s with the digest response (password = RES, qop=auth)
   and `Security-Verify` = the Security-Server line as received; then 200, SUBSCRIBE reg, SIP MESSAGE for SMS, INVITE for calls.
 - `--nullonly` keeps the old offer for comparison. One attempt per several minutes, as before.
+
+## MILESTONE 2026-11-13 13:15 — IMS REGISTERED on Jio (200 OK) (session B)
+
+- `redwood-ims` does the whole registration on the phone: REGISTER 1 (TCP, clear, four-tuple Security-Client) -> 401;
+  nonce -> RAND|AUTN -> ISIM AUTHENTICATE over a logical channel through the daemon's `apdu` pipe (DB | RES 8 | CK | IK);
+  four ESP transport SAs + four port-selective policies through PF_KEY (this kernel takes hmac-md5-96 + aes-cbc; SA
+  src->dst: UE->P spi = P's spi-s (unique:1), P->UE spi-c, P->UE spi-s, UE->P spi = P's spi-c (unique:2)); REGISTER 2
+  from port-c to the P-CSCF's port-s 6000 with the AKAv1-MD5 digest (password = RES, qop=auth) and Security-Verify = the
+  whole Security-Server value -> **200 OK**, expires 7200, Path, two Service-Routes, P-Associated-URI (sip: and tel: MSISDN).
+- XNU PF_KEY facts: SADB_EXT_SA must be the 24-byte sadb_sa_2; MD5HMAC is 1, SHA1HMAC 2, AESCBC 12, EALG_NULL 3;
+  sha1 + null was refused (EINVAL) in the self-test, md5 + aes-cbc accepted. `redwood-ims --selftest` checks the kernel side
+  and the ISIM without touching the network; `--flush` removes SAs and policies.
+- Without `--once` the client stays, answers requests with 200 and prints them (IMSI/IMEI/nonce masked).
+- Next: SIP MESSAGE (application/vnd.3gpp.sms: RP-DATA/RP-ACK) both ways, re-REGISTER before expiry, SUBSCRIBE reg;
+  then calls (INVITE, preconditions, dedicated bearer, AMR-WB RTP) -- a much larger piece.
