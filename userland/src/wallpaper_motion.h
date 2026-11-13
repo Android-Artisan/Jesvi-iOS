@@ -62,8 +62,8 @@ static bool wallpaper_motion_enabled(void)
     }
     return enabled;
 }
-/* Live tunables (com.redwood.motion, re-read every second): HomePosterMotionAmplitude (pt, 24),
- * HomePosterMotionRange (degrees of tilt for full travel, 20), HomePosterMotionRecenter (s, 3). */
+/* Live tunables (com.redwood.motion, re-read every second): HomePosterMotionAmplitude (pt, 40),
+ * HomePosterMotionRange (degrees of tilt for full travel, 15), HomePosterMotionRecenter (s, 3). */
 static double wallpaper_pref(CFStringRef key,double fallback,double lo,double hi)
 {
     CFTypeRef v=CFPreferencesCopyAppValue(key,CFSTR("com.redwood.motion"));
@@ -152,8 +152,8 @@ static void wallpaper_motion_start(void)
         if(now-scan_at>1) {
             scan_at=now;allowed=wallpaper_motion_enabled();
             CFPreferencesAppSynchronize(CFSTR("com.redwood.motion"));
-            amplitude=wallpaper_pref(CFSTR("HomePosterMotionAmplitude"),24,0,60);
-            pose.range=wallpaper_pref(CFSTR("HomePosterMotionRange"),20,3,60)*M_PI/180;
+            amplitude=wallpaper_pref(CFSTR("HomePosterMotionAmplitude"),40,0,60);
+            pose.range=wallpaper_pref(CFSTR("HomePosterMotionRange"),15,3,60)*M_PI/180;
             pose.tau=wallpaper_pref(CFSTR("HomePosterMotionRecenter"),3,0,60);
             id found=wallpaper_current_view();
             if(found!=current) {
