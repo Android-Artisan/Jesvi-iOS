@@ -409,3 +409,15 @@ profile 0d 1b?), deactivate before re-activate; also serve real EFS files (FLL.b
 - SMS/calls on Jio: LTE-only network -> SMS over IMS and VoLTE; on Samsung the IMS client runs on the AP
   (not in the CP). So Jio SMS needs data first, then an AP-side IMS (SIP) client. Plain CP SMS (IPC 04 xx)
   only helps on networks with SMS over SGs/CS fallback.
+
+### MILESTONE Nov13 ~10:00: LTE data call ACTIVE (Jio, IPv6)
+What made it work: (1) the packet processor got free RX buffers (SKTBUF mode: descriptors at d0000000+0x100
+filled with data_addr = 0x28100000 + i*2560 + 64, HEAD on desc 0, fore_ptr = n-1 in q_info; 256 descriptors),
+(2) the S20 message sizes (attach profile 0d14 330 B, define 0d01 142 B, activate 0d04 241 B), and
+(3) **cid 2** -- cid 1 answers state 3 at once (it is the attach PDN). PS attach 0d03 -> 0x8005 (already attached).
+Result: 0d09 IP configuration (313 B) and 0d10 "02 01" (cid 2, active). Layout of 0d09: d0 cid, d1 flags 0x42,
+d2 0x21, IPv4 none (Jio is IPv6-only), IPv6 address @0x23 (16 B), IPv6 DNS @0x63, MTU u16 @0x98 (1500).
+Service FIFO: `data [apn]` sends the whole sequence (currently cid 1 -- use cid 2; fix next).
+Next: packets. DL: CP fills pktproc descriptors (rear_ptr @ d0000000+0x14), AP reads and refills (fore_ptr).
+UL: raw IP into the multipdp SBD ring (id 9, ch 11 = rmnet1 = cid 2), buff_len = len | ch<<16, then
+MASK_SEND_DATA. Then a utun interface in iOS with the IPv6 address, default route and DNS.

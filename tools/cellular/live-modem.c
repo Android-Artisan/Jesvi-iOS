@@ -458,16 +458,27 @@ static void sbd_dump_dl(void)
 /* pktproc v2 info (link_rx_pktproc.c pktproc_create, CONFIG_CP_PKTPROC_V2): SHMEM_PKTPROC = cp_rmem_2
  * d0000000+64MB, CP view 0x28000000. info 0x100: {num_queues 1, mode 1 SKTBUF, max_packet 2048} +
  * q_info[0] {desc_base cp+0x100, num_desc (0x3f00000/2560)*25/100, data_base cp+0x100000, fore 0, rear 0} */
+#define PP_NDESC 256u
+#define PP_CELL 2560u
 static int pktproc_info(void)
 {
     char r[8192],c[96];
     for (unsigned o=0;o<0x100;o+=4) {snprintf(c,sizeof(c),"w 0x%x 0x0",0xd0000000u+o);if (request(c,r)) return -1;}
-    const uint32_t w[]={1u|(1u<<4)|(2048u<<8),0x28000100u,(0x3f00000u/2560u)*25u/100u,0x28100000u,0,0};
+    /* the descriptor ring (16 B each at +0x100): every entry but the last a free RX buffer, as
+     * pktproc_fill_data_addr(): data_addr = CP data base + cell offset + NET_SKB_PAD(64); HEAD on the first */
+    for (unsigned i=0;i<PP_NDESC;i++) {
+        uint32_t a=0xd0000100u+16*i,addr=i<PP_NDESC-1?0x28100000u+i*PP_CELL+64u:0,ctl=i==0?0x80u:0;
+        snprintf(c,sizeof(c),"w 0x%x 0x%x",a,addr);if (request(c,r)) return -1;
+        snprintf(c,sizeof(c),"w 0x%x 0x%x",a+4,ctl<<8);if (request(c,r)) return -1;
+        snprintf(c,sizeof(c),"w 0x%x 0x0",a+8);if (request(c,r)) return -1;
+        snprintf(c,sizeof(c),"w 0x%x 0x0",a+12);if (request(c,r)) return -1;
+    }
+    /* info: {num_queues 1, mode 1 SKTBUF, max_packet 2048} + q_info[0] {desc_base, num_desc, data_base, fore, rear} */
+    const uint32_t w[]={1u|(1u<<4)|(2048u<<8),0x28000100u,PP_NDESC,0x28100000u,PP_NDESC-1,0};
     for (unsigned i=0;i<6;i++) {snprintf(c,sizeof(c),"w 0x%x 0x%x",0xd0000000u+4*i,w[i]);if (request(c,r)) return -1;}
-    printf("cellular live DL: pktproc v2 info at d0000000: %08x %08x %08x %08x\n",w[0],w[1],w[2],w[3]);fflush(stdout);
+    printf("cellular live DL: pktproc v2 at d0000000: %u descriptors, %u free RX buffers (fore %u)\n",PP_NDESC,PP_NDESC-1,PP_NDESC-1);fflush(stdout);
     return 0;
 }
-
 /* ---- stay mode (--stay): the CP stays up; state for iOS in /var/tmp/redwood-cell/state ---- */
 static int stay_mode;
 static struct {int rssi_dbm,bars,reg_raw,have_rssi;char plmn[8];uint64_t at;} cell;
@@ -513,6 +524,15 @@ static void ctl_line(char *l)
         size_t n=strlen(l+3);if (n>1000) return;
         f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
         int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strncmp(l,"data",4)) {
+        const char *apn=l[4]==' '?l+5:"jionet";char cmd[1400],hex[1100];size_t al=strlen(apn);if (al>99) return;
+        uint8_t d[330];
+        #define HEXOF(buf,n) do{for(size_t _k=0;_k<(n);_k++) snprintf(hex+2*_k,3,"%02x",(buf)[_k]);}while(0)
+        memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);d[0x148]=6;HEXOF(d,330);snprintf(cmd,sizeof(cmd),"fmt 0d 14 03 %s",hex);ctl_line(cmd);
+        ctl_line("fmt 0d 03 03 010000");
+        memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);HEXOF(d,142);snprintf(cmd,sizeof(cmd),"fmt 0d 01 03 %s",hex);ctl_line(cmd);
+        memset(d,0,sizeof(d));d[0]=1;d[1]=1;HEXOF(d,241);snprintf(cmd,sizeof(cmd),"fmt 0d 04 03 %s",hex);ctl_line(cmd);
+        printf("cellular: data call requested on APN %s\n",apn);fflush(stdout);
     } else if (!strncmp(l,"stat",4)) {
         printf("cellular: rings id:ch ulrp/ulwp dlrp/dlwp:");
         for (unsigned i=0;i<SBD_N;i++) {uint16_t a1=0,a2=0,a3=0,a4=0;ipc_load16(sbd_rp(i,0),&a1);ipc_load16(sbd_wp(i,0),&a2);ipc_load16(sbd_rp(i,1),&a3);ipc_load16(sbd_wp(i,1),&a4);
