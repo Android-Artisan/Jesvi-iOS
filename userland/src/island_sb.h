@@ -41,10 +41,10 @@ struct island_size { double width, height; };   /* CGSize */
 static double island_w = 21.0, island_h = 21.0, island_y = 6.0;  /* punch hole "punch-21" (user-chosen 2026-11-13; was 18pro-small) */
 /* lh: the island's height while a Live Activity shows (compact / minimal views), user 2026-11-13: "when a live
  * activity is there it should increase its height". Default 32 pt; conf lh=; <= 0: the same rules as the pill. */
-static double island_lh = 32.0;
+static double island_lh = 36.667;  /* (default "punch-live18", user 2026-11-13 22:10; was 32) */
 /* lw: the pill's width while a Live Activity shows (conf lw=; <= 0: the resting width, at least lh). 2026-11-13 user's
  * experiment: lw=81 lh=36.667, the "18pro" pill, while an activity runs. */
-static double island_lw = 0;
+static double island_lw = 81.0;    /* (the 18 Pro pill while an activity runs; was 0) */
 static struct island_size (*island_orig_size)(id, SEL);
 static double (*island_orig_top)(id, SEL);
 

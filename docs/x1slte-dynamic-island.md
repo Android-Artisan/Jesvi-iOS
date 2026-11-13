@@ -67,8 +67,8 @@ Switch from the Mac with `tools/island-preset.sh NAME` (copies the preset to the
 | `favorite-pill` | `w=75 h=28` | 75 x 28, Apple's 11.33 pt | the pill the user liked most (2026-11-13): 18pro-small at Apple's top gap |
 | `circle-24` | `y=5 w=24 h=24` | 24 x 24, 5 pt | round, just over the camera hole (user: good) |
 | `circle` | `y=6 w=22 h=22` | 22 x 22, 6 pt | round, a bit smaller, same centre |
-| `punch-21` | `y=6 w=21 h=21` | 21 x 21, 6 pt | punch hole; **the built-in default** since 2026-11-13 21:05 (user: "all worked") |
-| `punch-live18` | `y=6 w=21 h=21 lw=81 lh=36.667` | 21 x 21 at rest; **81 x 36.67 while a Live Activity runs** (the `18pro` pill) | user's "preset 2" (2026-11-13 21:45: "little bigger during live activities") |
+| `punch-21` | `y=6 w=21 h=21 lw=0 lh=32` | 21 x 21, 6 pt | punch hole, 32 pt tall during activities (the default 21:05..22:10) |
+| `punch-live18` | `y=6 w=21 h=21 lw=81 lh=36.667` | 21 x 21 at rest; **81 x 36.67 while a Live Activity runs** (the `18pro` pill) | user's "preset 2"; **the built-in default** since 2026-11-13 22:10 |
 
 On the phone by hand: `cp /var/jb/etc/redwood-island.presets/NAME.conf /var/jb/etc/redwood-island.conf; /var/jb/usr/bin/sbreload`.
 Turning the island off altogether (iPhone X notch) is the boot argument `island=0`, not a preset.
@@ -90,8 +90,8 @@ and island-install.sh are that withdrawn version.)
 
 | | Preset | At rest | While a Live Activity / system element shows |
 | --- | --- | --- | --- |
-| **1** (built-in default) | `punch-21` | 21 x 21 pt round, 6 pt from the top | 32 pt tall, at least 32 wide (`lh` default) |
-| **2** | `punch-live18` | the same | 81 x 36.67 pt: the iPhone 18 Pro pill (`lw=81 lh=36.667`) |
+| **1** | `punch-21` | 21 x 21 pt round, 6 pt from the top | 32 pt tall, at least 32 wide (`lh` default) |
+| **2** (built-in default since 2026-11-13 22:10) | `punch-live18` | the same | 81 x 36.67 pt: the iPhone 18 Pro pill (`lw=81 lh=36.667`) |
 
 Switch: `tools/island-preset.sh punch-21` or `tools/island-preset.sh punch-live18` (a respring, no reboot).
 
