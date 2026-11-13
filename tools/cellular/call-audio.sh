@@ -1,7 +1,7 @@
 #!/bin/bash
 # call-audio.sh on|off|status — VoLTE call audio through ABOX (A, 2026-11-13). Run on the Mac; talks to the phone over ssh s20.
 #
-# Needs a kernel booted with cpcall=1 (redwood_exynos_sound.c maps abox-pci-rmem 0xF4200000 at IOVA 0xA2000000 and the
+# Needs a kernel booted with cpcall=1 or snd=3 (redwood_exynos_sound.c maps abox-pci-rmem 0xF4200000 at IOVA 0xA2000000 and the
 # modem's PCIe doorbell at 0xA3000000, which is where the S5123's voice engine meets Calliope on the S20).
 #
 # The routes are stock's mixer_paths.xml "incall_nb-handset" + "incall_nb-handset-mic", turned into what the stock

@@ -1578,8 +1578,12 @@ calliope_boot(void)
 	 * IOVA_VSS_PCI_DOORBELL 0xA3000000 (abox_pci_doorbell_paddr_set). The silent log gives up 8 MB so the PCI region
 	 * can sit where the modem's firmware expects it.
 	 */
-	uint32_t cpcall = 0;
+	uint32_t cpcall = 0, snd_arg = 0;
 	PE_parse_boot_argn("cpcall", &cpcall, sizeof(cpcall));
+	/* snd=3 (bit 1) is the same: the boot line has no room left for another argument */
+	if (PE_parse_boot_argn("snd", &snd_arg, sizeof(snd_arg)) && (snd_arg & 2)) {
+		cpcall = 1;
+	}
 	uint32_t slog_size = cpcall ? 0x2000000U : CAL_SLOG_SIZE;
 	uint64_t pci_phys = cpcall ? 0xF4200000ULL : CAL_PCI_PHYS;
 	{
