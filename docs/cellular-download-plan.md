@@ -604,3 +604,6 @@ in Messages, no calls.
   always compare the md5 of /redwood/lib/<lib> with the build after a deploy.
 - ControlCenterCellularDataButtonDemoMode (com.apple.springboard / com.apple.controlcenter) did not show the button;
   set back to false.
+- 17:58: the whole Control Center attempt was REMOVED at the user's request (main 5146306): no hooks in
+  ConnectivityModule, no module-load callback, no sb-dump/sb-hook. The notes above stay for a later attempt;
+  the code is in main's history (5588958 and before).
