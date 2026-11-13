@@ -713,3 +713,17 @@ Milestone order: (a) capture INVITE; (b) answer with SDP + CPVE channel -> CP RT
   enums of info+0x50/54/58/5c/60: codec, mode set, bandwidths ...), +0x3a u8 (+0x64), +0x3b u8 (+0x68), +0x40 u8 (+0x6c).
   Field meanings: from CPVEInterface::SetCodecInfo's arguments (codec name, payload types, mode-set, ptime, octet-align,
   EVS bandwidth range ...) -- the next RE step; then fill it from Jio's SDP.
+
+### VoLTE calls: Jio's INVITE (captured 2026-11-13 22:37; the raw file stays root-only on the phone and in the
+private extract folder -- it holds names, numbers and the IMEI: never paste it)
+- SIP over the registration's TCP connection from the P-CSCF (Alcatel-Lucent PCSF); Record-Route + Contact on the
+  P-CSCF; Supported: replaces,path,100rel (100rel NOT required); P-Early-Media supported; Expires 180.
+- SDP: IPv6 media gateway, `m=audio <port> RTP/AVP 100 8 0 101`; 100 = AMR/8000 (narrowband) with
+  mode-change-capability=2, bandwidth-efficient (no octet-align); 8 PCMA; 0 PCMU; 101 telephone-event 0-15;
+  ptime 20, maxptime 80. **No preconditions** (no a=curr/a=des): the answer flow is simply
+  100 Trying -> 180 Ringing -> (user answers) 200 OK + SDP answer -> ACK; BYE either way.
+- Our SDP answer: c=IN IP6 <our IMS IPv6>, m=audio <local RTP port> RTP/AVP 100 101, a=rtpmap:100 AMR/8000,
+  a=fmtp:100 mode-change-capability=2, a=rtpmap:101 telephone-event/8000, a=fmtp:101 0-15, a=ptime:20,
+  a=maxptime:80, a=sendrecv.
+- The CP media for it (CPVE): 16/06 SetPdnIp (our IMS IPv6), 16/01 SetChannel (local port; remote = the SDP's
+  c=/m= address and port), 16/02 SetCodec (AMR-NB, PT 100, DTMF PT 101, ptime 20), 16/03 start -- after the 200 OK.
