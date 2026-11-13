@@ -94,7 +94,7 @@ interSensorRegionInWindowSpace {213.333, 11.333, 9, 36.667}, minimumScreenEdgeIn
 Fix written, built, NOT tested (user chose not to reboot for it): `proposals/notch/island-geometry-hooks.patch` maps
 every geometry getter by value (36.667 -> h, 125 -> w, 18.333 -> h/2, 11.333 -> y). Needs a root.apfs (libredwood-sb)
 flash + reboot, then `tools/island-preset.sh circle` and the timer test. Until then: `apple-14pro` keeps the animation,
-the other presets lose it. Phone on `circle` (22 pt) since 2026-11-13 18:25 at the user's request.
+the other presets lose it. Phone on `18pro-small` (user's choice, 2026-11-13 18:27).
 
 
 With the 81 pt pill, the charging banner's battery number is cut (shows "%" without "100"). Not yet
