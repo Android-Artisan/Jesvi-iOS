@@ -7,6 +7,7 @@
  *   /var/jb/etc/redwood-statusbar.conf: "lead=N" (points; 0 = Apple's). Read at process start: respring / reopen apps.
  */
 #include <dispatch/dispatch.h>
+#include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -62,9 +63,69 @@ sbs_avoid(id self, SEL cmd, struct sbs_rect frame, double *offset, double *width
 	return changed;
 }
 
+/*
+ * At boot the status bar creates its cutout-width constraint straight from the island's size and only goes through
+ * _needsUpdateOfConstraintsForAvoidanceFrame: when the island later changes (2026-11-13: the log stayed empty after a
+ * boot and the time sat at Apple's place). So the constraint is also widened when it is handed over.
+ */
+static void (*sbs_orig_set_cut)(id, SEL, id);
+
+static void
+sbs_widen(id constraint, const char *why)
+{
+	SEL get = sel_registerName("constant"), set = sel_registerName("setConstant:");
+	double c;
+
+	if (constraint == nil || sbs_cut <= 0 || !class_respondsToSelector(object_getClass(constraint), get)) {
+		return;
+	}
+	c = ((double (*)(id, SEL))objc_msgSend)(constraint, get);
+	if (c > 0 && c < sbs_cut) {
+		((void (*)(id, SEL, double))objc_msgSend)(constraint, set, sbs_cut);
+		FILE *f = fopen("/var/mobile/Library/Logs/redwood-statusbar.log", "a");
+		if (f != NULL) {
+			fprintf(f, "statusbar: pid %d %s %.1f -> %.1f\n", getpid(), why, c, sbs_cut);
+			fclose(f);
+		}
+	}
+}
+
+static void
+sbs_set_cut(id self, SEL cmd, id constraint)
+{
+	sbs_orig_set_cut(self, cmd, constraint);
+	sbs_widen(constraint, "cutout constraint");
+}
+
+static id (*sbs_orig_setup)(id, SEL, id);
+
+static id
+sbs_setup(id self, SEL cmd, id container)
+{
+	id r = sbs_orig_setup(self, cmd, container);
+	id c = ((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("cutoutWidthConstraint"));
+
+	sbs_widen(c, "setup");
+	return r;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class dc = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
+		Method um = dc ? class_getInstanceMethod(dc, sel_registerName("setupInContainerView:")) : NULL;
+		if (um != NULL && sbs_orig_setup == NULL && sbs_cut > 0) {
+			sbs_orig_setup = (id (*)(id, SEL, id))method_setImplementation(um, (IMP)sbs_setup);
+		}
+	}
+	{
+		Class dc = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
+		Method sm = dc ? class_getInstanceMethod(dc, sel_registerName("setCutoutWidthConstraint:")) : NULL;
+		if (sm != NULL && sbs_orig_set_cut == NULL && sbs_cut > 0) {
+			sbs_orig_set_cut = (void (*)(id, SEL, id))method_setImplementation(sm, (IMP)sbs_set_cut);
+		}
+	}
 	{
 		Class dc = objc_getClass("_UIStatusBarVisualProvider_DynamicSplit");
 		Method am = dc ? class_getInstanceMethod(dc,
