@@ -151,6 +151,7 @@ static int inputs(uint32_t *value)
 /* ---- firmware download (A, 2026-11-12): legacy RAW queues in the reserved IPC memory, Samsung's
  * link_start_normal_boot + xmit_to_legacy_link + cbd's SIPC UDL. Only with --download TOC. ---- */
 #include <sys/sysctl.h>
+#include <fcntl.h>
 #include <sys/time.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -347,7 +348,77 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
     if (ipc_store(0x400,0x81)) return -1;
     return doorbell(0);
 }
+static int stay_mode;
 static void cell_ipc(const uint8_t *m,unsigned len);
+static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
+
+/* ---- RFS server (umts_rfs0, ch 245, SBD id 3), after mifmon.c (postmarketOS Note 8, decoded from libsec-ril):
+ * a byte stream of frames {u32 len (whole frame), u8 cmd, u8 id, data}, carried in SIPC5 frames of up to
+ * 2044 payload bytes. NV read/write go to the phone's private NV copy /var/root/cell-nv.bin (never the EFS
+ * partition); file requests: OPEN/INFO -> ENOENT, MKDIR -> 0, CLOSE -> 0, others -> ENOSYS. ---- */
+#define RFS_MAX (512*1024)
+static uint8_t *rfs_buf;static size_t rfs_have;
+static void rfs_put32(uint8_t *p,uint32_t v) {p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);p[2]=(uint8_t)(v>>16);p[3]=(uint8_t)(v>>24);}
+static uint32_t rfs_get32(const uint8_t *p) {return p[0]|p[1]<<8|p[2]<<16|(uint32_t)p[3]<<24;}
+static void rfs_send(uint8_t *r,size_t n,uint8_t cmd,uint8_t id)
+{
+    rfs_put32(r,(uint32_t)n);r[4]=cmd;r[5]=id;
+    for (size_t off=0;off<n;) {
+        uint8_t f[2048];size_t c=n-off>2044?2044:n-off;
+        f[0]=0xf8;f[1]=245;f[2]=(uint8_t)(c+4);f[3]=(uint8_t)((c+4)>>8);memcpy(f+4,r+off,c);
+        for (unsigned t=0;t<200 && sbd_send(3,f,(uint32_t)(c+4));t++) usleep(5000);
+        off+=c;
+    }
+}
+static void rfs_ret(uint8_t cmd,uint8_t id,int ret,int err)
+{
+    uint8_t r[14]={0};rfs_put32(r+6,(uint32_t)ret);rfs_put32(r+10,(uint32_t)(ret<0?err:0));rfs_send(r,14,cmd,id);
+}
+static void rfs_handle(const uint8_t *q,size_t n)
+{
+    uint8_t cmd=q[4],id=q[5];
+    if (cmd==1 || cmd==2) {
+        uint32_t off=n>=14?rfs_get32(q+6):0,len=n>=14?rfs_get32(q+10):0;ssize_t done=-1;
+        if (len>RFS_MAX) len=RFS_MAX;
+        uint8_t *r=calloc(1,15+len);int fd=open("/var/root/cell-nv.bin",O_RDWR);struct stat st;
+        if (r && fd>=0 && !fstat(fd,&st) && (uint64_t)off+len<=(uint64_t)st.st_size) {
+            if (cmd==1) done=pread(fd,r+15,len,off);
+            else if (n>=14+(size_t)len) {done=pwrite(fd,q+14,len,off);fsync(fd);}
+        }
+        if (fd>=0) close(fd);
+        printf("cellular: RFS NV_%s off 0x%x len %u -> %zd\n",cmd==1?"READ":"WRITE",off,len,done);fflush(stdout);
+        if (!r) return;
+        r[6]=done==(ssize_t)len;rfs_put32(r+7,off);rfs_put32(r+11,done>0?(uint32_t)done:0);
+        rfs_send(r,15+(cmd==1 && done>0?(size_t)done:0),cmd,id);free(r);return;
+    }
+    char path[200]="";
+    if (cmd==0x11 && n>=14) {uint32_t pl=rfs_get32(q+10);if (pl>n-14) pl=(uint32_t)(n-14);if (pl>=sizeof(path)) pl=sizeof(path)-1;memcpy(path,q+14,pl);path[pl]=0;}
+    if ((cmd==0x0a||cmd==0x0b||cmd==0x0c||cmd==0x14) && n>=10) {uint32_t pl=rfs_get32(q+6);if (pl>n-10) pl=(uint32_t)(n-10);if (pl>=sizeof(path)) pl=sizeof(path)-1;memcpy(path,q+10,pl);path[pl]=0;}
+    for (char *c=path;*c;c++) if (*c<32||*c>126) *c='.';
+    printf("cellular: RFS cmd 0x%02x id %u %s\n",cmd,id,path);fflush(stdout);
+    switch (cmd) {
+    case 0x11: rfs_ret(cmd,id,-1,2);break;                       /* OPEN: ENOENT */
+    case 0x06: rfs_ret(cmd,id,0,0);break;                        /* CLOSE */
+    case 0x0c: rfs_ret(cmd,id,0,0);break;                        /* MKDIR */
+    case 0x0a: case 0x13: {uint8_t r[32]={0};rfs_put32(r+6,(uint32_t)-1);rfs_put32(r+28,2);rfs_send(r,32,cmd,id);break;}
+    default: rfs_ret(cmd,id,-1,78);break;                        /* ENOSYS */
+    }
+}
+static void rfs_rx(const uint8_t *p,size_t n)
+{
+    if (!rfs_buf && !(rfs_buf=malloc(RFS_MAX))) return;
+    if (rfs_have+n>RFS_MAX) {printf("cellular: RFS overflow, stream reset\n");rfs_have=0;return;}
+    memcpy(rfs_buf+rfs_have,p,n);rfs_have+=n;
+    while (rfs_have>=6) {
+        uint32_t want=rfs_get32(rfs_buf);
+        static uint32_t said;
+        if (want!=said) {said=want;printf("cellular: RFS request: %u bytes, cmd 0x%02x id %u (have %zu)\n",want,rfs_buf[4],rfs_buf[5],rfs_have);fflush(stdout);}
+        if (want<6 || want>RFS_MAX) {printf("cellular: RFS bad length %u, stream reset\n",want);fflush(stdout);rfs_have=0;return;}
+        if (rfs_have<want) return;
+        rfs_handle(rfs_buf,want);
+        memmove(rfs_buf,rfs_buf+want,rfs_have-want);rfs_have-=want;
+    }
+}
 static void sbd_dump_dl(void)
 {
     static int said;
@@ -361,16 +432,21 @@ static void sbd_dump_dl(void)
         if (rp>=len || wp>=len) continue;      /* (not a valid index: reported by the rp/wp dump) */
         for (unsigned guard=0;rp!=wp && guard<len;guard++) {
             uint32_t n=0;uint8_t b[96];ipc_load(sbd_lenarr[id][1]+4*rp,&n);
-            uint8_t big[320];uint32_t show=sizeof(big);(void)b;(void)n;
+            uint8_t big[2100];uint32_t show=sbd_chs[id].dl_size<sizeof(big)?sbd_chs[id].dl_size:sizeof(big);(void)b;(void)n;
             ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,big,show);
             uint32_t flen=big[2]|(big[3]<<8);if (big[0]>=0xf8 && flen>=4 && flen<show) show=flen;
             if (sbd_chs[id].ch==235 && show>=11) cell_ipc(big,show);
+            if (sbd_chs[id].ch==245 && show>4) {rfs_rx(big+4,show-4);show=0;}
+            if (sbd_chs[id].ch==25 && show>4) {
+                printf("cellular: AT <- ");for (unsigned k=4;k<show;k++) putchar(big[k]=='\r'?' ':big[k]=='\n'?'|':(big[k]>=32&&big[k]<127?big[k]:'.'));printf("\n");fflush(stdout);
+                show=0;
+            }
             if (sbd_chs[id].ch==235 && show>=11) {
                 printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
                     big[8],big[9],big[10],big[6],big[7],show-11);
                 for (unsigned k=11;k<show;k++) printf(" %02x",big[k]);
                 printf("  |");for (unsigned k=11;k<show;k++) putchar(big[k]>=32&&big[k]<127?big[k]:'.');printf("|\n");
-            } else {
+            } else if (show && (!stay_mode || sbd_chs[id].ch!=28)) {     /* (dm0 = the modem's own debug log) */
                 printf("cellular live DL: SBD RX ch %u (%u bytes):",sbd_chs[id].ch,show);for (unsigned k=0;k<show && k<48;k++) printf(" %02x",big[k]);printf("\n");
             }
             rp=(uint16_t)((rp+1)%len);ipc_store16(sbd_rp(id,1),rp);
@@ -422,6 +498,44 @@ static void cell_ipc(const uint8_t *m,unsigned len)
     if (g==0x08 && i==0x05 && n>=2) {if (cell.reg_raw!=d[1]) {cell.reg_raw=d[1];changed=1;}}
     if (changed) cell_publish();
 }
+
+/* ---- control FIFO (stay mode): /var/tmp/redwood-cell/cmd, one command per line:
+ *   at <AT command>                  -> umts_router (ch 25, SBD id 5), "\r" appended
+ *   fmt <group> <index> <type> [hex] -> umts_ipc0 Samsung IPC (ch 235, SBD id 1)
+ * replies are logged ("AT <-" lines for ch 25, "IPC <-" for ch 235) ---- */
+static int ctl_fd=-1;static uint8_t ipc_mseq=0x40;
+static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n);
+static void ctl_line(char *l)
+{
+    uint8_t f[2048];
+    while (*l==' ') l++;
+    if (!strncmp(l,"at ",3)) {
+        size_t n=strlen(l+3);if (n>1000) return;
+        f[0]=0xf8;f[1]=25;memcpy(f+4,l+3,n);f[4+n]='\r';n+=5;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
+        int e=sbd_send(5,f,(uint32_t)n);printf("cellular: AT -> %s %s\n",l+3,e?"(send failed)":"");fflush(stdout);
+    } else if (!strncmp(l,"fmt ",4)) {
+        unsigned g,i,t;int used=0;
+        if (sscanf(l+4,"%x %x %x %n",&g,&i,&t,&used)<3) return;
+        size_t d=0;const char *h=l+4+used;
+        while (*h && d<1900) {while (*h==' ') h++;unsigned b;if (sscanf(h,"%2x",&b)!=1) break;f[11+d++]=(uint8_t)b;h+=2;}
+        size_t n=11+d;f[0]=0xf8;f[1]=235;f[2]=(uint8_t)n;f[3]=(uint8_t)(n>>8);
+        f[4]=(uint8_t)(n-4);f[5]=(uint8_t)((n-4)>>8);f[6]=ipc_mseq++;f[7]=0;f[8]=(uint8_t)g;f[9]=(uint8_t)i;f[10]=(uint8_t)t;
+        int e=sbd_send(1,f,(uint32_t)n);printf("cellular: IPC -> %02x %02x %02x (%zu data bytes) %s\n",g,i,t,d,e?"(send failed)":"");fflush(stdout);
+    }
+}
+static void ctl_poll(void)
+{
+    static char buf[4096];static size_t have;
+    if (ctl_fd<0) {
+        mkdir("/var/tmp/redwood-cell",0755);unlink("/var/tmp/redwood-cell/cmd");
+        if (mkfifo("/var/tmp/redwood-cell/cmd",0600)) return;
+        ctl_fd=open("/var/tmp/redwood-cell/cmd",O_RDWR|O_NONBLOCK);if (ctl_fd<0) return;
+    }
+    ssize_t r=read(ctl_fd,buf+have,sizeof(buf)-1-have);if (r<=0) return;have+=(size_t)r;buf[have]=0;
+    char *nl;
+    while ((nl=strchr(buf,'\n'))) {*nl=0;ctl_line(buf);size_t rest=have-(size_t)(nl+1-buf);memmove(buf,nl+1,rest);have=rest;buf[have]=0;}
+    if (have>=sizeof(buf)-1) have=0;
+}
 static int online_handshake(unsigned seconds)
 {
     uint32_t last=0xffffffff,lastu=0xffffffff,msi=0,lastmsi=0xffffffff;int online=0;
@@ -451,6 +565,7 @@ static int online_handshake(unsigned seconds)
             }
             last=m;lastu=u;lastmsi=msi;
         }
+        if (online && stay_mode) ctl_poll();
         if (online && stay_mode) {      /* heartbeat: SpringBoard treats a state older than two minutes as no modem */
             static uint64_t beat;
             if (now_us(NULL)-beat>20000000ull) {beat=now_us(NULL);if (cell.plmn[0] || cell.have_rssi) cell_publish();}

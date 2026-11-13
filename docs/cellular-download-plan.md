@@ -338,3 +338,24 @@ Logs with SIM/cell identifiers stay private (logs/ and out/ are gitignored); do 
 Next: a long-running daemon instead of the 40 s test (keep CP up, rings serviced, MSI driven), decode
 SIM status / NET_REGIST properly (libsamsung-ipc tables as a guide), then data: PDP context (GPRS group
 0x0d) + pktproc RX/TX path -> a utun interface in iOS; SMS (group 0x04); calls/IMS last.
+
+### Nov13 ~08:10: RFS server, AT channel, first data-call attempts (session A)
+
+- Service (`redwood-cellulard`, launchd `com.redwood.cellular`) has a control FIFO /var/tmp/redwood-cell/cmd:
+  `at <cmd>` (umts_router ch 25) and `fmt <grp> <idx> <type> <hex>` (Samsung IPC on umts_ipc0).
+  Send ONE line per write after the FIFO exists (a write to a stale FIFO with no reader blocks).
+- RFS server (after postmarketOS Note 8 mifmon.c / libsec-ril): byte stream over ch 245 in 2044-byte
+  SIPC5 frames (not multi-frame headers). Seen: NV_WRITE 154330 B @0x80000 and 30394 B @0 (applied to the
+  private /var/root/cell-nv.bin, never the EFS partition), OPEN "FLL.bin" (answered ENOENT; the EFS backup
+  has root/FLL.bin -- serve the real file next).
+- AT: "AT" -> OK. Any further command only echoes (AT+CPIN?, AT+CGDCONT=..., AT+CGATT=1): the AT engine
+  stalls after the first command, with or without RFS answered first. Unknown yet why (Note 8's CP
+  answered CPIN/COPS/CGATT).
+- IPC data call (Note 8 layouts): 0d01 DEFINE (127 B: 01 cid 06 apn[100]...), 0d04 ACTIVATE (105 B: 01 cid)
+  -> GEN_RES 0x8000 OK both, then GPRS_CALL_STATUS 0d10 "01 03 00 00" (cid 1, state 3 = not active, cause 0);
+  no 0d09 IP config. Same with APN "jionet" or "", and after IPC PS attach 0d03 (0x8000). Note 8 saw the
+  same: the CP only attaches for data after AT+CGDCONT + AT+CGATT=1. PWR 01 07 SET 0202 -> 0x8001 refused.
+- NET_REGIST 08 05 data "21 03 07 ...": status field unclear (libsamsung-ipc numbering does not fit).
+Next: make AT work past the first command (check the router UL/DL ring indices after each command, try
+"\r\n" endings, check whether results arrive on another channel, e.g. umts_csd/ipc1), serve real EFS files
+(FLL.bin), then AT attach -> IPC activate -> 0d09 IP config -> packet path (pktproc DL, multipdp UL) -> utun.
