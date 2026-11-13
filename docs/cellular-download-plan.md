@@ -571,3 +571,16 @@ in Messages, no calls.
   BlastDoor out of process; imagent crash loops end in launchd "spawn failed" with exponential throttling (wait ~1 min);
   never open sms: URLs to wake Messages (each one makes a new draft). Crash text is in the console log (:8080/log).
 - /var/root/cell-sms.txt keeps every received text; re-queue from it if the bridge missed some.
+
+## 2026-11-13 17:00 — long texts, reactions, texts from boot (A)
+
+- Send: more than 160 GSM / 70 UCS-2 characters -> parts with UDH 05 00 03 ref total seq (GSM 153 per part, padded to a
+  septet boundary: 49 bits of header; UCS-2 67, surrogate pairs never split); each part its own RP-DATA; the Messages
+  job answers Delivered only when every part's RP-ACK came (any RP-ERROR -> Not Delivered).
+- Receive: parts (UDH IEI 00 or 08) held per sender+reference, delivered joined when complete or after 5 minutes
+  ("…" for a missing part). /var/root/cell-sms.txt still records each part.
+- Reactions: an item without plain text but with associatedMessageType -> +[IMTapback tapbackWithAssociatedMessageType:
+  messageSummaryInfo:] -backwardCompatibilityStringWithMessageSummaryInfo: (the text iPhones send over SMS).
+- Incoming delivery is on by default; off: /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
+- From boot (no hands): image inject.conf has `libredwood-tweaks.dylib Preferences imagent`; RedwoodSMS in /var/jb;
+  redwood-ims (/var/root) started by redwood-cellulard; SMSC in /var/root/cell-smsc.
