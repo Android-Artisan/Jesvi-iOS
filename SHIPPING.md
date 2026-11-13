@@ -22,6 +22,20 @@
 - `echo restart > /var/tmp/redwood-cell/cmd` restarts the modem cleanly.
 - Live on the phone (/var/root binaries) and in prebuilt/userland for the next boot image.
 
+### Smoother phone, texts, sensors, status bar (2026-11-13 19:00, B) — `8d684ae`, `effab2b`, `9c742e6`, `573cce0`/`d1e21e4`, `99f1ff5`
+- Lag: aggregated (powerlog's daily archiver) was making one archive per day since 1970 (12,691 files, a core at 92 %).
+  Fixed on the phone (archive moved to /var/root/powerlog-backup-*); init now restores the saved time at boot and
+  rwlogd saves it every minute, so the clock never starts at 1970 again.
+- Texts over VoLTE: SIP + TCP keep-alive; the idle connection was dropped and texts got no answer. Sent and received
+  texts verified 18:51.
+- Sensor hub: proximity off by default (no more flashing next to the camera), light/pressure 1 s, motion 60 ms, hub
+  debug text only with shub_text=1 (was 482 log lines a minute). Kernel built in hackios-cellular (18:46).
+- Cellular service log quiet by default (was 38 KB/min); tools/bg-status.sh and docs/x1slte-background.md list every
+  background service and debug switch.
+- Status bar: the left side 3 pt nearer the edge (statusbar_shift.h, `lead=` in /var/jb/etc/redwood-statusbar.conf).
+- Island: built-in pill 18pro-small (75 x 28), presets in tools/island-presets.
+- All flashed and running on the phone (kernel 18:46, boot volume 18:57).
+
 ## 2026-11-12 — cellular IPC memory audit (built, not deployed)
 - Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
 - Root `cp.memory` audits existing XNU translations and cache attributes without
