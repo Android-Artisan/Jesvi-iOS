@@ -616,3 +616,46 @@ extracted to B's scratchpad from out/cellular/private-rom/stock-system.img):
   mic: an ABOX route CP <-> codec (redwood audio); (4) the iOS call UI.
 - Next concrete step: the user calls the S20 -> /var/root/ims-invite-*.txt gives Jio's SDP (codecs, preconditions,
   100rel) -> decide the INVITE answer path. Then disassemble CPVEInterface::CreateChannel/StartChannel in libsec-ims.
+
+## 2026-11-13 21:45 (A): the CP voice commands (from stock libsec-ims.so, symbols intact; extracted privately)
+OemIPCHandler builds a full Samsung IPC frame ([u16 len][mseq][aseq][grp][idx][type][payload], len = whole frame) and
+sends it through 0x81e750 -> RIL OEM hook -> libsec-ril -> CP. IMS group = 0x16. Table (grp idx type len):
+    0x7d2364 OemIPCHandler::ImsSetChannel(int, int, int, int, int, int, i grp #0x16 idx #1 type #3 len #0x36
+    0x7d24c0 OemIPCHandler::ImsGetCodecList(int, int*, _stSAE_CodecInfo*) grp #0x16 idx #2 type #2 len #9
+    0x7d2d24 OemIPCHandler::ImsSetCodec(int, int, int, _stSAE_CodecInfo*) grp #0x16 idx #2 type #3 len #0x41
+    0x7d3400 OemIPCHandler::ImsSetRtpMedia(int, int, int, int, int)       grp #0x16 idx #3 type #3 len #0xb
+    0x7d3630 OemIPCHandler::ImsSetDtmf(int, int, int, int, int, unsigned  grp #0x16 idx #4 type #3 len #0xd
+    0x7d37f8 OemIPCHandler::ImsHandleDtmf(int, int, int, int, int)        grp #0x16 idx #4 type #1 len #0xb
+    0x7d3980 OemIPCHandler::ImsGetOption(int, int, _SAE_RTPStatistics*)   grp #0x16 idx #5 type #2 len #0x4e
+    0x7d3c80 OemIPCHandler::ImsSetOption(int, int, int, IPCIMSOptionParam grp #0x16 idx #5 type #3 len #0x4e
+    0x7d3eac OemIPCHandler::ImsSetPdnIp(int, int, unsigned char, void*, c grp #0x16 idx #6 type #3 len #0x2d
+    0x7d4034 OemIPCHandler::ImsStopSessRefresh(int, int)                  grp #0x16 idx #7 type #1 len #0xc
+    0x7d424c OemIPCHandler::ImsStartSessRefresh(int, int, void*, void*, u grp #0x16 idx #7 type #1 len None
+    0x7d43d8 OemIPCHandler::ImsInitSessRefresh(int, int, int, int, int)   grp #0x16 idx #7 type #1 len #0x47a
+    0x7d450c OemIPCHandler::ImsStartEvent(int, unsigned char)             grp #0x16 idx #1 type #5 len #8
+    0x7d463c OemIPCHandler::ImsSimInfo(int, int)                          grp #0x16 idx #0x20 type #3 len #8
+    0x7d4794 OemIPCHandler::ImsSessRefreshGetCseq(int, int)               grp #0x16 idx #7 type #2 len #0xb
+    0x7d48f0 OemIPCHandler::ImsSessRefreshSetCseq(int, int, int)          grp #0x16 idx #7 type #3 len #0xf
+    0x7d4a70 OemIPCHandler::ImsEngineSet(int, int, int)                   grp #0x16 idx #9 type #3 len #9
+    0x7d4bf4 OemIPCHandler::ImsFrameTimeGet(int, int, int, _SAE_RTCPRepor grp #0x16 idx #0xa type #2 len #9
+    0x7d4d78 OemIPCHandler::ImsFrameTimeSet(int, int, int, _SAE_TimeStamp grp #0x16 idx #0xa type #3 len #0x11
+    0x7d559c OemIPCHandler::ImsNotiInfo(int, char*, int)                  grp #0x16 idx #0xc type #5 len #0x6c
+    0x7d5684 OemIPCHandler::ImsSIPInfoForACB(int, int)                    grp #0x16 idx #0x11 type #5 len #8
+    0x7d57b4 OemIPCHandler::ImsGetNetworkInfo(int, _SAE_NetworkInfoReport grp #0x16 idx #0x18 type #2 len #8
+    0x7d5ba4 OemIPCHandler::GetVersion(int, char*, int)                   grp #0x16 idx #0x1b type #2 len #7
+    0x7d5d1c OemIPCHandler::GetEVSRateAdapt(int)                          grp #0x16 idx #0x23 type #2 len #8
+    0x7d5ec8 OemIPCHandler::ImsDeleteCpClientSocket(int, int)             grp #0x16 idx #0x1c type #3 len #9
+    0x7d6028 OemIPCHandler::ImsGetRadioEnvironmentInfo(int, _SAE_RadioEnv grp #0x16 idx #0x21 type #2 len #8
+    0x7d6418 OemIPCHandler::ImsSendIPC(int, char*, int)                   grp #0x16 idx #0xf type #2 len #0x6c
+    0x7d6d38 DefaultOemIPCHandler::ImsSetCSTuneAway(int, unsigned char)   grp #0x16 idx #0x12 type #3 len #8
+    0x7d6e90 DefaultOemIPCHandler::ImsSignalingInfo(int, int, int, int)   grp #0x16 idx #0x19 type #3 len #0xa
+ImsSetChannel(phoneId, a2, a3, a4, a5, a6, a7, a8, ipver, void *ipA, void *ipB, a12) -> IPC 16/01 SET, frame 0x36:
+    +7 u8 a2 (channel)   +8 u8 a4 (op: only 1 or 3 fill the rest; anything else = ff: delete)
+    +9 u16 a5  +0xb u16 a6  +0xd u16 a7  +0xf u16 a8   (the RTP/RTCP ports, local and remote: order to confirm
+    against CPVEInterface::CreateChannel)   +0x11 u8 ipver (2: 16-byte IPv6, else 4-byte IPv4)
+    +0x12 ipB (16 of 36 bytes)   +0x22 u8 ipver   +0x23 ipA (16 of 19)   +0x33 u8 a12   +0x34 u16 a3
+Next: the layouts of 16/02 SetCodec (_stSAE_CodecInfo, 0x41), 16/06 SetPdnIp (0x2d), 16/03 SetRtpMedia (0x0b),
+16/09 EngineSet (0x09); CPVEInterface::CreateChannel/StartChannel for the call order; then send them from
+redwood-cellulard (it already frames IPC: live-modem.c ipc()). Audio: CPVEInterface::SetAudioPath is a stub (8 bytes):
+the voice route CP <-> codec is the audio HAL's (RIL sound path IPC + ABOX), still to find. Test call still needed
+(/var/root/ims-invite-*.txt for Jio's SDP).
