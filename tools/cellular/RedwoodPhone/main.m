@@ -204,8 +204,12 @@ static void rp_session_for_call(void)
         [self.engine attachNode:src];
         [self.engine connect:src to:self.engine.mainMixerNode format:f];
     }
-    NSError *e = nil;
-    if (![self.engine startAndReturnError:&e]) rp_log(@"route player: %@", e);
+    /* (off: iOS has no receiver port from the audio plug-in yet, so the silence ran the Speaker device, which set the
+     * speaker route over the earpiece redwood-ims had chosen. The call stays on the earpiece; route from the plug-in later.) */
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/call-ui/route-player"]) {
+        NSError *e = nil;
+        if (![self.engine startAndReturnError:&e]) rp_log(@"route player: %@", e);
+    }
     [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
         rp_log(@"route now %@", [AVAudioSession sharedInstance].currentRoute.outputs.firstObject.portType);
     }];
