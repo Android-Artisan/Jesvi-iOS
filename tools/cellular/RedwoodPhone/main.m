@@ -139,7 +139,14 @@ static void rp_cmd_quiet(NSString *line)
     }
 }
 
-- (void)providerDidReset:(CXProvider *)p { rp_log(@"provider reset"); }
+/* CallKit dropped us (callservicesd restarted, or refused the call): no call may stay ringing at the other end */
+- (void)providerDidReset:(CXProvider *)p
+{
+    rp_log(@"provider reset");
+    for (NSNumber *cid in self.calls.allKeys) {
+        if (![self.done containsObject:cid]) { [self.done addObject:cid]; rp_cmd([NSString stringWithFormat:@"end %@", cid]); }
+    }
+}
 - (void)providerDidBegin:(CXProvider *)p { rp_log(@"provider ready"); }
 static void rp_session_for_call(void)
 {

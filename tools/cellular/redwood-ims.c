@@ -654,8 +654,12 @@ call_respond(const char *status,const char *body)
     }
     if (body) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(body),body);
     else o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-    if (send(call.fd,m,(size_t)o,0)<0) printf("call: send %s failed: %s\n",status,strerror(errno));
-    else printf("call: --> %s\n",status);
+    if (send(call.fd,m,(size_t)o,0)<0) {
+        /* the P-CSCF's connection died under the call (2026-11-14 04:40: "Broken pipe", the caller kept ringing): the
+         * response goes to the same P-CSCF over our registration connection (port-c -> its port-s, which its Via names) */
+        printf("call: send %s failed (%s): sent on the registration connection instead\n",status,strerror(errno));
+        if (call_sock>=0 && send(call_sock,m,(size_t)o,0)>0) call.fd=call_sock;
+    } else printf("call: --> %s\n",status);
 }
 
 static void
@@ -1241,6 +1245,16 @@ int main(int argc,char **argv)
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
             static time_t ka;time_t t=time(NULL);
             if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+            /* (2026-11-14) the P-CSCF's own connections to our port-s, too: a dead one is closed at once, so the next
+             * call comes on a fresh connection instead of waiting out a dead one (late rings, lost CANCELs) */
+            static time_t kc;
+            if (t-kc>=20) {kc=t;
+                for (int j=0;j<ncs;j++) if (send(cs[j],"\r\n\r\n",4,0)<0) {
+                    printf("keep-alive: a P-CSCF connection is gone (%s): closed\n",strerror(errno));
+                    if (call.state && call.fd==cs[j]) call.fd=s;
+                    close(cs[j]);cs[j]=cs[--ncs];j--;
+                }
+            }
         }
         ims_cmd_poll(s,portc);
         call_tick();
@@ -1250,7 +1264,7 @@ int main(int argc,char **argv)
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
+            if (g<=0) {if (i>=base) {if (call.state && call.fd==cs[i-base]) call.fd=s;close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
             printf("<-- %zd bytes\n",g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) {
                 char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
