@@ -151,6 +151,8 @@ static int inputs(uint32_t *value)
 /* ---- firmware download (A, 2026-11-12): legacy RAW queues in the reserved IPC memory, Samsung's
  * link_start_normal_boot + xmit_to_legacy_link + cbd's SIPC UDL. Only with --download TOC. ---- */
 #include <sys/sysctl.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "../../xnu/files/bsd/sys/redwood_cp_ipc.h"
 #include "s5123-udl.h"
 static const char *download_toc;
@@ -342,6 +344,7 @@ static int sbd_send(unsigned id,const uint8_t *frame,uint32_t n)
     if (ipc_store(0x400,0x81)) return -1;
     return doorbell(0);
 }
+static void cell_ipc(const uint8_t *m,unsigned len);
 static void sbd_dump_dl(void)
 {
     static int said;
@@ -358,6 +361,7 @@ static void sbd_dump_dl(void)
             uint8_t big[320];uint32_t show=sizeof(big);(void)b;(void)n;
             ipc_read(sbd_buf[id][1]+rp*sbd_chs[id].dl_size,big,show);
             uint32_t flen=big[2]|(big[3]<<8);if (big[0]>=0xf8 && flen>=4 && flen<show) show=flen;
+            if (sbd_chs[id].ch==235 && show>=11) cell_ipc(big,show);
             if (sbd_chs[id].ch==235 && show>=11) {
                 printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
                     big[8],big[9],big[10],big[6],big[7],show-11);
@@ -384,6 +388,35 @@ static int pktproc_info(void)
     printf("cellular live DL: pktproc v2 info at d0000000: %08x %08x %08x %08x\n",w[0],w[1],w[2],w[3]);fflush(stdout);
     return 0;
 }
+
+/* ---- stay mode (--stay): the CP stays up; state for iOS in /var/tmp/redwood-cell/state ---- */
+static int stay_mode;
+static struct {int rssi_dbm,bars,reg_raw,have_rssi;char plmn[8];uint64_t at;} cell;
+static void cell_publish(void)
+{
+    char tmp[]="/var/tmp/redwood-cell/state.tmp";
+    mkdir("/var/tmp/redwood-cell",0755);
+    FILE *f=fopen(tmp,"w");if (!f) return;
+    const char *op=strncmp(cell.plmn,"4058",4)==0||strncmp(cell.plmn,"40586",5)==0?"Jio":cell.plmn[0]?cell.plmn:"";
+    fprintf(f,"bars %d\nmax 4\ndbm %d\noperator %s\nplmn %s\nreg %d\nrat LTE\nupdated %llu\n",
+        cell.bars,cell.rssi_dbm,op,cell.plmn,cell.reg_raw,(unsigned long long)time(NULL));
+    fclose(f);chmod(tmp,0644);rename(tmp,"/var/tmp/redwood-cell/state");
+}
+static void cell_ipc(const uint8_t *m,unsigned len)
+{
+    if (len<11) return;
+    unsigned g=m[8],i=m[9];const uint8_t *d=m+11;unsigned n=len-11;int changed=0;
+    if (g==0x07 && i==0x06 && n>=1) {               /* DISP_RSSI_INFO: first byte = -dBm */
+        int dbm=-(int)d[0],bars=dbm>=-90?4:dbm>=-100?3:dbm>=-108?2:dbm>=-115?1:0;
+        if (!cell.have_rssi || dbm!=cell.rssi_dbm) {cell.rssi_dbm=dbm;cell.bars=bars;cell.have_rssi=1;changed=1;}
+    }
+    if (g==0x08 && i==0x03 && n>=9) {               /* NET_CURRENT_PLMN: "...!" then 6 digits */
+        char p[8]={0};for (unsigned k=0;k<6 && 3+k<n;k++) p[k]=(char)d[3+k];
+        if (p[0]>='0' && p[0]<='9' && strcmp(p,cell.plmn)) {strcpy(cell.plmn,p);changed=1;}
+    }
+    if (g==0x08 && i==0x05 && n>=2) {if (cell.reg_raw!=d[1]) {cell.reg_raw=d[1];changed=1;}}
+    if (changed) cell_publish();
+}
 static int online_handshake(unsigned seconds)
 {
     uint32_t last=0xffffffff,lastu=0xffffffff,msi=0,lastmsi=0xffffffff;int online=0;
@@ -393,13 +426,13 @@ static int online_handshake(unsigned seconds)
         if (ipc_load(0x404,&m) || ipc_load(0x40c,&u)) return -1;
         read_word(0x13800830,&msi);inputs(&in);
         if (m!=last || u!=lastu || msi!=lastmsi) {
-            printf("cellular live DL: cp2ap_msg %08x cp2ap_united %08x MSI status %08x GPIO %x\n",m,u,msi,in);fflush(stdout);
+            if (!stay_mode || m!=last) {printf("cellular live DL: cp2ap_msg %08x cp2ap_united %08x MSI status %08x GPIO %x\n",m,u,msi,in);fflush(stdout);}
             if (msi) {char r[8192],c[64];snprintf(c,sizeof(c),"w 0x13800830 0x%x",msi);request(c,r);}
             static unsigned repeats;
             if (m==last && msi && (m&0xff)==0xc8 && online && repeats<5) {
                 repeats++;printf("cellular live DL: PHONE_START repeated (MSI) -> INIT_END again (%u)\n",repeats);ap2cp(0x02);
             }
-            if (online) {uint16_t urp=0,uwp=0;ipc_load16(sbd_rp(1,0),&urp);ipc_load16(sbd_wp(1,0),&uwp);
+            if (online && !stay_mode) {uint16_t urp=0,uwp=0;ipc_load16(sbd_rp(1,0),&urp);ipc_load16(sbd_wp(1,0),&uwp);
                 printf("cellular live DL: umts_ipc0 UL rp %u wp %u (rp moving = CP read our request)\n",urp,uwp);fflush(stdout);}
             if (m!=last && (m&0x80) && (m&0x40)) {
                 unsigned cmd=m&0x3f;
@@ -416,7 +449,7 @@ static int online_handshake(unsigned seconds)
         if (online) {
             static int asked;static uint64_t shown;
             static int scanned;
-            if (!scanned && now_us(NULL)+8000000ull>deadline) {
+            if (!stay_mode && !scanned && now_us(NULL)+8000000ull>deadline) {
                 scanned=1;uint8_t c[2048];uint32_t start=0,prev=0;int in_run=0;
                 printf("cellular live DL: scan IPC 0x10000..0x800000 for CP writes:\n");
                 for (uint32_t o=0x10000;o<0x800000;o+=sizeof(c)) {
@@ -431,12 +464,12 @@ static int online_handshake(unsigned seconds)
                 fflush(stdout);
             }
             static int rawn;
-            if (rawn<3 && now_us(NULL)-shown>1000000) {
+            if (!stay_mode && rawn<3 && now_us(NULL)-shown>1000000) {
                 uint8_t r[256];rawn++;
                 if (!ipc_read(0xf00,r,sizeof(r))) {printf("cellular live DL: raw IPC+f00:");for (unsigned k=0;k<sizeof(r);k++) printf("%s%02x",k%32?" ":"\n   ",r[k]);printf("\n");}
                 if (!ipc_read(0x400,r,32)) {printf("cellular live DL: raw IPC+400:");for (unsigned k=0;k<32;k++) printf(" %02x",r[k]);printf("\n");}
             }
-            if (now_us(NULL)-shown>1000000) {
+            if (!stay_mode && now_us(NULL)-shown>1000000) {
                 shown=now_us(NULL);uint8_t a[2*2*2*SBD_N];
                 if (!ipc_read(sbd_rpwp,a,sizeof(a))) {
                     printf("cellular live DL: rpwp ulrp|ulwp|dlrp|dlwp:");
@@ -445,7 +478,7 @@ static int online_handshake(unsigned seconds)
                 }
             }
             sbd_dump_dl();
-            if (!asked && now_us(NULL)+35000000ull<deadline) {
+            if (!asked && (stay_mode || now_us(NULL)+35000000ull<deadline)) {
                 /* Samsung IPC on umts_ipc0 (ch 235, SBD id 1): IPC_MISC_ME_VERSION GET (0a 01, type 02), data ff */
                 uint8_t f[16]={0xf8,235,0,0, 8,0, 1,0, 0x0a,0x01,0x02, 0xff};
                 f[2]=12;asked=1;
@@ -453,7 +486,7 @@ static int online_handshake(unsigned seconds)
                 printf("cellular live DL: IPC MISC_ME_VERSION GET on umts_ipc0: %s\n",e?"send failed":"sent");fflush(stdout);
             }
             static int asked_sim;
-            if (asked && !asked_sim && now_us(NULL)+25000000ull<deadline) {
+            if (!stay_mode && asked && !asked_sim && now_us(NULL)+25000000ull<deadline) {
                 /* IPC_SEC_SIM_STATUS (05 01) GET (02), no data */
                 uint8_t f[16]={0xf8,235,11,0, 7,0, 2,0, 0x05,0x01,0x02};asked_sim=1;
                 int e=sbd_send(1,f,11);
@@ -558,7 +591,7 @@ static int download_stages(void)
     fclose(p);
     if (!error) {
         phase("download complete: Samsung's IPC handshake, 20 s");
-        error=online_handshake(40);
+        error=online_handshake(stay_mode?(unsigned)(10*365*24*3600):40);
         for (unsigned i=0;i<2;i++) {
             uint32_t in=0,w[10];inputs(&in);for (unsigned k=0;k<10;k++) ipc_load(k*4,&w[k]);
             printf("cellular live DL: +%ums GPIO %x IPC",i*500,in);for (unsigned k=0;k<10;k++) printf(" %08x",w[k]);printf("\n");fflush(stdout);
@@ -715,16 +748,17 @@ static int read_file(const char *path,uint8_t *data,size_t capacity,size_t *leng
 }
 int main(int argc,char **argv)
 {
-    if ((argc<4 || argc>7) || strcmp(argv[1],"--reserved-base-verified")) return 2;
+    if ((argc<4 || argc>8) || strcmp(argv[1],"--reserved-base-verified")) return 2;
     if (argc==5) {if (strcmp(argv[4],"--link")) return 2;link_requested=1;}
     if (argc==6) {if (strcmp(argv[4],"--download")) return 2;link_requested=1;download_toc=argv[5];}
+    if (argc==8 && !strcmp(argv[7],"--stay")) {stay_mode=1;argc=7;}
     if (argc==7) {if (strcmp(argv[4],"--download-all")) return 2;link_requested=1;download_toc=argv[5];download_plan=argv[6];}
     uint8_t image[131073],info[25];size_t length,info_length;uint32_t fields[5];
     if (read_file(argv[2],image,sizeof(image),&length) || read_file(argv[3],info,sizeof(info),&info_length) ||
         info_length!=24 || memcmp(info,"S512",4)) return 2;
     memcpy(fields,info+4,sizeof(fields));
     if (fields[0]!=1 || fields[1]!=length || fields[3]!=0x40000000 || fields[4]!=1) return 2;
-    signal(SIGINT,stop_signal);signal(SIGTERM,stop_signal);signal(SIGHUP,stop_signal);
+    signal(SIGINT,stop_signal);signal(SIGTERM,stop_signal);signal(SIGHUP,stop_signal);if (stay_mode) signal(SIGHUP,SIG_IGN);
     char response[8192];
     if (request("spi8.rx 0",response) || strcmp(response,"spi8: invalid byte count/hex\n")) return 1;
     struct modem m={0};struct s5123_boot_result result={0};
