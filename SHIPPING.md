@@ -1,3 +1,18 @@
+## 2026-11-13 — cellular: data, VoLTE, texts in Messages (merge dfef1d3; verified on the phone)
+- **LTE data** for all apps: redwood-cellulard (utun + configd, Jio DNS/DNS64), kernel packet window (CP_IPC_PP_FLAG);
+  ~3 MB/s over LTE. Starts by itself at boot (~65 s to data). Watchdogs: registration (75 s), downlink (max 1 restart/15 min).
+- **Status bar**: signal bars, Jio, LTE glyph (when Wi-Fi is off), satellite glyph hidden (boot-arg cellsat=0 keeps it).
+- **Settings > Cellular**: live network/signal/SIM, working Cellular Data switch, VoLTE status (RedwoodCellular tweak).
+- **VoLTE (IMS) on Jio**: redwood-ims registers (ISIM AKA, IPsec ESP), re-registers every ~110 min, one instance.
+- **Texts in the Messages app**: send (Delivered on SMSC confirmation), receive with notification, long texts (parts),
+  reactions as their SMS text (RedwoodSMS tweak in imagent; image inject.conf has imagent).
+- Tested: end to end S20 -> own number -> SMSC -> back -> Messages; texts from another phone; sends from Messages;
+  cold boot. Kill switches: /var/root/cell-nodata, cell-noims, cell-noimsclient, cell-nocommcenter;
+  /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
+- Open: Control Center data button, hotspot, MMS (pictures/groups), calls; first modem start after boot can stall
+  (watchdog restarts it).
+- Details: work/hackios-cellular/docs/cellular-download-plan.md, sessions/A.md.
+
 ## 2026-11-12 — cellular IPC memory audit (built, not deployed)
 - Loader emits an exact IPC reservation handoff only after ownership/cache recheck.
 - Root `cp.memory` audits existing XNU translations and cache attributes without
