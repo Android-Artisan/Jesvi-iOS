@@ -73,6 +73,8 @@
 #include <sys/redwood_sensors.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>          /* IO_NDELAY */
+#include <miscfs/devfs/devfs.h>
 #include "redwood_bcm_shub.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -652,6 +654,10 @@ pay_ack(void)
 }
 
 static void deliver_rpcs(const uint8_t *p, size_t n);
+static void gnss_post(uint8_t kind, uint8_t flags, uint16_t id, const uint8_t *d, uint16_t len);
+#define GNSS_REC_RPC            'R'     /* an RPC from the hub that is not SSP: [id][data] */
+#define GNSS_REC_SSP            'S'     /* the answer to a raw SSP request: id = the command, flags 1 = answered */
+#define GNSS_REC_SENT           'A'     /* a raw RPC sent: id = the RPC, flags 1 = acknowledged (or sent, if plain) */
 
 static void
 handle_internal(const struct shub_pkt *p)
@@ -819,6 +825,9 @@ deliver_rpcs(const uint8_t *p, size_t n)
 
 	while ((r = shub_rpc_next(p, n, &at, &id, &d, &len)) == 1) {
 		tl.rpcs++;
+		if (id != SHUB_RPC_SENSOR_RSP) {
+			gnss_post(GNSS_REC_RPC, 0, id, d, len);  /* everything but SSP, for /dev/redwood-gnss's readers */
+		}
 		switch (id) {
 		case SHUB_RPC_VERSION:
 			if (len >= 12) {
@@ -957,7 +966,7 @@ static struct {
 	uint32_t init_done, frames, frame_errors, unexpected;
 	bool answered;
 	uint16_t answer_opts;
-	uint8_t answer[16];
+	uint8_t answer[2048];           /* large for /dev/redwood-gnss's raw SSP reads */
 	uint16_t answer_len;
 	uint64_t found;                 /* SENSOR_SCANNING's bitmap */
 	uint32_t fw_rev;
@@ -1384,6 +1393,211 @@ report(void)
 	lck_mtx_unlock(&shub_lock);
 }
 
+/*
+ * /dev/redwood-gnss: the hub's link for user space, for the GNSS bring-up (A, 2026-11-13; ported from Scion's
+ * /dev/hakios-gnss, 9b886e99, their docs/gnss.md; their gnsstool speaks the same records). Root only. Made at shub=6; requests are carried out by the hub thread between its reads.
+ *
+ * write(): one request per call, little-endian:
+ *   'R' [u16 id][data]       an RPC to the hub in a reliable packet (data up to 1000 bytes); answered by an 'A' record
+ *   'P' [u16 id][data]       the same in a plain packet
+ *   'S' [u8 cmd][u16 options][u32 arg][u16 len][data]   one SSP transaction (ssp_cmd): options 0 READs len bytes
+ *                            (up to 2000) and answers with an 'S' record of them; 1 WRITEs data (up to 64 bytes)
+ *   A write while a request is outstanding fails with EBUSY.
+ * read(): a stream of records [u8 kind][u8 flags][u16 id][u16 len][len bytes]: 'R' every RPC from the hub except SSP's
+ * (0x21) as it arrives, 'A' and 'S' the outcome of requests. Records that do not fit the 64 KB ring are dropped.
+ */
+#define GNSS_DEV_NAME           "redwood-gnss"
+#define GNSS_RING               (64 * 1024)
+#define GNSS_REQ_MAX            (1 + 2 + 1000)
+static uint8_t gnss_ring[GNSS_RING];
+static uint32_t gnss_head, gnss_tail, gnss_lost;
+static int gnss_readers;
+static bool gnss_waiting;
+static uint8_t gnss_req[GNSS_REQ_MAX];
+static uint16_t gnss_req_len;
+static volatile bool gnss_req_pending;  /* written, for the hub thread */
+static volatile bool gnss_req_busy;     /* from a write's start to the hub thread's end of it */
+static volatile bool gnss_live;         /* the hub thread is in run(), where requests are taken */
+
+static void
+gnss_post(uint8_t kind, uint8_t flags, uint16_t id, const uint8_t *d, uint16_t len)
+{
+	uint8_t h[6] = { kind, flags, (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)len, (uint8_t)(len >> 8) };
+
+	lck_mtx_lock(&shub_lock);
+	if (gnss_readers > 0) {
+		if (GNSS_RING - (gnss_head - gnss_tail) < sizeof(h) + len) {
+			gnss_lost++;
+		} else {
+			for (unsigned i = 0; i < sizeof(h); i++) {
+				gnss_ring[gnss_head++ % GNSS_RING] = h[i];
+			}
+			for (uint16_t i = 0; i < len; i++) {
+				gnss_ring[gnss_head++ % GNSS_RING] = d[i];
+			}
+			if (gnss_waiting) {
+				gnss_waiting = false;
+				wakeup(&gnss_head);
+			}
+		}
+	}
+	lck_mtx_unlock(&shub_lock);
+}
+
+static bool
+gnss_pending(void)
+{
+	return gnss_req_pending;
+}
+
+/* On the hub thread: carry out the request user space wrote */
+static void
+gnss_do(void)
+{
+	static uint8_t pay[SHUB_TL_MAX];
+	const uint8_t *r = gnss_req;
+	uint16_t n = gnss_req_len;
+
+	if (n >= 3 && (r[0] == 'R' || r[0] == 'P')) {
+		uint16_t id = (uint16_t)(r[1] | r[2] << 8);
+		size_t k = shub_rpc_put(pay, id, r + 3, (uint16_t)(n - 3));
+		bool ok = r[0] == 'R' ? send_reliable(pay, (uint16_t)k) : send_packet(0, pay, (uint16_t)k, false);
+
+		gnss_post(GNSS_REC_SENT, ok, id, NULL, 0);
+	} else if (n >= 10 && r[0] == 'S') {
+		uint8_t cmd = r[1];
+		uint16_t opts = (uint16_t)(r[2] | r[3] << 8), len = (uint16_t)(r[8] | r[9] << 8);
+		uint32_t arg = shub_le32(r + 4);
+		static uint8_t buf[2048];
+		bool ok;
+
+		if (SSP_TYPE(opts) == SSP_AP2HUB_READ) {
+			len = len > 2000 ? 2000 : len;
+			memset(buf, 0, len);
+			ok = ssp_cmd(cmd, opts, arg, buf, len);
+			gnss_post(GNSS_REC_SSP, ok, cmd, buf, ok ? len : 0);
+		} else {
+			len = len > 64 ? 64 : len;
+			len = len > n - 10 ? (uint16_t)(n - 10) : len;
+			memcpy(buf, r + 10, len);
+			ok = ssp_cmd(cmd, opts, arg, buf, len);
+			gnss_post(GNSS_REC_SSP, ok, cmd, NULL, 0);
+		}
+	} else {
+		gnss_post(GNSS_REC_SENT, 0, 0xffff, NULL, 0);
+	}
+	gnss_req_pending = false;
+	gnss_req_busy = false;
+}
+
+static int
+gnss_open(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	lck_mtx_lock(&shub_lock);
+	gnss_readers++;
+	lck_mtx_unlock(&shub_lock);
+	return 0;
+}
+
+static int
+gnss_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	lck_mtx_lock(&shub_lock);
+	if (gnss_readers > 0 && --gnss_readers == 0) {
+		gnss_tail = gnss_head;
+	}
+	lck_mtx_unlock(&shub_lock);
+	return 0;
+}
+
+static int
+gnss_read(__unused dev_t dev, struct uio *uio, int ioflag)
+{
+	uint8_t chunk[512];
+	int error = 0;
+
+	lck_mtx_lock(&shub_lock);
+	while (gnss_head == gnss_tail) {
+		if (ioflag & IO_NDELAY) {
+			lck_mtx_unlock(&shub_lock);
+			return EWOULDBLOCK;
+		}
+		gnss_waiting = true;
+		error = msleep(&gnss_head, &shub_lock, PZERO | PCATCH, GNSS_DEV_NAME, NULL);
+		if (error != 0) {
+			lck_mtx_unlock(&shub_lock);
+			return error;
+		}
+	}
+	while (gnss_head != gnss_tail && uio_resid(uio) > 0) {
+		uint32_t k = 0;
+
+		while (k < sizeof(chunk) && gnss_head != gnss_tail && (user_ssize_t)k < uio_resid(uio)) {
+			chunk[k++] = gnss_ring[gnss_tail++ % GNSS_RING];
+		}
+		lck_mtx_unlock(&shub_lock);
+		error = uiomove((caddr_t)chunk, (int)k, uio);
+		lck_mtx_lock(&shub_lock);
+		if (error != 0) {
+			break;
+		}
+	}
+	lck_mtx_unlock(&shub_lock);
+	return error;
+}
+
+static int
+gnss_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	user_ssize_t n = uio_resid(uio);
+	int error;
+
+	if (n < 1 || n > GNSS_REQ_MAX) {
+		return EINVAL;
+	}
+	lck_mtx_lock(&shub_lock);
+	if (gnss_req_busy || !gnss_live) {
+		lck_mtx_unlock(&shub_lock);
+		return EBUSY;
+	}
+	gnss_req_busy = true;
+	lck_mtx_unlock(&shub_lock);
+	error = uiomove((caddr_t)gnss_req, (int)n, uio);
+	if (error == 0) {
+		gnss_req_len = (uint16_t)n;
+		gnss_req_pending = true;
+	} else {
+		gnss_req_busy = false;
+	}
+	return error;
+}
+
+static const struct cdevsw gnss_cdevsw = {
+	.d_open = gnss_open,
+	.d_close = gnss_close,
+	.d_read = gnss_read,
+	.d_write = gnss_write,
+	.d_ioctl = eno_ioctl,
+	.d_stop = eno_stop,
+	.d_reset = eno_reset,
+	.d_select = eno_select,
+	.d_mmap = eno_mmap,
+	.d_strategy = eno_strat,
+	.d_type = 0,
+};
+
+static void
+make_gnss_device(void)
+{
+	int major = cdevsw_add(-1, &gnss_cdevsw);
+
+	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0600, GNSS_DEV_NAME) == NULL) {
+		say("shub: /dev/%s could not be made\n", GNSS_DEV_NAME);
+		return;
+	}
+	say("shub: /dev/%s made\n", GNSS_DEV_NAME);
+}
+
 static void
 run(void)
 {
@@ -1410,6 +1624,7 @@ run(void)
 		}
 		say("shub: 6: sensor %u on, every %u ms: %s\n", id, ms, sensor_on(id, ms) ? "taken" : "NOT taken");
 	}
+	gnss_live = true;
 	state = "running";
 	idle_us = 4000;
 	while (powered) {
@@ -1441,7 +1656,10 @@ run(void)
 			}
 			__atomic_store_n(&sensor_power_state, (uint32_t)ssp.enabled, __ATOMIC_RELAXED);
 		}
-		pump(100, NULL);
+		if (gnss_req_pending) {
+			gnss_do();
+		}
+		pump(100, gnss_pending);
 		if (ssp.frames - frames_at_time >= 3000) {
 			frames_at_time = ssp.frames;
 			send_time();
@@ -1556,6 +1774,7 @@ redwood_ssp_init(void)
 	period_ms = period_ms < 5 ? 5 : period_ms;
 	if (n >= 6) {
 		redwood_sensors_device();       /* now, so that backboardd finds it when it starts */
+		make_gnss_device();             /* /dev/redwood-gnss: raw RPCs and SSP for user space (GNSS bring-up) */
 		redwood_dbgport_add("shub.prox", "[0|1]: cached proximity readings; optional raw diagnostic sampling", dbg_shub_prox);
 	}
 	if (kernel_thread_start(shub_thread, (void *)(uintptr_t)n, &thread) == KERN_SUCCESS) {
