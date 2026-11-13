@@ -1473,6 +1473,13 @@ int main(int argc,char **argv)
         char args[1024]="";size_t al=sizeof(args)-1;
         if (!sysctlbyname("kern.bootargs",args,&al,NULL,0) && strstr(args,"cellular=0")) {puts("cellular=0: modem left off");return 0;}
         stay_mode=1;{struct stat nd;data_off=!stat("/var/root/cell-nodata",&nd);}argc=7;
+        {   /* (A, 2026-11-14) the call screen's app: LaunchServices forgets /var/jb's apps at every boot, and CallKit
+             * refuses a provider whose app it cannot find ("bundleIdentifier: (null)"): register it again, in the background */
+            struct stat ap;
+            if (!stat("/var/jb/Applications/RedwoodPhone.app",&ap) && fork()==0) {
+                sleep(20);execl("/var/jb/usr/bin/uicache","uicache","-p","/var/jb/Applications/RedwoodPhone.app",(char *)NULL);_exit(1);
+            }
+        }
         /* a newer copy in /var/root (root only) runs instead of the image's: updates without a new image */
         if (strcmp(argv[0],"/var/root/redwood-cellulard") && access("/var/root/redwood-cellulard",X_OK)==0) {
             argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
