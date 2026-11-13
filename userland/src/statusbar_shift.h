@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 20.0;   /* (user-verified 2026-11-13 with cut=125; was 3) */
+static double sbs_lead = 0;      /* (off by default: user 2026-11-13 22:20, "go back to default"; was 3..20) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -57,7 +57,7 @@ sbs_edge_insets(id self, SEL cmd)
  * where an iPhone has it; `lead` then moves it further left. Only the status bar's layout: the island is untouched.
  */
 struct sbs_rect { double x, y, w, h; };
-static double sbs_cut = 125.0;
+static double sbs_cut = 0;
 static bool (*sbs_orig_avoid)(id, SEL, struct sbs_rect, double *, double *);
 
 static bool
@@ -140,12 +140,13 @@ sbs_setup(id self, SEL cmd, id container)
  * the island on. It centres the time in the 83 pt left of a 209 pt notch, nudged by +leadingCenteringOffset
  * (-0.667). That nudge is moved left by lead/2 (the same feel `lead` had: lead=20 -> about 10 pt left).
  */
+static double sbs_notch_shift;
 static double (*sbs_orig_lco)(id, SEL);
 
 static double
 sbs_lco(id self, SEL cmd)
 {
-	double v = sbs_orig_lco(self, cmd), r = v - sbs_lead / 2;
+	double v = sbs_orig_lco(self, cmd), r = v - sbs_lead / 2 - sbs_notch_shift;
 	static int told;
 
 	if (told++ < 2) {
@@ -166,7 +167,7 @@ static double (*sbs_orig_tco)(id, SEL);
 static double
 sbs_tco(id self, SEL cmd)
 {
-	double v = sbs_orig_tco(self, cmd), r = v + sbs_lead / 2 + sbs_trail;
+	double v = sbs_orig_tco(self, cmd), r = v + sbs_lead / 2 + sbs_trail;    /* (no notch shift: it is derived from the left, already corrected) */
 	static int told;
 
 	if (told++ < 2) {
@@ -175,9 +176,48 @@ sbs_tco(id self, SEL cmd)
 	return r;
 }
 
+/*
+ * The side areas are (screen width - notchSize.width) / 2 wide (UIKitCore 0x189ab1044): with the iPhone X's 209 pt
+ * notch the left one is ~83 pt, so a longer carrier text ("... | Jio" on the lock screen) scrolled although the S20's
+ * hole is small (user 2026-11-13). +notchSize's width is reported as `notch` (conf notch=, default 125; 0 = Apple's).
+ * The centring points move inward by (209 - notch) / 4 with it (leadingCenteringEdgeInset = notchRect.x / 2 + ...),
+ * so lco/tco take that back: the time and the battery stay where lead/trail put them.
+ */
+struct sbs_size { double w, h; };
+static double sbs_notch = 0;
+static struct sbs_size (*sbs_orig_notch)(id, SEL);
+
+
+static struct sbs_size
+sbs_notch_size(id self, SEL cmd)
+{
+	struct sbs_size v = sbs_orig_notch(self, cmd);
+
+	if (sbs_notch > 0 && sbs_notch < v.w) {
+		sbs_notch_shift = (v.w - sbs_notch) / 4;
+		v.w = sbs_notch;
+	}
+	return v;
+}
+
 static void
 sbs_hook(void *unused)
 {
+	{
+		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+		Method nm = sc ? class_getClassMethod(sc, sel_registerName("notchSize")) : NULL;
+		if (nm != NULL && sbs_orig_notch == NULL && sbs_notch > 0) {
+			sbs_orig_notch = (struct sbs_size (*)(id, SEL))method_getImplementation(nm);
+			struct sbs_size o = sbs_orig_notch((id)sc, sel_registerName("notchSize"));
+			if (sbs_notch < o.w) {
+				sbs_notch_shift = (o.w - sbs_notch) / 4;
+			}
+			if (!class_addMethod(object_getClass((id)sc), sel_registerName("notchSize"), (IMP)sbs_notch_size,
+			    method_getTypeEncoding(nm))) {
+				method_setImplementation(nm, (IMP)sbs_notch_size);
+			}
+		}
+	}
 	{
 		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
 		SEL ts = sel_registerName("trailingCenteringOffset");
@@ -248,6 +288,10 @@ statusbar_shift_start(void)
 		if (p != NULL) {
 			sbs_lead = atof(p + 5);
 		}
+		p = strstr(b, "notch=");
+		if (p != NULL) {
+			sbs_notch = atof(p + 6);
+		}
 		p = strstr(b, "trail=");
 		if (p != NULL) {
 			sbs_trail = atof(p + 6);
@@ -257,8 +301,8 @@ statusbar_shift_start(void)
 			sbs_cut = atof(p + 4);
 		}
 	}
-	if (sbs_lead <= 0 && sbs_cut <= 0) {
-		return;
+	if (sbs_lead <= 0 && sbs_cut <= 0 && sbs_trail == 0 && sbs_notch <= 0) {
+		return;                         /* the default: Apple's status bar, nothing hooked */
 	}
 	/*
 	 * At once, from the library's constructor: UIKitCore is mapped (a dependency of every UI process) and its classes

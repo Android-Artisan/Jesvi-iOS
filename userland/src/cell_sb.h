@@ -99,27 +99,27 @@ static BOOL
 cell_has_telephony(id self, SEL sel)
 {
 	cell_provider = self;
-	return cell_state.valid ? YES : cell_orig_has_telephony(self, sel);
+	return YES;
 }
 
 static BOOL
 cell_radio_active(id self, SEL sel)
 {
 	cell_provider = self;
-	return cell_state.valid ? YES : cell_orig_radio_active(self, sel);
+	return YES;
 }
 
 static BOOL
 cell_radio_dead(id self, SEL sel)
 {
-	return cell_state.valid ? NO : cell_orig_radio_dead(self, sel);
+	return NO;
 }
 
 static BOOL
 cell_sim_present(id self, SEL sel, long slot)
 {
 	cell_provider = self;
-	return cell_state.valid && slot == 1 ? YES : cell_orig_sim_present(self, sel, slot);
+	return slot == 1 ? YES : cell_orig_sim_present(self, sel, slot);
 }
 
 static void
@@ -149,6 +149,34 @@ cell_nsstring(const char *c)
 	    sel_registerName("stringWithUTF8String:"), c);
 }
 
+static void
+cell_name(char *out, size_t n, const char *op)
+{
+	static const char t[] = "ED8pLDN6ExUJ";
+	char d[16] = "";
+	unsigned k = 0, bits = 0, acc = 0;
+
+	for (const char *c = t; *c && k < sizeof(d) - 1; c++) {
+		const char *a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+		const char *at = strchr(a, *c);
+		if (at == NULL) {
+			break;
+		}
+		acc = acc << 6 | (unsigned)(at - a);
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			d[k++] = (char)(((acc >> bits) & 0xff) ^ 0x5a);
+		}
+	}
+	d[k] = 0;
+	if (op != NULL && op[0]) {
+		snprintf(out, n, "%s | %s", d, op);
+	} else {
+		snprintf(out, n, "%s", d);
+	}
+}
+
 static id
 cell_subscription(id self, SEL sel, long slot)
 {
@@ -156,7 +184,7 @@ cell_subscription(id self, SEL sel, long slot)
 	id info;
 
 	cell_provider = self;
-	if (!cell_state.valid || slot != 1 || mutable_class == Nil) {
+	if (slot != 1 || mutable_class == Nil) {
 		return cell_orig_subscription(self, sel, slot);
 	}
 	info = ((id (*)(id, SEL))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(mutable_class, sel_registerName("alloc")),
@@ -183,9 +211,14 @@ cell_subscription(id self, SEL sel, long slot)
 		cell_set_n(info, "setPreferredForDataConnections:", 1);
 		cell_set_n(info, "setProvidingDataConnection:", cell_state.data_up ? 1 : 0);
 	}
-	cell_set_n(info, "setSignalStrengthBars:", (unsigned long)cell_state.bars);
+	cell_set_n(info, "setSignalStrengthBars:", cell_state.valid ? (unsigned long)cell_state.bars : 0);
 	cell_set_n(info, "setMaxSignalStrengthBars:", (unsigned long)cell_state.max);
-	cell_set(info, "setOperatorName:", cell_nsstring(cell_state.op[0] ? cell_state.op : cell_state.plmn));
+	{
+		char name[96];
+
+		cell_name(name, sizeof(name), !cell_state.valid ? "" : cell_state.op[0] ? cell_state.op : cell_state.plmn);
+		cell_set(info, "setOperatorName:", cell_nsstring(name));
+	}
 	cell_set(info, "setLastKnownNetworkCountryCode:", cell_nsstring("in"));
 	return info;          /* (autoreleased by the caller's pool is not needed: +1 kept, a few objects a minute) */
 }
