@@ -161,3 +161,25 @@
 - Added Camera to tracked tweak-loader injection defaults for future image builds. Live installation must retain the same entry in persistent and current injection lists while preserving unrelated entries. Data-volume tweak alone is not sufficient if Camera never loads the tweak loader.
 - ASan/UBSan policy tests pass (entry/steady/manual/exit, auto-off preservation, display-off, rule disable, unknown service, expired/future lease). Signed arm64 iOS dylib builds with -Wall -Wextra -Werror; passcode build integration passes. Latest dylib SHA-256 e746a68f6a164e2675832bf7789cf1ed42d8d963659446f7aaac92091f254fad.
 - Documentation/install/rollback and unverified cases: docs/x1slte-camera-brightness-rule.md. NOT installed/device-verified. Restore the temporary diagnostic global-auto-off setting to the user's normal enabled mode before the eventual Camera-only trial, otherwise that diagnostic value would be saved as their prior preference.
+
+## Auxiliary rear inventory checkpoint; system rechecked
+
+- Separate branch feat/s20-rear-aux now contains reproducible aux-inventory.py,
+  metadata-only JSON and docs/x1slte-camera-aux.md. Both saved phone overlays
+  agree. CIS2LA and GW2 both use address0x2d, on different I2C controllers;
+  GW2 module@5A is not its bus address. Shared WDMA route and a GPIO/MCLK pin
+  overlap require exclusive activation and deliberate restoration.
+- Three host fixup safety tests pass; cached-input assertions confirm matching
+  camera nodes, separate bus targets and both seven-bit addresses. No sensor
+  powered/probed and no auxiliary camera claimed working. Revision-gated2LA
+  initialization and GW2 TNP/Global remain prerequisites, not copied blindly.
+- Phone lock acquired after other agent explicitly released it. Read-only SSH
+  confirms kernel21:16:40 remains; new system injection list still lacks Camera
+  on libredwood-tweaks. No live brightness installation, respring, flash or reboot
+  in this checkpoint. Persistent brightness source commit3cfacd02 remains staged.
+- Before installing brightness, restore normal auto-on outside Camera, preserve
+  current persistent/runtime injection entries, install matching tweak/filter,
+  and verify live lifecycle/manual-slider/lock tests. Reboot validation requires
+  explicit user permission. Front original remains the required default.
+- Accepted master has advanced to02636ecf; integrate it explicitly before any new
+  full image/kernel build. No accepted work was overwritten by this checkpoint.
