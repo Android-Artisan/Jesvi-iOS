@@ -46,3 +46,15 @@
 - Installed slot SHA-256: `dcc5b9e7e87ae854927fdddf79497ef7a90923bf95486f1f9014b1517ae233f8`.
 - Exact rollback slot is preserved. Loader/profile/root/system/userdata were not rewritten.
 - Next: execute the user-authorized test reboot, wait for SSH, verify protected/locked keybag before user unlock, fingerprint exchange-v2 status and camera device.
+
+## Checkpoint: combined kernel booted; live captures verified
+
+- Authorized test reboot completed. Live kernel build time: 2026-11-14 21:16:40 IST. Camera node present; fingerprint exchange-v2 preserved, TEEGRIS not started, no fingerprint commands issued.
+- Correction to earlier activation checkpoint: postboot inspection found the uploaded library still named `.camera-new`. It had not been activated. Renamed it live, verified the active file byte-for-byte against the signed build, restarted only mediaserverd. Its log confirms the development copy loaded. No second reboot.
+- Native MKB state is 0 / AKS 0x4 (unlocked). Repeat passcode locking is NOT verified; requested physical lock/unlock checks from the user without asking for their code.
+- Added bounded `tools/camera/s20_capture_probe.c`: explicit binned rear/front mode, EAGAIN startup handling, 36 headers per session, odd exposure requested after stream initialization. Commands before stream initialization are reset; an initial probe demonstrated this, so it was corrected rather than counted as a pass.
+- Rear/front/rear sessions pass (108 frames). Rear 2016x1512, line_ns 1468; requested 1001 lines settles to 1000. Kernel register readback at frame 31 independently reports exposure 1000, gain 0x20, frame length 22564 matching the request.
+- Production ISP host executable captures 40/40 rear frames, no skips, approximately 30 fps; renders 1008x756 NV12 in 21 ms. Register readback tracks AE requests (3374 lines).
+- Captured scene is nearly black (~1% samples above black+8). Exposure transport passes, but image quality cannot be accepted from this scene. Asked user whether lens is covered/dark and to provide a lit scene. Do not claim stock quality or visual validation.
+- Evidence is outside git: `/Users/jesvi/ios-port-research/build/camera-device-20261114/` (`rear-probe-2.txt`, `front-probe-1.txt`, `rear-probe-3.txt`, `rear-isp-test.txt`, `test-final-kernel.log`, active library readback). Earlier failed probe logs preserved too.
+- Remaining: physical repeat-lock confirmation, lit-scene RAW/preview inspection and app still/switch testing. Full-resolution rear remains disabled; stock GRAS/CCM/noise transplantation is not yet enabled.
