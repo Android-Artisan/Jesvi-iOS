@@ -2465,6 +2465,179 @@ tee_open_test_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 }
 
+/*
+ * The fingerprint TA (FINGE, Samsung libbauthtzcommon's protocol, reversed 2026-11-14): one session, one 0x2ee00c-byte
+ * shared buffer, every command is TEEC command N with param 0 = the whole buffer (partial in/out):
+ *   request  +0x0 u32 1, +0x4 u32 N, +0xc u32 handle (the last response's), +0x10 data (<= 0xa000), +0xa010 u32 length
+ *   response +0x177004 u32 status, +0x177008 u32 handle, +0x177010 u32 ?, +0x177014 data, +0x181014 u32 length,
+ *            +0x2ee008 u32 error
+ * N: 1 PREPARE 2 ENROLL_INIT 3 ENROLL_DO 4 ENROLL_FINAL 5 IDENTIFY_INIT 6 IDENTIFY_DO 7 IDENTIFY_FINAL 8 SET_PASSWORD
+ *    9 VERIFY_PASSWORD 10 CANCEL 12 CONTROL_OP 13 HAT_OP 14 TEMPLATE_MIGRATION 16 TYPE_CHECK
+ */
+#define FP_SHM_SIZE             0x2ee00cu
+#define FP_TA_PATH              "/var/root/tee/00000000-0000-0000-0000-46494e474502"
+static struct tee_session fp_ses;
+static bool fp_open;
+static uint8_t *fp_buf;
+static int fp_shm_id;
+static uint32_t fp_handle;
+static char fp_cmd_text[300];
+
+static int
+fp_ensure(void)
+{
+	struct redwood_tee_session *s = NULL;
+	struct tz_uuid u = { 0, 0, 0, { 0, 0, 0x46, 0x49, 0x4e, 0x47, 0x45, 0x02 } };
+	uint32_t result = 0, origin = 0;
+	int err;
+
+	if (fp_open) {
+		return 0;
+	}
+	if ((err = redwood_tee_open(FP_TA_PATH, &u, &s, &result, &origin)) != 0) {
+		snprintf(tee_last, sizeof(tee_last), "fp: open err %d result %#x origin %u", err, result, origin);
+		return err;
+	}
+	fp_ses = *(struct tee_session *)s;
+	if (fp_buf == NULL && (fp_buf = tz_alloc(FP_SHM_SIZE)) == NULL) {
+		return ENOMEM;
+	}
+	lck_mtx_lock(&tee_client_lock);
+	result = tee_shm_register(&tee_ctx, fp_buf, FP_SHM_SIZE, true, &fp_shm_id, &origin);
+	lck_mtx_unlock(&tee_client_lock);
+	if (result != 0) {
+		snprintf(tee_last, sizeof(tee_last), "fp: shared memory %#x origin %u", result, origin);
+		return EIO;
+	}
+	fp_open = true;
+	return 0;
+}
+
+static int
+fp_hex(char c)
+{
+	return (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+}
+
+/*
+ * The QBT2000 sensor's normal-world side, as Samsung's qbt2000 driver does it (drivers/fingerprint/qbt2000_common.c
+ * power_control + qbt2000_platform.c sec_spi_prepare; x1s dts "qbt2000"): VDD_BTP_1P8 = S2MPS19 LDO19M on; the pins to
+ * "pins_poweron" = spi4-bus (gpp2-0/1/2 function 2, no pull) + spi4-fp-cs-func-high (gpp2-3 function 2, data 1); the SPI
+ * clocks (fp-spi-pclk = Q-channel USI04_USI, fp-spi-sclk = DIV_CLK_PERIC0_USI04_USI) on at 4 x 25 MHz. The SPI itself
+ * (USI04, 0x105D0000) is the secure world's. Pins: PERIC0 pinctrl 0x10430000, bank gpp2 at +0x40.
+ */
+extern int redwood_pmic_ldo_on(unsigned ldo, char *report, size_t report_size);
+#include <sys/redwood_bbi2c.h>
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#define FP_CMU_PERIC0           0x10400000UL
+#define  FP_USI04_USER_MUX      0x0660
+#define  FP_USI04_DIV           0x1814
+#define  FP_USI04_RSTNSYNC      0x20cc
+#define  FP_USI04_QCH           0x303c
+
+static void
+fp_power(void)
+{
+	static vm_offset_t cmu;
+	volatile uint8_t *gpp2;
+	char line[160];
+	int r;
+
+	r = redwood_pmic_ldo_on(19, line, sizeof(line));
+	tee_say("fp power: %s (%d)\n", line, r);
+	delay(10000);
+	if (cmu == 0) {
+		cmu = ml_io_map(FP_CMU_PERIC0, 0x4000);
+	}
+#define CMU(o)  (*(volatile uint32_t *)(cmu + (o)))
+	tee_say("fp power: USI04 before: user mux %08x div %08x rstnsync %08x qch %08x\n", CMU(FP_USI04_USER_MUX),
+	    CMU(FP_USI04_DIV), CMU(FP_USI04_RSTNSYNC), CMU(FP_USI04_QCH));
+	CMU(FP_USI04_RSTNSYNC) |= (1u << 20) | (1u << 21);
+	CMU(FP_USI04_QCH) |= 3;
+	if ((CMU(FP_USI04_USER_MUX) >> 4) & 1) {
+		CMU(FP_USI04_DIV) = (CMU(FP_USI04_DIV) & ~0xfu) | 3;    /* 400 MHz / 4 = 100 MHz: SCLK 25 MHz */
+	}
+	delay(100);
+	tee_say("fp power: USI04 after: user mux %08x div %08x rstnsync %08x qch %08x\n", CMU(FP_USI04_USER_MUX),
+	    CMU(FP_USI04_DIV), CMU(FP_USI04_RSTNSYNC), CMU(FP_USI04_QCH));
+	for (uint32_t o = 0x2000; o < 0x2080; o += 4) {
+		if (CMU(o) != 0) {
+			tee_say("fp power: PERIC0 gate +%#x = %08x\n", o, CMU(o));
+		}
+	}
+#undef CMU
+	gpp2 = redwood_gpio_bank(0x10430000, 0x40);
+	redwood_gpio_set(gpp2, 3, 1);           /* data 1 first (this makes it an output), then the SPI function */
+	for (uint32_t pin = 0; pin < 4; pin++) {
+		redwood_gpio_pull(gpp2, pin, 0);
+		redwood_gpio_func(gpp2, pin, 2);
+	}
+	tee_say("fp power: gpp2 con %08x dat %08x pud %08x\n", *(volatile uint32_t *)gpp2, *(volatile uint32_t *)(gpp2 + 4),
+	    *(volatile uint32_t *)(gpp2 + 8));
+}
+
+/* "N [HEX]": command N with data HEX; the reply's head into tee_last and the log */
+static void
+fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	uint32_t n = 0, len = 0, result, origin = 0, rlen, status, handle, error;
+	const char *p = fp_cmd_text;
+	char hex[200];
+	size_t at = 0;
+
+	if (fp_ensure() != 0) {
+		return;
+	}
+	while (*p == ' ') {
+		p++;
+	}
+	if (strncmp(p, "power", 5) == 0) {
+		fp_power();
+		return;
+	}
+	while (*p >= '0' && *p <= '9') {
+		n = n * 10 + (uint32_t)(*p++ - '0');
+	}
+	if (*p == ':') {
+		fp_handle = 0;
+		for (p++; *p >= '0' && *p <= '9'; p++) {
+			fp_handle = fp_handle * 10 + (uint32_t)(*p - '0');
+		}
+	}
+	bzero(fp_buf, 0x10);
+	bzero(fp_buf + 0x177000, 0x20);
+	*(uint32_t *)(fp_buf + 0x0) = 1;
+	*(uint32_t *)(fp_buf + 0x4) = n;
+	*(uint32_t *)(fp_buf + 0xc) = fp_handle;
+	while (*p == ' ') {
+		p++;
+	}
+	while (p[0] && p[1] && fp_hex(p[0]) >= 0 && fp_hex(p[1]) >= 0 && len < 0xa000) {
+		fp_buf[0x10 + len++] = (uint8_t)(fp_hex(p[0]) << 4 | fp_hex(p[1]));
+		p += 2;
+	}
+	*(uint32_t *)(fp_buf + 0xa010) = len;
+	*(uint32_t *)(fp_buf + 0x181014) = 0;
+	*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+	lck_mtx_lock(&tee_client_lock);
+	result = tee_invoke_shm(&fp_ses, n, fp_shm_id, FP_SHM_SIZE, &origin);
+	lck_mtx_unlock(&tee_client_lock);
+	status = *(uint32_t *)(fp_buf + 0x177004);
+	handle = *(uint32_t *)(fp_buf + 0x177008);
+	rlen = *(uint32_t *)(fp_buf + 0x181014);
+	error = *(uint32_t *)(fp_buf + 0x2ee008);
+	if (result == 0) {
+		fp_handle = handle;
+	}
+	for (uint32_t i = 0; i < rlen && i < 64 && at + 3 < sizeof(hex); i++) {
+		at += (size_t)snprintf(hex + at, sizeof(hex) - at, "%02x", fp_buf[0x177014 + i]);
+	}
+	hex[at] = 0;
+	snprintf(tee_last, sizeof(tee_last), "fp %u (%u bytes): result %#x origin %u status %#x opcode %#x error %#x timeout %u reply %u: %s",
+	    n, len, result, origin, status, handle, error, *(uint32_t *)(fp_buf + 0x177010), rlen, hex);
+	tee_say("%s\n", tee_last);
+}
+
 static int
 tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
 {
@@ -2491,6 +2664,16 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 		tee_state = TEE_STARTING;
 		snprintf(tee_status, sizeof(tee_status), "TEEGRIS: starting");
 		kernel_thread_start(tee_start_thread, NULL, &t);
+		thread_deallocate(t);
+		return 0;
+	}
+	if (strncmp(in, "fp ", 3) == 0) {
+		if (tee_state != TEE_UP) {
+			return ENXIO;
+		}
+		strlcpy(fp_cmd_text, in + 3, sizeof(fp_cmd_text));
+		snprintf(tee_last, sizeof(tee_last), "fp %s: in progress", fp_cmd_text);
+		kernel_thread_start(fp_cmd_thread, NULL, &t);
 		thread_deallocate(t);
 		return 0;
 	}
