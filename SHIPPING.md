@@ -17,6 +17,13 @@
 - Local `main` and `master` contain this work. Remote publishing remains blocked by unavailable GitHub credentials;
   do not overwrite divergent remote main to bypass that problem.
 
+## 2026-11-14 (13:25, B) — idle power, softer thermal steps, quieter log
+- Wi-Fi broad scans coalesced (`kern.redwood.wifi_scan_gap`, 30 s): idle big cores 85-90 % asleep (was 19-32 %), 0.76 A from USB, 62-63 C.
+- Thermal second step: GPU 455 MHz (was 377), A76 1482 MHz (was 1066) above 90 C.
+- Log: DVFS changes only on failure (`kern.redwood.dvfs_log=1`), BT vendor lines capped, launchd quiet by default (`QUIET=0`).
+- metaloff out of the boot list (mediaserverd stack overflow). Build: callservicesd job fixed with python (macOS build's plutil is a no-op).
+- One clean build of everyone's work flashed (main = master = x1slte, all active branches aligned; devops pending). Details: docs/x1slte-debug.md.
+
 ## 2026-11-14 (B) — Metal driver, wallpapers, call screen fixes
 - Metal driver (CoreImage correct on the Mali, matches macOS on 7 filters): unbound texture/sampler placeholders,
   simdgroup barriers, dispatch-sized threadgroup memory, sampler 0 for read(), Apple's 32-wide SIMD width, GPU->IOSurface

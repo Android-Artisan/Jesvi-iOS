@@ -21,6 +21,10 @@ string sysctls only).
 | GL census of draws without a program | per draw | boot `glcensus=1` | `eagl.c` |
 | RedwoodProbe (view-tree dumps on `notify com.redwood.probe`) | loaded into SpringBoard, PosterBoard, InCallService | `mv /var/jb/usr/lib/TweakInject.disabled/RedwoodProbe.* /var/jb/usr/lib/TweakInject/`, restart SpringBoard | `proposals/wallpaper/rwprobe.m` |
 
+| Every DVFS clock change (`dvfs: domain N to N kHz: answered`) | a line per clock change (~200 in minutes of use) | live `sysctl -w kern.redwood.dvfs_log=1` (failures are always logged) | `bsd/dev/redwood_exynos_acpm.c` `set_rate` |
+| Bluetooth vendor command lines | a line per command | first 40 a boot only | `bsd/dev/redwood_exynos_bt.c` |
+| launchd's own notices on the console | the largest share of `/log` | build with `QUIET=0` (default is quiet since 2026-11-14) | `userland/build.sh`, `src/init.c` |
+
 ## Taken out
 
 | What | Why | Undo |
@@ -42,3 +46,17 @@ string sysctls only).
 - Log volume: two `curl http://10.77.0.2:8080/log` 30 s apart; about 46 lines/s before this cleanup.
 - 120 Hz: `/var/root/hztest` must print `120.0 Hz` (`tools/perf/hztest.m`).
 - Idle wake-ups: switch `kern.redwood.wake_stats=1` on for a minute, read the `wakes core` lines, switch it off.
+
+## Power changes (B, 2026-11-14)
+
+- Wi-Fi: wifid asked for a full scan every ~4 s; each polled the radio every 0.2-1 ms for up to 2 s on the big cores
+  (~140 wake-ups/s idle, ~4.5 W from USB). Broad scans within `kern.redwood.wifi_scan_gap` seconds (30) of the last real
+  one are answered from its results; named/channel scans always go to the radio. 0 = old behaviour.
+  Measured after: big cores 85-90 % asleep with the screen off (was 19-32 %), 0.76 A from USB, 62-63 C.
+- Thermal second steps softened (`bsd/dev/redwood_exynos_acpm.c` domains): GPU 455 MHz (was 377), A76 1482 MHz (was 1066)
+  above 90 C -- swipes past 90 C fell off a cliff (frames over 35 ms doubled). Trip is ~108 C.
+- `libredwood-metaloff` is not in the boot inject list: its IORegistry hooks were the common factor of two stack overflows
+  (mediaserverd SIGBUS at its guard page, CollectionsPoster with metalon). Add it live only while `metal_props on`.
+- Open: progressd still crash-loops when something starts it on demand (seen 40 min into a boot) although mkjobs denies
+  its job; PosterBoard "insert nil object" crashes (gallery data) -- load `libredwood-crashlog.dylib` into PosterBoard
+  via exec_inject to get the stack.
