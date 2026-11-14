@@ -190,6 +190,29 @@ smc(uint64_t f, uint64_t a1, uint64_t a2, uint64_t *x2out)
 	return x0;
 }
 
+#ifdef GENERIC_GIC_V2_IRQ
+/* tzdev's version ABI has seven input registers; zero every unused argument.
+ * Keep this independent of the four-register Samsung SFR debug helper. */
+static uint64_t
+fp_tee_smc(uint64_t function, uint64_t client, uint64_t driver, uint64_t *out_x2)
+{
+    register uint64_t x0 __asm__("x0") = function;
+    register uint64_t x1 __asm__("x1") = client;
+    register uint64_t x2 __asm__("x2") = driver;
+    register uint64_t x3 __asm__("x3") = 0;
+    register uint64_t x4 __asm__("x4") = 0;
+    register uint64_t x5 __asm__("x5") = 0;
+    register uint64_t x6 __asm__("x6") = 0;
+    __asm__ volatile ("dsb sy\n\tsmc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3),
+        "+r"(x4), "+r"(x5), "+r"(x6) : : "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+        "x14", "x15", "x16", "x17", "memory");
+    *out_x2=x2;
+    return x0;
+}
+#include <sys/redwood_fp_probe.h>
+#endif
+
+
 static unsigned
 parse(const char *s, char *cmd, size_t cmdlen, uint64_t *v, unsigned max)
 {
@@ -280,6 +303,7 @@ run(const char *line)
 
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"fp.tee-version")==0) {fp_tee_probe(n==1?v[0]:2);return;}
     if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
     if (strcmp(cmd,"cp.s2mpu")==0 && n==0) {cp_s2mpu_grant();return;}
     if (strcmp(cmd,"spi8.tx")==0) {
@@ -339,7 +363,7 @@ run(const char *line)
 				return;
 			}
 		}
-		o = (size_t)snprintf(out_buf, cap, "r PA [N] | w PA V | m PA AND OR | sr PA | sw PA V | help\n");
+		o = (size_t)snprintf(out_buf, cap, "r PA [N] | w PA V | m PA AND OR | sr PA | sw PA V | help\nfp.tee-version 0|1 (Exynos): inspect or one-shot TEE compatibility; no authentication\n");
 		for (unsigned i = 0; i < ncmds && o < cap; i++) {
 			o += (size_t)snprintf(out_buf + o, cap - o, "%s %s\n", cmds[i].name, cmds[i].help ? cmds[i].help : "");
 		}

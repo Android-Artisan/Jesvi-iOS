@@ -1,0 +1,212 @@
+# S20 ultrasonic fingerprint research
+
+## Status: no fingerprint unlock yet
+
+Branch `feat/s20-fingerprint` starts at local main/master `8d584cc` (14 November
+2026), including the newer A76/GPU thermal steps, Wi-Fi scan coalescing and quieter
+logs. Main/master are not advanced with this experiment. No restart/reboot or
+fingerprint enrollment was performed for this work. The current passcode stays
+under the existing software-keybag implementation.
+
+The user wants the actual under-display fingerprint sensor to authenticate native
+iOS unlock, with passcode fallback. Merely detecting a finger, fabricating a
+BiometricKit match, dismissing SpringBoard, or accepting arbitrary IPC is not that.
+No successful-match injection or biometric unlock selector is added here.
+
+Prepared artifacts in ignored `out/fingerprint/`:
+
+- `fingerprint-status`: read-only iOS LocalAuthentication/IOKit diagnostic.
+- `wiring.json`: selected properties from the phone's locally owned DTB/DTBO.
+- `kernel-build.log`, `mach.x1slte-fingerprint-probe`, `kernel-slot.bin`: the
+  experimental one-shot compatibility-probe kernel and its padded flash slot.
+- Synthetic host tests for the policy, DTB inventory and manual-probe guard.
+
+## Confirmed device wiring
+
+The actual saved `dtbo.1.dtb` has a `qcom,qbt2000` node, matching the reference
+Exynos990 x1slte revision-21 device tree. The base DTB resolves its external
+symbols as follows (overlay phandles such as `0xffffffff` are not physical addresses):
+
+| Item | Configuration evidence |
+| --- | --- |
+| Sensor/model | Qualcomm QBT2000 / G98X |
+| Firmware IPC interrupt | GPA1 pin 3 |
+| Finger detect / WUHB | GPA1 pin 1 |
+| GPIO controller | `/pinctrl@15850000/gpa1` |
+| Power supply | `VDD_BTP_1P8` |
+| SPI bus | SPI4 / PERIC0 USI04; GPP2 pins 0–2, function 2 |
+| SPI chip select | GPP2 pin 3, function 2 in the active pinctrl state |
+| SPI inactive | GPP2 pins 0–3, input function, pull-up |
+
+This identifies board wiring, not working communication or a successful live
+sensor probe. No GPIO, regulator, sensor reset or SPI configuration was changed.
+
+Samsung's source at local reference commit `69515fbb7` has
+`CONFIG_SENSORS_QBT2000=y`, `CONFIG_TEEGRIS_VERSION=4`, and secure fingerprint mode.
+Its Kconfig explicitly assigns SPI communication to the trusted application in
+secure mode. The normal-world driver exposes power/clock control, finger-down/up
+and firmware notification plumbing. The nonsecure qbtspi path is not a demonstrated
+production matching API. Do not substitute the touchscreen for fingerprint input.
+
+Local Android init backups reference `tzdaemon`, `tzts_daemon`, the fingerprint
+HAL service, and qbt2000 device nodes. A vendor TEE object with a fingerprint-like
+UUID namespace is present, but its filename does not establish a callable protocol
+or successful loading. The proprietary fingerprint HAL/client libraries have not
+been located in the captured firmware subset. No firmware or biometric material
+is copied into git.
+
+## Live native-iOS baseline
+
+Read-only checks found no AppleMesa or ApplePearlSEPDriver service, no exposed
+qbt2000/tzdev device nodes, and no running biometrickitd in the sampled process
+list. AppleKeyStore advertises the existing software passcode backend. After the
+user re-enabled their passcode, native state was protected/locked (MKB 1, AKS 0x5).
+
+`tools/fingerprint/status.m` ran on the phone without evaluating an authentication
+policy or starting enrollment/matching. Results:
+
+| Query | Result |
+| --- | --- |
+| LocalAuthentication biometrics available | false |
+| Reported biometry type | 0 |
+| Biometrics capability error | -1000 |
+| Device-owner capability error | -1000 |
+| AppleKeyStore / software passcode backend | present / enabled |
+| AppleMesa / ApplePearlSEPDriver | absent / absent |
+
+Do not reinterpret the device-owner capability error as “no passcode”: raw native
+MKB independently confirms the protected bag. The probe is a command-line
+caller, not proof of every app's entitlement/policy behavior. It logs only
+capability booleans, numeric errors and state, never credentials or templates.
+
+The extracted iOS 16.5 BiometricKit cache contains BKDeviceTouchID, BKDevicePearl,
+BKEnrollTouchIDOperation, BKMatchOperation and XPC match/enrollment callbacks. The
+public app-facing goal is LocalAuthentication with fingerprint semantics, not
+claiming fingerprint hardware is Face ID. Existing native keybag/credential binding
+must work too; drawing a Touch ID prompt or enabling biometrickitd alone is insufficient.
+
+## Prototype policy, deliberately not connected to unlock
+
+`tools/fingerprint/policy.h` is a host-testable decision core only. It is not
+linked into the kernel, SpringBoard or any daemon. It has no credential storage,
+matcher, IPC service or unlock API. `FP_VERIFIED_MATCH` is a caller contract: a
+future trusted backend must verify secure-world proof before making that call.
+Passing that enum does not cryptographically verify anything by itself.
+
+The prototype requires a genuine passcode verification after initialization,
+backend failure/restart, enrollment change or invalidated keybag generation. It
+binds each request to a fresh coordinator-generated 128-bit challenge, keybag and
+enrollment generations, and a five-second lifetime. Presence events only wait;
+cancelled, timed-out, cross-generation or replayed completions are denied.
+A failed match requires passcode immediately (the user's requested conservative
+policy); successful biometrics do not reset the passcode-verification timestamp.
+An eight-hour passcode validity ceiling is a prototype restriction, not a claim
+to reproduce every Apple security timer.
+
+Apple's documented policy requires passcode after restart and allows at most five
+unsuccessful biometric matches; a lower fallback threshold can be used. Native
+policy integration and its first-unlock, timeout and lockout behavior still need
+to be validated when a real matching backend exists.
+
+## Prepared first hardware test: TEE compatibility only
+
+The kernel debug port gains `fp.tee-version 0|1` on the Exynos/GICv2 build:
+
+- `0` reports the planned call, or its cached result; it never initiates a call.
+- `1` makes exactly one explicit compatibility call per boot. Further requests
+  return its cached result, including errors. No retries or polling thread.
+
+The allowlisted ABI is Samsung's ARM fast SMC32 trusted-OS CHECK_VERSION:
+function `0xb200000d`, reference-client version field `0x41357` (4.19.87), driver
+ABI `0x30000` (3.0.0), with unused argument registers zero. The client version is
+an observed ABI field, not an assertion that XNU implements Linux. Calls use the
+existing root-only serialized debug port. No generic arbitrary-SMC interface is
+added. The diagnostic does not run at boot, register shared pages, load a trustlet,
+control the sensor, verify a fingerprint or change a keybag. Compatibility
+negotiation can affect volatile secure-world state; unknown firmware can still
+reject or fail the call. This has not run on hardware yet.
+
+After an approved test boot, inspect first, then explicitly run once:
+
+```sh
+tools/poke 'fp.tee-version 0'
+tools/poke 'fp.tee-version 1'
+```
+
+Before deployment, acquire the shared phone lock, obtain user reboot approval,
+and back up/read back the currently installed 16-MiB recovery kernel slot. Flash
+only the new slot at recovery offset `0x2000000`; preserve current boot arguments,
+loader, root volume and userdata. Retain the exact previous slot for rollback.
+A successful version response proves only this SMC exchange; it does not prove
+trustlet loading, enrollment, matching, signed proof verification or iOS unlock.
+
+## Remaining implementation and traps
+
+1. Confirm the secure-world ABI with the prepared one-shot test; stop on an
+   unsupported/error response rather than cycling through guessed SMC IDs.
+2. Implement a narrow TEEGRIS transport: per-core AUX buffers, shared-memory
+   registration, event/panic IRQs, scheduling, inter-world sockets and userspace
+   loading/storage services as required by the actual firmware. Samsung's
+   reference init order registers several such services; one SMC is not tzdev.
+3. Resolve the signed fingerprint trusted application's real client protocol and
+   matching result verification. Locate legitimate matching HAL/client binaries
+   from this device's own stock firmware if the captured subset lacks them.
+   Do not assume Android ELF/HIDL services can execute directly under Darwin.
+4. Implement protected enrollment and template lifecycle. Old Android enrollment
+   data may not survive the current userdata layout; never promise reuse or read
+   template/TEE storage to bypass enrollment. Passcode consent occurs on-device.
+5. Connect verified matching to a keybag-bound native authentication operation
+   and the actual iOS BiometricKit/LocalAuthentication provider. Do not store the
+   user's passcode for replay or expose a “match=true” notification as authority.
+6. Validate wrong/right finger, after-boot passcode, cancellation, replay, lockout,
+   app policy queries, passcode changes/removal, and repeated locks. Keep backend
+   capability unavailable until these prerequisites exist.
+
+Further traps:
+
+- XNU uses 16-KiB pages; Samsung's shared-memory ABI derives page-frame numbers
+  and AUX buffer sizes from its Linux page configuration. Resolve the actual
+  secure page size/PFN width before sharing memory. Do not blindly pass XNU PFNs
+  or expose adjacent allocations in a larger host page.
+- Per-core AUX channels require CPU affinity/lifetime handling; a migrating XNU
+  thread cannot assume the same channel remains selected across calls.
+- Preserve secure storage and EFS. Firmware presence does not grant permission
+  to overwrite secure enrollment/keymaster/gatekeeper state.
+- Verify signed/protected result provenance and bind fresh challenges to one
+  unlock request. A sensor IRQ, native UI callback or root CLI argument is not
+  a fingerprint match proof.
+- This remains software-keybag authentication on the iOS side, not Apple SEP
+  equivalence, Apple Pay, attestation or full keychain access-control support.
+- User credentials are entered only on the device. Never log them, embed them
+  in commands/test vectors, or enable verbose native keybagd logging.
+
+## Reproduce checks
+
+```sh
+python3 tools/fingerprint/test_inventory.py
+cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tools/fingerprint/test_policy.c -o /tmp/fp-policy && /tmp/fp-policy
+cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tools/fingerprint/test_tee_probe.c -o /tmp/fp-tee-probe && /tmp/fp-tee-probe
+python3 tools/passcode/test_build_integration.py
+```
+
+Read the phone's own DTBs without copying them into the repository:
+
+```sh
+python3 tools/fingerprint/inventory.py /path/to/boot.dtb /path/to/dtbo.dtb
+```
+
+The status probe cross-compiles with the iPhoneOS16.5 SDK, ARC/blocks, and
+Foundation, LocalAuthentication and IOKit frameworks. No special authentication
+entitlement or match permission is requested. Kernel build: Exynos GICv2
+DEVELOPMENT. Tests validate code/policy/guard behavior; they do not validate a
+physical fingerprint match. The kernel has not been flashed for this branch.
+
+## Primary references
+
+- [Samsung Exynos990 kernel reference](https://github.com/ExtremeXT/android_kernel_samsung_exynos990/tree/69515fbb7/drivers/fingerprint)
+  and its `drivers/misc/tzdev` implementation, Kconfig, board DT and clock tables.
+- [Apple biometric/passcode requirements](https://support.apple.com/en-mt/guide/security/sec9479035f1/web).
+- [Android fingerprint HAL architecture](https://android.googlesource.com/platform/docs/source.android.com/+/0fda4ae8f8f65df3360a3170059b5ea11c99f7ec/src/devices/tech/security/authentication/fingerprint-hal.jd).
+- [Android authentication tokens and trusted matching](https://source.android.com/docs/security/features/authentication).

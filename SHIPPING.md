@@ -1,3 +1,15 @@
+## 2026-11-14 — Fingerprint research branch (not enabled, not shipped)
+- `feat/s20-fingerprint` starts from accepted main/master `8d584cc`, including newer thermal/logging changes.
+- Actual saved DTBO confirms QBT2000, GPA1 IRQ pins 3/1, SPI4 and VDD_BTP_1P8. Live LocalAuthentication reports no
+  biometric capability (-1000); Mesa/Pearl drivers are absent. User re-enabled passcode; protected/locked confirmed.
+- Added a read-only capability probe, allowlisted DTB inventory, host-only fallback policy prototype, and a manually
+  armed one-shot TEEGRIS version diagnostic in the kernel debug port. No biometric match/unlock operation is added.
+- Host policy/guard tests under ASan/UBSan, synthetic inventory, existing passcode build-integration checks and the
+  Exynos GICv2 kernel build pass. Experimental 16-MiB kernel slot is prepared in ignored out/fingerprint; not flashed.
+- Implementation/research, precise missing transport/matcher/provider work and traps: docs/x1slte-fingerprint.md.
+  The first compatibility test requires the shared phone lock and explicit user reboot approval. Keep main/master
+  on accepted code; do not merge this prototype as working fingerprint support.
+
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
   `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.
