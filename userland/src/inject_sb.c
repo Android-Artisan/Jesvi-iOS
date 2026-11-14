@@ -1458,6 +1458,7 @@ control_center_fades(const char *arguments)
 
 /* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
 #include "island_sb.h"
+#include "wallpaper_motion.h"
 /* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
 #include "cell_sb.h"
 #include "statusbar_shift.h"
@@ -1549,6 +1550,7 @@ redwood_springboard_init(void)
 	 */
 	mps_unsupported_returns_nil();
 	island_start();
+	wallpaper_motion_start();
 	cell_start();
 	statusbar_shift_start();
 	load_tweaks();
