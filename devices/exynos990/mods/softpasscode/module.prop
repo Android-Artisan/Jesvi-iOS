@@ -1,0 +1,3 @@
+id=softpasscode
+name=Software passcode
+description=Persistent passcode lock without SEP (docs/x1slte-passcode.md)

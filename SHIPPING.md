@@ -1,3 +1,11 @@
+## 2026-11-14 (21:30, A) — per-device targets and mods (ExtremeROM/UN1CA layout)
+- `devices/exynos990/platform.conf` + `<target>/target.conf` (identity, display, camera, modem, chips, boot-args),
+  `patches/` (all 990), `<target>/patches/` (one phone), `mods/` (optional: island, softpasscode); `./build.sh target`.
+- Release image builds take the boot line from the target (S20 output = x1slte.cmdline word for word) and apply
+  mods' root/system overlays + customize.sh when JESVI_TARGET is set; release.conf `MODS_DISABLE`.
+- Targets x1slte (builds), x1s (inherits), y2s, z3s, c1s, c2s, r8s (public facts from ExtremeROM, unmaintained).
+- 55 Python tests + Go suite pass. Day-to-day x1slte.sh unchanged. No phone involved.
+
 ## 2026-11-14 (20:50, A) — release.conf, Android-ROM installs, Jesvi-iOS-Restore (host-verified only)
 - `release.conf` + `./build.sh release` (targets, outputs twrp/preflight/restore/tar, mode, writes) builds
   `Jesvi-iOS_<ver>_<date>_<target>.zip` and `Jesvi-iOS-Restore_...zip`; CI builds restore ZIPs on public runners.

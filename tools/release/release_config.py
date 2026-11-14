@@ -9,7 +9,7 @@ import tarfile
 from manage import ROOT, profile
 
 KEYS = {'NAME': 'Jesvi-iOS', 'VERSION': '0.0.0', 'TARGETS': 'x1slte', 'OUTPUTS': 'twrp restore',
-        'MODE': 'choose', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release'}
+        'MODE': 'choose', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release', 'MODS_DISABLE': ''}
 OUTPUTS = ('twrp', 'preflight', 'restore', 'tar')
 
 
@@ -53,6 +53,10 @@ def check(conf):
     if conf['WRITES'].lower() not in ('true', 'false'):
         raise ValueError('WRITES: true or false')
     conf['WRITES'] = conf['WRITES'].lower() == 'true'
+    from targets import PLATFORM
+    for m in conf['MODS_DISABLE'].split():
+        if not (PLATFORM / 'mods' / m / 'module.prop').is_file():
+            raise ValueError(f'MODS_DISABLE: no optional mod {m!r} in devices/exynos990/mods')
     out = (ROOT / conf['OUT']).resolve()
     if (ROOT / 'dist').resolve() not in (out, *out.parents):
         raise ValueError('OUT must be inside dist/')
@@ -123,6 +127,7 @@ def bundle_for(conf, target):
     from local_build import build as local
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     out = ROOT / 'dist' / f'candidate-{target}-{stamp}'
+    os.environ['JESVI_MODS_DISABLE'] = ' '.join(conf['MODS_DISABLE'].split())
     local(out, twrp=False, bundle_only=True)
     return out
 

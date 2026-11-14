@@ -28,7 +28,17 @@ def profile(name):
         # No device is qualified yet. A future qualification PR must change this
         # code and include its evidence, rather than flipping a JSON boolean.
         raise ValueError('installer hardware qualification is not recorded; see docs/release/twrp.md')
+    import targets
+    t = targets.load(name)
+    if t['TARGET_STATUS'] != d['status']:
+        raise ValueError(f'{name}: target.conf status {t["TARGET_STATUS"]} differs from device.json {d["status"]}')
+    d['target'] = t
     if d['status'] != 'unmaintained':
+        if d['models'] != t['TARGET_ASSERT_MODEL'].split() or d['bootloaders'] != t['TARGET_ASSERT_BOOTLOADER'].split() \
+                or d['recovery_products'] != t['TARGET_RECOVERY_PRODUCTS'].split():
+            raise ValueError(f'{name}: models/bootloaders/products differ between target.conf and device.json')
+        if t['TARGET_SUPER_PARTITION_SIZE'] and int(t['TARGET_SUPER_PARTITION_SIZE']) != d['partitions'].get('super'):
+            raise ValueError(f'{name}: super size differs between target.conf and device.json')
         if not d['models'] or not d['bootloaders'] or not d['evidence']:
             raise ValueError(f'missing identity/evidence: {name}')
         for part in ('boot', 'recovery', 'super', 'userdata'):
@@ -113,6 +123,8 @@ def main():
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--experimental', action='store_true', help='enable writes after physical confirmation')
+    p = sub.add_parser('target', help='list targets, or show one target\'s merged config/boot line/mods')
+    p.add_argument('rest', nargs=argparse.REMAINDER)
     p = sub.add_parser('package')
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
@@ -127,6 +139,9 @@ def main():
             p.add_argument('--development', action='store_true',
                            help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
+    if a.command == 'target':
+        import targets
+        return targets.main(a.rest)
     if a.command == 'release':
         import release_config
         return release_config.build(release_config.load(a.config, a.set), a.dry_run)
@@ -185,7 +200,7 @@ def main():
         verify_extraction(ROOT)
         verify()
         hfs_kit(ROOT / 'userland/hfs-kit.bin', profile(a.device)['partitions']['userdata'])
-        env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1')
+        env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1', JESVI_TARGET=a.device)
         env['HACKIOS_IMAGE_CACHE'] = str(Path(env.get('HACKIOS_IMAGE_CACHE', ROOT / '.cache/private-images')).resolve())
         # Build locally, never export xnu-src over the source under review.
         run('bash', 'ci/build-kernel.sh', '4')
@@ -199,7 +214,9 @@ def main():
         run('./build.sh', 'identity', env=env)
         run('python3', 'tools/release/loader_font.py', env=env)
         run('bash', 'x1slte.sh', 'embed', env=env)
-        run('bash', 'x1slte.sh', 'payload', (ROOT / 'x1slte.cmdline').read_text().strip(), env=env)
+        # Boot line from the target config: platform + hardware + target + mods.
+        import targets
+        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split()), env=env)
         run('bash', 'x1slte.sh', 'pack', env=env)
         verify()
         print('Private development images built. Next: build.sh package --output dist/CANDIDATE')

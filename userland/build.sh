@@ -814,6 +814,10 @@ if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; t
 p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
 plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 fi
+# per-device mods (devices/exynos990/.../root/ and customize.sh), only for release builds that name a target
+if [ -n "${JESVI_TARGET:-}" ]; then
+	python3 ../tools/release/apply_mods.py "$JESVI_TARGET" root root
+fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 
@@ -1038,6 +1042,9 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# A containing app gives the local provider its data/app-group containers.
 	# Relocate rather than duplicate it: a metadata-only standalone registration
 	# can otherwise win PlugInKit election over the working app extension.
+	if [ -n "${JESVI_TARGET:-}" ]; then
+		python3 ../tools/release/apply_mods.py "$JESVI_TARGET" system sysroot
+	fi
 	python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
 		$IOS/system.manifest obj/system-files.manifest
 	# zlib where it saves room, as Apple keeps the root (a small file whole in its attribute): 5.4 GB of

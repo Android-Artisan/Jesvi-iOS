@@ -33,12 +33,6 @@ Each ZIP gets `.sha256` and `.build.json` (source commit, Go version, writes fla
 The restore ZIP carries no Apple or Samsung files, so public runners can build it.
 iOS ZIPs contain Apple-derived images and stay in private runs.
 
-## Adding an Exynos 990 phone
+## Targets and mods
 
-A target becomes buildable when its `devices/exynos990/<id>/device.json` is
-measured (models, bootloaders, recovery product names, partition byte sizes,
-layout) and an `android.json` records its stock super layout (slot 0 of the
-phone's LP metadata: metadata size/slots, alignment, first logical sector,
-groups). The installer reads all sizes from the profile; nothing is hard-coded
-to the S20 any more. The iOS image build itself still only has an S20 adapter
-(`BUNDLE` can package another target's verified candidate). See [porting](porting.md).
+Per-phone settings, boot-args and mods: see [targets](targets.md).
