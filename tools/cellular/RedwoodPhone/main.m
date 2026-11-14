@@ -16,7 +16,6 @@
 #import <Intents/Intents.h>
 #import <objc/message.h>
 #include <dlfcn.h>
-#include <notify.h>
 
 static NSString *const Dir = @"/var/tmp/redwood-cell/call-ui";
 
@@ -249,129 +248,13 @@ static void rp_session_for_call(void)
 /* When a call is answered iOS also launches the provider's app through FrontBoard (UIKitApplication:com.redwood.phone):
  * that instance must not be a second provider (it reported the same call again, 2026-11-14 04:03): it only runs UIKit,
  * shows nothing and stays out of the way; the launchd instance keeps the calls. */
-@interface RPCallVC : UIViewController <CXCallObserverDelegate>
-@property (strong) UILabel *who, *status;
-@property (strong) UIButton *mute, *speaker, *keypad, *end;
-@property (strong) CXCallObserver *obs;
-@property (strong) CXCallController *cc;
-@property (strong) NSDate *connectedAt;
-@property BOOL muted, onSpeaker;
-@property (copy) NSString *lastState;
-@end
-static NSDate *rp_last_event;   /* a call started, was answered or changed state */
-
-/* RedwoodPhone's own call screen (A, 2026-11-14): what a tap on the call's banner / Dynamic Island opens (iOS opens the
- * provider's app for a CallKit call). Number, status / time, mute, speaker, end; reads redwood-ims's state. */
-@implementation RPCallVC
-static UIButton *rp_round(NSString *sym, NSString *title, UIColor *bg)
-{
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIButtonConfiguration *c = [UIButtonConfiguration filledButtonConfiguration];
-    c.image = [UIImage systemImageNamed:sym withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:28]];
-    c.imagePlacement = NSDirectionalRectEdgeTop; c.imagePadding = 8;
-    c.title = title; c.baseBackgroundColor = bg; c.baseForegroundColor = UIColor.whiteColor;
-    c.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    c.titleTextAttributesTransformer = ^NSDictionary *(NSDictionary *a) { NSMutableDictionary *m = a.mutableCopy; m[NSFontAttributeName] = [UIFont systemFontOfSize:13]; return m; };
-    b.configuration = c;
-    b.translatesAutoresizingMaskIntoConstraints = NO;
-    [b.widthAnchor constraintEqualToConstant:84].active = YES; [b.heightAnchor constraintEqualToConstant:104].active = YES;
-    return b;
-}
-- (void)viewDidLoad
-{
-    [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithRed:0.08 green:0.09 blue:0.11 alpha:1];
-    self.who = [UILabel new]; self.who.font = [UIFont systemFontOfSize:34 weight:UIFontWeightRegular];
-    self.who.textColor = UIColor.whiteColor; self.who.textAlignment = NSTextAlignmentCenter; self.who.adjustsFontSizeToFitWidth = YES;
-    self.status = [UILabel new]; self.status.font = [UIFont systemFontOfSize:18]; self.status.textColor = [UIColor colorWithWhite:0.75 alpha:1];
-    self.status.textAlignment = NSTextAlignmentCenter;
-    UIColor *g = [UIColor colorWithWhite:1 alpha:0.18];
-    self.mute = rp_round(@"mic.slash.fill", @"mute", g);
-    self.keypad = rp_round(@"circle.grid.3x3.fill", @"keypad", g); self.keypad.enabled = NO;
-    self.speaker = rp_round(@"speaker.wave.3.fill", @"speaker", g);
-    self.end = rp_round(@"phone.down.fill", @"", UIColor.systemRedColor);
-    [self.mute addTarget:self action:@selector(toggleMute) forControlEvents:UIControlEventTouchUpInside];
-    [self.speaker addTarget:self action:@selector(toggleSpeaker) forControlEvents:UIControlEventTouchUpInside];
-    [self.end addTarget:self action:@selector(hangUp) forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.mute, self.keypad, self.speaker]];
-    row.spacing = 26; row.axis = UILayoutConstraintAxisHorizontal;
-    UIStackView *top = [[UIStackView alloc] initWithArrangedSubviews:@[self.who, self.status]];
-    top.axis = UILayoutConstraintAxisVertical; top.spacing = 8;
-    for (UIView *v in @[top, row, self.end]) { v.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:v]; }
-    UILayoutGuide *sa = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [top.topAnchor constraintEqualToAnchor:sa.topAnchor constant:70], [top.leadingAnchor constraintEqualToAnchor:sa.leadingAnchor constant:20],
-        [top.trailingAnchor constraintEqualToAnchor:sa.trailingAnchor constant:-20],
-        [row.centerXAnchor constraintEqualToAnchor:sa.centerXAnchor], [row.bottomAnchor constraintEqualToAnchor:self.end.topAnchor constant:-60],
-        [self.end.centerXAnchor constraintEqualToAnchor:sa.centerXAnchor], [self.end.bottomAnchor constraintEqualToAnchor:sa.bottomAnchor constant:-40],
-    ]];
-    self.cc = [CXCallController new];
-    self.obs = self.cc.callObserver; [self.obs setDelegate:self queue:nil];
-    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { [self refresh]; }];
-    [self refresh];
-}
-- (CXCall *)current { for (CXCall *c in self.obs.calls) if (!c.hasEnded) return c; return nil; }
-- (void)refresh
-{
-    NSString *st = [NSString stringWithContentsOfFile:[Dir stringByAppendingString:@"/state"] encoding:NSUTF8StringEncoding error:nil];
-    NSArray *w = [[st stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@" "];
-    NSString *num = [NSString stringWithContentsOfFile:[Dir stringByAppendingString:@"/number"] encoding:NSUTF8StringEncoding error:nil];
-    if (st && ![st isEqualToString:self.lastState]) { self.lastState = st; rp_last_event = [NSDate date]; }
-    CXCall *c = [self current];
-    self.who.text = num.length ? num : @"Call";
-    if (!c) { self.status.text = @"Call ended"; self.connectedAt = nil; return; }
-    if (c.hasConnected) {
-        if (!self.connectedAt) self.connectedAt = [NSDate date];
-        int s = (int)-[self.connectedAt timeIntervalSinceNow];
-        self.status.text = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
-    } else self.status.text = [w.firstObject isEqualToString:@"alerting"] ? @"ringing…" : (c.isOutgoing ? @"calling…" : @"incoming…");
-}
-- (void)callObserver:(CXCallObserver *)o callChanged:(CXCall *)c { rp_last_event = [NSDate date]; [self refresh]; }
-- (void)toggleMute
-{
-    CXCall *c = [self current]; if (!c) return;
-    self.muted = !self.muted;
-    [self.cc requestTransaction:[[CXTransaction alloc] initWithAction:[[CXSetMutedCallAction alloc] initWithCallUUID:c.UUID muted:self.muted]] completion:^(NSError *e) {}];
-    UIButtonConfiguration *k = self.mute.configuration; k.baseBackgroundColor = self.muted ? UIColor.whiteColor : [UIColor colorWithWhite:1 alpha:0.18];
-    k.baseForegroundColor = self.muted ? UIColor.blackColor : UIColor.whiteColor; self.mute.configuration = k;
-}
-- (void)toggleSpeaker
-{
-    self.onSpeaker = !self.onSpeaker;
-    notify_post(self.onSpeaker ? "com.redwood.call.speaker" : "com.redwood.call.earpiece");
-    UIButtonConfiguration *k = self.speaker.configuration; k.baseBackgroundColor = self.onSpeaker ? UIColor.whiteColor : [UIColor colorWithWhite:1 alpha:0.18];
-    k.baseForegroundColor = self.onSpeaker ? UIColor.blackColor : UIColor.whiteColor; self.speaker.configuration = k;
-}
-- (void)hangUp
-{
-    CXCall *c = [self current]; if (!c) return;
-    [self.cc requestTransaction:[[CXTransaction alloc] initWithAction:[[CXEndCallAction alloc] initWithCallUUID:c.UUID]] completion:^(NSError *e) {}];
-}
-@end
-
 @interface RPApp : UIResponder <UIApplicationDelegate>
 @property (nonatomic, strong) UIWindow *window;
 @end
 @implementation RPApp
-/* iOS also brings us to the front itself when a call is dialled or answered; its own full call screen is the one to
- * keep then (05:40: native screen, then ours over it). Ours is for a tap on the banner / Dynamic Island later on. */
-- (void)applicationDidBecomeActive:(UIApplication *)a
-{
-    if (rp_last_event && -[rp_last_event timeIntervalSinceNow] < 4) {
-        rp_log(@"in front with a call event just now: back to iOS's call screen");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SEL s = NSSelectorFromString(@"suspend");
-            if ([a respondsToSelector:s]) ((void (*)(id, SEL))[a methodForSelector:s])(a, s);
-        });
-    } else rp_log(@"in front: our call screen");
-}
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o
 {
-    rp_log(@"launched by iOS (pid %d): the call screen", getpid());
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [RPCallVC new];
-    [self.window makeKeyAndVisible];
-    rp_last_event = [NSDate date];
+    rp_log(@"launched by iOS (pid %d): UI instance only", getpid());
     NSDictionary *uad = o[UIApplicationLaunchOptionsUserActivityDictionaryKey];
     NSUserActivity *ua = uad[@"UIApplicationLaunchOptionsUserActivityKey"];
     if ([ua isKindOfClass:[NSUserActivity class]]) { rp_log(@"dial request at launch (%@)", ua.activityType); rp_start_call(rp_intent_number(ua)); }
@@ -413,6 +296,23 @@ static void rp_start_call(NSString *num)
     return YES;
 }
 
+/* brought to the front when a call is answered: nothing to show (a blank screen covered the call screen, the user
+ * 2026-11-14 04:08): step back at once, so iOS's own call screen (InCallService) stays in front */
+- (void)applicationDidBecomeActive:(UIApplication *)a
+{
+    /* iOS's full call screen in front (suspending alone sent the call into the Dynamic Island, 2026-11-14 04:20):
+     * -[TUCallCenter activateInCallUIWithActivityContinuationIdentifier:], then step back if still in front */
+    rp_log(@"in front: bringing the call screen up");
+    Class cc = NSClassFromString(@"TUCallCenter");
+    id center = cc ? ((id (*)(id, SEL))objc_msgSend)(cc, NSSelectorFromString(@"sharedInstance")) : nil;
+    SEL act = NSSelectorFromString(@"activateInCallUIWithActivityContinuationIdentifier:");
+    if (center && [center respondsToSelector:act]) ((void (*)(id, SEL, id))objc_msgSend)(center, act, nil);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (a.applicationState != UIApplicationStateActive) return;
+        SEL s = NSSelectorFromString(@"suspend");
+        if ([a respondsToSelector:s]) ((void (*)(id, SEL))[a methodForSelector:s])(a, s);
+    });
+}
 @end
 
 int main(int argc, char **argv)
