@@ -487,5 +487,24 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
     "optional mild software display warmth (0 or 1)");
 
+/* kern.redwood.ksample (osfmk/arm64/user_exception_trace.c): sample a thread where it runs -- 1 SpringBoard's main
+ * thread, 2 backboardd's render thread, N process N's main thread, 0 off; "SAMPLE" records in /m2m */
+extern int redwood_ksample_get(void);
+extern bool redwood_ksample_set(int value);
+
+static int
+ksample_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
+{
+	int value = redwood_ksample_get(), changed = 0;
+	int error = sysctl_io_number(req, value, sizeof(value), &value, &changed);
+
+	if (error == 0 && changed && !redwood_ksample_set(value)) {
+		error = EINVAL;
+	}
+	return error;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, ksample, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, ksample_sysctl, "I",
+    "sample a thread where it runs: 1 SpringBoard main, 2 backboardd render, N pid N main, 0 off");
+
 SYSCTL_PROC(_kern_redwood, OID_AUTO, poke, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, poke_sysctl, "A",
     "the debug port: r/w/m/sr/sw and the drivers' commands (help)");
