@@ -1,3 +1,32 @@
+# User acceptance and next-agent handover — 2026-11-15
+
+User reports “all good” after the Camera-only brightness installation and asks
+for commit/push and handover. Treat this as user acceptance of current behaviour;
+separate instrumented entry/exit/manual/lock tests and reboot persistence were
+not performed by this agent. No reboot approval is implied.
+
+Next agent: keep the accepted brightness rule and original front-camera path.
+Continue remaining main-rear grain/gradient/red-green/tint investigation and
+bring up the two additional rear cameras on `feat/s20-rear-aux` in
+`work/hackios-camera-aux`. Read docs/x1slte-camera-aux.md and its generated
+inventory before hardware writes. That branch contains offline wiring evidence,
+not a functioning auxiliary driver. First integrate this latest camera-quality
+branch and accepted main/master explicitly; preserve unrelated accepted work.
+
+For main rear, compare bounded unpacked16-bit format6 against packed format7,
+then validate native12MP separately from upscaled JPEG dimensions. Existing
+native-mode/diagnostic kernel candidates remain uninstalled; any reboot needs
+user approval. For auxiliary sensors, read model/revision before selecting
+revision-dependent tables, activate one sensor at a time, and restore shared
+pins/rails/routes. Do not copy front-camera configuration or promise every
+stock resolution/FPS before live validation. Phone lock is released; check
+workspace NEXT.md, TASKS.md and lock status before taking it.
+
+Current installed brightness artifact/rollback details follow. Private captures,
+firmware and device backups remain outside git. No push changes main/master.
+
+---
+
 # Start here: live Camera brightness installation (latest checkpoint)
 
 Worktree: `/Users/jesvi/ios-port-research/work/hackios-camera-improve`, branch
