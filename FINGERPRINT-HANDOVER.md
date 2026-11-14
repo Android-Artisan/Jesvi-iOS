@@ -1,5 +1,28 @@
 # Fingerprint handover — 14 November 2026
 
+## Priority instruction: no phone changes without permission
+
+The user explicitly reiterated that another agent has priority and no reboot is
+allowed without permission. Phone remains owned by B. This session performed
+read-only reachability/prerequisite checks after the user's manual restart; no
+preview, kernel, tweak or daemon was deployed and no TEE command was started.
+
+The phone is reachable again. Read-only preflight reports the running kernel
+lacks `reject-v1`; TEE is not started; saved template, both factory-calibration
+slots, driver directory, teetsd, launchctl and passcode-relock tweak are present.
+See `out/fingerprint/ui-preflight.json` for the sanitized local report. Current
+charging flags both read1; that is one observation, not a completed USB fix.
+
+Offline follow-up fixed Settings' detail-controller inheritance (PSViewController,
+confirmed in the local16.5 cache), refresh of an already cached Settings root,
+and the lock-screen window fallback for SpringBoard without UIWindowScene.
+The revised tweak/broker cross-compile with warnings as errors. Bundle rebuilt;
+its current per-file hashes are in `out/fingerprint/ui/manifest.json`. The kernel
+artifact/hash below is unchanged. No live UI or enrollment test has been run.
+
+Leave the phone to the priority agent. Next device test requires coordination and
+explicit reboot permission; do not interpret “continue” as permission to reboot.
+
 ## 15 November: rejection-only UI preview staged
 
 The user deferred matching research and requested setup plus Touch ID-style

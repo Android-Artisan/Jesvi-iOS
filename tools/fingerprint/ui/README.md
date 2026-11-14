@@ -22,6 +22,19 @@ clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 out/fingerprint/ui-test-model
 ```
 
+Run the read-only preflight separately from the host:
+
+```sh
+python3 tools/fingerprint/ui/preflight.py
+```
+
+Exit2 means prerequisites are missing; exit1 means the check could not complete.
+It starts no TEE operation, installs nothing and never reboots. Current phone
+preflight confirms the saved template, factory slot files, driver directory,
+storage-daemon binary and passcode tweak are present. The running kernel lacks
+`reject-v1` and TEE is not started, so the backend test is not ready. File presence
+alone is not runtime validation.
+
 The build creates signed arm64 iOS 16 binaries in `out/fingerprint/ui/`; it does
 not deploy or restart anything. Build requires the local iOS 16.5 SDK and existing
 XNU clang wrapper. `package.py` produces a reviewed tar bundle and hash manifest
@@ -99,6 +112,16 @@ Do not run a kernel flash or another TA command session concurrently with it.
   isolation, not a substitute for a production signed biometric provider.
 - No capability spoofing, fabricated failure result, injected authentication
   success, match-threshold change, stored PIN, Gatekeeper change or keybag write.
+
+## Local UIKit compatibility review
+
+The local iOS16.5 Preferences cache confirms `PSViewController` implements the
+specifier, parent-controller and root-controller setters used by Settings. The
+preview now inherits that class; a plain UIViewController did not implement this
+contract. The root list refreshes after installing its hook, covering a cached
+Settings root. The SpringBoard prompt also supports ordinary UIWindow instances
+when there is no UIWindowScene. Both changes cross-compile; actual page navigation
+and overlay rendering remain device tests.
 
 ## Required device validation before calling the UI integrated
 

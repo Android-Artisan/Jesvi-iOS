@@ -12,6 +12,10 @@
 - (id)propertyForKey:(NSString*)key;
 - (void)setProperty:(id)value forKey:(NSString*)key;
 @end
+/* iOS 16.5 Preferences' own detail-controller contract, confirmed against the
+ * local cache: PSViewController implements specifier/parent/root setters. */
+@interface PSViewController:UIViewController
+@end
 static dispatch_queue_t requests;
 static void request(const char *command,void (^done)(NSDictionary *)){
     NSString *copy=@(command);
@@ -34,7 +38,7 @@ static UIColor *tint(NSDictionary *s){
     if([s[@"phase"] isEqual:@"saved"])return UIColor.systemGreenColor;
     return UIColor.labelColor;
 }
-@interface RWFingerprintPreviewController:UIViewController
+@interface RWFingerprintPreviewController:PSViewController
 @end
 @implementation RWFingerprintPreviewController {
     UIImageView *finger,*sensorTarget;UILabel *heading,*detail;UIProgressView *progress;
@@ -118,6 +122,20 @@ static UIColor *tint(NSDictionary *s){
 static NSArray *(*originalSpecifiers)(id,SEL);
 static BOOL installed;
 static atomic_bool queued;
+static void refreshRoot(UIViewController *controller,Class root,unsigned depth){
+    if(!controller||depth>16)return;
+    if([controller isKindOfClass:root]&&[controller respondsToSelector:NSSelectorFromString(@"reloadSpecifiers")]){
+        [controller performSelector:NSSelectorFromString(@"reloadSpecifiers")];return;
+    }
+    for(UIViewController *child in controller.childViewControllers)refreshRoot(child,root,depth+1);
+}
+static void refreshSettings(Class root){
+    for(UIWindow *window in UIApplication.sharedApplication.windows)refreshRoot(window.rootViewController,root,0);
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
+        if(![scene isKindOfClass:UIWindowScene.class])continue;
+        for(UIWindow *window in ((UIWindowScene*)scene).windows)refreshRoot(window.rootViewController,root,0);
+    }
+}
 static NSArray *specifiers(id self,SEL cmd){
     NSArray *original=originalSpecifiers(self,cmd);if(![original isKindOfClass:NSArray.class])return original;
     NSMutableArray *items=[original mutableCopy];
@@ -145,6 +163,8 @@ static void imageAdded(const struct mach_header *h,intptr_t slide){
         if(!class_addMethod(cls,@selector(specifiers),(IMP)specifiers,method_getTypeEncoding(m)))
             method_setImplementation(class_getInstanceMethod(cls,@selector(specifiers)),(IMP)specifiers);
         installed=YES;
+        refreshSettings(cls);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{refreshSettings(cls);});
     });
 }
 
@@ -174,8 +194,10 @@ static void lockStart(void){
     lockState=mkb?dlsym(mkb,"MKBGetDeviceLockState"):NULL;
     UIWindowScene *scene=nil;
     for(UIScene *s in UIApplication.sharedApplication.connectedScenes)if([s isKindOfClass:UIWindowScene.class]){scene=(id)s;break;}
-    if(!scene)return;
-    prompt=[[UIWindow alloc]initWithWindowScene:scene];prompt.frame=scene.coordinateSpace.bounds;
+    /* SpringBoard may own ordinary windows without a UIWindowScene on this
+     * port. Keep the prompt on its normal display in either case. */
+    prompt=scene?[[UIWindow alloc]initWithWindowScene:scene]:[[UIWindow alloc]initWithFrame:UIScreen.mainScreen.bounds];
+    prompt.frame=scene?scene.coordinateSpace.bounds:UIScreen.mainScreen.bounds;
     prompt.backgroundColor=UIColor.clearColor;prompt.windowLevel=UIWindowLevelAlert+1;prompt.userInteractionEnabled=NO;prompt.hidden=YES;
     UIViewController *controller=[UIViewController new];controller.view.backgroundColor=UIColor.clearColor;prompt.rootViewController=controller;
     CGFloat y=prompt.bounds.size.height*(1860.0/2400.0),x=prompt.bounds.size.width/2;
