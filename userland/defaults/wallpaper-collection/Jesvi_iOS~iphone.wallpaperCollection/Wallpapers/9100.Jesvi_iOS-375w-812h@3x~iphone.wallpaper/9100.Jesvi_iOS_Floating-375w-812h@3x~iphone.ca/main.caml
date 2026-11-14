@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<caml xmlns="http://www.apple.com/CoreAnimation/1.0">
+  <CALayer allowsEdgeAntialiasing="1" allowsGroupOpacity="1" bounds="0 0 375 812" contentsFormat="RGBA8" geometryFlipped="1" hidden="0" name="Root Layer" position="187.5 406">
+    <sublayers>
+      <CALayer id="Floating" allowsEdgeAntialiasing="1" allowsGroupOpacity="1" anchorPoint="0 0" bounds="0 0 375 812" contentsFormat="RGBA8" geometryFlipped="0" hidden="0" name="Floating" position="0 0">
+      </CALayer>
+    </sublayers>
+    <scriptComponents/>
+    <states>
+      <LKState name="Locked"><elements/></LKState>
+      <LKState name="Sleep"><elements/></LKState>
+      <LKState name="Unlock"><elements/></LKState>
+    </states>
+  </CALayer>
+</caml>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>identifier</key>
+	<string>B7E1A2D4-5C3F-4E8A-9D61-7A0F2C9E4B13</string>
+	<key>isLegacyContent</key>
+	<false/>
+	<key>name</key>
+	<string>Jesvi iOS</string>
+	<key>order</key>
+	<array>
+		<integer>9100</integer>
+	</array>
+	<key>source</key>
+	<string>Apple</string>
+</dict>
+</plist>
