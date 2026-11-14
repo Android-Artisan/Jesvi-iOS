@@ -904,26 +904,6 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# init copies it into a data volume that has no poster store yet (userland/src/init.c, default_wallpaper); a
 	# phone with wallpapers of its own is never touched. 3.5 MB (the editing source is HEIC; snapshots are left out,
 	# PosterBoard renders them again).
-	# "Jesvi iOS" in the wallpaper gallery (Add New Wallpaper > Collections): the user's photo as a collection
-	# wallpaper of its own, made like Apple's WWDC 2022 one (LayeredAnimation: a background package with the
-	# photo, empty floating/foreground ones) for this phone's screen class, 375x812 points @3x. The collection
-	# index (Collections~iphone.plist, a hard link into the iOS root) is written anew, never edited in place.
-	JC=sysroot/Library/Wallpaper/Collections
-	if [ -d defaults/wallpaper-collection/Jesvi_iOS~iphone.wallpaperCollection ] && [ -f $JC/Collections~iphone.plist ]; then
-		cp -R defaults/wallpaper-collection/Jesvi_iOS~iphone.wallpaperCollection $JC/
-		find $JC/Jesvi_iOS~iphone.wallpaperCollection -type d -exec chmod 0755 {} +
-		find $JC/Jesvi_iOS~iphone.wallpaperCollection -type f -exec chmod 0644 {} +
-		python3 - $JC/Collections~iphone.plist $JC/Jesvi_iOS~iphone.wallpaperCollection/WallpaperCollection.plist <<'PY'
-import os, plistlib, sys
-index, ours = sys.argv[1], sys.argv[2]
-order = plistlib.load(open(index, 'rb'))
-uid = plistlib.load(open(ours, 'rb'))['identifier']
-if uid not in order['order']:
-    order['order'].insert(0, uid)
-os.unlink(index)
-plistlib.dump(order, open(index, 'wb'), fmt=plistlib.FMT_BINARY)
-PY
-	fi
 	if [ -d defaults/wallpaper/PRBPosterExtensionDataStore ]; then
 		mkdir -p sysroot/System/Library/Redwood/DefaultWallpaper
 		cp -R defaults/wallpaper/PRBPosterExtensionDataStore sysroot/System/Library/Redwood/DefaultWallpaper/
