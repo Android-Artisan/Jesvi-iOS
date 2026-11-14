@@ -5,6 +5,6 @@
   <key>ProgramArguments</key><array><string>/var/jb/redwood/bin/redwood-telephonyd</string></array>
   <key>UserName</key><string>mobile</string>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>3</integer>
 </dict></plist>

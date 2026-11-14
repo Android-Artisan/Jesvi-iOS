@@ -15,6 +15,7 @@
  * accepted), so the call screen never shows a state the network does not have.
  * Log: /var/mobile/Library/Logs/redwood-telephonyd.log (no phone numbers).
  */
+#include "../calls-mode.h"
 #import <Foundation/Foundation.h>
 #import <CallKit/CallKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -72,6 +73,8 @@ static void send_cmd(NSString *line, BOOL quiet)
 @property (copy) NSString *lastText;
 @property (strong) NSDate *lastFresh;
 @end
+
+static int td_registered;
 
 @implementation TD
 
@@ -277,7 +280,7 @@ static CXCallEndedReason ended_reason(RWCall *c)
 }
 
 /* ---- CallKit ---- */
-- (void)providerDidBegin:(CXProvider *)p { tlog(@"provider registered as the telephony provider"); }
+- (void)providerDidBegin:(CXProvider *)p { td_registered = 1; tlog(@"provider registered as the telephony provider"); }
 - (void)providerDidReset:(CXProvider *)p
 {
     tlog(@"provider reset by iOS: ending every call");
@@ -356,10 +359,47 @@ static CXCallEndedReason ended_reason(RWCall *c)
 }
 @end
 
+/* calls=0, or mode 2 after the native provider failed this boot: legacy (RedwoodPhone) runs instead; exit 0 keeps
+ * launchd from starting us again (KeepAlive SuccessfulExit false) */
+static void td_mode_gate(void)
+{
+    int m = calls_mode();
+    if (!calls_use_native()) {
+        tlog(@"calls=%d%s: the legacy stack (RedwoodPhone) has the calls; not starting", m, m == 2 ? " and the native provider failed this boot" : "");
+        exit(0);
+    }
+    /* starts this boot: a provider that keeps crashing before it registers counts as failed (mode 2) */
+    char id[64], prev[64] = { 0 }; int n = 0;
+    calls_boot_id(id, sizeof(id));
+    NSString *sf = [Dir stringByAppendingString:@"/telephonyd-starts"];
+    FILE *f = fopen(sf.UTF8String, "r");
+    if (f) { if (fscanf(f, "%63s %d", prev, &n) != 2) n = 0; fclose(f); }
+    if (strcmp(prev, id)) n = 0;
+    n++;
+    f = fopen(sf.UTF8String, "w"); if (f) { fprintf(f, "%s %d\n", id, n); fclose(f); }
+    if (m == 2 && n > 5) {
+        tlog(@"started %d times this boot without staying up: falling back to the legacy stack", n);
+        calls_mark_native_failed("restarts");
+        exit(0);
+    }
+    /* registration watchdog: CallKit must accept us as the telephony provider within 30 s */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (td_registered) return;
+        if (calls_mode() == 2) {
+            tlog(@"not registered as the telephony provider after 30 s: falling back to the legacy stack");
+            calls_mark_native_failed("not-registered");
+            exit(0);
+        }
+        tlog(@"not registered as the telephony provider after 30 s (calls=1: trying again)");
+        exit(1);
+    });
+}
+
 int main(void)
 {
     @autoreleasepool {
         tlog(@"redwood-telephonyd starting (pid %d)", getpid());
+        td_mode_gate();
         static TD *td; td = [TD new];
         [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *t) { [td tick]; }];
         [[NSRunLoop mainRunLoop] run];
