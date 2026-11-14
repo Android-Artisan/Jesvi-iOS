@@ -1,6 +1,6 @@
 # Rear additive dark-grid experiment
 
-2026-11-14, `feat/s20-camera-quality`. **Experimental; not installed.**
+2026-11-14, `feat/s20-camera-quality`. **Experimental; live trial rejected and rolled back.**
 
 The latest JPEGs IMG_0205/0206 show coloured noise and spatial colour gradients.
 Covered-lens RAWs confirm the binned S5K2LD has spatial, CFA-site, exposure and
@@ -72,3 +72,13 @@ RAW10. This routing agrees at source level; it is not evidence that the port
 must demosaic the PDAF tail as image pixels. Further per-frame routing/layout
 validation remains useful, especially for full-resolution mode. Do not label
 the visible noise as a four-in-one or PDAF-layout fault without that evidence.
+
+## Live trial outcome
+
+Fresh covered repeats passed a relative spatial-bias reduction check, including
+high-gain interpolation, but IMG_0207 and user feedback did not establish a visual
+fix. Logs confirm the correction was active at rear gain512/exposure20436.
+Observed app rate was ~13–14fps (thermal baseline unmatched). Candidate was
+removed. The original system media library is active again; front exposure
+regression feedback requires baseline verification. No dark-grid calibration
+is active. See tracked handoff.md for the complete chronology and hashes.
