@@ -75,6 +75,38 @@ with hooks so that iOS treats them as the phone's own calls.
   video calls (ViLTE), no Wi-Fi calling (VoWiFi needs an IKEv2/EAP-AKA tunnel to Jio's ePDG).
 - Dynamic Island / Control Center show no live mic level (the voice bypasses iOS's audio system).
 
+## Known bugs and open work (2026-11-14, 05:30)
+
+Working and stable: incoming calls on the call screen, outgoing calls from the Phone app (keypad, Recents, Contacts),
+answer / decline / end / mute, the caller's hang-up, earpiece by default, the Speaker button, country code from the SIM.
+
+Open:
+1. **Call goes to the Dynamic Island instead of the full call screen.** iOS gives a third-party CallKit app's calls the
+   island; the full screen comes when the provider is "telephony" (`isTelephonyProvider`) inside InCallService, but then
+   InCallService waits for telephony status ("calling…" never changes) and sends End where nobody listens. Tried:
+   both flags in InCallService (full screen, but stuck "calling…" and lost End), isSystemProvider alone (still island),
+   none (island; stable — current). The flags can be switched live without a new image: `/var/root/callspoof 0x8N`
+   (bit 0 isSystemProvider, bit 1 isTelephonyProvider; affects SpringBoard and InCallService), `callspoof 0` = defaults.
+   Next idea: keep the telephony answer for the presentation only (SpringBoard / InCallService's presentation
+   controller) and give InCallService the call's status and End through CallKit as now.
+2. **Recents empty right after a boot** (back within ~30 s): the Phone app hides calls from a provider whose app
+   LaunchServices does not know, and LaunchServices forgets /var/jb's apps at every boot; redwood-cellulard registers
+   RedwoodPhone 20 s after it starts (uicache). Better: register earlier, or install RedwoodPhone as a system app.
+3. **Message / video / mail buttons greyed in Recents** ("Phone Audio" calls are a third-party app's). Making them phone
+   calls inside MobilePhone broke dialling and Recents — reverted. Needs a narrower hook (the contact card's actions).
+4. **Bluetooth headsets / car for calls**: not yet. Apple's bluetoothd does HFP; missing: SCO audio in our Bluetooth
+   kernel driver, and the call's voice through iOS's audio system (today it bypasses it) when a headset is the route.
+5. **No echo cancellation / noise suppression**; AMR-NB only (no HD voice).
+6. **Purple call-screen background** (GPU: the blur/tint material of InCallService).
+7. **No mic waveform in the Dynamic Island** (the voice bypasses iOS's audio system).
+8. Not built: video calls (ViLTE), Wi-Fi calling (VoWiFi: IKEv2/EAP-AKA to Jio's ePDG), emergency calls, hold /
+   call waiting / conference, de-registration on stop.
+
+Process notes (learnt the hard way):
+- Never restart redwood-ims / redwood-cellulard while a call is up: the network keeps the call ("busy" afterwards).
+- Files copied to /var just before a flash were lost (the flash reboots hard): `sync` after every copy.
+- Each redwood-ims restart re-registers; fixed ports (50060/50062) make it replace the old registration.
+
 ## Earpiece and speaker (user-verified 2026-11-14)
 
 - Every call starts on the **earpiece**: the kernel's speaker driver plays the call through the top amplifier only
