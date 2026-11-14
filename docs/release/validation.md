@@ -139,3 +139,33 @@ structural/checksum verification is not a successful boot/install test.
 All **34 release Python tests**, the C data policy test and passcode integration,
 restore-file and native-adapter checks passed during this implementation. Final
 workflow lint and shell syntax checks passed. No phone operations were performed.
+
+## Experimental TWRP package — implemented and built
+
+Installer source commit: `c2d65727081d54651e142980446ff3cdfed7ef28`; source tree was clean.
+`./build.sh twrp --bundle dist/local-validation --output dist/jesvi-ios-x1slte-experimental.zip --experimental` completed successfully.
+The archive contains the real candidate images, HFS kit, bound installer metadata
+and a static Linux/ARM64 `META-INF/com/google/android/update-binary`. ZIP inventory,
+CRC checks and the native host build of the same image/HFS validators all passed.
+ELF architecture, executable permissions and absence of a dynamic interpreter were
+checked. Archive SHA-256: `f7843bd11214c77db322a45f1e3b745b6f76b5e30e6ff5900195558c3de8c88a`.
+
+**35 Python tests**, C boot-data policy tests, passcode integration/restore/native
+checks, **13 Go top-level tests** (plus failure subcases), Go vet, static ARM64
+cross-compilation, actionlint and whitespace checks passed. File-backed tests cover
+fresh HFS headers/zero extents, data/keybag preservation on updates, existing-image
+hash reuse, tails retained, failures before BOOT, corrupt/truncated/unexpected ZIP
+inputs, wrong identity/unlock/mount evidence, staged boot/recovery independent of
+transport, and UI command-injection rejection.
+
+No PIT/GPT rewrite or resize backend was added. The native installer exclusively
+claims only its four measured target partitions, streams the large system image,
+requires physical holds before writing, fsyncs/invalidates block caches/readbacks,
+and never requests reboot. It supports preflight-only packages by default;
+`--experimental` explicitly enables the hardware-unqualified writer.
+
+These results supersede earlier statements that no writer/initializer exists.
+They do **not** establish actual TWRP properties/holder cleanup, physical key input,
+block ioctl behavior, ZIP64/sideload handling, first HFS mount, sboot/AVB behavior,
+bootability, update compatibility, interruption recovery or Download Mode rescue.
+No phone was accessed, flashed or rebooted. See [TWRP guide](twrp.md) before any trial.

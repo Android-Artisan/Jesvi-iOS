@@ -14,7 +14,7 @@ preview with no end-user flashing promise.
 - [x] SDK Git revision pin and explicit private input/UEFI/DTBH/AVB paths.
 - [x] Content-based system cache with checksum verification and atomic publication.
 - [x] Private input lock, candidate manifest and content-addressed image retention.
-- [x] Structural image validation and offline flashing plan; no new writer.
+- [x] Structural image validation and offline flashing plan; experimental writer tracked separately below.
 - [x] Publication inventory and GitHub settings plan.
 
 See [validation](validation.md) for tests actually run. These checks do not imply

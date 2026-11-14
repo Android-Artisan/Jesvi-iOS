@@ -47,3 +47,8 @@ they do not demonstrate an end-to-end Actions installation package.
 Subsequent local implementation completed successfully: see [local build](local-build.md)
 and [validation](validation.md). This supersedes the local extraction-receipt gap
 above. Remote Actions provisioning, delivery and installer qualification remain open.
+
+A native experimental TWRP ZIP writer and offline HFSX initializer were subsequently
+implemented and host-tested, with preflight mode as the default. See [TWRP](twrp.md)
+and the latest validation record. Hardware/remote Actions qualification remains
+open; this does not enable a public automatic release.
