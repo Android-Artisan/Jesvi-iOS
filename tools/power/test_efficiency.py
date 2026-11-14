@@ -29,7 +29,12 @@ enum { PROF_NORMAL, PROF_LPM, PROF_OFF };
 ''' + tables + '\n' + '\n'.join(function(n) for n in (
     'efficiency_cap', 'power_profile', 'profile_cap')) + r'''
 int main(void) {
-    const uint32_t expected[] = {1248000, 1794000, 1898000, 455000, 1352000, 0, 0};
+    assert(domains[0].step1 == 82 && domains[0].step2 == 90);
+    assert(domains[1].step1 == 82 && domains[1].step2 == 90);
+    assert(domains[2].step1 == 78 && domains[2].step2 == 86);
+    assert(domains[2].mid == 1586000);
+    assert(domains[3].step1 == 82 && domains[3].step2 == 90);
+    const uint32_t expected[] = {1456000, 2106000, 1794000, 572000, 1352000, 0, 0};
     for (unsigned d = 0; d < NDOMAINS; d++) {
         efficiency = 0;
         assert(profile_cap(d, domains[d].target, PROF_NORMAL) == domains[d].target);
@@ -52,7 +57,7 @@ int main(void) {
     efficiency = 1;
     redwood_lowpower = 1;
     assert(power_profile() == PROF_LPM);
-    assert(profile_cap(2, 2730000, power_profile()) == 1794000);
+    assert(profile_cap(2, 2730000, power_profile()) == 1586000);
     redwood_screen_on = 0;
     assert(power_profile() == PROF_OFF);
     assert(profile_cap(4, 2028000, power_profile()) == 421000);

@@ -21,16 +21,16 @@
  * Boot args:
  *   dvfs=1       read: every domain's clock and the temperatures, then every 10 s
  *   dvfs=2       ... and set the clocks below (kHz; 0 leaves a domain as it is):
- *                dvfs_cl0 (A55, default 1742000), dvfs_cl1 (A76, 2210000), dvfs_cl2 (M5, 2002000),
- *                dvfs_g3d (GPU, 702000), dvfs_mif (memory, 0)
+ *                dvfs_cl0 (A55, default 2002000), dvfs_cl1 (A76, 2504000), dvfs_cl2 (M5, 2730000),
+ *                dvfs_g3d (GPU, 800000), dvfs_mif (memory, 2028000)
  *   dvfs_efficiency=1  cap CPU/GPU/memory clocks; runtime: kern.redwood.efficiency=0|1
  *   dvfs_wait=S  seconds after boot before anything is asked (default 10)
  *   dvfs_hot=C   the first step of each domain's throttling, in degrees of its own zone (default:
- *                Samsung's: A55 86 / 96 by the LITTLE zone, A76 86 / 96 by MID, GPU 88 / 100 by G3D,
- *                exynos9830.dts thermal-zones); a step is let go 6 degrees below where it was taken.
+ *                78 / 86 for M5, 82 / 90 for A55/A76/GPU, using each domain's own zone); a step is let go
+ *                8 degrees below where it was taken. An override sets the second step to C + 8.
  *                Step 1 is the "mid" clock, step 2 the safe one. Only the domain that is hot slows.
  *   fb_hot=C     the panel held under 70 % of its brightness from C degrees in the hottest zone (default
- *                90; 0: never), under 50 % from C + 6; the 50 % let go below C + 2, the 70 % below C - 4.
+ *                82; 0: never), under 50 % from C + 6; the 50 % let go below C + 2, the 70 % below C - 4.
  *                The panel's power is heat in the same body as the SoC (a phone's thermal policy does the
  *                same; Samsung's is in user space, SSRM, so these marks are this driver's own).
  * Every line goes to the loader's log with a `dvfs:` prefix.
@@ -104,11 +104,13 @@ static const struct {
 	 * (B, 2026-11-07: 86/96 read once a second let the big cluster reach 108-111 C during boot and the SoC's thermal
 	 * trip reset the phone through the PMIC -- RST_STAT PINRESET, PWRONSRC WTSR -- 2-3 times after a cold start. Now
 	 * 85/95 read every 250 ms and let go 10 degrees below the mark; 80/90 throttled plain UI use, 18:50.)
+	 * Cluster-aware policy: M5 steps at 78/86 C, others at 82/90 C; 8 C release hysteresis.
+	 * lpmd engages earlier at 76 C M5, 80 C A76/GPU, 82 C A55.
 	 */
-	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 85, 95 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 85, 95 },
-	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 85, 95 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 87, 97 },
+	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 82, 90 },
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 82, 90 },
+	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1586000, 0, 78, 86 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 90 },
 	{ D_MIF, "mif",       "dvfs_mif", 2028000, 0,       0,       -1, 0, 0 },  /* (2730 = LPDDR5 top: heat for no UI gain, 18:50); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
@@ -447,9 +449,9 @@ int redwood_gov_wake;                   /* the event a touch or a slow GPU job w
 /*
  * Power profiles (B, 2026-11-07): caps on top of the governor and the thermal steps.
  *   screen off (MiniIOMobileFramebuffer's display off): every cluster at its thermal "safe" clock, the GPU at its
- *     lowest, memory at 421 MHz (measured live: 2.7 GB/s there vs 15.7 at 2730; ACPM takes every step);
+ *     safe clock (377 MHz), memory at 421 MHz (measured live: 2.7 GB/s there vs 15.7 at 2730; ACPM takes every step);
  *   Low Power Mode (kern.redwood.lowpower=1, from iOS's switch): clusters at their first thermal step, memory 1352 MHz;
- *   normal: as before (memory 2730 MHz).
+ *   normal: memory 2028 MHz.
  * dvfs_sleep=0 turns the screen-off profile off; dvfs_lpm=0 ignores Low Power Mode.
  */
 static volatile int redwood_screen_on = 1;
@@ -463,10 +465,10 @@ static uint32_t
 efficiency_cap(unsigned domain)
 {
 	switch (domain) {
-	case D_CL0: return 1248000;
-	case D_CL1: return 1794000;
-	case D_CL2: return 1898000;
-	case D_G3D: return 455000;
+	case D_CL0: return 1456000;
+	case D_CL1: return 2106000;
+	case D_CL2: return 1794000;
+	case D_G3D: return 572000;
 	case D_MIF: return 1352000;
 	default: return 0;
 	}
@@ -667,7 +669,7 @@ profile_cap(unsigned d, uint32_t cap, int prof)
 static void
 acpm_thread(void *arg, wait_result_t wr_unused)
 {
-	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 90;
+	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 82;
 	int bl_step = 0;
 	int hot = 0, level[NDOMAINS] = { 0 }, temp[4];
 	uint32_t govern = 1, govern_gpu = 1, gov_rung[NGOV], gov_low[NGOV], gov_sent[NGOV], gov_changes = 0, tick = 0;
@@ -1011,15 +1013,15 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				continue;
 			}
 			s1 = hot_at ? (int)hot_at : domains[i].step1;
-			s2 = hot_at ? (int)hot_at + 10 : domains[i].step2;
+			s2 = hot_at ? (int)hot_at + 8 : domains[i].step2;
 			want = level[i];
 			if (t >= s2) {
 				want = 2;
 			} else if (t >= s1 && want < 1) {
 				want = 1;
-			} else if (want == 2 && t < s2 - 10) {
-				want = t >= s1 - 10 ? 1 : 0;
-			} else if (want == 1 && t < s1 - 10) {
+			} else if (want == 2 && t < s2 - 8) {
+				want = t >= s1 - 8 ? 1 : 0;
+			} else if (want == 1 && t < s1 - 8) {
 				want = 0;
 			}
 			if (want != level[i]) {
