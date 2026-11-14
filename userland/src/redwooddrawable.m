@@ -412,6 +412,9 @@ static const struct rwd_format rwd_formats[] = {
 	{  70, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm" },
 	{  71, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm_sRGB" },
 	{  80, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm" },
+	/* CoreVideo's kCVPixelFormatType_32ARGB code (0x20), which CoreGraphics-made surfaces carry for
+	 * premultiplied-first little-endian pixels -- BGRA in memory -- (PhotoImaging) */
+	{  80, 0x00000020, 4, 0, "MTLPixelFormatBGRA8Unorm" },
 	{  81, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm_sRGB" },
 	{  90, 'R10k', 4, 0, "a ten-bit RGB format" },
 	{  94, 'l10r', 4, 1, "a ten-bit RGB format" },

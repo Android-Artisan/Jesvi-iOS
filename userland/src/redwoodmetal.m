@@ -4356,7 +4356,28 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 			took.rowBytes = (unsigned)rowp(s, p);
 		}
 	}
-	if (texture == NULL && took.surface != 0 && took.rowBytes % 64 != 0 &&
+	/* a surface over the process's own memory (IOSurface made with an address): the kernel cannot
+	 * hand those pages to the GPU, so it is served as a copy like an unaligned one (PhotoImaging's
+	 * tiles in "Use as Wallpaper"); written back after the GPU when it is a target */
+	BOOL force_copy = NO;
+	if (texture == NULL && took.surface == 0 && s != NULL && strstr(why, "memory of the process's own") != NULL) {
+		static size_t (*row1)(void *), (*w1)(void *), (*h1)(void *);
+		static uint32_t (*sid1)(void *);
+		if (row1 == NULL) {
+			*(void **)&row1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRow");
+			*(void **)&w1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetWidth");
+			*(void **)&h1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeight");
+			*(void **)&sid1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+		}
+		if (row1 && w1 && h1 && sid1 && w1(s) >= shape.width && h1(s) >= shape.height) {
+			took.surface = sid1(s);
+			took.width = (unsigned)w1(s);
+			took.height = (unsigned)h1(s);
+			took.rowBytes = (unsigned)row1(s);
+			force_copy = YES;
+		}
+	}
+	if (texture == NULL && took.surface != 0 && (took.rowBytes % 64 != 0 || force_copy) &&
 	    mesa.texture_create != NULL && mesa.texture_write != NULL) {
 		char why2[256];
 		struct rwa_texture *own = mesa.texture_create(_mesa, &shape, why2, sizeof(why2));
