@@ -2863,7 +2863,13 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	uint64_t _countedAt;            /* made by -newTextureWithDescriptor: and counted (rw_perf) */
 	id _buffer;                     /* a texture over a buffer's memory: that buffer (retained) */
 	NSUInteger _bufferOffset, _bufferBytesPerRow;
+	const void *_userBytes;         /* -newTextureWithBytesNoCopy:: the caller's pixels, copied in at each use */
+	NSUInteger _userRowBytes;
+	void (^_userDeallocator)(void *, NSUInteger);
+	NSUInteger _userLength;
 }
+- (void)redwoodMirrorUserBytes:(const void *)bytes length:(NSUInteger)length rowBytes:(NSUInteger)row
+		   deallocator:(void (^)(void *, NSUInteger))deallocator;
 @property (readonly) struct rwa_texture *mesaTexture;
 /* counted in rw_perf's allocations, made at `t` (its free is counted with its lifetime) */
 - (void)redwoodCountedAt:(uint64_t)t;
@@ -2935,8 +2941,15 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	NSUInteger _length;
 	struct rwa_buffer *_mesa; /* set instead when the memory came from Mesa */
 	int _responsibleProcess;  /* what <MTLResourceSPI> calls the owner, for accounting */
+	void *_userBytes;         /* -newBufferWithBytesNoCopy:: the caller's pages, mirrored (below) */
+	void *_gpuContents;       /* and then the GPU's own copy */
+	void (^_userDeallocator)(void *, NSUInteger);
 }
 @property (readonly) struct rwa_buffer *mesaBuffer;
+/* serve the caller's own memory: -contents is `bytes`, copied to the GPU's buffer whenever a
+ * command uses it and back after a kernel ran (the kernel cannot map a process's pages yet) */
+- (void)redwoodMirrorUserBytes:(void *)bytes deallocator:(void (^)(void *, NSUInteger))deallocator;
+- (void)redwoodCopyBackToUser;
 - (instancetype)initWithDevice:(RedwoodMetalDevice *)device
 			   gpu:(io_connect_t)gpu
 			length:(NSUInteger)length;
@@ -3623,15 +3636,23 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		     descriptor:(MTLTextureDescriptor *)descriptor
 		    deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	(void)bytes;
-	(void)length;
-	(void)descriptor;
-	(void)deallocator;
-	RW_ONCE('W', "RES", "a texture over the caller's own memory was asked for, and the "
-		"contract has no import for a bare pointer -- only for an IOSurface. Copying "
-		"instead would be worse than nil: the caller writes to its pages and expects the "
-		"texture to follow\n");
-	return nil;
+	/* A mirror rather than an import (the kernel cannot map the caller's pages yet): a
+	 * texture of our own, refreshed from `bytes` every time a command uses it
+	 * (-mesaTexture), so the caller's later writes are followed. nil here made Core
+	 * Animation draw text from an empty glyph cache: scrambled titles in PosterBoard. */
+	NSUInteger height = [descriptor height] ? [descriptor height] : 1;
+	NSUInteger row = length / height;
+	if (bytes == NULL || row == 0) {
+		return nil;
+	}
+	RedwoodMetalTexture *t = [self newTextureWithDescriptor:descriptor];
+	if (t == nil) {
+		return nil;
+	}
+	RW_ONCE('I', "RES", "a texture over the caller's own memory: served as a mirror, copied in "
+		"at each use (%lu bytes a row)\n", (unsigned long)row);
+	[t redwoodMirrorUserBytes:bytes length:length rowBytes:row deallocator:deallocator];
+	return t;
 }
 
 - (id)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
@@ -4371,8 +4392,19 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		       options:(NSUInteger)options
 		   deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	(void)bytes; (void)length; (void)options; (void)deallocator;
-	return nil;   /* wrapping the caller's own pages needs the kernel to map them: not yet */
+	/* The kernel cannot map the caller's pages for the GPU yet, so the buffer is a mirror:
+	 * a GPU buffer of our own, -contents answering the caller's pointer, copied in whenever
+	 * a command uses it and back after a kernel ran (RedwoodMetalBuffer). Games and Core
+	 * Animation use this; nil made them draw from nothing. */
+	if (bytes == NULL || length == 0) {
+		return nil;
+	}
+	RedwoodMetalBuffer *b = [self newBufferWithLength:length options:options];
+	if (b == nil) {
+		return nil;
+	}
+	[b redwoodMirrorUserBytes:bytes deallocator:deallocator];
+	return b;
 }
 - (id)newIndirectCommandBufferWithDescriptor:(id)d
 			      maxCommandCount:(NSUInteger)count
@@ -4678,11 +4710,37 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 - (struct rwa_buffer *)mesaBuffer
 {
+	if (_userBytes != NULL && _gpuContents != NULL) {
+		memcpy(_gpuContents, _userBytes, _length);   /* what the caller wrote, before the GPU reads it */
+	}
 	return _mesa;
+}
+
+- (void)redwoodMirrorUserBytes:(void *)bytes deallocator:(void (^)(void *, NSUInteger))deallocator
+{
+	_gpuContents = _contents;
+	_userBytes = bytes;
+	_contents = bytes;
+	if (_gpuContents != NULL) {
+		memcpy(_gpuContents, bytes, _length);
+	}
+	_userDeallocator = deallocator ? Block_copy(deallocator) : NULL;
+}
+
+- (void)redwoodCopyBackToUser
+{
+	if (_userBytes != NULL && _gpuContents != NULL) {
+		memcpy(_userBytes, _gpuContents, _length);
+	}
 }
 
 - (void)dealloc
 {
+	if (_userDeallocator != NULL) {
+		_userDeallocator(_userBytes, _length);
+		Block_release(_userDeallocator);
+		_userDeallocator = NULL;
+	}
 	if (_mesa != NULL) {
 		mesa.buffer_destroy(_mesa);
 		rw_note_free(false, 0);
@@ -4868,6 +4926,11 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 - (void)dealloc
 {
+	if (_userDeallocator != NULL) {
+		_userDeallocator((void *)_userBytes, _userLength);
+		Block_release(_userDeallocator);
+		_userDeallocator = NULL;
+	}
 	if (_texture != NULL) {
 		mesa.texture_destroy(_texture);
 		if (_countedAt != 0) {
@@ -4892,8 +4955,24 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	_bufferBytesPerRow = bytesPerRow;
 }
 
+- (void)redwoodMirrorUserBytes:(const void *)bytes length:(NSUInteger)length rowBytes:(NSUInteger)row
+		   deallocator:(void (^)(void *, NSUInteger))deallocator
+{
+	_userBytes = bytes;
+	_userLength = length;
+	_userRowBytes = row;
+	_userDeallocator = deallocator ? Block_copy(deallocator) : NULL;
+}
+
 - (struct rwa_texture *)mesaTexture
 {
+	if (_userBytes != NULL && _texture != NULL && mesa.texture_write != NULL) {
+		/* the caller's pixels as they are now: Core Animation's glyph cache writes there */
+		char why[128];
+		const unsigned origin[3] = { 0, 0, 0 };
+		const unsigned size[3] = { _shape.width, _shape.height, 1 };
+		(void)mesa.texture_write(_texture, 0, 0, origin, size, _userBytes, _userRowBytes, why, sizeof(why));
+	}
 	if (_copied) {
 		[self redwoodRefreshCopy];
 	}
@@ -6642,6 +6721,12 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 				     retain];
 			_status = RW_CB_ERROR;
 			goto done;
+		}
+		/* a kernel may have written a mirrored buffer: the caller reads its own pages */
+		for (unsigned i = 0; i < work->count; i++) {
+			if ([work->buffers[i] isKindOfClass:[RedwoodMetalBuffer class]]) {
+				[(RedwoodMetalBuffer *)work->buffers[i] redwoodCopyBackToUser];
+			}
 		}
 		/* RWM_PROBE_DISPATCH=1: every texture a kernel can write, its first texel after the
 		 * dispatch (the dispatch has waited for the GPU), in hex -- which kernel of a chain
