@@ -1468,6 +1468,23 @@ input_thread(__unused void *arg)
 
 	while (read(device, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
 		uint64_t read_at = mach_absolute_time();
+		static uint64_t lat_checked;
+
+		/* kern.redwood.touch_lat (live; boot-arg touch_lat=1 as before): looked at once a second at most */
+		if (read_at - lat_checked > 24000000ULL) {
+			uint32_t live = 0;
+			size_t live_size = sizeof(live);
+
+			lat_checked = read_at;
+			if (sysctlbyname("kern.redwood.touch_lat", &live, &live_size, NULL, 0) == 0) {
+				static int boot_value = -1;
+
+				if (boot_value < 0) {
+					boot_value = touch_latency;
+				}
+				touch_latency = boot_value || live;
+			}
+		}
 
 		last_input_at = read_at;        /* (the idle timer below) */
 

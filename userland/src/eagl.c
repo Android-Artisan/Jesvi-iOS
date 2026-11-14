@@ -1080,6 +1080,19 @@ frame_end(struct eagl *e, bool finished)
 	after = now_us();
 	e->in_frame = false;
 	e->frames++;
+	if ((e->frames & 63) == 0) {
+		/* kern.redwood.touch_lat (live), every 64 frames; boot-arg touch_lat=1 keeps it on */
+		static int boot_value = -1;
+		uint32_t live = 0;
+		size_t live_size = sizeof(live);
+
+		if (boot_value < 0) {
+			boot_value = latency_lines;
+		}
+		if (sysctlbyname("kern.redwood.touch_lat", &live, &live_size, NULL, 0) == 0) {
+			latency_lines = boot_value || live;
+		}
+	}
 	if (latency_lines) {
 		/* "tl: g FRAME began US ended US DRAWS": microseconds of mach_absolute_time (tools/latency.py) */
 		say("tl: g %u began %llu ended %llu %u\n", e->frames, e->began, after, e->draws);

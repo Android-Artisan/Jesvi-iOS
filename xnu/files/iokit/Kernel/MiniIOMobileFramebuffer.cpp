@@ -534,6 +534,7 @@ swapQueue(void)
  * touch takes to show (tools/latency.py; the touch's own lines: bsd/dev/redwood_input.c).
  */
 static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
+extern "C" uint32_t redwood_touch_lat_live;     /* kern.redwood.touch_lat, live (bsd/dev/redwood_input.c) */
 
 static inline uint64_t
 micros(uint64_t absolute)
@@ -3056,7 +3057,7 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	nanoseconds_to_absolutetime(NSEC_PER_SEC / refreshHz() * 5 / 4, &period);
 	nanoseconds_to_absolutetime(FRAME_PAUSE * NSEC_PER_MSEC, &pause);
 	clock_interval_to_deadline(SWAP_HELD_MS, kMillisecondScale, &deadline);
-	if (gTouchLat) {
+	if (gTouchLat || redwood_touch_lat_live) {
 		redwood_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
 	}
 	{
@@ -3391,7 +3392,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		record(recorded);
 	}
 	fSwapsShown++;
-	if (gTouchLat) {
+	if (gTouchLat || redwood_touch_lat_live) {
 		redwood_tl("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
 		    micros(drawn));
 	}
@@ -3689,7 +3690,7 @@ IOMobileFramebufferUserClient::vsync(void)
 	IOLockUnlock(fLock);
 	if (send) {
 		sendAsyncResult64WithOptions(ref, kIOReturnSuccess, args, 6, kIOUserNotifyOptionCanDrop);
-		if (gTouchLat) {
+		if (gTouchLat || redwood_touch_lat_live) {
 			/* the refresh it is for, and when it was sent: tools/frame_split.py's refresh -> swap */
 			redwood_tl("tl: vs %llu due %llu sent %llu\n", fVSyncCount, micros(now), micros(mach_absolute_time()));
 		}
@@ -3772,7 +3773,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		return kIOReturnSuccess;
 
 	case kFBMethodSwapWait:                         /* in: the swap; returns once it is on the panel */
-		if (gTouchLat) {
+		if (gTouchLat || redwood_touch_lat_live) {
 			redwood_tl("tl: w %llu %#llx %#llx at %llu\n", args->scalarInputCount > 0 ? in[0] : 0,
 			    args->scalarInputCount > 1 ? in[1] : 0, args->scalarInputCount > 2 ? in[2] : 0, micros(mach_absolute_time()));
 		}
