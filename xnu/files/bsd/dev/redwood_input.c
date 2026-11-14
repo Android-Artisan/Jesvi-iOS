@@ -25,6 +25,9 @@
  * tools/latency.py.
  */
 static uint32_t touch_lat = 2;          /* 2: not yet looked up */
+/* the same, live (A, 2026-11-14; the boot line is full): sysctl -w kern.redwood.touch_lat=1. The kernel's "tl:" lines then
+ * also go to its own log (curl /log), next to the window server's, so a measurement needs no Log access */
+uint32_t redwood_touch_lat_live = 0;
 
 extern void loader_log_line(const char *line);
 extern void redwood_sec_ts_init(void);
@@ -51,6 +54,9 @@ redwood_tl(const char *format, ...)
 	vsnprintf(line, sizeof(line), format, list);
 	va_end(list);
 	loader_log_line(line);
+	if (redwood_touch_lat_live) {
+		printf("%s", line);
+	}
 }
 
 static bool
@@ -61,7 +67,7 @@ latency_lines(void)
 
 		touch_lat = PE_parse_boot_argn("touch_lat", &on, sizeof(on)) && on != 0;
 	}
-	return touch_lat != 0;
+	return touch_lat != 0 || redwood_touch_lat_live != 0;
 }
 
 static LCK_GRP_DECLARE(touch_lck_grp, "redwood-touch");

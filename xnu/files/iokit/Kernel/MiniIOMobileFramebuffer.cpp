@@ -127,6 +127,26 @@ static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
  * fb_mode (x1slte, SM-G980F, 2026-11-06): 1 = the panel switched to 1080x2400 at 120 Hz (HS), Samsung's "mres" at start;
  * 0 = as UEFI leaves it (1440x3200 at 60 Hz). Needs fb_scaler=1 (the frame is scaled to the panel's size by DPP 5).
  * See modeSetFhd120().
+ *
+ *   0  1440x3200 @  60   iOS draws 1125x2436 at 3x   touch scan normal 60
+ *   1  1080x2400 @ 120   iOS draws 1125x2436 at 3x   touch scan HS120      <- the phone's preset (x1slte.cmdline)
+ *   2  1080x2400 @  60   iOS draws 1125x2436 at 3x   touch scan normal 60
+ *   3   720x1600 @ 120   iOS draws  750x1624 at 2x   touch scan HS120
+ *   4   720x1600 @  60   iOS draws  750x1624 at 2x   touch scan normal 60
+ *
+ * THE PANEL AT 120 Hz IS NOT iOS AT 120 Hz (A, 2026-11-14; the user: scrolling "a lot better" once all of these held).
+ * The panel is a fixed-rate one (no LTPO); a 120 Hz mode needs every one of these, each following fb_mode by itself:
+ *   - TimingElements at the mode's refresh (this driver: SyncRate 120 in 16.16, one fixed mode, no range);
+ *   - CoreAnimation's clock at 120: backboardd started with CA_HEARTBEAT_RATE=120 (userland/src/inject.c). Without it
+ *     iOS ran its frames for 60 (CADisplay.refreshRate 0.016667) while the panel scanned 120 -- the "60 Hz feel";
+ *   - apps not held to 60: QuartzCore's phone cap lifted with CADisableMinimumFrameDurationOnPhone set in each app's
+ *     info dictionary (inject.c app_fps_unlock; app_fps=0 off);
+ *   - the touch controller scanning at 120: sec_ts 0x94 {1, 2} (bsd/dev/redwood_sec_ts.c ts_set_scan_rate; it reported
+ *     ~60 a second otherwise; touch_scan=N);
+ *   - SpringBoard's own 20-30 fps animation caps raised (userland/src/inject_sb.c sb_fps_hooks; sb_fps=0 off).
+ * At 2x (fb_mode 3/4) also: MobileGestalt's cached scale and pitch (init.c mg_scale_sync) and the status bar's notch
+ * layout (statusbar_shift.h) -- see the drawing size below. Check on the phone: /var/root/hztest must print 120.0 Hz.
+ * Everything here: docs/x1slte-display.md, "Display presets" and "Smoothness findings".
  */
 static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
 /*
@@ -514,6 +534,7 @@ swapQueue(void)
  * touch takes to show (tools/latency.py; the touch's own lines: bsd/dev/redwood_input.c).
  */
 static TUNABLE(uint32_t, gTouchLat, "touch_lat", 0);
+extern "C" uint32_t redwood_touch_lat_live;     /* kern.redwood.touch_lat, live (bsd/dev/redwood_input.c) */
 
 static inline uint64_t
 micros(uint64_t absolute)
@@ -3036,7 +3057,7 @@ IOMobileFramebuffer::present(const uint8_t * swap)
 	nanoseconds_to_absolutetime(NSEC_PER_SEC / refreshHz() * 5 / 4, &period);
 	nanoseconds_to_absolutetime(FRAME_PAUSE * NSEC_PER_MSEC, &pause);
 	clock_interval_to_deadline(SWAP_HELD_MS, kMillisecondScale, &deadline);
-	if (gTouchLat) {
+	if (gTouchLat || redwood_touch_lat_live) {
 		redwood_tl("tl: s %u at %llu\n", swapWord(swap, SWAP_ID), micros(now));
 	}
 	{
@@ -3371,7 +3392,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		record(recorded);
 	}
 	fSwapsShown++;
-	if (gTouchLat) {
+	if (gTouchLat || redwood_touch_lat_live) {
 		redwood_tl("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
 		    micros(drawn));
 	}
@@ -3669,7 +3690,7 @@ IOMobileFramebufferUserClient::vsync(void)
 	IOLockUnlock(fLock);
 	if (send) {
 		sendAsyncResult64WithOptions(ref, kIOReturnSuccess, args, 6, kIOUserNotifyOptionCanDrop);
-		if (gTouchLat) {
+		if (gTouchLat || redwood_touch_lat_live) {
 			/* the refresh it is for, and when it was sent: tools/frame_split.py's refresh -> swap */
 			redwood_tl("tl: vs %llu due %llu sent %llu\n", fVSyncCount, micros(now), micros(mach_absolute_time()));
 		}
@@ -3752,7 +3773,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		return kIOReturnSuccess;
 
 	case kFBMethodSwapWait:                         /* in: the swap; returns once it is on the panel */
-		if (gTouchLat) {
+		if (gTouchLat || redwood_touch_lat_live) {
 			redwood_tl("tl: w %llu %#llx %#llx at %llu\n", args->scalarInputCount > 0 ? in[0] : 0,
 			    args->scalarInputCount > 1 ? in[1] : 0, args->scalarInputCount > 2 ? in[2] : 0, micros(mach_absolute_time()));
 		}

@@ -8,6 +8,7 @@
 #include <kern/clock.h>
 #include <kern/kalloc.h>
 #include <kern/locks.h>
+#include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <netinet/in.h>
@@ -37,6 +38,11 @@ static LCK_SPIN_DECLARE(mux_lock, &mux_grp);
 static struct mux_packet *mq_rx, *mq_tx;
 static struct mux_connection *mc;
 static uint32_t rxhead, rxtail, txhead, txtail, generation, worker_generation;
+/* the worker's wake-up (A, 2026-11-14): it polled every millisecond for ever, 880 wake-ups a second of the big
+ * cores with nothing on the cable -- the hottest kernel thread at idle. Now 1 ms only while data moves; quiet,
+ * it sleeps 20 ms (100 ms with the link down) unless a packet from the computer or a link change wakes it. */
+static int mux_wake_event;
+static uint32_t mux_activity;
 static bool mux_started, mux_link;
 extern void redwood_usbmux_notify(bool);
 static unsigned mux_version;
@@ -85,6 +91,8 @@ bool redwood_usbmux_rx(const uint8_t *bytes, size_t length) {
 		ok = true;
 	}
 	lck_spin_unlock(&mux_lock);
+	if (ok)
+		thread_wakeup(&mux_wake_event);
 	return ok;
 }
 static size_t mux_header(uint32_t proto, size_t payload) {
@@ -347,6 +355,7 @@ static void mux_poll(struct mux_connection *c) {
 		mux_close(c, true);
 		return;
 	}
+	mux_activity++;
 	if (mux_tcp(c, 0x10, data, received))
 		c->seq += (uint32_t)received;
 	else
@@ -383,7 +392,7 @@ static void mux_lockdown_probe(void) {
 	redwood_usb_gadget_replug();
 }
 static void mux_worker(__unused void *arg, __unused wait_result_t result) {
-	uint32_t seen = 0;
+	uint32_t seen = 0, activity = 0, quiet = 0;
 	struct mux_packet *packet = kalloc_data(sizeof(struct mux_packet), Z_WAITOK | Z_ZERO);
 	for (;;) {
 		bool have = false, up;
@@ -410,7 +419,18 @@ static void mux_worker(__unused void *arg, __unused wait_result_t result) {
 				mux_poll(&mc[i]);
 			mux_lockdown_probe();
 		}
-		delay_for_interval(1, NSEC_PER_MSEC);
+		if (have || activity != mux_activity) {
+			activity = mux_activity;
+			quiet = 0;
+		} else if (quiet < 1000) {
+			quiet++;
+		}
+		if (up && quiet < 50) {
+			delay_for_interval(1, NSEC_PER_MSEC);   /* data moved in the last 50 ms */
+		} else {
+			assert_wait_timeout((event_t)&mux_wake_event, THREAD_UNINT, up ? 20 : 100, NSEC_PER_MSEC);
+			thread_block(THREAD_CONTINUE_NULL);
+		}
 	}
 }
 void redwood_usbmux_link(bool up) {
@@ -440,6 +460,7 @@ void redwood_usbmux_link(bool up) {
 	rxtail = rxhead;
 	txtail = txhead;
 	lck_spin_unlock(&mux_lock);
+	thread_wakeup(&mux_wake_event);
 	/* (not with interrupts off: loader_return() quiesces the gadget that way, and the console then panics
 	 * "Console I/O from interrupt-disabled context" -- kern.redwood_menu never reached Log access, 2026-11-13) */
 	if (ml_get_interrupts_enabled()) {
