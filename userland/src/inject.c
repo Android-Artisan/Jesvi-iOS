@@ -1774,7 +1774,6 @@ camera_front_by_default(void)
 }
 
 #include "statusbar_shift.h"
-#include "phone_dial.h"
 
 __attribute__((constructor))
 static void
@@ -1791,17 +1790,12 @@ redwood_init(void)
 	if (strcmp(name, "Camera") == 0) {
 		camera_front_by_default();
 	}
-	if (strcmp(name, "MobilePhone") == 0) {
-		phone_dial_hook();
-		/* (not phone_system_hook() here: in MobilePhone it broke dialling ("call failed") and emptied Recents, 05:18) */
-	}
-	if (strcmp(name, "InCallService") == 0) {
-		/* as a "telephony" call in InCallService the screen stayed on "calling..." and its End never reached RedwoodPhone
-		 * (2026-11-14 05:21); without any, the call went to the Dynamic Island. Default here: isSystemProvider only;
-		 * switchable live (phone_spoof_flags) */
-		phone_spoof_default = 0;     /* (reverted: isSystemProvider alone still gave the Dynamic Island, 05:30) */
-		phone_system_hook();
-		phone_speaker_hook();
+	/* the call hooks live outside the boot image (A, 2026-11-14), so they change without a reboot:
+	 * /var/jb/redwood/lib/libredwood-calls.dylib (userland/src/calls_tweak.c), in the Phone app and the call screen */
+	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+		if (dlopen("/var/jb/redwood/lib/libredwood-calls.dylib", RTLD_NOW) == NULL) {
+			say("redwood: %s: no call hooks (%s)\n", name, dlerror());
+		}
 	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
