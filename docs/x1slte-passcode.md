@@ -1,9 +1,10 @@
 # Software passcode work (experimental)
 
-Reported symptom: Settings accepts a new passcode and its confirmation, but never
-turns passcode on. The running phone still reports AKS state flags 0x6 (no
-passcode, first-unlock complete). No passcode or keybag data was read, logged,
-replaced or removed during diagnosis.
+Original symptom: Settings accepted a new passcode and its confirmation but did
+not enable it. The original kernel always reported AKS flags 0x6 (no passcode).
+The user enters credentials only on the phone; diagnostic tools never request or
+log the real code. The implementation and live validation below supersede that
+initial failure.
 
 Two concrete blockers were found:
 
@@ -46,18 +47,63 @@ passed before the user enabled a real code. The user then confirmed Settings
 keeps the passcode enabled; native state is protected/unlocked (AKS 0x4, MKB 0),
 and the native saved keybag is private (0600).
 
-**Remaining failure:** the user can still swipe through the lock screen without
-a code. SpringBoard's authentication controller caches “no passcode” despite the
-protected system bag. This is not a working end-to-end passcode yet.
+## Live result and repeat-lock fix (14 November 2026)
 
-A prepared kernel now emits Apple's IOGeneralInterest keybag events after system
-state changes. Local iOS 16.5 `MKBEventsRegister` (0x1ae395488) registers this
-interest, and `aksNotificationCB` (0x1ae37e8b8) maps `0xe3ffd00d` to state-change
-and `0xe3ffd00f` to first-unlock. `SBFMobileKeyBag` refreshes its cached passcode
-state on these events. Notifications run outside the bag lock and require no
-poller. This patch builds but awaits an approved device reboot and lock-screen
-validation; its diagnosis is supported by the missing events, not yet confirmed
-by the phone. A user-client backup notification port is a separate interface.
+The approved notification kernel was flashed and read back by the loader, then
+booted with the saved protected bag. The user confirmed the initial passcode
+prompt, but later locks still allowed a swipe through. SpringBoard reported
+“authenticated, a passcode” while native MKB reported locked (1), AKS flags 0x5.
+The open padlock was consistent with this UI authentication mismatch. A successful
+first unlock alone was therefore insufficient validation.
+
+`software_passcode_lock.h` bridges `com.apple.iokit.hid.displayStatus` display-off
+events to the native authentication controller's
+`revokeAuthenticationImmediatelyForPublicReason:`. The observed iOS 16.5 method
+locks the keybag, invalidates cached lock state and revokes authentication. It
+never grants authentication or handles credentials. This immediate-lock policy
+is scoped to `softpasscode=1`; native no-passcode handling is retained. It uses
+one event subscription and one startup check, with no monitoring loop. A shared
+associated-object guard prevents duplicate installation by the standalone tweak
+and built-in library.
+
+The bridge is integrated into `inject_sb.c` for future images. On the current
+phone, the standalone `RedwoodSoftwarePasscode.dylib` and SpringBoard-only filter
+are installed in `/var/jb/Library/MobileSubstrate/DynamicLibraries/`, on persistent
+data. SpringBoard was restarted without rebooting. The user then confirmed that
+the **second unlock requires the code**. Kernel state subsequently returned to
+protected/unlocked (0x4). Further reboot testing of the standalone bridge and UI
+wrong-code testing were not performed in this session; isolated native and host
+wrong-code tests already passed.
+
+The notification kernel emits IOGeneralInterest events outside the bag lock.
+Local iOS 16.5 `MKBEventsRegister` (0x1ae395488) registers this interest, and
+`aksNotificationCB` (0x1ae37e8b8) maps `0xe3ffd00d` to state-change and
+`0xe3ffd00f` to first-unlock. These notifications alone did not establish reliable
+repeat-lock enforcement on this port; retain the display-off bridge. A user-client
+backup notification port is a separate interface.
+
+The user clarified that the swipe-to-passcode animation concern was its short
+activation threshold (roughly 10–20% of a swipe), not necessarily dropped frames,
+and accepted the current transition. This implementation does not change the
+swipe recognizer, animation duration, blur or passcode transition sequence.
+
+## Speed and file-security refinements
+
+A protected record can only be created with a nonempty secret. Empty credential
+probes now reject without running 100,000 HMACs, preserving the same failure
+counter and retry-delay behavior. Nonempty verification retains the original
+PBKDF2 work factor. The host test counts HMAC calls to verify this fast path and
+checks that rejection still increments failures. This optimized kernel is built
+as `out/mach.x1slte-softpasscode-optimized` but is **not flashed**.
+
+Boot restore now opens a root-owned private parent directory without following
+symlinks, uses directory-relative file lookup, refuses multiply-linked or
+non-regular files, and opens nonblocking so a FIFO cannot hang PID 1. Raw file
+buffers are wiped through volatile writes. The hardened helper cross-compiles
+and successfully parses the current phone's saved private bag with `--check`.
+It is staged in `prebuilt/userland/softkeybag-init`; the current boot used the
+previous helper. These changes are intended for the next prepared image, not a
+reason to reboot a working test session.
 
 ## Limits
 
@@ -96,12 +142,13 @@ aks_unlock_device 0x1f22d7788. MKBKeyBagChangeSystemSecret at 0x1ae386ca0
 calls sharedService/changeSystemSecretFromOldPasscode:ToNew:withOpaqueData:.
 These are development ABI observations, not a published stable interface.
 
-## Tests and next step
+## Validation and deployment
 
 ```sh
 cc -std=c11 -O2 -Wall -Wextra -Werror tools/passcode/test_software_keybag.c -o /tmp/test-software-keybag
 /tmp/test-software-keybag
 python3 tools/passcode/test_native_adapter.py
+python3 tools/passcode/test_restore_files.py
 ```
 
 The host test compares the actual KDF against CommonCrypto's independent PBKDF2
@@ -122,6 +169,48 @@ userland builds into this integration. Kernel artifact:
 `out/mach.x1slte-softpasscode`. Private deployment images and backups remain in
 ignored `out/passcode-deploy-20261114`; never commit them.
 
-Validation still required: approved boot with a protected saved bag; code prompt
-on lock; incorrect code rejected; correct code accepted; subsequent lock/unlock
-and passcode change/removal state updates. A reboot needs user confirmation.
+The restore-file fixture test runs the actual read-only parser against private
+synthetic files. It checks modes, parent permissions, hardlinks, symlinks,
+interrupted writes, FIFOs and malformed plist data. Only fixture path and expected
+owner are substituted for the host; the shipped helper still requires UID 0.
+
+To build the standalone bridge against the local SDK:
+
+```sh
+clang -target arm64-apple-ios16.5 -isysroot xnu-deps/theos-mac/sdks/iPhoneOS16.5.sdk \
+  -fblocks -fobjc-arc -dynamiclib -O2 -Wall -Wextra -Werror \
+  userland/src/software_passcode_lock.m -framework Foundation -o /tmp/RedwoodSoftwarePasscode.dylib
+codesign -s - -f /tmp/RedwoodSoftwarePasscode.dylib
+```
+
+Install that library with `userland/RedwoodSoftwarePasscode.plist` into the
+persistent tweak directory above, then restart SpringBoard during an agreed test
+window. Normal images include the same bridge in the prebuilt SpringBoard library.
+A full phone reboot still needs user confirmation.
+
+## Traps and recovery
+
+- Treat Settings-enabled, first-boot unlock and repeat-lock enforcement as three
+  separate checks. A locked kernel bag does not guarantee a locked UI here.
+- Keep the guarded bring-up unlock helper and `autounlock=0`; never restore an
+  unconditional-success credential operation to fix a UI integration problem.
+- Native keybagd RPC callers need their normal device/verify entitlements. An
+  unentitled probe's EPERM is not evidence the actual Settings flow is broken.
+- Native persistence needs `no-effaceable-storage` and change-secret epilogue
+  support. Candidate flag 4 must not mutate the live bag before save/install.
+- Do not enable keybagd verbose logging: native log strings can include codes.
+- Never run empty-to-empty system transaction experiments once a code is set.
+  The diagnostic tools guard this condition; use temporary non-system bags.
+- Preserve the legacy default UUID so enabling this backend does not arbitrarily
+  change existing keychain identity. Never import an actual SEP bag.
+- Restore saved protected bags locked before UI startup. Invalid existing files
+  stop the launchd handoff rather than falling back to a no-passcode UI.
+- Runtime retry counts are volatile. Root/kernel modification and offline attacks
+  remain outside this software gate's protection.
+- Keep private recovery images, keychain backups and captured logs in ignored
+  `out/`. The known-good cooling recovery and pre-passcode keychain backups are
+  retained locally; do not erase current keybags as a casual recovery step.
+- Rebuilding all userland from stale inputs can drop live firmware/job changes.
+  Prepare from the archived current tree, include only intended additions, and
+  validate APFS contents before flashing. The legacy APFS verifier mishandles
+  absolute symlinks; validate them as symlinks rather than following host paths.

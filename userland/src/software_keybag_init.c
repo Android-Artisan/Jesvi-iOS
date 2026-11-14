@@ -23,22 +23,32 @@ static int enabled(void) {
 }
 /* Return 0 absent, 1 parsed, -1 invalid. Never print serialized key material. */
 static int record_data(CFDataRef *out) {
- int fd=open(BAG_PATH,O_RDONLY|O_NOFOLLOW);
+ /* Hold a private parent directory so a path replacement cannot redirect
+  * the file lookup through a symlink between validation and open. */
+ int dir=open("/private/var/keybags",O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+ if(dir<0)return errno==ENOENT?0:-1;
+ struct stat parent;
+ if(fstat(dir,&parent)||parent.st_uid!=0||(parent.st_mode&0077)) {close(dir);return -1;}
+ int fd=openat(dir,"systembag.kb",O_RDONLY|O_NOFOLLOW|O_NONBLOCK);
  if(fd<0) {
-  if(errno!=ENOENT)return -1;
+  if(errno!=ENOENT){close(dir);return -1;}
   struct stat st;
-  if(lstat(BAG_PATH ".writing",&st)==0||errno!=ENOENT)return -1;
+  int partial=fstatat(dir,"systembag.kb.writing",&st,AT_SYMLINK_NOFOLLOW);
+  int missing=partial<0&&errno==ENOENT;close(dir);
+  if(!missing)return -1;
   return 0;
  }
+ close(dir);
  struct stat st;
- if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_uid!=0||(st.st_mode&0077)||st.st_size<=0||st.st_size>65536) {
+ if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_nlink!=1||st.st_uid!=0||(st.st_mode&0077)||st.st_size<=0||st.st_size>65536) {
   close(fd);return -1;
  }
  size_t size=(size_t)st.st_size,got=0;uint8_t *buf=malloc(size);
  if(!buf){close(fd);return -1;}
  while(got<size) {ssize_t n=read(fd,buf+got,size-got);if(n<=0){free(buf);close(fd);return -1;}got+=(size_t)n;}
  close(fd);
- CFDataRef raw=CFDataCreate(NULL,buf,(CFIndex)size);memset(buf,0,size);free(buf);
+ CFDataRef raw=CFDataCreate(NULL,buf,(CFIndex)size);
+ volatile uint8_t *wipe=buf;for(size_t i=0;i<size;i++)wipe[i]=0;free(buf);
  if(!raw)return -1;
  CFPropertyListRef plist=CFPropertyListCreateWithData(NULL,raw,kCFPropertyListImmutable,NULL,NULL);
  CFRelease(raw);

@@ -3,7 +3,9 @@
 #include <CommonCrypto/CommonKeyDerivation.h>
 #include <assert.h>
 #include <stdio.h>
+static unsigned hmac_calls;
 static void hmac(const void *key, size_t kn, const void *data, size_t dn, uint8_t out[32]) {
+    hmac_calls++;
     CCHmac(kCCHmacAlgSHA256, key, kn, data, dn, out);
 }
 static void random_bytes(void *out, size_t n) {
@@ -28,7 +30,9 @@ int main(void) {
     struct swkb_record saved = s.record;
     assert(swkb_load(&loaded, &saved, sizeof(saved)) == 0);
     assert(swkb_flags(&loaded) == 1); /* restart requires first authentication */
+    unsigned before_empty = hmac_calls;
     assert(swkb_unlock(&loaded, hmac, "", 0, 3) == SWKB_BAD_SECRET && loaded.locked);
+    assert(hmac_calls == before_empty && loaded.failures == 1);
     for (unsigned n = 0; n < 4; n++) assert(swkb_unlock(&loaded, hmac, "wrong", 5, 3) == SWKB_BAD_SECRET);
     assert(swkb_unlock(&loaded, hmac, "test-only-A", 11, 3) == SWKB_BACKOFF);
     assert(swkb_unlock(&loaded, hmac, "test-only-A", 11, 4) == 0);

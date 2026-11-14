@@ -103,6 +103,11 @@ swkb_check(struct swkb_state *s, swkb_hmac_fn hmac, const void *secret, size_t l
     int match;
     if (!s->record.has_secret) {
         match = len == 0;
+    } else if (!len) {
+        /* Protected records are created only from nonempty secrets. Native
+         * nil-passcode probes cannot match: avoid 100,000 HMACs, but retain
+         * the same failure accounting and backoff as any incorrect code. */
+        match = 0;
     } else {
         swkb_derive(hmac, secret, len, s->record.salt, verifier);
         match = swkb_equal(verifier, s->record.verifier, sizeof(verifier));
