@@ -12,6 +12,7 @@
 !/.gitattributes
 !/build.sh
 !/run.sh
+!/release.conf
 !/SECURITY.md
 !/SHIPPING.md
 !/README.uk.md

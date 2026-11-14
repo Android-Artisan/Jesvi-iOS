@@ -33,7 +33,7 @@ func verifyIdentity(c Config, model, bootloader, product, soc, locked, state str
 	if !hasModel(c.Models, model) || !hasModel(c.Bootloaders, bootloader) {
 		return fmt.Errorf("exact model/bootloader mismatch: model=%q bootloader=%q", model, bootloader)
 	}
-	if product != "x1s" && product != "x1slte" {
+	if !hasModel(c.Products, product) {
 		return fmt.Errorf("unqualified recovery product: %s", product)
 	}
 	if soc != "exynos990" && soc != "exynos9830" {

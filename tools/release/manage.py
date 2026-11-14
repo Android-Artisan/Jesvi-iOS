@@ -38,6 +38,19 @@ def profile(name):
         if not (l['system_offset'] + l['system_max_bytes'] <= l['super_log_offset'] <
                 d['partitions']['super']):
             raise ValueError('system/log overlap')
+        # Android-side facts live beside the profile, outside the image-bound device.json.
+        ap = p.with_name('android.json')
+        android = json.loads(ap.read_text()) if ap.is_file() else {}
+        if android and android.get('schema') != 1:
+            raise ValueError(f'invalid android.json: {name}')
+        d['android_super'] = a = android.get('android_super') or {}
+        stash = android.get('android_stash_offset', 0)
+        l['android_stash_offset'] = stash
+        if not a.get('groups') or not all(isinstance(a.get(k), int) and a[k] > 0 for k in (
+                'metadata_max_size', 'metadata_slots', 'logical_block_size', 'alignment', 'first_logical_sector')):
+            raise ValueError(f'missing measured Android super layout: {name}')
+        if not (l['super_log_offset'] + (8 << 20) <= stash and stash + 4096 + (1 << 20) <= d['partitions']['super']):
+            raise ValueError('Android map stash must sit in super\'s free tail after the log')
         if not (l['log_offset'] + l['log_bytes'] <= l['kernel_offset'] and
                 l['kernel_offset'] + l['kernel_max_bytes'] <= l['root_offset'] <
                 d['partitions']['recovery']):
@@ -92,6 +105,14 @@ def main():
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--mode', choices=['choose', 'update', 'fresh'], default='choose')
     p.add_argument('--experimental', action='store_true', help='enable unqualified device writes after physical confirmation')
+    p = sub.add_parser('release', help='build everything release.conf asks for')
+    p.add_argument('--config', type=Path)
+    p.add_argument('--set', action='append', default=[], metavar='KEY=value')
+    p.add_argument('--dry-run', action='store_true', help='print the plan only')
+    p = sub.add_parser('restore', help='Jesvi-iOS-Restore ZIP for one device')
+    p.add_argument('--device', default='x1slte')
+    p.add_argument('--output', required=True, type=Path)
+    p.add_argument('--experimental', action='store_true', help='enable writes after physical confirmation')
     p = sub.add_parser('package')
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
@@ -106,6 +127,13 @@ def main():
             p.add_argument('--development', action='store_true',
                            help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
+    if a.command == 'release':
+        import release_config
+        return release_config.build(release_config.load(a.config, a.set), a.dry_run)
+    if a.command == 'restore':
+        from twrp_package import package_restore
+        package_restore(a.device, a.output, a.experimental)
+        return 0
     if a.command == 'twrp':
         from twrp_package import package
         package(a.bundle, a.output, a.mode, a.experimental)

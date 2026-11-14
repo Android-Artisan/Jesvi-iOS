@@ -6,7 +6,7 @@ import (
 )
 
 func TestDeviceEvidenceRejectsWrongOrMissingIdentity(t *testing.T) {
-	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}}
+	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}, Products: []string{"x1s", "x1slte"}}
 	base := []string{"SM-G980F", "G980FXXSNHYB7", "x1s", "exynos990", "0", "unlocked"}
 	check := func(v []string) error { return verifyIdentity(c, v[0], v[1], v[2], v[3], v[4], v[5]) }
 	if e := check(base); e != nil {
@@ -50,7 +50,7 @@ func TestUntrustedErrorTextCannotInjectRecoveryCommands(t *testing.T) {
 }
 
 func TestSamsungBootloaderPropertiesTakePrecedenceOverGenericRecoveryTemplate(t *testing.T) {
-	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}}
+	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}, Products: []string{"x1s", "x1slte"}}
 	values := map[string]string{"ro.boot.em.model": "SM-G980F", "ro.product.model": "SM-G981B", "ro.bootloader": "G980FXXSNHYB7", "ro.product.device": "x1s", "ro.board.platform": "exynos990", "ro.boot.flash.locked": "0", "ro.boot.vbmeta.device_state": "unlocked"}
 	get := func(key string) string { return values[key] }
 	if e := verifyRecoveryIdentity(c, get); e != nil {

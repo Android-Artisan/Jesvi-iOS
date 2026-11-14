@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -23,13 +24,18 @@ type Image struct {
 }
 type Config struct {
 	Schema             int              `json:"schema"`
+	Action             string           `json:"action"` // install | restore
 	Device             string           `json:"device"`
 	Mode               string           `json:"mode"`
 	AllowWrites        bool             `json:"allow_writes"`
 	InstallerValidated bool             `json:"installer_validated"`
 	Models             []string         `json:"models"`
 	Bootloaders        []string         `json:"bootloaders"`
+	Products           []string         `json:"products"`
 	Partitions         map[string]int64 `json:"partitions"`
+	SystemMaxBytes     int64            `json:"system_max_bytes"`
+	StashOffset        int64            `json:"stash_offset"`
+	AndroidSuper       AndroidSuper     `json:"android_super"`
 	Files              map[string]Image `json:"files"`
 	KitSHA256          string           `json:"kit_sha256"`
 	KitBytes           int64            `json:"kit_bytes"`
@@ -42,7 +48,65 @@ type Bundle struct {
 }
 
 var imageParts = map[string]string{"boot.img": "boot", "recovery.img": "recovery", "system.apfs": "super"}
+
+// Measured x1slte geometry; replaced by the device profile bound into each ZIP.
 var capacities = map[string]int64{"boot": 61865984, "recovery": 69009408, "super": 9437184000, "userdata": 116253523968}
+var systemMax int64 = 4 << 30
+
+var deviceName = regexp.MustCompile(`^[a-z0-9]{2,16}$`)
+
+// checkConfig accepts only the fixed four destinations, sizes from the bound
+// device profile, and a stash window inside super's free tail.
+func checkConfig(c Config) error {
+	if c.Schema != 2 || !deviceName.MatchString(c.Device) || c.InstallerValidated {
+		return errors.New("unsupported installer configuration")
+	}
+	switch c.Action {
+	case "install":
+		if c.Mode != "choose" && c.Mode != "fresh" && c.Mode != "update" {
+			return errors.New("unsupported install mode")
+		}
+		if len(c.Files) != 3 || c.KitBytes <= 0 {
+			return errors.New("install package needs system, recovery, boot and HFS kit")
+		}
+	case "restore":
+		if c.Mode != "restore" || len(c.Files) != 0 || c.KitBytes != 0 || c.KitSHA256 != "" {
+			return errors.New("restore package must not carry images")
+		}
+	default:
+		return errors.New("unknown package action")
+	}
+	if len(c.Models) == 0 || len(c.Bootloaders) == 0 || len(c.Products) == 0 || len(c.Partitions) != 4 {
+		return errors.New("unsupported device profile")
+	}
+	for _, p := range []string{"boot", "recovery", "super", "userdata"} {
+		if n := c.Partitions[p]; n < 16<<20 || n%4096 != 0 {
+			return errors.New("unsupported partition geometry")
+		}
+	}
+	sup := c.Partitions["super"]
+	if c.SystemMaxBytes < 64<<20 || c.SystemMaxBytes > 4<<30 || c.SystemMaxBytes > sup {
+		return errors.New("invalid system window")
+	}
+	if c.StashOffset < c.SystemMaxBytes || c.StashOffset%4096 != 0 || c.StashOffset+4096+lpRegion > sup {
+		return errors.New("Android map stash must sit in super's free tail")
+	}
+	a := c.AndroidSuper
+	if len(a.Groups) == 0 {
+		return errors.New("Android super layout missing")
+	}
+	if _, e := a.metadata(sup).encode(); e != nil {
+		return fmt.Errorf("Android super layout: %w", e)
+	}
+	return nil
+}
+func applyConfig(c Config) {
+	capacities = make(map[string]int64, 4)
+	for k, v := range c.Partitions {
+		capacities[k] = v
+	}
+	systemMax = c.SystemMaxBytes
+}
 
 func sameSHA(got []byte, expected string) bool { return hex.EncodeToString(got) == expected }
 func readSmall(f *zip.File, max int64) ([]byte, error) {
@@ -62,9 +126,10 @@ func readSmall(f *zip.File, max int64) ([]byte, error) {
 }
 func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	files := make(map[string]*zip.File)
-	allowed := map[string]bool{"installer.json": true, "hfs-kit.bin": true, "candidate.json": true, "README.txt": true, "META-INF/com/google/android/update-binary": true, "META-INF/com/google/android/updater-script": true}
+	meta := map[string]bool{"installer.json": true, "README.txt": true, "META-INF/com/google/android/update-binary": true, "META-INF/com/google/android/updater-script": true}
+	payload := map[string]bool{"hfs-kit.bin": true, "candidate.json": true}
 	for name := range imageParts {
-		allowed[name] = true
+		payload[name] = true
 	}
 	for _, f := range z.File {
 		limit := uint64(64 << 10)
@@ -80,13 +145,10 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 		if f.UncompressedSize64 > limit || f.Flags&1 != 0 {
 			return nil, errors.New("oversized/encrypted ZIP entry")
 		}
-		if !allowed[f.Name] || files[f.Name] != nil || !f.Mode().IsRegular() || f.Method != zip.Store {
+		if !(meta[f.Name] || payload[f.Name]) || files[f.Name] != nil || !f.Mode().IsRegular() || f.Method != zip.Store {
 			return nil, fmt.Errorf("unexpected, duplicate or compressed ZIP entry: %s", f.Name)
 		}
 		files[f.Name] = f
-	}
-	if len(files) != len(allowed) {
-		return nil, errors.New("incomplete installer ZIP")
 	}
 	data, e := readSmall(files["installer.json"], 64<<10)
 	if e != nil {
@@ -105,16 +167,24 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	if e = d.Decode(new(any)); e != io.EOF {
 		return nil, errors.New("trailing configuration data")
 	}
-	if c.Schema != 1 || c.Device != "x1slte" || c.InstallerValidated || (c.Mode != "choose" && c.Mode != "fresh" && c.Mode != "update") {
-		return nil, errors.New("unsupported installer configuration")
+	if e = checkConfig(c); e != nil {
+		return nil, e
 	}
-	if len(c.Models) != 1 || c.Models[0] != "SM-G980F" || len(c.Bootloaders) != 1 || c.Bootloaders[0] != "G980FXXSNHYB7" || len(c.Partitions) != 4 || len(c.Files) != 3 {
-		return nil, errors.New("unsupported device profile")
+	want := len(meta)
+	if c.Action == "install" {
+		want += len(payload)
 	}
-	for p, n := range capacities {
-		if c.Partitions[p] != n {
-			return nil, errors.New("unsupported partition geometry")
+	for name := range meta {
+		if files[name] == nil {
+			return nil, errors.New("incomplete installer ZIP")
 		}
+	}
+	if len(files) != want {
+		return nil, errors.New("installer ZIP inventory does not match its action")
+	}
+	applyConfig(c)
+	if c.Action == "restore" {
+		return &Bundle{Config: c, Files: files}, nil
 	}
 	staged := make(map[string][]byte)
 	for name, p := range imageParts {
@@ -122,7 +192,7 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 		f := files[name]
 		limit := capacities[p]
 		if p == "super" {
-			limit = 4 << 30
+			limit = systemMax
 		}
 		hash, e := hex.DecodeString(meta.SHA256)
 		if !ok || meta.Partition != p || meta.Offset != 0 || meta.Bytes <= 0 || meta.Bytes > limit || uint64(meta.Bytes) != f.UncompressedSize64 || e != nil || len(hash) != 32 {
@@ -256,7 +326,7 @@ func checkImages(b *Bundle) error {
 	if e = checkAPFS(rec, 52<<20, capacities["recovery"]-(52<<20)-64); e != nil {
 		return e
 	}
-	return checkAPFS(b.Files["system.apfs"], 0, 4<<30)
+	return checkAPFS(b.Files["system.apfs"], 0, systemMax)
 }
 
 type Extent struct {

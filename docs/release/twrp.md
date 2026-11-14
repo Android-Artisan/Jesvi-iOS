@@ -13,7 +13,7 @@ layout.** The installer uses the existing physical partitions:
 
 | Existing partition | Installation use |
 |---|---|
-| `super` | Writes system APFS at byte 0, at most 4 GiB; leaves the remaining tail alone |
+| `super` | Writes system APFS at byte 0, at most 4 GiB; saves Android's original 1 MiB partition map in the last 2 MiB (for the restore ZIP); leaves the rest of the tail alone |
 | `userdata` | HFSX persistent data; initialized only with explicit fresh-install confirmation |
 | `recovery` | Full runtime image, replacing TWRP |
 | `boot` | Matching Android/Samsung boot head, committed last |
@@ -24,6 +24,42 @@ userdata as HFSX is not the same operation as repartitioning a physical disk.
 No EFS/sec_efs, modem, bootloader, DTBO, VBMETA, param or PIT/GPT writer exists in
 this backend. An Android stock restore needs the exact stock firmware and may
 require wiping data; retaining the table does not itself supply a rollback slot.
+
+## From an Android ROM or from iOS
+
+The same ZIP installs from TWRP whatever the phone runs now:
+
+- **Android ROM (ExtremeROM, UN1CA, LineageOS, stock):** TWRP maps the ROM's
+  logical partitions and mounts `/data`. After the Volume Up confirmation the
+  installer unmounts exactly the mounts on `super`/`userdata`, removes the
+  device-mapper entries stacked only on them (by name, never `remove_all`) and
+  checks that nothing holds them any more. A mapping that also uses another disk,
+  or a busy mount, stops the install (busy: TWRP *Mount > Disable MTP*). No lazy
+  unmounts. Before writing iOS, it saves the ROM's partition map (first 1 MiB of
+  `super`, checksummed) at `super - 2 MiB`.
+- **Jesvi iOS:** recovery holds the iOS runtime, so first put TWRP back with
+  Odin (AP = TWRP tar), boot it, and flash. `choose` mode keeps iOS data.
+
+The ZIP itself must not be on internal storage: microSD, USB-OTG or `adb sideload`.
+
+## Back to Android: Jesvi-iOS-Restore
+
+```sh
+./build.sh restore --device x1slte --output dist/restore.zip [--experimental]
+# or: ./build.sh release --set OUTPUTS=restore
+```
+
+Flash it in TWRP. It refuses a `super` that still holds Android partitions or
+holds neither iOS nor an Android map. Otherwise it writes a valid, **empty**
+Android partition map at the head of `super` (the copy saved at install time
+with its partitions dropped, or the measured stock layout from `android.json`),
+reads it back, and zeroes the HFSX headers (first and last MiB) on `userdata`.
+BOOT, recovery (TWRP) and every protected partition are untouched. Then, without
+rebooting: *Wipe > Format Data* and flash any Android ROM ZIP. UN1CA-based ROM
+ZIPs (ExtremeROM too) start their `dynamic_partitions_op_list` with
+`remove_all_groups`, but the updater must first load a valid map, which is what
+the restore puts back. The encoder is checked byte-for-byte against the S20's real
+pre-iOS super head (`JESVI_SUPER_HEAD=... go test`). Running it twice is a no-op.
 
 ## Build the ZIP
 

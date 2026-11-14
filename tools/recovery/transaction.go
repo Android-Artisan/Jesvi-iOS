@@ -138,6 +138,9 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 		log("Writing and verifying " + m.Partition)
 		return transfer(targets[m.Partition], r, m.Offset, m.Bytes, m.SHA256)
 	}
+	if e = saveAndroidMap(b, targets["super"], log); e != nil {
+		return fmt.Errorf("saving Android partition map: %w", e)
+	}
 	if e = writeImage("system.apfs"); e != nil {
 		return fmt.Errorf("system: %w", e)
 	}
@@ -174,5 +177,127 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 		return fmt.Errorf("boot: %w", e)
 	}
 	log("All written ranges passed readback. No reboot requested.")
+	return nil
+}
+
+func checkedBytes(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+func readRange(t io.ReaderAt, at int64, n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, e := t.ReadAt(b, at)
+	return b, e
+}
+
+// Before iOS overwrites super, keep Android's partition map (1 MiB) in super's
+// free tail for the restore ZIP. Phones already on iOS keep their saved copy.
+func saveAndroidMap(b *Bundle, super Target, log func(string)) error {
+	at := b.Config.StashOffset
+	if at < systemMax || at+4096+lpRegion > capacities["super"] {
+		return errors.New("stash outside super's free tail")
+	}
+	head, e := readRange(super, 0, lpRegion)
+	if e != nil {
+		return e
+	}
+	if _, e = parseLP(head); e != nil {
+		log("No Android partition map at the start of super (already iOS); keeping any saved copy")
+		return nil
+	}
+	stash := encodeStash(head, capacities["super"])
+	if old, e := readRange(super, at, len(stash)); e == nil && bytes.Equal(old, stash) {
+		log("Android partition map already saved")
+		return nil
+	}
+	log("Saving the Android partition map for Jesvi-iOS-Restore")
+	return transfer(super, bytes.NewReader(stash), at, int64(len(stash)), checkedBytes(stash))
+}
+
+// restoreState: true when super already has an empty Android map; an error when
+// super holds a live Android layout or something unrecognized.
+func restoreState(head []byte) (bool, error) {
+	if m, e := parseLP(head); e == nil {
+		if len(m.Partitions) != 0 {
+			return false, errors.New("super already holds Android partitions; nothing to restore")
+		}
+		return true, nil
+	}
+	if len(head) < 36 || string(head[32:36]) != "NXSB" {
+		return false, errors.New("super holds neither iOS nor an Android map; refusing to guess")
+	}
+	return false, nil
+}
+
+// restoreAndroid puts a valid, empty Android partition map back at the head of
+// super and clears the HFSX headers on userdata, so TWRP's Format Data and any
+// Android ROM ZIP work again. BOOT and recovery (TWRP, running now) are untouched.
+func restoreAndroid(b *Bundle, device Device, log func(string)) error {
+	if e := device.CheckSafe(); e != nil {
+		return e
+	}
+	super, e := device.OpenWritable("super")
+	if e != nil {
+		return e
+	}
+	data, e := device.OpenWritable("userdata")
+	if e != nil {
+		return e
+	}
+	if e = device.CheckSafe(); e != nil {
+		return e
+	}
+	size := capacities["super"]
+	head, e := readRange(super, 0, lpRegion)
+	if e != nil {
+		return e
+	}
+	done, e := restoreState(head)
+	if e != nil {
+		return e
+	}
+	if done {
+		log("Android partition map already restored; skipping super")
+	} else {
+		var m *lpMetadata
+		saved, e := readRange(super, b.Config.StashOffset, 4096+lpRegion)
+		if e == nil {
+			m, e = decodeStash(saved, size)
+		}
+		if e == nil {
+			log("Restoring the Android partition map saved at install time")
+			m = m.emptied()
+		} else {
+			log("No saved map (" + e.Error() + "); using the measured stock layout")
+			m = b.Config.AndroidSuper.metadata(size)
+		}
+		region, e := m.encode()
+		if e != nil {
+			return e
+		}
+		region = append(region, make([]byte, lpRegion-len(region))...)
+		if e = transfer(super, bytes.NewReader(region), 0, lpRegion, checkedBytes(region)); e != nil {
+			return fmt.Errorf("super: %w", e)
+		}
+	}
+	dsize := capacities["userdata"]
+	h, e := readRange(data, 1024, 2)
+	if e != nil {
+		return e
+	}
+	if string(h) == "HX" || string(h) == "H+" {
+		log("Clearing iOS data headers on userdata (Format Data will finish the wipe)")
+		zero := make([]byte, 1<<20)
+		for _, at := range []int64{0, dsize - 1<<20} {
+			if e = device.CheckSafe(); e != nil {
+				return e
+			}
+			if e = transfer(data, bytes.NewReader(zero), at, 1<<20, checkedBytes(zero)); e != nil {
+				return fmt.Errorf("userdata: %w", e)
+			}
+		}
+	} else {
+		log("userdata holds no iOS volume; leaving it alone")
+	}
 	return nil
 }

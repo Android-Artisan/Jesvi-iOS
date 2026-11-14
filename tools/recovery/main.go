@@ -32,7 +32,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		fmt.Printf("Verified TWRP payload: device=%s mode=%s writes=%v hardware-qualified=false\n", b.Config.Device, b.Config.Mode, b.Config.AllowWrites)
+		fmt.Printf("Verified TWRP payload: action=%s device=%s mode=%s writes=%v hardware-qualified=false\n", b.Config.Action, b.Config.Device, b.Config.Mode, b.Config.AllowWrites)
 		return nil
 	}
 	if len(args) != 4 || (args[1] != "3" && args[1] != "2") {
@@ -58,8 +58,6 @@ func run() error {
 			panic("recovery UI pipe failed; stopping installation")
 		}
 	}
-	log("Jesvi iOS: EXPERIMENTAL x1slte installer. Hardware qualification pending.")
-	log("Plan: reuse existing physical partitions; no partition-table changes.")
 	archive, e := os.Open(args[3])
 	if e != nil {
 		return e
@@ -78,14 +76,55 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	if b.Config.Action == "restore" {
+		log("Jesvi-iOS-Restore (" + b.Config.Device + "): back to Android. Hardware qualification pending.")
+	} else {
+		log("Jesvi iOS (" + b.Config.Device + "): EXPERIMENTAL installer. Hardware qualification pending.")
+		log("Plan: reuse existing physical partitions; no partition-table changes.")
+	}
 	d, e := openRecovery(b.Config, archive)
 	if e != nil {
 		return e
 	}
 	defer d.Close()
-	log("Exact device, bootloader, partition sizes, mount/holder and battery checks passed.")
+	log("Exact device, bootloader, partition sizes and battery checks passed.")
+	if b.Config.Action == "restore" {
+		head, e := d.readHead("super", lpRegion)
+		if e != nil {
+			return e
+		}
+		if _, e = restoreState(head); e != nil {
+			return e
+		}
+	}
+	held, e := d.plan()
+	if e != nil {
+		return e
+	}
+	if !held.empty() {
+		log("Android ROM storage is in use; after confirmation the installer will:")
+		for _, s := range held.describe() {
+			log("  " + s)
+		}
+	}
 	if !b.Config.AllowWrites {
 		log("PREFLIGHT ONLY: no partitions opened for writing. No reboot.")
+		return nil
+	}
+	if b.Config.Action == "restore" {
+		log("RESTORE: puts back Android's partition map and clears iOS data headers.")
+		log("ALL iOS DATA WILL BE LOST. BOOT and TWRP stay as they are.")
+		if e = confirmKeys("Erase iOS and prepare the phone for an Android ROM?", log); e != nil {
+			return e
+		}
+		if e = d.release(log); e != nil {
+			return e
+		}
+		if e = restoreAndroid(b, d, log); e != nil {
+			return e
+		}
+		log("Done. Next, without rebooting: Wipe > Format Data (type yes),")
+		log("then flash your Android ROM ZIP (ExtremeROM, UN1CA, ...) or use Odin with stock firmware.")
 		return nil
 	}
 	valid, recognizable, e := d.dataState()
@@ -118,6 +157,9 @@ func run() error {
 		if e = confirmKeys("SECOND CONFIRMATION: erase userdata and initialize HFSX?", log); e != nil {
 			return e
 		}
+	}
+	if e = d.release(log); e != nil {
+		return e
 	}
 	if e = d.CheckSafe(); e != nil {
 		return e

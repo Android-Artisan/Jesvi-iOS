@@ -50,7 +50,8 @@ func fixtureBundle(t *testing.T) *Bundle {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	c := Config{Files: make(map[string]Image)}
+	c := testConfig()
+	c.Files = make(map[string]Image)
 	for name, part := range imageParts {
 		data := bytes.Repeat([]byte(name), 500)
 		h := sha256.Sum256(data)
@@ -174,7 +175,7 @@ func TestUpdatePreservesDataAndTailsAndCommitsBootLast(t *testing.T) {
 	if !reflect.DeepEqual(d.opened, []string{"super", "recovery", "boot"}) {
 		t.Fatal(d.opened)
 	}
-	want := []string{"Writing and verifying super", "Writing and verifying recovery", "Writing and verifying boot", "All written ranges passed readback. No reboot requested."}
+	want := []string{"No Android partition map at the start of super (already iOS); keeping any saved copy", "Writing and verifying super", "Writing and verifying recovery", "Writing and verifying boot", "All written ranges passed readback. No reboot requested."}
 	if !reflect.DeepEqual(log, want) {
 		t.Fatal(log)
 	}
@@ -269,7 +270,7 @@ func TestIdenticalInstalledImagesAreVerifiedAndSkipped(t *testing.T) {
 	if e := perform(b, d, "update", func(s string) { logs = append(logs, s) }); e != nil {
 		t.Fatal(e)
 	}
-	want := []string{"Already matches verified super; skipping write", "Already matches verified recovery; skipping write", "Already matches verified boot; skipping write", "All written ranges passed readback. No reboot requested."}
+	want := []string{"No Android partition map at the start of super (already iOS); keeping any saved copy", "Already matches verified super; skipping write", "Already matches verified recovery; skipping write", "Already matches verified boot; skipping write", "All written ranges passed readback. No reboot requested."}
 	if !reflect.DeepEqual(logs, want) {
 		t.Fatal(logs)
 	}
@@ -309,5 +310,85 @@ func TestStagedBootAndRecoveryDoNotDependOnTransportDuringCommit(t *testing.T) {
 	}
 	if e := perform(b, d, "update", func(string) {}); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// Android phone (ExtremeROM etc.): its partition map is saved in super's tail
+// before iOS overwrites the head, and the restore ZIP brings back an empty map.
+func TestInstallSavesAndroidMapAndRestoreBringsItBack(t *testing.T) {
+	b, d := fixtureBundle(t), newFake(t)
+	m := s20Android().metadata(capacities["super"])
+	m.Groups[1].Name = "rom_group" // as a custom ROM might name it
+	m.Partitions = []lpPartition{{Name: "system", Attributes: 1, NumExtent: 1, Group: 1}}
+	m.Extents = []lpExtent{{Sectors: 2048, Data: 2048}}
+	android, e := m.encode()
+	if e != nil {
+		t.Fatal(e)
+	}
+	d.files["super"].WriteAt(android, 0)
+	var log []string
+	if e = perform(b, d, "fresh", func(s string) { log = append(log, s) }); e != nil {
+		t.Fatal(e)
+	}
+	if log[0] != "Saving the Android partition map for Jesvi-iOS-Restore" {
+		t.Fatal(log)
+	}
+	if string(readBytes(t, d.files["super"], capacities["super"]-64, 14)) != "UNCHANGED-TAIL" {
+		t.Fatal("stash overran super's tail")
+	}
+	// The test system image is not APFS; give super an iOS head as a real install has.
+	nx := make([]byte, 64)
+	copy(nx[32:], "NXSB")
+	d.files["super"].WriteAt(nx, 0)
+	r := &Bundle{Config: testConfig()}
+	r.Config.Action, r.Config.Mode = "restore", "restore"
+	log = nil
+	if e = restoreAndroid(r, d, func(s string) { log = append(log, s) }); e != nil {
+		t.Fatal(e)
+	}
+	got, e := parseLP(readBytes(t, d.files["super"], 0, lpRegion))
+	if e != nil || len(got.Partitions) != 0 || got.Groups[1].Name != "rom_group" {
+		t.Fatal("restored map wrong", e, log)
+	}
+	if h := readBytes(t, d.files["userdata"], 1024, 2); string(h) == "HX" {
+		t.Fatal("HFSX header survived restore")
+	}
+	if !bytes.Equal(readBytes(t, d.files["userdata"], capacities["userdata"]-1024, 512), make([]byte, 512)) {
+		t.Fatal("HFSX alternate header survived restore")
+	}
+	// Second run is a no-op; an Android super with partitions is never touched.
+	log = nil
+	if e = restoreAndroid(r, d, func(s string) { log = append(log, s) }); e != nil || len(log) != 2 {
+		t.Fatal(e, log)
+	}
+	d.files["super"].WriteAt(android, 0)
+	if e = restoreAndroid(r, d, func(string) {}); e == nil {
+		t.Fatal("restore overwrote a live Android partition map")
+	}
+}
+
+func TestRestoreWithoutSavedMapUsesMeasuredLayoutAndRefusesUnknownSuper(t *testing.T) {
+	d := newFake(t)
+	r := &Bundle{Config: testConfig()}
+	r.Config.Action, r.Config.Mode = "restore", "restore"
+	if e := restoreAndroid(r, d, func(string) {}); e == nil {
+		t.Fatal("restore accepted a super that is neither iOS nor Android")
+	}
+	nx := make([]byte, 64)
+	copy(nx[32:], "NXSB")
+	d.files["super"].WriteAt(nx, 0)
+	var log []string
+	if e := restoreAndroid(r, d, func(s string) { log = append(log, s) }); e != nil {
+		t.Fatal(e)
+	}
+	got, e := parseLP(readBytes(t, d.files["super"], 0, lpRegion))
+	if e != nil || got.Groups[1].Name != "group_basic" || got.Devices[0].Alignment != 524288 {
+		t.Fatal(e, log)
+	}
+	d.unsafe = true
+	copy(nx[32:], "NXSB")
+	d.files["super"].WriteAt(nx, 0)
+	if e := restoreAndroid(r, d, func(string) {}); e == nil {
+		t.Fatal("restore wrote while targets were mounted")
 	}
 }

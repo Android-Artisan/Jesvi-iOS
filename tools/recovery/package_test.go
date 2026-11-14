@@ -37,7 +37,8 @@ func fullFixture(t *testing.T) (*zip.Reader, string) {
 	apfs(system)
 	kit := testKit()
 	ks := sha256.Sum256(kit)
-	c := Config{Schema: 1, Device: "x1slte", Mode: "choose", Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}, Partitions: capacities, Files: make(map[string]Image), KitBytes: int64(len(kit)), KitSHA256: hex.EncodeToString(ks[:])}
+	c := testConfig()
+	c.Files, c.KitBytes, c.KitSHA256 = make(map[string]Image), int64(len(kit)), hex.EncodeToString(ks[:])
 	payload := map[string][]byte{"boot.img": boot, "recovery.img": rec, "system.apfs": system, "hfs-kit.bin": kit, "candidate.json": []byte("{}"), "README.txt": []byte("test"), "META-INF/com/google/android/update-binary": []byte("test"), "META-INF/com/google/android/updater-script": []byte("#test")}
 	for name, part := range imageParts {
 		b := payload[name]

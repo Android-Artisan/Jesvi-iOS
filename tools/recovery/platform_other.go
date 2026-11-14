@@ -23,3 +23,10 @@ func (*linuxDevice) dataState() (bool, bool, error) {
 }
 func (*linuxDevice) Close() error            { return nil }
 func confirmKeys(string, func(string)) error { return errors.New("physical keys unavailable on host") }
+func (*linuxDevice) plan() (releasePlan, error) {
+	return releasePlan{}, errors.New("no device backend on host")
+}
+func (*linuxDevice) release(func(string)) error { return errors.New("no device backend on host") }
+func (*linuxDevice) readHead(string, int) ([]byte, error) {
+	return nil, errors.New("no device backend on host")
+}

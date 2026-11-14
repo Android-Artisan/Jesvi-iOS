@@ -1,12 +1,17 @@
-name: Private TWRP candidate
+name: Private TWRP release
 # Only enable in a PRIVATE build repository with disposable macOS workers.
 on:
   workflow_dispatch:
     inputs:
-      experimental_installer:
-        description: Enable hardware-unqualified writes after physical confirmation (otherwise preflight-only)
-        type: boolean
-        default: false
+      writes:
+        description: Override release.conf WRITES (hardware-unqualified writes after physical confirmation)
+        type: choice
+        options: [from-release.conf, 'true', 'false']
+        default: from-release.conf
+      outputs:
+        description: Override release.conf OUTPUTS (e.g. "twrp restore tar"); empty keeps the file's value
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -32,33 +37,32 @@ jobs:
         run: |
           test -n "$PRIVATE_INPUTS_ROOT"
           python3 tools/release/private_store.py stage --snapshot "$PRIVATE_INPUTS_ROOT"
-      - name: Build and verify final TWRP ZIP
+      - name: Build everything release.conf asks for
         env:
           HACKIOS_IMAGE_CACHE: /var/cache/exynos990/private-images
-          EXPERIMENTAL_INSTALLER: ${{ inputs.experimental_installer }}
+          WRITES_INPUT: ${{ inputs.writes }}
+          OUTPUTS_INPUT: ${{ inputs.outputs }}
         run: |
-          if [ "$EXPERIMENTAL_INSTALLER" = true ]; then
-            ./build.sh local --output dist/candidate --experimental
-          else
-            ./build.sh local --output dist/candidate
-          fi
-          test -s dist/candidate.zip
-          test -s dist/candidate.zip.sha256
-          test -s dist/candidate.zip.build.json
+          args=(--set OUT=dist/release)
+          if [ "$WRITES_INPUT" != from-release.conf ]; then args+=(--set "WRITES=$WRITES_INPUT"); fi
+          if [ -n "$OUTPUTS_INPUT" ]; then args+=(--set "OUTPUTS=$OUTPUTS_INPUT"); fi
+          ./build.sh release --dry-run "${args[@]}"
+          ./build.sh release "${args[@]}"
+          ls dist/release/*.zip
       - name: Retain deduplicated image objects privately
         env:
           PRIVATE_STORE_ROOT: ${{ vars.PRIVATE_STORE_ROOT }}
         run: |
           test -n "$PRIVATE_STORE_ROOT"
-          python3 tools/release/private_store.py retain --bundle dist/candidate --store "$PRIVATE_STORE_ROOT"
+          for bundle in dist/candidate-*/; do
+            [ -d "$bundle" ] || continue
+            python3 tools/release/private_store.py retain --bundle "$bundle" --store "$PRIVATE_STORE_ROOT"
+          done
       - name: Downloadable ZIP in this private workflow run
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: x1slte-twrp-${{ github.sha }}-${{ github.run_id }}
-          path: |
-            dist/candidate.zip
-            dist/candidate.zip.sha256
-            dist/candidate.zip.build.json
+          name: jesvi-ios-${{ github.sha }}-${{ github.run_id }}
+          path: dist/release/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error

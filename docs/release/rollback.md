@@ -35,6 +35,12 @@ using this ZIP. The full candidate and an independent rescue path must remain on
 the host. Do not assume a partially failed write leaves the previous OS bootable;
 this is an in-place, non-A/B installation with no atomic rollback slot.
 
+## Return to an Android custom ROM (TWRP only)
+
+Flash TWRP with Odin, then `Jesvi-iOS-Restore_*.zip` in TWRP, then *Format Data*,
+then the ROM ZIP. Details in [TWRP](twrp.md#back-to-android-jesvi-ios-restore).
+No PC firmware download is needed. For stock Samsung firmware use the Odin path below.
+
 ## Return to stock Android
 
 Our installer does not resize or rewrite PIT/GPT. It does replace Android logical

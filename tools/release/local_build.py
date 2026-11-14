@@ -37,7 +37,7 @@ def preflight(output):
     if errors:
         raise ValueError('\n'.join(errors))
 
-def build(output, check_only=False, twrp=True, experimental=False):
+def build(output, check_only=False, twrp=True, experimental=False, bundle_only=False):
     output = output.absolute()
     preflight(output)
     if check_only:
@@ -82,6 +82,9 @@ def build(output, check_only=False, twrp=True, experimental=False):
         run('03-build: compile and assemble images', ['./build.sh', 'images', '--development'])
         run('04-package: assemble candidate', ['./build.sh', 'package', '--output', str(output)])
         run('05-verify: verify candidate', ['./run.sh', 'verify', '--bundle', str(output)])
+        if bundle_only:
+            print(f'Verified candidate: {output}', flush=True)
+            return
         if twrp:
             args = ['./build.sh', 'twrp', '--bundle', str(output), '--output', str(output) + '.zip']
             if experimental:

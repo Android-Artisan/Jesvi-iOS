@@ -1,3 +1,14 @@
+## 2026-11-14 (20:50, A) — release.conf, Android-ROM installs, Jesvi-iOS-Restore (host-verified only)
+- `release.conf` + `./build.sh release` (targets, outputs twrp/preflight/restore/tar, mode, writes) builds
+  `Jesvi-iOS_<ver>_<date>_<target>.zip` and `Jesvi-iOS-Restore_...zip`; CI builds restore ZIPs on public runners.
+- Installer sizes now come from the bound device profile (other Exynos 990 targets once measured).
+- From an Android ROM's TWRP: the installer unmounts super/userdata mounts and removes only the dm devices stacked
+  on them, after confirmation; it saves Android's 1 MiB partition map at super - 2 MiB before writing iOS.
+- Jesvi-iOS-Restore writes an empty, valid Android map (saved copy or android.json stock layout) and clears HFSX
+  headers; then Format Data + any ROM ZIP. LP encoder matches the S20's real pre-iOS super head byte-for-byte.
+- Tests: 48 Python, Go recovery suite incl. ROM-hold planning and install→restore round trip; both ZIPs built and
+  self-inspected from `dist/local-validation`. NOT run on the phone: hardware trial of both ZIPs still required.
+
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
   `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.

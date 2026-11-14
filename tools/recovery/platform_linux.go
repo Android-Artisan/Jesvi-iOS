@@ -128,7 +128,9 @@ func openRecovery(c Config, archive *os.File) (*linuxDevice, error) {
 		p.Read = file
 		d.parts[name] = p
 	}
-	if e = d.CheckSafe(); e != nil {
+	// Mounted/held targets are released only after confirmation (release());
+	// anything that cannot be released safely is refused here, before any prompt.
+	if _, e = d.plan(); e != nil {
 		return nil, e
 	}
 	good = true
@@ -366,4 +368,91 @@ func (b blockTarget) Sync() error {
 		return errno
 	}
 	return nil
+}
+
+type sysBlocks struct{}
+
+func (sysBlocks) list(dev, sub string) ([]string, error) {
+	entries, e := os.ReadDir(filepath.Join("/sys/class/block", dev, sub))
+	if errors.Is(e, os.ErrNotExist) {
+		return nil, nil
+	}
+	var out []string
+	for _, x := range entries {
+		out = append(out, x.Name())
+	}
+	return out, e
+}
+func (s sysBlocks) Holders(dev string) ([]string, error) { return s.list(dev, "holders") }
+func (s sysBlocks) Slaves(dev string) ([]string, error)  { return s.list(dev, "slaves") }
+func (sysBlocks) ID(dev string) (string, error) {
+	b, e := os.ReadFile(filepath.Join("/sys/class/block", dev, "dev"))
+	return strings.TrimSpace(string(b)), e
+}
+func (sysBlocks) DMName(dev string) (string, error) {
+	b, e := os.ReadFile(filepath.Join("/sys/class/block", dev, "dm/name"))
+	return strings.TrimSpace(string(b)), e
+}
+func (d *linuxDevice) plan() (releasePlan, error) {
+	text, e := os.ReadFile("/proc/self/mountinfo")
+	if e != nil {
+		return releasePlan{}, e
+	}
+	targets := map[string]string{}
+	for name, p := range d.parts {
+		targets[filepath.Base(p.Path)] = name
+	}
+	st, e := d.archive.Stat()
+	if e != nil {
+		return releasePlan{}, e
+	}
+	return planRelease(targets, string(text), sysBlocks{}, deviceID(st.Sys().(*syscall.Stat_t).Dev))
+}
+
+// release unmounts TWRP's own mounts of the targets and removes the dm devices
+// stacked on them (an Android ROM's system/vendor/... and /data). No lazy
+// unmounts: a busy mount stops the installer.
+func (d *linuxDevice) release(log func(string)) error {
+	p, e := d.plan()
+	if e != nil || p.empty() {
+		return e
+	}
+	for _, m := range p.Unmount {
+		log("Unmounting " + m)
+		if e = syscall.Unmount(m, 0); e != nil && e != syscall.EINVAL {
+			if e == syscall.EBUSY {
+				return fmt.Errorf("%s is busy: in TWRP choose Mount > Disable MTP, leave the file manager/terminal, then flash again", m)
+			}
+			return fmt.Errorf("unmount %s: %w", m, e)
+		}
+	}
+	ctl, e := openNode("/dev/device-mapper", syscall.O_RDWR)
+	if e != nil {
+		if ctl, e = openNode("/dev/mapper/control", syscall.O_RDWR); e != nil {
+			return fmt.Errorf("device-mapper control unavailable: %w", e)
+		}
+	}
+	defer ctl.Close()
+	for _, name := range p.Remove {
+		log("Releasing mapping " + name)
+		var io [312]byte // struct dm_ioctl, version 4.0.0
+		binary.LittleEndian.PutUint32(io[0:], 4)
+		binary.LittleEndian.PutUint32(io[12:], 312)
+		binary.LittleEndian.PutUint32(io[16:], 312)
+		copy(io[48:48+127], name)
+		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, ctl.Fd(), 0xC138FD04, uintptr(unsafe.Pointer(&io[0]))) // DM_DEV_REMOVE
+		if errno != 0 {
+			return fmt.Errorf("release mapping %s: %w", name, errno)
+		}
+	}
+	if p, e = d.plan(); e != nil {
+		return e
+	}
+	if !p.empty() {
+		return errors.New("targets are still held after release: " + strings.Join(p.describe(), ", "))
+	}
+	return nil
+}
+func (d *linuxDevice) readHead(name string, n int) ([]byte, error) {
+	return readRange(d.parts[name].Read, 0, n)
 }
