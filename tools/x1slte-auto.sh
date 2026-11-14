@@ -1,6 +1,7 @@
 #!/bin/zsh
 # x1slte-auto.sh [system.apfs]   hands-free system-image update while iOS runs on Wi-Fi (uroot)
 # x1slte-auto.sh --recovery      the same for out/x1slte-recovery.img (kernel, loader, root.apfs: uflash)
+# x1slte-auto.sh --all           both (userland/system.apfs, then the recovery image), one restart
 # logs saved -> phone to Log access (rwlogd /menu?to=1) -> uroot -> cold restart -> wait for iOS on Wi-Fi again.
 cd "$(dirname "$0")/.."
 # several Claude sessions, one phone (2026-11-06): only the lock's holder deploys (tools/phone-lock.sh, CLAUDE_SESSION)
@@ -21,7 +22,9 @@ echo "[auto] asking the phone for Log access"; curl -s -m 10 "http://$IP:8080/me
 for i in $(seq 1 60); do fastboot devices 2>/dev/null | grep -q fastboot && break; sleep 2; done
 fastboot devices | grep -q fastboot || { echo "[auto] the phone did not reach Log access"; exit 1; }
 ./x1slte.sh ulog > $D/lastlog.txt 2>&1 || true
-if [ "$F" = --recovery ]; then ./x1slte.sh uflash || exit 1; else ./x1slte.sh uroot "$F" || exit 1; fi
+# --all: system.apfs and the recovery image in one Log access visit, one restart (A, 2026-11-14)
+if [ "$F" = --all ]; then ./x1slte.sh uroot userland/system.apfs || exit 1; ./x1slte.sh uflash || exit 1
+elif [ "$F" = --recovery ]; then ./x1slte.sh uflash || exit 1; else ./x1slte.sh uroot "$F" || exit 1; fi
 ./x1slte.sh ureboot
 echo "[auto] waiting for iOS (USB cable or Wi-Fi)"
 for i in $(seq 1 90); do sleep 4; IP=$(phone-ip 2>/dev/null) && {
