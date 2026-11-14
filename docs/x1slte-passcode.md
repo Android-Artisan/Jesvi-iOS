@@ -1,4 +1,4 @@
-# Software passcode work (experimental, not enabled)
+# Software passcode work (experimental)
 
 Reported symptom: Settings accepts a new passcode and its confirmation, but never
 turns passcode on. The running phone still reports AKS state flags 0x6 (no
@@ -28,17 +28,36 @@ changed before native MobileKeyBag can persist/install its replacement. Root is
 required for bag export, replacement and passcode changes. Queries and checking
 a code do not automatically succeed. Unsupported SE-derived operations fail.
 
-The code is gated by **`softpasscode=1`**, off by default. The current cooling
-kernel and its device deployment were not replaced. The SpringBoard bring-up
-unlock helper now refuses automatic/remote dismissal when a passcode is set or
-keybag state is unknown. The real authenticated unlock flow is left to iOS.
+The code is gated by **`softpasscode=1`**, off by default. It is enabled on the
+current test phone alongside the existing cooling changes. The SpringBoard
+bring-up unlock helper refuses dismissal when a passcode is set or keybag state
+is unknown; `autounlock=0` remains active.
 
-This is NOT completed native Settings integration yet. Notification delivery,
-keybagd persistence/rollback, framework policy checks, reboot-time loading and
-the complete Settings -> lock -> correct/wrong-code unlock sequence still require
-on-device validation. Do not enable a real system passcode until those tests pass.
-The existing `ALLOW=keybagd` job-generation override can include the native daemon
-for an isolated test image; it has deliberately not been enabled on the phone.
+Native keybagd now runs through a dedicated job with a restrictive umask. The
+`no-effaceable-storage` device-tree capability selects Apple's software storage
+path. Native change-secret epilogue verifies the installed secret rather than
+returning unconditional success. `softkeybag-init` restores the saved software
+bag locked before handing control to launchd; invalid or insecure existing files
+stop startup rather than silently reverting to no passcode. Production keybagd
+verbose logging is disabled because native log messages can contain credentials.
+
+On-device isolated bag tests passed. Native empty-to-empty system transactions
+passed before the user enabled a real code. The user then confirmed Settings
+keeps the passcode enabled; native state is protected/unlocked (AKS 0x4, MKB 0),
+and the native saved keybag is private (0600).
+
+**Remaining failure:** the user can still swipe through the lock screen without
+a code. SpringBoard's authentication controller caches “no passcode” despite the
+protected system bag. This is not a working end-to-end passcode yet.
+
+A prepared kernel now emits Apple's IOGeneralInterest keybag events after system
+state changes. Local iOS 16.5 `MKBEventsRegister` (0x1ae395488) registers this
+interest, and `aksNotificationCB` (0x1ae37e8b8) maps `0xe3ffd00d` to state-change
+and `0xe3ffd00f` to first-unlock. `SBFMobileKeyBag` refreshes its cached passcode
+state on these events. Notifications run outside the bag lock and require no
+poller. This patch builds but awaits an approved device reboot and lock-screen
+validation; its diagnosis is supported by the missing events, not yet confirmed
+by the phone. A user-client backup notification port is a separate interface.
 
 ## Limits
 
@@ -92,21 +111,17 @@ sanitizers with narrow IOKit mocks: privilege and input checks, transaction clon
 serialization/reload and system installation. These mocks do not open a real
 keystore. The kernel builds for Exynos GICv2 DEVELOPMENT. The SpringBoard library and iOS probe cross-compile.
 
-`tools/passcode/keybag-probe.c` is read-only by default and was run on the current
-phone: system state 0x6, matching the reported setup failure. Its
-`--isolated-test` mode creates ONLY non-system temporary bags with test-only
-credentials. It checks set/change/wrong/right/remove and save/reload, unloads the
-test bags and confirms the original system state is unchanged. It never calls
-set-system or changes the device passcode. Run that mode only after an approved
-boot of the experimental kernel with softpasscode=1, before starting keybagd or
-trying Settings. The kernel artifact is `out/mach.x1slte-softpasscode`.
+`tools/passcode/keybag-probe.c` is read-only by default. Its isolated tests use
+non-system temporary bags and were validated on-device. Native transaction
+probes refuse to run when a passcode is present; do not use a real passcode in
+command arguments, logs or test tools. The user enters it only on the phone.
 
-A reboot needs user confirmation. Preserve the currently working cooling kernel
-and backup the native keybag files before any real Settings integration test.
+`tools/passcode/prepare-root.py` adds the native keybagd job, guarded SpringBoard
+library and boot restore helper to a prepared root. `SOFTWARE_PASSCODE=1` opts
+userland builds into this integration. Kernel artifact:
+`out/mach.x1slte-softpasscode`. Private deployment images and backups remain in
+ignored `out/passcode-deploy-20261114`; never commit them.
 
-Prepared test arguments: `out/passcode-test.cmdline`, based on the running
-phone's arguments with `softpasscode=1`. `metal_profile=1` is omitted only from
-that candidate to fit the loader's boot-line limit; the live arguments are
-unchanged. Before a real system passcode test, deploy the staged SpringBoard
-library guard and verify `autounlock=0` remains active. The first approved boot
-is for the isolated bag probe, not for enabling a real passcode immediately.
+Validation still required: approved boot with a protected saved bag; code prompt
+on lock; incorrect code rejected; correct code accepted; subsequent lock/unlock
+and passcode change/removal state updates. A reboot needs user confirmation.

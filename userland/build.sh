@@ -219,6 +219,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/thermald src/thermald.c
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
+		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
 		$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
 		{ ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
@@ -426,6 +427,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	[ -f ../prebuilt/userland/redwood-cellulard ] && cp ../prebuilt/userland/redwood-cellulard root/bin/
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
+	[ -f obj/softkeybag-init ] && cp obj/softkeybag-init root/bin/
 	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
@@ -652,6 +654,12 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
 	fi
+fi
+# Explicit experimental image profile; ordinary builds retain their current job list.
+# Match with softpasscode=1 in the kernel boot line. Restore the saved software bag
+# before launchd, and use the native daemon with private file permissions.
+if [ "${SOFTWARE_PASSCODE:-0}" = 1 ]; then
+	python3 ../tools/passcode/prepare-root.py root --binaries obj
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/
