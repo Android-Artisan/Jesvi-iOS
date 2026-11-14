@@ -1634,6 +1634,8 @@ mps_unsupported_returns_nil(void)
 	say("redwood: SpringBoard: Metal's failure reports of type 0 ignored: MPS kernels it cannot make are nil\n");
 }
 
+#include "software_passcode_lock.h"
+
 __attribute__((constructor))
 static void
 redwood_springboard_init(void)
@@ -1677,6 +1679,7 @@ redwood_springboard_init(void)
 	 */
 	mps_unsupported_returns_nil();
 	island_start();
+	software_passcode_lock_start();
 	wallpaper_motion_start();
 	cell_start();
 	sb_fps_hooks();

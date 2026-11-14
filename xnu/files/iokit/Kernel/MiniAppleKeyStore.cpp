@@ -22,6 +22,7 @@
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/kauth.h>
@@ -42,6 +43,7 @@ enum {
 	kAKSSetSystem           = 0x05,
 	kAKSLoadBag             = 0x06,
 	kAKSChangeSecret        = 0x0f,
+	kAKSChangeSecretEpilogue = 0x69,
 	kAKSGetLockState        = 0x07,         /* in: handle; out: state flags */
 	kAKSLockDevice          = 0x08,
 	kAKSUnlockDevice        = 0x09,
@@ -69,6 +71,8 @@ enum {
 /* lock state: 0 unlocked, 1 locked, 2 locking, 3 disabled (no passcode) */
 #define kAKSLockStateDisabled   3
 
+static const uint8_t bagUUID[16] = { 0x72, 0x65, 0x64, 0x77, 0x6f, 0x6f, 0x64, 0x00, 0x6b, 0x65, 0x79, 0x62, 0x61, 0x67, 0x00, 0x01 };
+
 static uint64_t gAKSLogged[4];          /* selectors already reported */
 static bool     gAKSNotifyState;
 
@@ -77,6 +81,13 @@ static int gSoftPasscode;
 static IOLock *gSoftLock;
 static struct swkb_state gSoftBags[16];
 static bool gSoftUsed[16];
+static IOService *gSoftService;
+
+/* iOS 16.5 MKBEventsRegister observes AppleKeyStore's IOGeneralInterest.
+ * aksNotificationCB maps d00d to state-changed and d00f to first-unlock.
+ * A user-client notification port is a separate keybagd backup interface. */
+static const UInt32 kSoftStateChanged = 0xe3ffd00d;
+static const UInt32 kSoftFirstUnlock = 0xe3ffd00f;
 
 static uint64_t
 softNow(void)
@@ -187,6 +198,7 @@ AppleKeyStore::start(IOService * provider)
 	setProperty(kIOUserClientClassKey, "AppleKeyStoreUserClient");
 	setProperty("RedwoodSoftwarePasscode", gSoftPasscode != 0);
 	setName("AppleKeyStore");
+	gSoftService = this;
 	registerService();
 	return true;
 }
@@ -276,13 +288,18 @@ AppleKeyStoreUserClient::softwareMethod(uint32_t selector, IOExternalMethodArgum
 	 * may query state or verify a code, but cannot export verifier records,
 	 * replace the system bag or set a new passcode through this raw interface. */
 	if ((selector == kAKSCreateBag || selector == kAKSSaveBag || selector == kAKSLoadBag ||
-	    selector == kAKSUnloadBag || selector == kAKSSetSystem || selector == kAKSChangeSecret) &&
+	    selector == kAKSUnloadBag || selector == kAKSSetSystem || selector == kAKSChangeSecret ||
+	    selector == kAKSChangeSecretEpilogue) &&
 	    !kauth_cred_issuser(kauth_cred_get())) return kIOReturnNotPrivileged;
 	if (!g_crypto_funcs || !g_crypto_funcs->ccsha256_di || !g_crypto_funcs->cchmac_fn) {
 		return kIOReturnNotReady;
 	}
 	if (!gSoftUsed[0]) {
 		swkb_init(&gSoftBags[0], softRandom);
+		/* Preserve the existing no-passcode bag identity until a persisted
+		 * software bag is explicitly installed. Existing keychain metadata
+		 * must not see a new identity just because this backend is enabled. */
+		memcpy(gSoftBags[0].record.uuid, bagUUID, sizeof(bagUUID));
 		gSoftUsed[0] = true;
 	}
 	const uint64_t *in = args->scalarInput;
@@ -367,6 +384,11 @@ AppleKeyStoreUserClient::softwareMethod(uint32_t selector, IOExternalMethodArgum
 	case kAKSUnlockBag:
 		if (args->scalarInputCount != 3 || !softCopySecret(in[1], in[2], first)) return kIOReturnBadArgument;
 		return softResult(swkb_unlock(bag, softHmac, first, (size_t)in[2], softNow()));
+	case kAKSChangeSecretEpilogue:
+		/* Native MobileKeyBag calls this only after saving and installing
+		 * the candidate. Verify its new secret against the installed bag. */
+		if (args->scalarInputCount != 3 || !softCopySecret(in[1], in[2], first)) return kIOReturnBadArgument;
+		return softResult(swkb_check(bag, softHmac, first, (size_t)in[2], softNow()));
 	case kAKSChangeSecret: {
 		/* scalars: handle, flags, se-type, old ptr/len, new ptr/len,
 		 * optional SE secrets ptr/len and mode. SE-derived secrets are unsupported. */
@@ -406,18 +428,28 @@ IOReturn
 AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
     IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
 {
-	static const uint8_t bagUUID[16] = { 0x72, 0x65, 0x64, 0x77, 0x6f, 0x6f, 0x64, 0x00, 0x6b, 0x65, 0x79, 0x62, 0x61, 0x67, 0x00, 0x01 };
 	uint8_t der[128];
 	uint64_t * out = args->scalarOutput;
 
 	if (gSoftPasscode && (selector == kAKSCreateBag || selector == kAKSSaveBag || selector == kAKSLoadBag ||
 	    selector == kAKSUnloadBag || selector == kAKSSetSystem || selector == kAKSGetSystem ||
-	    selector == kAKSChangeSecret || selector == kAKSGetLockState || selector == kAKSGetDeviceState ||
+	    selector == kAKSChangeSecret || selector == kAKSChangeSecretEpilogue || selector == kAKSGetLockState || selector == kAKSGetDeviceState ||
 	    selector == kAKSGetExtendedState || selector == kAKSGetBagUUID || selector == kAKSLockDevice ||
 	    selector == kAKSLockDeviceNow || selector == kAKSUnlockDevice || selector == kAKSUnlockBag)) {
 		IOLockLock(gSoftLock);
+		unsigned previousFlags = gSoftUsed[0] ? swkb_flags(&gSoftBags[0]) : kAKSStateFlags;
+		unsigned previousFailures = gSoftBags[0].failures;
+		uint64_t previousRetry = gSoftBags[0].retry_after;
 		IOReturn result = softwareMethod(selector, args);
+		unsigned currentFlags = gSoftUsed[0] ? swkb_flags(&gSoftBags[0]) : kAKSStateFlags;
+		bool changed = previousFlags != currentFlags || previousFailures != gSoftBags[0].failures ||
+		    previousRetry != gSoftBags[0].retry_after;
+		bool firstUnlock = !(previousFlags & 4) && (currentFlags & 4);
 		IOLockUnlock(gSoftLock);
+		/* Never call observers while holding the bag lock: consumers query
+		 * the state again. No timer or periodic polling is required. */
+		if (gSoftService && changed) gSoftService->messageClients(kSoftStateChanged);
+		if (gSoftService && firstUnlock) gSoftService->messageClients(kSoftFirstUnlock);
 		return result;
 	}
 
@@ -531,6 +563,14 @@ MiniAppleKeyStoreStart(void)
 		if (!gSoftLock) {
 			IOLog("MiniAppleKeyStore: software passcode initialization failed\n");
 			return;
+		}
+		/* MobileKeyBag's native software-storage path checks for this
+		 * capability in IODeviceTree:/defaults. The port has no Effaceable
+		 * Storage, so publish its absence instead of fabricating wipe IDs. */
+		IORegistryEntry *defaults = IORegistryEntry::fromPath("/defaults", gIODTPlane);
+		if (defaults) {
+			defaults->setProperty("no-effaceable-storage", kOSBooleanTrue);
+			defaults->release();
 		}
 		IOLog("MiniAppleKeyStore: experimental software authentication enabled; no SEP/data encryption\n");
 	}
