@@ -210,6 +210,50 @@ fp_tee_smc(uint64_t function, uint64_t client, uint64_t driver, uint64_t *out_x2
     return x0;
 }
 #include <sys/redwood_fp_probe.h>
+#include <kern/thread.h>
+#include <vm/vm_kern.h>
+extern uint64_t kvtophys(vm_offset_t);
+extern processor_t cpu_to_processor(int);
+extern processor_t thread_bind(processor_t);
+extern wait_result_t thread_block(thread_continue_t);
+extern unsigned int real_ncpus;
+extern int psci_smp_cpu_is_running(int);
+static vm_offset_t fp_channel_pages[9];
+static unsigned fp_channel_count;
+static unsigned fp_channel_cpu_count(void) { return real_ncpus; }
+static bool fp_channel_online(unsigned cpu) {
+    return cpu_to_processor((int)cpu)!=PROCESSOR_NULL && psci_smp_cpu_is_running((int)cpu);
+}
+static void fp_channel_flush(vm_offset_t page) {
+    for(vm_offset_t p=page;p<page+PAGE_SIZE;p+=64) __asm__ volatile ("dc civac, %0" : : "r"(p) : "memory");
+    __asm__ volatile ("dsb sy" : : : "memory");
+}
+static bool fp_channel_allocate(unsigned index,uint32_t *pfn) {
+    vm_offset_t page=0;
+    if(index>=9 || PAGE_SIZE<4096 || kmem_alloc(kernel_map,&page,PAGE_SIZE,
+        KMA_KOBJECT|KMA_ZERO|KMA_DATA,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS)return false;
+    /* Retain even a failed translation: at most nine private pages per boot. */
+    fp_channel_pages[index]=page;fp_channel_count=index+1;
+    uint64_t pa=kvtophys(page);
+    if(!pa || (pa&4095) || (pa>>12)>UINT32_MAX)return false;
+    fp_channel_flush(page);*pfn=(uint32_t)(pa>>12);return true;
+}
+static uint64_t fp_channel_call(unsigned cpu,uint64_t function,uint64_t arg1,uint64_t arg2) {
+    processor_t previous=thread_bind(cpu_to_processor((int)cpu));
+    thread_block(THREAD_CONTINUE_NULL);
+    uint64_t unused=0,result=fp_tee_smc(function,arg1,arg2,&unused);
+    thread_bind(previous);thread_block(THREAD_CONTINUE_NULL);return result;
+}
+static void fp_channel_service_prepare(uint32_t pfn) {
+    memcpy((void *)fp_channel_pages[0],&pfn,sizeof(pfn));
+    fp_channel_flush(fp_channel_pages[0]);
+    fp_channel_flush(fp_channel_pages[fp_channel_count-1]);
+}
+static void fp_channel_service_read(uint32_t *cpu,uint32_t *user) {
+    vm_offset_t page=fp_channel_pages[fp_channel_count-1];fp_channel_flush(page);
+    memcpy(cpu,(void *)page,4);memcpy(user,(void *)(page+4),4);
+}
+#include <sys/redwood_fp_channels.h>
 #endif
 
 
@@ -303,6 +347,7 @@ run(const char *line)
 
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"fp.tee-channels")==0) {fp_tee_channels(n==1?v[0]:2);return;}
     if (strcmp(cmd,"fp.tee-version")==0) {fp_tee_probe(n==1?v[0]:2);return;}
     if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
     if (strcmp(cmd,"cp.s2mpu")==0 && n==0) {cp_s2mpu_grant();return;}

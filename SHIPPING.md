@@ -1,3 +1,14 @@
+## 2026-11-14 — Fingerprint compatibility SMC returns zero; channels staged
+- User approved the probe reboot and phone takeover. Exact current recovery kernel slot backed up locally before
+  flashing; loader verified the new write. Protected keybag restored locked before first unlock (AKS 0x1).
+- Explicit CHECK_VERSION returned x0=0/x2=0, subsequent inspect was cached. User confirmed passcode works after
+  reboot and on the next lock/unlock. This proves no fingerprint match; native biometrics remain unavailable.
+- Added fixed-command probe client and a separately staged AUX/service handshake: dedicated zeroed wired backing,
+  4-KiB wire PFNs, per-CPU affinity, bounded cache maintenance, stop-on-first-error and no automatic retries.
+- Channel host tests with sanitizers and kernel cross-build pass. New channel kernel is NOT flashed; another
+  user-approved reboot is required. No IRQ/SYSCONF/TA loading, enrollment, matching or biometric unlock yet.
+- Detailed evidence, deployment boundaries and traps: docs/x1slte-fingerprint.md. Main/master remain unchanged.
+
 ## 2026-11-14 — Fingerprint research branch (not enabled, not shipped)
 - `feat/s20-fingerprint` starts from accepted main/master `8d584cc`, including newer thermal/logging changes.
 - Actual saved DTBO confirms QBT2000, GPA1 IRQ pins 3/1, SPI4 and VDD_BTP_1P8. Live LocalAuthentication reports no

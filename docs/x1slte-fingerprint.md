@@ -4,8 +4,9 @@
 
 Branch `feat/s20-fingerprint` starts at local main/master `8d584cc` (14 November
 2026), including the newer A76/GPU thermal steps, Wi-Fi scan coalescing and quieter
-logs. Main/master are not advanced with this experiment. No restart/reboot or
-fingerprint enrollment was performed for this work. The current passcode stays
+logs. Main/master are not advanced with this experiment. The user approved the first
+probe boot and explicitly authorized taking control of the shared phone lock.
+Fingerprint enrollment has not been performed. The current passcode stays
 under the existing software-keybag implementation.
 
 The user wants the actual under-display fingerprint sensor to authenticate native
@@ -124,13 +125,15 @@ existing root-only serialized debug port. No generic arbitrary-SMC interface is
 added. The diagnostic does not run at boot, register shared pages, load a trustlet,
 control the sensor, verify a fingerprint or change a keybag. Compatibility
 negotiation can affect volatile secure-world state; unknown firmware can still
-reject or fail the call. This has not run on hardware yet.
+reject or fail the call.
 
-After an approved test boot, inspect first, then explicitly run once:
+Cross-compile `tools/fingerprint/probe.c` with the iOS SDK, sign ad hoc and copy
+it to `/var/tmp/redwood-fingerprint-probe`. After an approved test boot, run on
+the phone as root; inspect first, then explicitly call once:
 
 ```sh
-tools/poke 'fp.tee-version 0'
-tools/poke 'fp.tee-version 1'
+/var/tmp/redwood-fingerprint-probe --inspect
+/var/tmp/redwood-fingerprint-probe --call-once
 ```
 
 Before deployment, acquire the shared phone lock, obtain user reboot approval,
@@ -140,10 +143,65 @@ loader, root volume and userdata. Retain the exact previous slot for rollback.
 A successful version response proves only this SMC exchange; it does not prove
 trustlet loading, enrollment, matching, signed proof verification or iOS unlock.
 
+## Hardware result: version probe passed
+
+The current 16-MiB recovery kernel slot was read from offset 0x2000000 into
+`out/fingerprint/kernel-before-84931a3b.bin` before any write. The new slot was
+written and verified by the loader's readback. Boot arguments, loader, root and
+userdata were left in place. Deployment hashes are in ignored `deployment.json`.
+
+After the approved reboot, native MKB reported protected/locked before first
+unlock (1 / AKS 0x1). The inspect command said NOT RUN. The explicit version call
+returned `x0=0, x2=0`, and a subsequent inspect returned the same cached result.
+There was no second SMC call. The user confirmed passcode unlock both immediately
+after boot and again after re-locking. This establishes the compatibility
+exchange, not any enrollment, match, signed-token or native-biometric capability.
+`/var/tmp` is cleared on this port's boot; copy the diagnostic client after boot.
+
+## Next prepared test: AUX and service channels (not flashed)
+
+`redwood_fp_channels.h` and fixed helpers in the debug port implement the first
+shared-memory steps observed in Samsung's initialization order: per-CPU AUX
+registration (SMC 0xb2000000), followed by one service channel (0xb2000001,
+mode 1, one page). The manually armed `fp.tee-channels 1` command first requires
+a successful explicit version probe, a supported CPU count and all configured
+CPUs online. Inspect mode 0 allocates nothing and invokes nothing.
+
+The reference Linux page configuration defaults to 4 KiB with a 32-bit PFN ABI.
+For this prototype, each shared page has a dedicated, zeroed, wired 16-KiB XNU
+backing page, and only its first 4 KiB is shared. PFNs are physical >> 12, checked
+for alignment/range; no kernel/user data from adjacent allocations is included.
+All nine backing pages are allocated before the first registration on an 8-core
+phone. Each AUX call is bound to its CPU, and the original binding is restored.
+Cache clean/invalidate and barriers surround sharing and the bounded service
+response read. Registered/uncertain pages stay wired until reboot, including on
+failure; total backing on this phone is at most 144 KiB. No periodic work.
+
+At the first firmware error, the sequence stops without retrying or registering
+later channels. Repeated commands only report cached status. The prototype does
+not install IRQ handlers, send SYSCONF, start firmware scheduling/TA loading,
+power the fingerprint sensor, enroll, match or change keybag authentication.
+Zero/absent service masks must not be treated as working authentication.
+
+The channel sequence passes host guard/partial-failure tests with ASan/UBSan, and
+the Exynos kernel cross-build passes. It is prepared separately as
+`out/fingerprint/kernel-channels-slot.bin`, not installed. Testing requires a new
+approved reboot, another exact current-slot backup, and these on-phone commands:
+
+```sh
+/var/tmp/redwood-fingerprint-probe --inspect
+/var/tmp/redwood-fingerprint-probe --call-once
+/var/tmp/redwood-fingerprint-probe --inspect-channels
+/var/tmp/redwood-fingerprint-probe --connect-channels
+```
+
+The fixed-command C client refuses a kernel without the expected diagnostic
+prefix and never accepts arbitrary SMC addresses or arguments.
+
 ## Remaining implementation and traps
 
-1. Confirm the secure-world ABI with the prepared one-shot test; stop on an
-   unsupported/error response rather than cycling through guessed SMC IDs.
+1. Version compatibility returned zero on hardware. Next validate the prepared
+   shared-memory handshake; stop on firmware errors rather than guessing SMC IDs.
 2. Implement a narrow TEEGRIS transport: per-core AUX buffers, shared-memory
    registration, event/panic IRQs, scheduling, inter-world sockets and userspace
    loading/storage services as required by the actual firmware. Samsung's
@@ -188,6 +246,8 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
   tools/fingerprint/test_policy.c -o /tmp/fp-policy && /tmp/fp-policy
 cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
   tools/fingerprint/test_tee_probe.c -o /tmp/fp-tee-probe && /tmp/fp-tee-probe
+cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tools/fingerprint/test_channels.c -o /tmp/fp-channels && /tmp/fp-channels
 python3 tools/passcode/test_build_integration.py
 ```
 
@@ -201,7 +261,8 @@ The status probe cross-compiles with the iPhoneOS16.5 SDK, ARC/blocks, and
 Foundation, LocalAuthentication and IOKit frameworks. No special authentication
 entitlement or match permission is requested. Kernel build: Exynos GICv2
 DEVELOPMENT. Tests validate code/policy/guard behavior; they do not validate a
-physical fingerprint match. The kernel has not been flashed for this branch.
+physical fingerprint match. The version-only kernel is flashed; the newer channel-handshake kernel remains
+staged. No physical fingerprint match has been attempted.
 
 ## Primary references
 
