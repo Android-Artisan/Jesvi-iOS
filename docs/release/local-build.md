@@ -74,3 +74,9 @@ updates the Apple extraction part of an existing lock.
 
 A cache hit is an integrity/reuse decision, not evidence that an image boots.
 Keep `inputs/`, `.cache/`, `sysimage` downloads and `out/` local and private.
+
+## Validation
+
+The command completed locally and produced `dist/local-validation.tar` on
+2026-11-14. Actual extraction and system-image cache hits were observed, and the
+packaged system hash matched the cached object. See [validation](validation.md).

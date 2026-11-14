@@ -107,3 +107,35 @@ Merged kernel build completed successfully at `8d2d12b6` with
 `source_dirty: false`: **15,161,848 bytes**, below the 16 MiB limit. SHA-256:
 `4aee6fc2bd598506f14fe2138947c1d0185ef67346c9c7890dcd38d417f3b7d1`. The isolated pinned OpenH264 fetch/build helper also
 completed successfully. Neither output establishes phone boot qualification.
+
+## One-command local build — completed
+
+`./build.sh local --output dist/local-validation` completed successfully on
+2026-11-14. Source candidate commit: `b563e2497152ecd2a615abd820509d3845c18cbd`;
+`source_dirty: false`. The pipeline prepared a new reviewed
+recipe extraction, generated Apple device-tree identity and the XNU menu font,
+built source kernel/media/userland/loader, assembled Samsung DT/AVB recovery,
+packaged the three images and passed `run.sh verify`.
+
+The pinned OS cryptex and device-tree members were fetched from Apple's CDN with
+byte-range and ZIP CRC checks. The root DMG and App cryptex were independent APFS
+copies of existing local inputs and were freshly extracted; active source trees
+and compiled userland outputs were not borrowed.
+
+Real reuse was demonstrated during retries: extraction recipe/content verification
+reported a hit, and the complete system image was restored from cache key
+`f316850227fe25c9acf53b96fca5ee24779d59ab8550ef98538985fe0f50f9e2`. Its packaged SHA-256 exactly matches the stored object:
+`800030a9aae82106ccf292ab4aebd2af549e76b62db917dfbb678b6650bc76a4`. Loader-only preparation fixes did not rebuild that system image.
+Failed attempts stopped before packaging. They exposed and resolved hidden input
+mutation for callservicesd and missing generated identity/menu-font headers.
+
+Ignored local outputs: `dist/local-validation/`, `dist/local-validation.tar` and
+`dist/local-validation.tar.sha256`. The archive is approximately 2.5 GiB and is a
+private development candidate, not an Odin/TWRP installer. Kernel, root image,
+system image and recovery were assembled, but UEFI remains the supplied hash-locked
+artifact. Filesystem/AVB/hardware qualification gaps stated above remain open;
+structural/checksum verification is not a successful boot/install test.
+
+All **34 release Python tests**, the C data policy test and passcode integration,
+restore-file and native-adapter checks passed during this implementation. Final
+workflow lint and shell syntax checks passed. No phone operations were performed.

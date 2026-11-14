@@ -43,3 +43,7 @@ integrity before unattended provisioning can be claimed robust.
 
 Earlier successful host builds and workflow lint demonstrate local components;
 they do not demonstrate an end-to-end Actions installation package.
+
+Subsequent local implementation completed successfully: see [local build](local-build.md)
+and [validation](validation.md). This supersedes the local extraction-receipt gap
+above. Remote Actions provisioning, delivery and installer qualification remain open.
