@@ -1,3 +1,28 @@
+# Next agent: continue rear camera implementation — 2026-11-15
+
+User accepted current Camera brightness behaviour (“all good”) and requested
+handover for the remaining camera issues and two additional rear cameras.
+Latest camera-quality acceptance/handoff commit: `f7d505e2` on
+`feat/s20-camera-quality`. Integrate that branch here before implementation;
+the live brightness change42b1dd4d is not yet integrated into this aux branch.
+Also explicitly integrate accepted main/master before full image/kernel builds.
+
+Start with docs/x1slte-camera-aux.md and the metadata-only inventory. Two saved
+overlays agree; three fixup tests pass. No auxiliary sensor has been powered,
+identified or streamed by this work. Bring up one sensor at a time with bounded
+model/revision reads, revision-correct tables, shared pin/rail rollback, then RAW
+packing/CFA/VC validation. Do not expose lens controls until capture and switching
+work. Preserve original front default and accepted display rule. Main-rear
+noise/tint and native12MP remain separate unresolved tasks. Rejected dark-grid
+trial must stay disabled. Native/diagnostic kernel candidate remains uninstalled.
+
+Authoritative installed-device state and rollback: camera-improve/handoff.md.
+Phone ownership was released. Read workspace NEXT.md/TASKS.md and acquire the
+phone lock before device changes. Never reboot without asking the user.
+Private captures/firmware/calibration/backups must remain outside git.
+
+---
+
 # Latest live installation handoff (supersedes staged-only status below)
 
 Camera-only brightness was installed subsequently from `feat/s20-camera-quality`
