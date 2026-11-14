@@ -21,20 +21,23 @@
  * Boot args:
  *   dvfs=1       read: every domain's clock and the temperatures, then every 10 s
  *   dvfs=2       ... and set the clocks below (kHz; 0 leaves a domain as it is):
- *                dvfs_cl0 (A55, default 1742000), dvfs_cl1 (A76, 2210000), dvfs_cl2 (M5, 2002000),
- *                dvfs_g3d (GPU, 702000), dvfs_mif (memory, 0)
+ *                dvfs_cl0 (A55, default 2002000), dvfs_cl1 (A76, 2504000), dvfs_cl2 (M5, 2730000),
+ *                dvfs_g3d (GPU, 800000), dvfs_mif (memory, 2028000)
+ *   dvfs_efficiency=1  cap CPU/GPU/memory clocks; runtime: kern.redwood.efficiency=0|1
  *   dvfs_wait=S  seconds after boot before anything is asked (default 10)
  *   dvfs_hot=C   the first step of each domain's throttling, in degrees of its own zone (default:
- *                Samsung's: A55 86 / 96 by the LITTLE zone, A76 86 / 96 by MID, GPU 88 / 100 by G3D,
- *                exynos9830.dts thermal-zones); a step is let go 6 degrees below where it was taken.
+ *                78 / 86 for M5, 82 / 90 for A55/A76/GPU, using each domain's own zone); a step is let go
+ *                8 degrees below where it was taken. An override sets the second step to C + 8.
  *                Step 1 is the "mid" clock, step 2 the safe one. Only the domain that is hot slows.
  *   fb_hot=C     the panel held under 70 % of its brightness from C degrees in the hottest zone (default
- *                90; 0: never), under 50 % from C + 6; the 50 % let go below C + 2, the 70 % below C - 4.
+ *                82; 0: never), under 50 % from C + 6; the 50 % let go below C + 2, the 70 % below C - 4.
  *                The panel's power is heat in the same body as the SoC (a phone's thermal policy does the
  *                same; Samsung's is in user space, SSRM, so these marks are this driver's own).
  * Every line goes to the loader's log with a `dvfs:` prefix.
  */
 
+#include <os/atomic_private.h>
+#include <sys/errno.h>
 #include <kern/clock.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
@@ -48,6 +51,7 @@
 #include <mach/processor_info.h>
 #include <mach/machine.h>
 #include <sys/redwood_dbgport.h>
+#include <sys/redwood_power_policy.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -101,11 +105,13 @@ static const struct {
 	 * (B, 2026-11-07: 86/96 read once a second let the big cluster reach 108-111 C during boot and the SoC's thermal
 	 * trip reset the phone through the PMIC -- RST_STAT PINRESET, PWRONSRC WTSR -- 2-3 times after a cold start. Now
 	 * 85/95 read every 250 ms and let go 10 degrees below the mark; 80/90 throttled plain UI use, 18:50.)
+	 * Cluster-aware policy: M5 steps at 78/86 C, others at 82/90 C; 8 C release hysteresis.
+	 * lpmd engages earlier at 76 C M5, 80 C A76/GPU, 82 C A55.
 	 */
-	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 85, 95 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 85, 95 },
-	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1794000, 0, 85, 95 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 87, 97 },
+	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 82, 90 },
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 82, 90 },
+	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1586000, 0, 78, 86 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 90 },
 	{ D_MIF, "mif",       "dvfs_mif", 2028000, 0,       0,       -1, 0, 0 },  /* (2730 = LPDDR5 top: heat for no UI gain, 18:50); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
@@ -379,11 +385,29 @@ report(const char *why)
 	dlog("%s: %s", why, line);
 }
 
+/* Cache only accepted requests. A failed cap must be retried, not remembered
+ * as applied. Return 1 changed, 0 already requested, -1 failed. */
+static int
+governor_set_rate(unsigned domain, uint32_t khz, uint32_t *sent)
+{
+	if (*sent == khz) {
+		return 0;
+	}
+	if (set_rate(domain, khz) != 0) {
+		return -1;
+	}
+	*sent = khz;
+	return 1;
+}
+
+static int power_profile(void);
+static uint32_t profile_cap(unsigned d, uint32_t cap, int prof);
+
 static void
 apply(int hot, bool skip_g3d)
 {
 	for (unsigned i = 0; i < NDOMAINS; i++) {
-		uint32_t khz = hot ? domains[i].safe : targets[i];
+		uint32_t khz = targets[i] ? profile_cap(i, hot ? domains[i].safe : targets[i], power_profile()) : 0;
 
 		/* (cluster 2 is asked on its own, last: acpm_thread) */
 		if (khz == 0 || (skip_g3d && domains[i].domain == D_G3D) || domains[i].domain == D_CL2) {
@@ -441,15 +465,53 @@ int redwood_gov_wake;                   /* the event a touch or a slow GPU job w
 /*
  * Power profiles (B, 2026-11-07): caps on top of the governor and the thermal steps.
  *   screen off (MiniIOMobileFramebuffer's display off): every cluster at its thermal "safe" clock, the GPU at its
- *     lowest, memory at 421 MHz (measured live: 2.7 GB/s there vs 15.7 at 2730; ACPM takes every step);
+ *     safe clock (377 MHz), memory at 421 MHz (measured live: 2.7 GB/s there vs 15.7 at 2730; ACPM takes every step);
  *   Low Power Mode (kern.redwood.lowpower=1, from iOS's switch): clusters at their first thermal step, memory 1352 MHz;
- *   normal: as before (memory 2730 MHz).
+ *   normal: memory 2028 MHz.
  * dvfs_sleep=0 turns the screen-off profile off; dvfs_lpm=0 ignores Low Power Mode.
  */
 static volatile int redwood_screen_on = 1;
 volatile int redwood_display_is_on = 1;      /* the same, for other drivers (redwood_ssp.c: its polling) */
 int redwood_lowpower;                   /* kern.redwood.lowpower (redwood_battery.c's node) */
 static uint32_t prof_sleep = 1, prof_lpm = 1;
+static int efficiency;                 /* manual whole-device profile */
+static int efficiency_auto = 1;        /* independent automatic caps, on by default */
+static unsigned efficiency_mask;       /* updated by the existing ACPM thermal loop */
+
+/* Existing Samsung clock levels, kHz; a ceiling, never a request to raise a clock. */
+static uint32_t
+efficiency_cap(unsigned domain)
+{
+	switch (domain) {
+	case D_CL0: return 1456000;
+	case D_CL1: return 2106000;
+	case D_CL2: return 1794000;
+	case D_G3D: return 572000;
+	case D_MIF: return 1352000;
+	default: return 0;
+	}
+}
+static int
+efficiency_active(unsigned domain)
+{
+	unsigned bit;
+
+	if (os_atomic_load(&efficiency, relaxed)) {
+		return 1;
+	}
+	if (!os_atomic_load(&efficiency_auto, relaxed)) {
+		return 0;
+	}
+	switch (domain) {
+	case D_CL0: bit = 0; break;
+	case D_CL1: bit = 1; break;
+	case D_CL2: bit = 2; break;
+	case D_G3D: bit = 3; break;
+	case D_MIF: return 0; /* No memory-specific automatic telemetry. */
+	default: return 0;
+	}
+	return (os_atomic_load(&efficiency_mask, relaxed) & (1u << bit)) != 0;
+}
 enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
 
 void redwood_dvfs_display(int on);
@@ -473,6 +535,29 @@ power_profile(void)
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_INT(_kern_redwood, OID_AUTO, lowpower, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_lowpower, 0,
     "Low Power Mode: 1 caps the clocks (redwood_exynos_acpm.c)");
+static int
+sysctl_efficiency SYSCTL_HANDLER_ARGS
+{
+	int *setting = (int *)arg1;
+	int value = os_atomic_load(setting, relaxed);
+	int error = sysctl_handle_int(oidp, &value, 0, req);
+
+	if (error || req->newptr == USER_ADDR_NULL) {
+		return error;
+	}
+	if (value != 0 && value != 1) {
+		return EINVAL;
+	}
+	os_atomic_store(setting, value, relaxed);
+	thread_wakeup((event_t)&redwood_gov_wake);
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    &efficiency, 0, sysctl_efficiency, "I", "Efficiency clock caps: 0 normal, 1 underclocked (requires dvfs=2)");
+SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency_auto, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    &efficiency_auto, 0, sysctl_efficiency, "I", "Independent automatic cooling: on by default, uses existing thermal samples");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, efficiency_mask, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &efficiency_mask, 0, "Automatic cooling bits: A55=1 A76=2 M5=4 GPU=8; memory independent");
 /*
  * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
  * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
@@ -612,16 +697,24 @@ profile_cap(unsigned d, uint32_t cap, int prof)
 {
 	uint32_t p = prof == PROF_OFF ? domains[d].safe : prof == PROF_LPM ? domains[d].mid : 0;
 
-	if (p == 0) {
-		return cap;
+	if (domains[d].domain == D_MIF) {
+		p = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : 0;
 	}
-	return cap == 0 || p < cap ? p : cap;
+	if (efficiency_active(domains[d].domain)) {
+		uint32_t e = efficiency_cap(domains[d].domain);
+
+		if (e && (!p || e < p)) {
+			p = e;
+		}
+	}
+	return p && (!cap || p < cap) ? p : cap;
 }
 
 static void
 acpm_thread(void *arg, wait_result_t wr_unused)
 {
-	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 90;
+	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 82;
+	struct redwood_cooling_state cooling[4] = {0};
 	int bl_step = 0;
 	int hot = 0, level[NDOMAINS] = { 0 }, temp[4];
 	uint32_t govern = 1, govern_gpu = 1, gov_rung[NGOV], gov_low[NGOV], gov_sent[NGOV], gov_changes = 0, tick = 0;
@@ -643,6 +736,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_ffl_g3d", &gov_frame_khz[3], sizeof(gov_frame_khz[3]));
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
 	PE_parse_boot_argn("dvfs_lpm", &prof_lpm, sizeof(prof_lpm));
+	PE_parse_boot_argn("dvfs_efficiency", &efficiency, sizeof(efficiency));
+	efficiency = efficiency != 0;
 	for (unsigned g = 0; g < NGOV; g++) {
 		gov_rung[g] = GOV_RUNGS - 1;
 		while (gov_rung[g] > 0 && gov[g].rung[gov_rung[g]] == 0) {
@@ -703,7 +798,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 
 		for (unsigned i = 0; i < NDOMAINS; i++) {
 			if (domains[i].domain == D_G3D) {
-				g3d = targets[i];
+				g3d = targets[i] ? profile_cap(i, targets[i], power_profile()) : 0;
 			}
 		}
 		set_rate(D_G3D, g3d);
@@ -742,10 +837,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			    real_ncpus);
 			break;
 		}
-		if (set_rate(D_CL2, targets[i]) != 0) {
-			dlog("cl2 (M5): %u kHz was not taken", targets[i]);
+		uint32_t khz = profile_cap(i, targets[i], power_profile());
+		if (set_rate(D_CL2, khz) != 0) {
+			dlog("cl2 (M5): %u kHz was not taken", khz);
 		} else {
-			dlog("cl2 (M5): asked for %u MHz", targets[i] / 1000);
+			dlog("cl2 (M5): asked for %u MHz", khz / 1000);
 		}
 		delay(5000);
 		if (ch_tmu.len != 0 && hottest() < 0) {
@@ -799,8 +895,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				khz = gov[g].rung[floor];
 				khz = khz > targets[d] ? targets[d] : khz;
 				khz = cap != 0 && khz > cap ? cap : khz;
-				if (khz != gov_sent[g] && set_rate(domains[d].domain, khz) == 0) {
-					gov_sent[g] = khz;
+				if (governor_set_rate(domains[d].domain, khz, &gov_sent[g]) > 0) {
 					gov_changes++;
 					gov_boosts++;
 				}
@@ -808,21 +903,23 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 		/* memory per power profile (on change only) */
 		if (mode >= 2) {
-			static int mif_prof = -1;
-			int prof = power_profile();
+			static int mif_prof = -1, mif_efficiency = -1;
+			int prof = power_profile(), eff = efficiency_active(D_MIF);
 
-			if (prof != mif_prof) {
+			if (prof != mif_prof || eff != mif_efficiency) {
 				unsigned m = 0;
 				uint32_t khz;
 
 				while (m < NDOMAINS && domains[m].domain != D_MIF) {
 					m++;
 				}
-				khz = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : (m < NDOMAINS ? targets[m] : 0);
+				khz = m < NDOMAINS && targets[m] ? profile_cap(m, targets[m], prof) : 0;
 				if (khz != 0 && set_rate(D_MIF, khz) == 0) {
 					dlog("power: %s: memory %u MHz%s", prof == PROF_OFF ? "screen off" : prof == PROF_LPM ?
 					    "Low Power Mode" : "normal", khz / 1000, prof == PROF_NORMAL ? "" : ", clusters and GPU capped");
 					mif_prof = prof;
+					mif_efficiency = eff;
+					dlog("efficiency: %s", eff ? "on" : "off");
 				} else if (khz != 0) {
 					static uint32_t told;
 
@@ -830,6 +927,21 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 						dlog("power: memory %u MHz NOT taken (profile %d): tried again next tick", khz / 1000, prof);
 					}
 				}
+			}
+		}
+		/* Fixed-clock boot overrides must honor the same runtime caps as the governor. */
+		for (unsigned g = 0; mode >= 2 && g < NGOV; g++) {
+			if (govern && (gov[g].ncpus || govern_gpu)) {
+				continue;
+			}
+			for (unsigned d = 0; d < NDOMAINS; d++) {
+				if (domains[d].domain != gov[g].domain || !targets[d]) {
+					continue;
+				}
+				uint32_t cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
+				uint32_t khz = profile_cap(d, cap < targets[d] ? cap : targets[d], power_profile());
+
+				(void)governor_set_rate(domains[d].domain, khz, &gov_sent[g]);
 			}
 		}
 		/* the governor: every tick */
@@ -856,16 +968,17 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				continue;
 			}
 			busy = gov_busy(g);
-			if (busy < 0) {
-				continue;
-			}
 			want = gov_rung[g];
+			/* Missing utilization must not skip a thermal/profile cap. Preserve
+			 * the requested rung and still apply ceilings below. */
 			if (busy >= (int)gov[g].jump) {
 				want = top;
 				gov_low[g] = 0;
-			} else {
+			} else if (busy >= 0) {
 				/* the lowest rung that would leave it at most `aim` % busy */
-				uint64_t need = (uint64_t)gov[g].rung[gov_rung[g]] * (uint64_t)busy / gov[g].aim;
+				uint32_t current = efficiency_active(domains[d].domain) && gov_sent[g] ?
+				    gov_sent[g] : gov[g].rung[gov_rung[g]];
+				uint64_t need = (uint64_t)current * (uint64_t)busy / gov[g].aim;
 				unsigned fit = 0;
 
 				while (fit < top && gov[g].rung[fit] < need) {
@@ -891,11 +1004,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			khz = cap != 0 && khz > cap ? cap : khz;
 			gov_khz_sum[g] += khz;
 			if (khz != gov_sent[g]) {
-				if (set_rate(domains[d].domain, khz) != 0) {
+				if (governor_set_rate(domains[d].domain, khz, &gov_sent[g]) < 0) {
 					dlog("%s: %u kHz was not taken", domains[d].name, khz);
+				} else {
+					gov_changes++;
 				}
-				gov_sent[g] = khz;
-				gov_changes++;
 			}
 		}
 		if (tick % (250 / GOV_TICK_MS) != 0) {
@@ -905,6 +1018,23 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		hot = 0;
 		for (unsigned z = 0; z < 4; z++) {
 			temp[z] = ch_tmu.len != 0 ? read_temp(z) : -1;
+		}
+		/* Reuse the four samples above: no extra reads, thread, timer or log polling.
+		 * Decisions affect the next governor tick; stricter thermal/profile caps still win. */
+		if (mode >= 2) {
+			uint64_t ns;
+			unsigned previous = os_atomic_load(&efficiency_mask, relaxed), mask = 0;
+
+			if (os_atomic_load(&efficiency_auto, relaxed)) {
+				absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+				mask = redwood_cooling_mask(cooling, temp, ns / NSEC_PER_SEC);
+			} else {
+				memset(cooling, 0, sizeof(cooling));
+			}
+			os_atomic_store(&efficiency_mask, mask, relaxed);
+			if (mask != previous) {
+				dlog("automatic cooling: mask %#x -> %#x (A55=1 A76=2 M5=4 GPU=8)", previous, mask);
+			}
 		}
 		if (fb_hot != 0) {
 			extern void redwood_fb_thermal_cap(uint32_t nits);
@@ -941,15 +1071,15 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				continue;
 			}
 			s1 = hot_at ? (int)hot_at : domains[i].step1;
-			s2 = hot_at ? (int)hot_at + 10 : domains[i].step2;
+			s2 = hot_at ? (int)hot_at + 8 : domains[i].step2;
 			want = level[i];
 			if (t >= s2) {
 				want = 2;
 			} else if (t >= s1 && want < 1) {
 				want = 1;
-			} else if (want == 2 && t < s2 - 10) {
-				want = t >= s1 - 10 ? 1 : 0;
-			} else if (want == 1 && t < s1 - 10) {
+			} else if (want == 2 && t < s2 - 8) {
+				want = t >= s1 - 8 ? 1 : 0;
+			} else if (want == 1 && t < s1 - 8) {
 				want = 0;
 			}
 			if (want != level[i]) {
@@ -958,7 +1088,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				/* (a governed cluster gets its clock from the governor, capped by this step, next tick) */
 				bool governed = govern && (domains[i].domain == D_CL0 || domains[i].domain == D_CL1 ||
 				    domains[i].domain == D_CL2 || (domains[i].domain == D_G3D && govern_gpu));
-				if (khz != 0 && !governed && set_rate(domains[i].domain, khz) != 0) {
+				if (khz != 0 && !governed && set_rate(domains[i].domain,
+				    profile_cap(i, khz < targets[i] ? khz : targets[i], power_profile())) != 0) {
 					dlog("%s: %u kHz was not taken", domains[i].name, khz);
 				}
 				dlog("%s zone %s %d C: step %d, %u MHz", domains[i].name, zones[z], t, want, khz / 1000);
