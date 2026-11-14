@@ -235,6 +235,7 @@ static void md5hex(const void *d,size_t n,char *hex)
 static int bound(int type,int port)
 {
     unsigned idx=if_nametoindex(cfg.ifn);int s=socket(AF_INET6,type,0);int one=1;if (s<0) return -1;
+    if (type==SOCK_STREAM) {struct linger lg={1,0};setsockopt(s,SOL_SOCKET,SO_LINGER,&lg,sizeof(lg));}   /* close = reset: our fixed ports stay free */
     setsockopt(s,IPPROTO_IPV6,IPV6_BOUND_IF,&idx,sizeof(idx));setsockopt(s,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one));setsockopt(s,SOL_SOCKET,SO_REUSEPORT,&one,sizeof(one));
     struct sockaddr_in6 l={.sin6_len=sizeof(l),.sin6_family=AF_INET6,.sin6_port=htons((uint16_t)port)};inet_pton(AF_INET6,cfg.ip6,&l.sin6_addr);
     if (bind(s,(struct sockaddr *)&l,sizeof(l))) {close(s);return -1;}
@@ -1297,8 +1298,16 @@ int main(int argc,char **argv)
      * the network replaces our registration instead of keeping the old one beside it. With old ones kept, an incoming
      * call was offered to the dead contacts first and reached us only after the caller had heard "busy". */
     struct sockaddr_in6 a={.sin6_len=sizeof(a),.sin6_family=AF_INET6,.sin6_port=htons(5060),.sin6_addr=pc6};
-    int s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,IMS_PORT_C);
-    if (s>=0 && connect(s,(struct sockaddr *)&a,sizeof(a))) {printf("port-c %d: %s; a free port instead\n",IMS_PORT_C,strerror(errno));close(s);s=-1;}
+    /* (05:46: a quick restart found port-c still in TIME_WAIT, took a free port, and the old contact stayed at the
+     * network: the next call was "busy") -- the fixed port is retried for up to 60 s before any other is taken */
+    int s=-1;
+    for (int tries=0;tries<30;tries++) {
+        s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,IMS_PORT_C);
+        if (s>=0 && !connect(s,(struct sockaddr *)&a,sizeof(a))) break;
+        if (tries==0 || tries==29) printf("port-c %d: %s%s\n",IMS_PORT_C,strerror(errno),tries==29?"; a free port instead":"; trying again for up to 60 s");
+        if (s>=0) close(s);
+        s=-1;sleep(2);
+    }
     if (s<0) {
         s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,0);if (s<0) {perror("bind");return 1;}
         if (connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect");isim_close();return 1;}
@@ -1386,6 +1395,13 @@ int main(int argc,char **argv)
     snprintf(cnonce,sizeof(cnonce),"%08x%08x",arc4random(),arc4random());
     {size_t L=(size_t)snprintf(buf,sizeof(buf),"%s:%s:00000001:%s:auth:%s",ha1,nonce,cnonce,ha2);md5hex(buf,L,resp);}
     memset(ha1,0,sizeof(ha1));
+    /* our previous contact, if it was another (address or port changed): removed in this same REGISTER (expires=0),
+     * so the network never offers a call to a dead contact first ("busy", late rings) */
+    char my_contact[200],stale_contact[300]="";
+    snprintf(my_contact,sizeof(my_contact),"<sip:%s@[%s]:%d;transport=%s>",cfg.imsi,cfg.ip6,ports,tcp?"tcp":"udp");
+    {FILE *q=fopen("/var/root/ims-last-contact","r");char old[200]="";
+     if (q) {if (!fgets(old,sizeof(old),q)) old[0]=0;fclose(q);old[strcspn(old,"\r\n")]=0;}
+     if (old[0] && strcmp(old,my_contact)) {snprintf(stale_contact,sizeof(stale_contact),"Contact: %s;expires=0\r\n",old);printf("    the previous contact is removed in this REGISTER\n");}}
     s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,portc);if (s<0) {perror("bind port-c");ipsec_flush();return 1;}
     a.sin6_port=htons((uint16_t)pports);
     if (connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect (protected)");ipsec_flush();return 1;}
@@ -1400,7 +1416,8 @@ int main(int argc,char **argv)
         "Authorization: Digest username=\"%s\",realm=\"%s\",nonce=\"%s\",uri=\"%s\",response=\"%s\",algorithm=AKAv1-MD5,qop=auth,nc=00000001,cnonce=\"%s\"\r\n"
         "Security-Client: %s\r\n"
         "Security-Verify: %s\r\n"
-        "Content-Length: 0\r\n\r\n",uri,T,cfg.ip6,ports,arc4random(),common,user,cfg.realm,nonce,uri,resp,cnonce,secc,secs);
+        "%s"
+        "Content-Length: 0\r\n\r\n",uri,T,cfg.ip6,ports,arc4random(),common,user,cfg.realm,nonce,uri,resp,cnonce,secc,secs,stale_contact);
     printf("--> REGISTER 2 (protected) to port %u\n",pports);
     if (send(s,m,(size_t)n,0)<0) {perror("send (protected)");ipsec_flush();return 1;}
     do n=recv_msg(s,r,sizeof(r),10); while (n>0 && !strncmp(r,"SIP/2.0 1",9));
@@ -1408,6 +1425,7 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
+    {FILE *q=fopen("/var/root/ims-last-contact","w");if (q) {fprintf(q,"%s\n",my_contact);fclose(q);chmod("/var/root/ims-last-contact",0600);}}
     {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)time(NULL));fclose(q);}}
     sms_keep_registration(r);
     if (flag(argc,argv,"--once")) return 0;
