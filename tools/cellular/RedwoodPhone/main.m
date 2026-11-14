@@ -256,7 +256,9 @@ static void rp_session_for_call(void)
 @property (strong) CXCallController *cc;
 @property (strong) NSDate *connectedAt;
 @property BOOL muted, onSpeaker;
+@property (copy) NSString *lastState;
 @end
+static NSDate *rp_last_event;   /* a call started, was answered or changed state */
 
 /* RedwoodPhone's own call screen (A, 2026-11-14): what a tap on the call's banner / Dynamic Island opens (iOS opens the
  * provider's app for a CallKit call). Number, status / time, mute, speaker, end; reads redwood-ims's state. */
@@ -314,6 +316,7 @@ static UIButton *rp_round(NSString *sym, NSString *title, UIColor *bg)
     NSString *st = [NSString stringWithContentsOfFile:[Dir stringByAppendingString:@"/state"] encoding:NSUTF8StringEncoding error:nil];
     NSArray *w = [[st stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@" "];
     NSString *num = [NSString stringWithContentsOfFile:[Dir stringByAppendingString:@"/number"] encoding:NSUTF8StringEncoding error:nil];
+    if (st && ![st isEqualToString:self.lastState]) { self.lastState = st; rp_last_event = [NSDate date]; }
     CXCall *c = [self current];
     self.who.text = num.length ? num : @"Call";
     if (!c) { self.status.text = @"Call ended"; self.connectedAt = nil; return; }
@@ -323,7 +326,7 @@ static UIButton *rp_round(NSString *sym, NSString *title, UIColor *bg)
         self.status.text = [NSString stringWithFormat:@"%02d:%02d", s / 60, s % 60];
     } else self.status.text = [w.firstObject isEqualToString:@"alerting"] ? @"ringing…" : (c.isOutgoing ? @"calling…" : @"incoming…");
 }
-- (void)callObserver:(CXCallObserver *)o callChanged:(CXCall *)c { [self refresh]; }
+- (void)callObserver:(CXCallObserver *)o callChanged:(CXCall *)c { rp_last_event = [NSDate date]; [self refresh]; }
 - (void)toggleMute
 {
     CXCall *c = [self current]; if (!c) return;
@@ -350,12 +353,25 @@ static UIButton *rp_round(NSString *sym, NSString *title, UIColor *bg)
 @property (nonatomic, strong) UIWindow *window;
 @end
 @implementation RPApp
+/* iOS also brings us to the front itself when a call is dialled or answered; its own full call screen is the one to
+ * keep then (05:40: native screen, then ours over it). Ours is for a tap on the banner / Dynamic Island later on. */
+- (void)applicationDidBecomeActive:(UIApplication *)a
+{
+    if (rp_last_event && -[rp_last_event timeIntervalSinceNow] < 4) {
+        rp_log(@"in front with a call event just now: back to iOS's call screen");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SEL s = NSSelectorFromString(@"suspend");
+            if ([a respondsToSelector:s]) ((void (*)(id, SEL))[a methodForSelector:s])(a, s);
+        });
+    } else rp_log(@"in front: our call screen");
+}
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o
 {
     rp_log(@"launched by iOS (pid %d): the call screen", getpid());
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [RPCallVC new];
     [self.window makeKeyAndVisible];
+    rp_last_event = [NSDate date];
     NSDictionary *uad = o[UIApplicationLaunchOptionsUserActivityDictionaryKey];
     NSUserActivity *ua = uad[@"UIApplicationLaunchOptionsUserActivityKey"];
     if ([ua isKindOfClass:[NSUserActivity class]]) { rp_log(@"dial request at launch (%@)", ua.activityType); rp_start_call(rp_intent_number(ua)); }
