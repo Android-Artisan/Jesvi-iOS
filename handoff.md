@@ -65,3 +65,14 @@
 - Shared ISP plumbing DID change: per-site black levels moved from global variables into each ISP instance; RAW decoding/statistics/rendering now consume that instance; preview cache invalidation includes frame/sensor/black metadata; sharpness receives that state. These apply to front as well as rear, preserving existing front calibration numbers but changing state ownership/cache behavior. Front visual parity is not yet demonstrated.
 - Live front probe temporarily requested 1001 exposure lines and gain register 32 in binned mode for 36 frames; this was a diagnostic command, not a saved front tuning change. Subsequent rear selection completed. Front was only checked for switching regression.
 - Keep front tuning values frozen during subsequent rear research. Any proposed front-specific numerical or processing change must be described to the user first.
+
+## Rear visual feedback and active tuning audit
+
+- User reports rear still has grain, gradient and tint, with fewer glitches. Treat this as a failed visual-quality acceptance, despite passing transport tests.
+- Read back active phone tuning files without modifying either camera. Rear uses the legacy alias `camera-s5khm2sd.isp` (actual hardware S5K2LD); front uses `camera-ov16a1q.isp` (actual SAK3J1). Names are inherited routing aliases, not proof that different sensors are installed.
+- Rear RWCISP02 is 3632 bytes: one CCM across all light/CCT ranges; all 884 shading floats (4 x 13 x 17) are exactly 1.0. Therefore its active map applies no spatial correction. This does not establish whether every observed gradient comes from lens shading; black offsets/readout still require isolation.
+- Rear CCM rows: [1.588,-0.342,-0.246], [-0.407,1.764,-0.357], [-0.437,-0.239,1.676]. These are existing local tuning values, not verified stock coefficients.
+- Live app logs show rear 8–16x analog gain and up to 2x digital gain. ISP source explicitly has no noise reduction stage; grain at those settings is unsurprising, but requires controlled RAW noise measurements to separate temporal, row and fixed-pattern components.
+- Existing binned rear black correction uses hand-measured gain/exposure tables; this and one fixed CCM can contribute to shadow casts. Do not substitute decoded Samsung GRAS or packed CCM9 coefficients blindly: mapping/calibration/composition remains unresolved.
+- Local evidence: `live-tuning-files.txt`, `rear-live.isp`, `front-live.isp`, `live-tuning-summary.json`, `quality-observation.log` in the private device artifact directory. Front values remain untouched.
+- Next controlled evidence: lit neutral/flat field plus covered-lens frames at identical rear exposure/gain, then separate additive black/row offsets from multiplicative colour shading. No new reboot required.
