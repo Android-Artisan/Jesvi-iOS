@@ -21,7 +21,8 @@ ART = r'''
            '-.._____..-'
 '''.strip('\n').split('\n')
 COL = {'white': '\033[1;97m', 'green': '\033[1;92m', 'red': '\033[1;91m', 'grey': '\033[90m'}
-TXT = {'white': 'PRESS the sensor', 'green': 'HOLD...  reading your finger', 'red': 'NOT GOOD -- lift your finger',
+TXT = {'match': 'MATCH  -- that is you', 'nomatch': 'NO MATCH -- not this finger',
+       'white': 'PRESS the sensor', 'green': 'HOLD...  reading your finger', 'red': 'NOT GOOD -- lift your finger',
        'grey': 'waiting for the phone...', 'done': 'ENROLLED  -- all done'}
 RST = '\033[0m'
 LINE = re.compile(r'^\[ *([0-9.]+)\]: redwood-tee: (fp run .*)$')
@@ -31,7 +32,7 @@ msg = ''
 
 
 def draw():
-    c = 'green' if state == 'done' else state
+    c = {'done': 'green', 'match': 'green', 'nomatch': 'red'}.get(state, state)
     out = ['\033[H\033[2J', '\n']
     for l in ART:
         out.append('      ' + COL[c] + l + RST + '\n')
@@ -48,6 +49,14 @@ def draw():
 def event(text):
     global state, progress, good, bad, red_until, msg
     now = time.time()
+    if 'fp run 6: MATCH' in text:
+        good += 1
+        state, red_until, msg = 'match', now + 2.0, 'lift; press again to test'
+        return
+    if 'fp run 6: NO MATCH' in text or ('fp run 6: bad image (0x20)' in text):
+        bad += 1
+        state, red_until, msg = 'nomatch', now + 2.0, 'lift; press again'
+        return
     if 'SAMPLE' in text and 'ACCEPTED' in text:
         good += 1
         m = re.search(r'progress (\d+)', text)
@@ -87,6 +96,7 @@ def event(text):
             state, msg = 'grey', 'run ended'
 
 
+fails = 0
 draw()
 while True:
     try:
@@ -94,8 +104,15 @@ while True:
         if not data:
             raise OSError('no data')
     except Exception:
+        fails += 1
+        if fails >= 3:                       # rwlogd serves one connection and sometimes wedges: restart it
+            subprocess.run(['ssh', '-o', 'ConnectTimeout=5', 's20',
+                            'kill $(ps -A -o pid,comm | grep rwlogd | cut -c1-6)'], capture_output=True, timeout=15)
+            fails = 0
+            time.sleep(3)
         time.sleep(1)
         continue
+    fails = 0
     for l in data.split('\n'):
         m = LINE.match(l)
         if not m:
@@ -107,7 +124,7 @@ while True:
             continue
         last_t = t
         event(m.group(2))
-    if state == 'red' and time.time() >= red_until:
+    if state in ('red', 'match', 'nomatch') and time.time() >= red_until:
         state, msg = 'white', 'try again: press the sensor'
     draw()
-    time.sleep(0.25)
+    time.sleep(1.0)

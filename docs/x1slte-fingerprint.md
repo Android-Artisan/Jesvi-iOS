@@ -377,6 +377,26 @@ otherwise fails (29/67/68). Enrollment runs without CBGE.
   (LineageOS hardware/samsung `aidl/fingerprint/Session.cpp`). Here the kernel watches the touch panel itself:
   sensor spot x 22000-43500, y 44000-60000 (0-65535 units), held 150 ms.
 
+
+### Factory calibration (2026-11-14 19:20): the fix for hard presses
+
+Stock loads the phone's factory CBGE data at boot (FPBAuthServiceStorage readCBGEData, `/efs/biometrics/meta/`, on the
+**sec_efs** partition): `cbge_0.dat` (368096 B, slot 0), `cbge_8.dat` (368024 B, slot 8), `bg_estimation*/bg_basis.dat`,
+`bg_metadata.dat`, `sensor_id`. Without it the ultrasonic image has no background model: only hard, perfectly placed
+presses pass (LIGHT_TOUCH/PARTIAL). Copied (private, never committed) to `/var/root/fp-calib/cbge_N.dat`; kernel
+`fp cbgeefs` loads every slot with CONTROL_OP 66. Order: tee-up (PREPARE) -> `fp cbgeefs` -> `fp 10:1` -> `fp 1:2` ->
+`fp einit 1` -> `fp run 3 1 300 4`. Result: easy presses, varied angles accepted, 100 % in ~16 presses.
+Capture trigger: 400 ms steady contact inside x 27500-38000, y 46500-55500 (Samsung qcom,position centre 32.34 mm up).
+
+### Identify (2026-11-14): runs, never matches yet
+
+IDENTIFY_INIT (cmd 5): op 1, +0x8 chunk (0, or 0xffffffff = re-arm without data), +0x10 user id string, template at
++0x110 (len +0x64110), encrypted metadata at +0x64114 (len +0x64514), 0x45 bytes params at +0x64518. Template from
+ENROLL_DO at 100 % (+0x177024, len +0x1db024; header "FPV3" "1000"), saved to /var/root/fp-template.bin. TA decrypts it
+(get_uniquekey kdf) and parses it (version 51.2). IDENTIFY_DO (cmd 6) runs the same 4->5->6 machine; error 32 (0x20) =
+no match. Every attempt so far: no match. Missing vs Samsung: the HAT (secure user id) at enroll and the metadata from
+CONTROL 0x2d SAVE_SECAUTH_ID (TA refuses with "sid is 0"), which Samsung passes back at IDENTIFY_INIT. Next step.
+
 ### Still to do
 
 1. Identify (TA cases 5/6/7) against the enrolled template.

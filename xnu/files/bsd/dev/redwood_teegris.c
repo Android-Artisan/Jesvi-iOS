@@ -28,6 +28,7 @@
 #include <sys/errno.h>
 #include <sys/sysctl.h>
 #include <sys/vnode.h>
+#include <sys/fcntl.h>
 #include <sys/vnode_internal.h>
 #include <sys/proc.h>
 #include <sys/time.h>
@@ -2636,14 +2637,126 @@ fp_call(uint32_t n, uint32_t op)
 }
 
 extern volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
-#define FP_X_MIN        22000
-#define FP_X_MAX        43500
-#define FP_Y_MIN        44000
-#define FP_Y_MAX        60000
-#define FP_HOLD_MS      150
+/*
+ * The sensor's spot in touch units (0-65535 over 1080x2400): Samsung's qcom,position puts the centre 32.34 mm above the
+ * screen's bottom edge, x centred (panel 540,1860 = 32768,50790); +-8 mm for the finger. A capture waits for 400 ms of
+ * steady contact: at 150 ms the finger is not pressed flat yet (most samples came back LIGHT_TOUCH / PARTIAL).
+ */
+#define FP_X_MIN        27500
+#define FP_X_MAX        38000
+#define FP_Y_MIN        46500
+#define FP_Y_MAX        55500
+#define FP_HOLD_MS      400
 
 static uint32_t fp_cbge_load(void);
 static void fp_cbge(void);
+
+/*
+ * The enrolled template. The FINGE TA keeps none: ENROLL_DO hands it out at progress 100 (+0x177024, length at
+ * +0x1db024, libbauthtzcommon BAuth_Enroll_Do) and IDENTIFY_INIT takes it back (+0x110, length +0x64110, chunk
+ * number at +0x8, libbauthserver FPBAuthService::identify). Kept in /var/root/fp-template.bin (root only).
+ */
+#define FP_TMPL_PATH    "/var/root/fp-template.bin"
+#define FP_TMPL_MAX     0x64000u
+static uint8_t *fp_tmpl;
+static uint32_t fp_tmpl_len;
+
+static int
+fp_tmpl_save(void)
+{
+	vfs_context_t vctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	int resid = 0, err;
+
+	if ((err = vnode_open(FP_TMPL_PATH, FWRITE | O_CREAT | O_TRUNC, 0600, 0, &vp, vctx)) != 0) {
+		tee_say("fp template: open for writing %d\n", err);
+		return err;
+	}
+	err = vn_rdwr(UIO_WRITE, vp, (caddr_t)fp_tmpl, (int)fp_tmpl_len, 0, UIO_SYSSPACE, IO_NODELOCKED | IO_SYNC,
+	    vfs_context_ucred(vctx), &resid, vfs_context_proc(vctx));
+	vnode_close(vp, FWRITE, vctx);
+	tee_say("fp template: saved %u bytes to %s (error %d)\n", fp_tmpl_len, FP_TMPL_PATH, err);
+	return err;
+}
+
+static int
+fp_tmpl_load(void)
+{
+	size_t size = 0;
+	void *buf;
+
+	if (fp_tmpl != NULL && fp_tmpl_len != 0) {
+		return 0;
+	}
+	if ((buf = tee_read_file(FP_TMPL_PATH, &size)) == NULL || size == 0 || size > FP_TMPL_MAX) {
+		tee_say("fp template: none saved (enroll first)\n");
+		return ENOENT;
+	}
+	if (fp_tmpl == NULL) {
+		fp_tmpl = kalloc_data(FP_TMPL_MAX, Z_WAITOK | Z_ZERO);
+	}
+	if (fp_tmpl != NULL) {
+		memcpy(fp_tmpl, buf, size);
+		fp_tmpl_len = (uint32_t)size;
+	}
+	tz_free(buf, size);
+	tee_say("fp template: loaded %u bytes\n", fp_tmpl_len);
+	return fp_tmpl ? 0 : ENOMEM;
+}
+
+/* keep the template ENROLL_DO just handed out (progress 100) */
+static void
+fp_tmpl_take(void)
+{
+	uint32_t len = *(uint32_t *)(fp_buf + 0x1db024);
+
+	tee_say("fp template: enroll handed out %u bytes, head %08x %08x %08x %08x\n", len,
+	    *(uint32_t *)(fp_buf + 0x177024), *(uint32_t *)(fp_buf + 0x177028), *(uint32_t *)(fp_buf + 0x17702c),
+	    *(uint32_t *)(fp_buf + 0x177030));
+	if (len == 0 || len > FP_TMPL_MAX) {
+		return;
+	}
+	if (fp_tmpl == NULL) {
+		fp_tmpl = kalloc_data(FP_TMPL_MAX, Z_WAITOK | Z_ZERO);
+	}
+	if (fp_tmpl == NULL) {
+		return;
+	}
+	memcpy(fp_tmpl, fp_buf + 0x177024, len);
+	fp_tmpl_len = len;
+	fp_tmpl_save();
+}
+
+/*
+ * IDENTIFY_INIT (command 5, op 1): CHUNK = 0 with the template (first attempt), 0xffffffff without data (re-arm
+ * for the next touch, as FPBAuthService::identify does). The TA's error, or the invoke's result.
+ */
+static uint32_t
+fp_idinit(uint32_t chunk)
+{
+	uint32_t result, origin = 0;
+
+	if (chunk == 0 && fp_tmpl_load() != 0) {
+		return 0x3a;
+	}
+	bzero(fp_buf, 0x110);
+	bzero(fp_buf + 0x64110, 0x500);
+	bzero(fp_buf + 0x177000, 0x1b0);
+	*(uint32_t *)(fp_buf + 0x0) = 5;
+	*(uint32_t *)(fp_buf + 0x4) = 5;
+	*(uint32_t *)(fp_buf + 0x8) = chunk;
+	*(uint32_t *)(fp_buf + 0xc) = 1;
+	fp_buf[0x10] = '0';
+	if (chunk == 0) {
+		memcpy(fp_buf + 0x110, fp_tmpl, fp_tmpl_len);
+		*(uint32_t *)(fp_buf + 0x64110) = fp_tmpl_len;
+	}
+	*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+	lck_mtx_lock(&tee_client_lock);
+	result = tee_invoke_shm(&fp_ses, 5, fp_shm_id, FP_SHM_SIZE, &origin);
+	lck_mtx_unlock(&tee_client_lock);
+	return result != 0 ? result : *(uint32_t *)(fp_buf + 0x2ee008);
+}
 
 /* wait until no finger is on the sensor's spot for 100 ms (or the deadline) */
 static void
@@ -2768,6 +2881,30 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 		 * ENROLL_FINAL (4) op loop -> ENROLL_INIT again, until progress 100. A bad image (0x27/0x29) takes the same
 		 * ENROLL_FINAL path (0x4eb44 -> 0x4ef4c), not a cancel. DO again without that is refused (39); 67 = bad state.
 		 */
+		if (n == 6 && result == 0 && (error != 0 || r[0] == 0 || r[0] == 0x4d)) {
+			/* IDENTIFY_DO result: r[6] (+0x177020) = matched template, -1 = none (TA dispatcher case 6) */
+			uint32_t e;
+
+			tee_say("fp run 6: result error %#x | r0-8 %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", error, r[0], r[1], r[2],
+			    r[3], r[4], r[5], r[6], r[7], r[8]);
+			if (error == 0 && (r[6] != 0xffffffffu || r[0] == 0x4d)) {
+				good++;
+				tee_say("fp run 6: MATCH (template %d, op %u)\n", (int)r[6], r[0]);
+			} else if (error == 0) {
+				tee_say("fp run 6: NO MATCH\n");
+			} else {
+				bad_quality++;
+				tee_say("fp run 6: bad image (%#x): lift and press again, quality %08x\n", error, r[3]);
+			}
+			fp_wait_lift(n, deadline);
+			e = fp_idinit(0xffffffffu);
+			if (e != 0) {
+				tee_say("fp run 6: re-arm failed (%#x): stop\n", e);
+				break;
+			}
+			op = 1;
+			continue;
+		}
 		if (n == 3 && result == 0 && error == 0x44) {
 			/* 68: the TA wants the sensor's calibration (CBGE) loaded first -- load_cbge */
 			uint32_t e = 0;
@@ -2788,12 +2925,13 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 				good++;
 				tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u | %08x %08x %08x %08x\n", good, progress, r[1], r[3], r[5], r[6]);
 				if (progress >= 100) {
+					fp_tmpl_take();
 					break;
 				}
 			} else {
 				bad_quality++;
 				tee_say("fp run 3: %s (%#x): lift and press again, quality %08x\n", error == 0x43 ? "capture rejected" : "bad image",
-				    error, r[1]);
+				    error, r[3]);
 			}
 			if (error == 0x43 && ++refused > 3) {
 				tee_say("fp run 3: 67 keeps coming: stop\n");
@@ -3023,6 +3161,47 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 	if (strncmp(p, "power", 5) == 0) {
 		fp_power();
+		return;
+	}
+	if (strncmp(p, "idinit", 6) == 0) {
+		uint32_t e = fp_idinit(0);
+
+		snprintf(tee_last, sizeof(tee_last), "fp idinit: error %#x op %u template %u bytes | %08x %08x %08x", e,
+		    *(uint32_t *)(fp_buf + 0x177008), fp_tmpl_len, *(uint32_t *)(fp_buf + 0x17700c),
+		    *(uint32_t *)(fp_buf + 0x177010), *(uint32_t *)(fp_buf + 0x177014));
+		tee_say("%s\n", tee_last);
+		return;
+	}
+	if (strncmp(p, "cbgeefs", 7) == 0) {
+		/*
+		 * The phone's factory calibration, as stock loads it (FPBAuthServiceStorage readCBGEData from
+		 * /efs/biometrics/meta/cbge_%d.dat, sec_efs partition): copied to /var/root/fp-calib/cbge_N.dat.
+		 */
+		uint32_t slot, n = 0;
+		char path[64];
+
+		for (slot = 0; slot < 16; slot++) {
+			size_t size = 0;
+			void *buf;
+
+			snprintf(path, sizeof(path), "/var/root/fp-calib/cbge_%u.dat", slot);
+			if ((buf = tee_read_file(path, &size)) == NULL) {
+				continue;
+			}
+			if (size != 0 && size <= 0x96000) {
+				if (fp_cbge_slot[slot] == NULL) {
+					fp_cbge_slot[slot] = kalloc_data(0x96000, Z_WAITOK | Z_ZERO);
+				}
+				if (fp_cbge_slot[slot] != NULL) {
+					memcpy(fp_cbge_slot[slot], buf, size);
+					fp_cbge_slot_len[slot] = (uint32_t)size;
+					n++;
+				}
+			}
+			tz_free(buf, size);
+		}
+		snprintf(tee_last, sizeof(tee_last), "fp cbgeefs: %u factory slots read, load error %#x", n, n ? fp_cbge_load() : 0);
+		tee_say("%s\n", tee_last);
 		return;
 	}
 	if (strncmp(p, "cbgeload", 8) == 0) {
