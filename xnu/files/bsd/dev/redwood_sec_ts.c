@@ -399,6 +399,38 @@ release_all(void)
 	}
 }
 
+/*
+ * The scan rate (A, 2026-11-14). The controller scans at its default 60 Hz unless told otherwise; Android tells it
+ * (sec_ts y79a set_scan_rate: SEC_TS_CMD_SET_SCANRATE 0x94, { 1 = in step with the panel's vsync, 0 normal 60 / 1 HS60
+ * / 2 HS120 / 3 48 / 4 96 }) when the panel changes mode. Measured with the panel at 720x1600 120 Hz: 255 events in
+ * 4.1 s of fingers down, 62 a second -- iOS got a new finger position every other frame (a stepping scroll).
+ * Boot-arg touch_scan=N: the mode byte (default from fb_mode: 1 and 3 run the panel at 120 Hz -> 2; else 0); 255 off.
+ */
+static uint32_t ts_scan = 0xffff;
+
+static void
+ts_set_scan_rate(void)
+{
+	uint8_t want[2] = { 1, 0 }, got[2] = { 0, 0 };
+	uint32_t mode = 0;
+
+	if (ts_scan == 0xffff) {
+		if (!PE_parse_boot_argn("touch_scan", &ts_scan, sizeof(ts_scan))) {
+			ts_scan = PE_parse_boot_argn("fb_mode", &mode, sizeof(mode)) && (mode == 1 || mode == 3) ? 2 : 0;
+		}
+	}
+	if (ts_scan > 4) {
+		return;
+	}
+	want[1] = (uint8_t)ts_scan;
+	if (!ts_write(0x94, want, sizeof(want))) {
+		note("scan rate %u: not written", ts_scan);
+		return;
+	}
+	(void)ts_read(0x94, got, sizeof(got));
+	note("scan rate: asked %u %u, the controller has %u %u", want[0], want[1], got[0], got[1]);
+}
+
 static bool
 ts_start_sensing(void)
 {
@@ -406,7 +438,9 @@ ts_start_sensing(void)
 	bool ok;
 
 	ok = ts_write(TS_CMD_SET_TOUCHFUNCTION, functions, sizeof(functions));
-	return ts_write(TS_CMD_SENSE_ON, NULL, 0) && ok;
+	ok = ts_write(TS_CMD_SENSE_ON, NULL, 0) && ok;
+	ts_set_scan_rate();
+	return ok;
 }
 
 static void
