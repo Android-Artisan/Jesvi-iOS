@@ -176,6 +176,67 @@ replace_method_by_name(const char *class_name, const char *selector, IMP replace
 	return original;
 }
 
+/*
+ * SpringBoard's own frame rate caps (A, 2026-11-14, from Scion's inject_sb.c e3c8ac7; boot-arg sb_fps=0 leaves them).
+ * Some SpringBoard animations ask CoreAnimation for fewer frames than the panel has through their settings' frame rate
+ * range: the crossfade of the page dots and the search pill after every home-screen page slide is
+ * CAFrameRateRangeMake(20, 30, 0) (-[SBFolderScrollAccessoryView _setUpAnimation], 16.5 20F66), so for ~600 ms after
+ * each swipe SpringBoard's display link runs at 30 a second. On an iPhone that saves power; here it is a visible stutter
+ * (Scion measured missed refreshes 5.4-6.5/s -> 0.6-1.6/s). A range whose most is under 60 gets 60 as most and preferred.
+ */
+#define SB_FPS_FLOOR    60.0f
+typedef struct {
+	float minimum, maximum, preferred;
+} sb_frame_rate_range;
+static unsigned sb_fps_raised;
+
+static sb_frame_rate_range
+sb_fps_raise(sb_frame_rate_range range)
+{
+	if (range.maximum > 0.0f && range.maximum < SB_FPS_FLOOR) {
+		range.maximum = SB_FPS_FLOOR;
+		range.preferred = SB_FPS_FLOOR;
+		__atomic_fetch_add(&sb_fps_raised, 1, __ATOMIC_RELAXED);
+	}
+	return range;
+}
+
+/* -[SBFFluidBehaviorSettings setFrameRateRange:highFrameRateReason:], -[SBFAnimationSettings ...]: "v32@0:8{CAFrameRateRange=fff}16I28" */
+static void (*original_fluid_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+static void (*original_animation_set_range)(id self, SEL selector, sb_frame_rate_range range, unsigned reason);
+
+static void
+fluid_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_fluid_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+static void
+animation_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned reason)
+{
+	original_animation_set_range(self, selector, sb_fps_raise(range), reason);
+}
+
+static void
+sb_fps_hooks(void)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *arg;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (arg = strstr(args, "sb_fps=0")) != NULL &&
+	    (arg == args || arg[-1] == ' ')) {
+		say("redwood: SpringBoard's own frame rate caps left as they are (sb_fps=0)\n");
+		return;
+	}
+	original_fluid_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method_by_name(
+	    "SBFFluidBehaviorSettings", "setFrameRateRange:highFrameRateReason:", (IMP)fluid_set_range);
+	original_animation_set_range = (void (*)(id, SEL, sb_frame_rate_range, unsigned))replace_method_by_name(
+	    "SBFAnimationSettings", "setFrameRateRange:highFrameRateReason:", (IMP)animation_set_range);
+	say("redwood: SpringBoard's frame rate caps raised to %.0f a second: fluid %s, animation %s (sb_fps=0: Apple's)\n",
+	    SB_FPS_FLOOR, original_fluid_set_range ? "yes" : "NO", original_animation_set_range ? "yes" : "NO");
+}
+
 /* the selectors of a class whose names hold one of the words, with their addresses: to pin hooks later */
 static void
 say_methods(const char *class_name, const char *const *words, unsigned nwords)
@@ -1568,6 +1629,7 @@ redwood_springboard_init(void)
 	island_start();
 	wallpaper_motion_start();
 	cell_start();
+	sb_fps_hooks();
 	statusbar_shift_start();
 	load_tweaks();
 	/*
