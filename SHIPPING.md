@@ -17,6 +17,18 @@
 - Local `main` and `master` contain this work. Remote publishing remains blocked by unavailable GitHub credentials;
   do not overwrite divergent remote main to bypass that problem.
 
+## 2026-11-14 (B) — Metal driver, wallpapers, call screen fixes
+- Metal driver (CoreImage correct on the Mali, matches macOS on 7 filters): unbound texture/sampler placeholders,
+  simdgroup barriers, dispatch-sized threadgroup memory, sampler 0 for read(), Apple's 32-wide SIMD width, GPU->IOSurface
+  write-back, YUV 420f planes, float CoreVideo formats, ASTC, no-copy buffers/textures, app-memory IOSurfaces as copies.
+- Per-process Metal: libredwood-metalon (Photos/Gradient/Emoji poster helpers) and libredwood-metaloff (PosterBoard,
+  AegirPoster, WeatherPoster, mediaserverd) in the boot inject list; system-wide is `metal_props on` (live, not at boot).
+- Wallpaper: Photos "Use as Wallpaper" works; gallery via duetexpertd (job allowed + libredwood-duet data-vault skip);
+  parallax only for Apple posters, rests unless tilted 2.5 pt (GPU ~97% idle at rest); custom pictures stay still.
+- Calls: callservicesd job forced to /var/jb/redwood (macOS builds packed the stock /System path -> no call screen);
+  RedwoodPhone ignores the duplicate cold-launch dial (outgoing calls were cancelled at once).
+- Details, switches and traps: docs/x1slte-wallpaper-metal.md. Native-calls design (CommCenter identity): sessions/B.md.
+
 ## 2026-11-14 (10:40) — Real 120 Hz: scrolling "a lot better" (user-verified)
 - iOS ran its frame clock at 60 while the panel scanned 120 (CADisplay.refreshRate 16.7 ms): backboardd now gets
   CA_HEARTBEAT_RATE=120 in fb_mode 1/3 (8.3 ms). Apps get the ProMotion opt-in (QuartzCore capped apps at 60): `app_fps=0` off.

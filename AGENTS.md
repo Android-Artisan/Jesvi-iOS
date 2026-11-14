@@ -25,3 +25,8 @@ assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
   `NEXT.md`, `TASKS.md` and phone-lock status before a device-changing operation.
 - Local `main` and `master` track the accepted work. Other worktrees/branches must
   explicitly integrate these commits; do not overwrite their unrelated work.
+
+- Metal, wallpapers and the call-screen job: read [docs/x1slte-wallpaper-metal.md](docs/x1slte-wallpaper-metal.md).
+  Traps: a driver copy in /var/jb next to the image's one gives backboardd two libredwoodair copies (black snapshots);
+  the callservicesd job must point at /var/jb/redwood/callservicesd (build.sh fixes it right before root.apfs);
+  keep libredwood-metaloff on PosterBoard until the scrambled-text bug is fixed.
