@@ -1,3 +1,16 @@
+## 2026-11-15 (02:16, A) — native calls permanent; status bar on island phones; Cellular settings live
+- Calls: native only, on at boot. `feat/native-calls` merged into x1slte (ad93a151); redwood-telephonyd starts from the
+  boot image and registers as `com.apple.coretelephony telephony=1`; RedwoodPhone no longer shipped. Engine review
+  fixes (bounded SIP message building, 100rel, no 32 s give-up after 100 Trying, one INVITE dump), telephonyd bounded
+  sets + cheap unchanged-file path. Docs: `docs/x1slte-native-calls.md`.
+- Status bar (island phones, device-tree detection): plain time (activity only in the island), no battery bolt
+  (`bolt=1` keeps it), left padding removed (`lead=12`, `lead=0` Apple's). Docs: `docs/x1slte-dynamic-island.md`.
+- Settings > Cellular: VoLTE / Calls / Text Messages from the live engine state.
+- Flashed three times by swapping only root.apfs inside the phone's own recovery image (loader, kernel and signature
+  byte-identical): `docs/x1slte-root-swap.md`. Verified after each boot: telephonyd at boot, VoLTE registered,
+  island hook armed. Not yet seen on screen by the user: plain time while recording, no bolt while charging.
+- Open: outgoing calls' late ringing (precondition / modem IPC 0x16), the privacy dot position, Personal Hotspot.
+
 ## 2026-11-14 — Default wallpaper: the user's photo poster ships with the image
 - `92857ab9`: the user's Photos poster (their picture, lock-screen clock style, layout, paired home screen) is the
   wallpaper of a phone whose data volume has no poster store yet: a fresh install or a factory reset.
