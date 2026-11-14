@@ -404,7 +404,10 @@ static const struct rwd_format rwd_formats[] = {
 	/* CoreVideo's one-component and float buffers, which PhotoImaging and CoreImage make
 	 * textures over (kCVPixelFormatType_OneComponent16Half / 32Float / 128RGBAFloat) */
 	{  25, 'L00h', 2, 0, "MTLPixelFormatR16Float" },
+	{  25, '1C0h', 2, 0, "MTLPixelFormatR16Float" },
 	{  55, 'L00f', 4, 0, "MTLPixelFormatR32Float" },
+	{  55, '1C0f', 4, 0, "MTLPixelFormatR32Float" },
+	{  65, '2C0h', 4, 0, "MTLPixelFormatRG16Float" },
 	{ 125, 'RGfA', 16, 0, "MTLPixelFormatRGBA32Float" },
 	{  70, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm" },
 	{  71, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm_sRGB" },
@@ -688,10 +691,14 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 		return NULL;
 	}
 	if (surface.pixelFormat != fourcc && !rwd_fourcc_serves(want->pixel_format, surface.pixelFormat)) {
-		rwd_say(why, why_size, "surface %u is '%c%c%c%c' and Metal format %u is "
-		    "'%c%c%c%c'", id, (char)(surface.pixelFormat >> 24),
-		    (char)(surface.pixelFormat >> 16), (char)(surface.pixelFormat >> 8),
-		    (char)surface.pixelFormat, want->pixel_format, (char)(fourcc >> 24),
+		/* in hex as well: a format code with a zero byte cut the sentence off at the quote */
+		rwd_say(why, why_size, "surface %u is 0x%08x ('%c%c%c%c') and Metal format %u is "
+		    "'%c%c%c%c'", id, surface.pixelFormat,
+		    (char)((surface.pixelFormat >> 24) ? surface.pixelFormat >> 24 : '.'),
+		    (char)((surface.pixelFormat >> 16) & 0xff ? surface.pixelFormat >> 16 : '.'),
+		    (char)((surface.pixelFormat >> 8) & 0xff ? surface.pixelFormat >> 8 : '.'),
+		    (char)(surface.pixelFormat & 0xff ? surface.pixelFormat : '.'),
+		    want->pixel_format, (char)(fourcc >> 24),
 		    (char)(fourcc >> 16), (char)(fourcc >> 8), (char)fourcc);
 		return NULL;
 	}

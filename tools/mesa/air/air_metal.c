@@ -4105,9 +4105,14 @@ check_bindings(const struct air_shader_info *info, const struct rwa_slot *slots,
             return -1;
          }
          if (!stored && !t->shader_read) {
-            say(why, why_size, "%s samples texture %u and that texture was made without "
-                               "MTLTextureUsageShaderRead", name, r->index);
-            return -1;
+            /* Apple's GPUs sample such a texture anyway and CoreImage relies on it
+             * (PhotoImaging's tiles): noted once, served. */
+            static bool told_read;
+            if (!told_read) {
+               told_read = true;
+               fprintf(stderr, "rwa: %s samples texture %u made without "
+                       "MTLTextureUsageShaderRead; served (noted once)\n", name, r->index);
+            }
          }
          if (!texture_fits(t, &slots[r->index], name, r->index, why, why_size))
             return -1;

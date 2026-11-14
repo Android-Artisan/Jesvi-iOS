@@ -2297,6 +2297,11 @@ translate_cast(struct air_ctx *c, const struct air_inst *in)
          res = nir_unpack_32_2x16(&c->b, x);
       else if (sn == 2 && sb == 16 && dn == 1 && db == 32)
          res = nir_pack_32_2x16(&c->b, x);
+      else if (sn * sb == dn * db && (db == 8 || db == 16 || db == 32 || db == 64) &&
+               (sb == 8 || sb == 16 || sb == 32 || sb == 64))
+         /* any other same-size repacking (VideoToolbox's i32 -> <4 x i8>):
+          * little-endian, element 0 in the low bits, as LLVM lays it out */
+         res = nir_extract_bits(&c->b, &x, 1, 0, dn, db);
       else
          return air_error(c, "instruction: a bitcast from %u x %u bits to %u x %u bits, "
                              "which is a repacking this frontend does not do",
