@@ -2477,6 +2477,7 @@ tee_open_test_thread(__unused void *arg, __unused wait_result_t wr)
  *    9 VERIFY_PASSWORD 10 CANCEL 12 CONTROL_OP 13 HAT_OP 14 TEMPLATE_MIGRATION 16 TYPE_CHECK
  */
 #define FP_SHM_SIZE             0x2ee00cu
+#define FP_STORE_PATH           "fingerprint" /* Legacy enrollment binding; preserve for existing templates. */
 #define FP_TA_PATH              "/var/root/tee/00000000-0000-0000-0000-46494e474502"
 static struct tee_session fp_ses;
 static bool fp_open;
@@ -2595,7 +2596,7 @@ fp_power(void)
  * answered, until it answers 0, fails, or SECONDS pass. Op 4 waits for steady contact on the sensor's screen area.
  * Op 7 sleeps the requested timeout. Each step's response head is logged.
  */
-/* ENROLL_INIT as Samsung's enroll() sends it: user id "0", finger index IDX (1-4), 7, a name */
+/* ENROLL_INIT: user id "0", finger index IDX (1-4), type 7, stable logical storage path. */
 static uint32_t
 fp_einit(uint32_t idx)
 {
@@ -2609,7 +2610,7 @@ fp_einit(uint32_t idx)
 	fp_buf[0x10] = '0';
 	*(uint32_t *)(fp_buf + 0x110) = idx;
 	*(uint32_t *)(fp_buf + 0x114) = 7;
-	memcpy(fp_buf + 0x118, "fingerprint", 11);
+	memcpy(fp_buf + 0x118, FP_STORE_PATH, sizeof(FP_STORE_PATH));
 	*(uint32_t *)(fp_buf + FP_WIRE_ERROR) = 0;
 	{
 		uint32_t origin = 0;
@@ -2759,6 +2760,9 @@ fp_idinit(uint32_t chunk)
 	*(uint32_t *)(fp_buf + 0x8) = chunk;
 	*(uint32_t *)(fp_buf + 0xc) = 1;
 	fp_buf[0x10] = '0';
+	/* +0x118 during enrollment was a storage path, not a display name.
+	 * Restore the identical authenticated 100-byte field on every Init. */
+	memcpy(fp_buf + 0x6455d, FP_STORE_PATH, sizeof(FP_STORE_PATH));
 	if (chunk == 0) {
 		memcpy(fp_buf + 0x110, fp_tmpl, fp_tmpl_len);
 		*(uint32_t *)(fp_buf + 0x64110) = fp_tmpl_len;
@@ -3214,7 +3218,7 @@ fp_private_parent(void)
 {
  vnode_t vp = NULLVP;
  vfs_context_t ctx = vfs_context_kernel();
- int err = vnode_open(FP_RESEARCH_DIR, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+ int err = vnode_open(FP_RESEARCH_DIR, FREAD | O_NOFOLLOW | O_NONBLOCK, 0, 0, &vp, ctx);
 
  if (err == 0) {
   err = fp_private_attr(vp, VDIR, 0700, NULL);
@@ -3232,7 +3236,7 @@ fp_exchange_read(uint8_t **request)
  int resid = 0, err;
 
  *request = NULL;
- err = vnode_open(FP_REQUEST_PATH, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+ err = vnode_open(FP_REQUEST_PATH, FREAD | O_NOFOLLOW | O_NONBLOCK, 0, 0, &vp, ctx);
  if (err != 0) {
   return err;
  }
@@ -3268,7 +3272,7 @@ fp_exchange_write(uint32_t result, uint32_t origin, uint32_t cmd)
  uint32_t header[5] = { 0x31525046, result, origin, cmd, FP_SHM_SIZE }; /* FPR1 */
  int resid = 0, err;
 
- err = vnode_open(FP_RESPONSE_PATH, FWRITE | O_CREAT | O_NOFOLLOW, 0600, 0, &vp, ctx);
+ err = vnode_open(FP_RESPONSE_PATH, FWRITE | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600, 0, &vp, ctx);
  if (err != 0) {
   return err;
  }
@@ -3399,7 +3403,7 @@ fp_cmd_execute(void)
 		/*
 		 * ENROLL_INIT as Samsung's enroll() sends it (libbauthtzcommon BAuth_Enroll_Init): +0x10 the user id (a
 		 * string, <= 0x100), +0x110 the finger's index (1-4, BAuthUserInfo get_req_bioindex), +0x114 7, +0x118 a
-		 * name (<= 100). "einit [INDEX]".
+		 * storage path (<= 100). "einit [INDEX]".
 		 */
 		uint32_t idx = 0, e;
 

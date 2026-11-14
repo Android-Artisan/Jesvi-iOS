@@ -1,38 +1,42 @@
 # S20 ultrasonic fingerprint research
 
-## Status (2026-11-14, post-reboot audit)
+## Status (2026-11-14, handover after fresh registration)
 
-Factory-calibrated enrollment reached 100% in the previous session. There is
-**no verified match or native fingerprint unlock**. Same-boot identify attempts
-returned no-match. Crucially, those tests and the first audit Init call reused the
-kernel's in-memory template; they did not establish that the saved file was valid.
+**Enrollment and saved-template restoration work; matching and iOS fingerprint
+unlock do not.** Read [FINGERPRINT-HANDOVER.md](../FINGERPRINT-HANDOVER.md) first.
 
-The user approved installation of audit commit `d8a8ee74`. The kernel-slot write
-was read-back verified; the previous slot is backed up locally at
-`out/fingerprint/slot-backup-200455.bin`. The phone reports the `audit-v1` marker.
-Native keybag state was locked (`AKS 0x1`) after boot, and the user confirmed
-passcode unlock, lock and a second passcode unlock work.
+The phone runs structured exchange kernel `7e8181fe`, installed with explicit
+approval and loader read-back verification. After each of the two approved boots,
+the native keybag started locked (`AKS 0x1`), and the user confirmed passcode
+unlock, lock, then a second passcode unlock work.
 
-Both factory CBGE slots load successfully. A true file load after reboot fails:
-Identify Init returns error **31**, and the TA trace identifies the immediate
-failure as **outer HMAC mismatch (28)** during the store-path-bound check. The file
-is recognized as version 3, but no template is accepted. This does not prove
-whether the mismatch is due to key/context restoration, path binding or bad saved
-bytes. The original 376,182-byte file is preserved, including a private on-phone
-backup. No fresh enrollment or tapping test was started during this audit.
+The restore bug is confirmed and repaired in source: ENROLL_INIT `+0x118` is a
+**storage path**, not a name. The old code supplied `"fingerprint"` there, binding
+the encrypted template's outer HMAC to that 100-byte zero-padded value. Restoring
+that exact value with CONTROL `0x30` made the original disk file load successfully
+after reboot (finger ID `1:`), without changing the template or bypassing its MAC.
+The new kernel source supplies the same path automatically in Identify Init;
+that kernel build is prepared locally, not installed. Keep the legacy value even
+if the project is renamed.
 
-Missing HAT/SID metadata remains an authentication integration gap, not a proven
-explanation for either the earlier no-matches or this integrity failure. A prior
-claim that the template already survives reboot was premature.
+The user then requested fresh registration followed by matching. Registration
+finished with 17 accepted presses, 18 quality retries, 100%. The new 376,182-byte
+file differs from the preserved original. It was explicitly read from disk and
+sent through the structured client (bypassing the kernel template cache); the TA
+accepted it and returned finger ID `1:`. The immediate match trial still returned
+error `0x20`, with no image-quality errors and no verified match. This isolates
+template restoration from the outstanding comparison failure.
 
-Work stays on `feat/s20-fingerprint`; main/master and the release DevOps worktree
-are untouched. A structured `exchange-v2` research bridge is built locally and
-host-tested, **not installed**. It allows proper client-side request packing,
-metadata handling and file-reload experiments without a kernel rebuild per trial.
-Installing it requires a separate reboot approval; the one approved audit-v1
-installation has completed. See [the bridge instructions](../tools/fingerprint/RESEARCH-EXCHANGE.md).
-Earlier dated sections are history; this status and the protocol audit take
-precedence. The existing software passcode remains the unlock backend.
+There is no proven causal link between missing secure-user-ID/HAT metadata and
+these no-matches. Legitimate passcode-bound authentication still needs that work,
+but do not promise that adding an arbitrary ID will repair the matcher. PREPARE
+in the tested empty first-call form returned zero sealed metadata bytes.
+
+TA QDBL diagnostic export `0x4c` produced 4,984 private bytes containing eight
+verify records and eight identify outcomes. They are captured for offline analysis;
+no more pressing is needed now. The user is handing the phone to another kernel
+agent. Main/master and the release DevOps worktree are untouched. Source is on
+`feat/s20-fingerprint`; private logs/templates/calibration remain uncommitted.
 
 The user wants the actual under-display fingerprint sensor to authenticate native
 iOS unlock, with passcode fallback. Merely detecting a finger, fabricating a
@@ -323,7 +327,7 @@ built for arm64, `scripts/Decomp.java`).
 | +0xc | op code sent to the TA |
 | +0x10 | string argument (user id / CBGE slot number as text, <= 0x100) |
 | +0x110 | data in (ENROLL_INIT: finger index; CONTROL: payload) |
-| +0x114, +0x118 | ENROLL_INIT: 7, name ("fingerprint") |
+| +0x114, +0x118 | ENROLL_INIT: 7, authenticated storage path (legacy "fingerprint") |
 | +0xa010 | generic data length (non-control commands) |
 | +0xfa110 | CONTROL_OP data length |
 | +0x177004 | response status (echoes the command) |
@@ -659,3 +663,38 @@ It never automatically retries a TA command, resets Gatekeeper, signs a fabricat
 HAT or connects results to iOS unlock. All payload files stay mode 0600 in private
 directories. Eight host tests plus the C parser/request tests pass; the kernel
 compiles. Root-only file/transport behavior on exchange-v2 still needs live validation.
+
+### Confirmed legacy storage-path fix and current diagnostic boundary
+
+`BAuth_Enroll_Init` in `libbauthtzcommon.so` at `0x1047a4` explicitly names its
+last argument `store_path` and copies it to `+0x118`. The service at `0x14d9ec`
+passes its storage path (`service +0x144a9fa`), not a display label. Restoring the
+legacy `"fingerprint"` value on the live exchange-v2 kernel changed the original
+file's result from outer-HMAC failure/error31 to successful Init/finger1. KDF
+per-boot instability was a hypothesis; this result supplies a simpler confirmed
+explanation for the observed restore failure.
+
+The latest source names this constant `FP_STORE_PATH`, preserves it during
+Enroll Init and supplies it at Identify Init `+0x6455d` on every call. The Python
+builder uses `LEGACY_STORE_PATH` too. The new kernel also opens research files
+nonblocking so a wrong FIFO type cannot hang before type validation; that change
+is built, not installed or hardware-qualified. Existing regular-file transport,
+bad-mode, hardlink and symlink rejection were exercised on exchange-v2.
+
+The live view now uses one private multiplexed SSH connection to read the kernel
+message buffer. It does not poll/restart rwlogd. A byte cursor avoids replaying
+old matches, and the view distinguishes REGISTERING YOUR THUMB from MATCHING
+SAVED THUMB. Sensor candidates remain explicitly unverified; native iOS unlock is
+not enabled. Host cursor/view tests pass.
+
+QDBL data is separate from disabled level-2 text logs. The client
+`FPBAuthService::getAdditionalLog` (`0x14bcc8`) uses CONTROL `0x4c`. The TA
+`qfp_get_qdbl_info` copies and clears a ring up to 0x8000 bytes. The research
+request used an explicit 0x8000 output capacity, not an arbitrary small buffer.
+Record headers are `<u8 0x28, u8 type, u16 LE size, ...>`; schema comes from
+`0x15d124`, `0x15e9f0`, metric offsets from `0x15d644`. The private capture parses
+exactly to 4,984 bytes. Use `tools/fingerprint/qdbl.py` for an allowlisted summary.
+The eight type-7 records all show opaque metrics `b3=8,b4=1,b5=255`; the eight
+type-11 records show `matched_flag=0, metric_cb=2, aed=0`. These metric meanings
+are **not yet decoded**; do not label metric_cb=2 as a known failure reason or
+change thresholds based on it. Trace their writers next, before more touch tests.

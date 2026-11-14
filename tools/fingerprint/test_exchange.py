@@ -58,6 +58,8 @@ class WireTests(unittest.TestCase):
         self.assertEqual(wire.u32(p, 12), 0x30)
         self.assertEqual(wire.u32(p, 0xfa110), 100)
         self.assertEqual(p[0x110:0x174], path.encode().ljust(100, b'\0'))
+        legacy = wire.identify_init(b'encrypted-fixture')
+        self.assertEqual(legacy[0x6455d:0x645c1], b'fingerprint'.ljust(100, b'\0'))
         p = wire.identify_init(b'encrypted-fixture', path=path)
         self.assertEqual(p[0x6455d:0x645c1], path.encode().ljust(100, b'\0'))
         for invalid in ('', 'x' * 100, 'x\0y'):

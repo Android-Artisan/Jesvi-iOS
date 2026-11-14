@@ -1,13 +1,15 @@
 # Structured FINGE research exchange
 
 This is a manually armed debugging client on `feat/s20-fingerprint`. It is not
-an iOS biometric provider or unlock API. The running audit-v1 kernel cannot use
-it. The exchange-v2 kernel must be installed during an approved reboot first.
+an iOS biometric provider or unlock API. The running exchange-v2 kernel supports it, installed with explicit approval.
+An older audit-v1 kernel cannot use it; the CLI refuses that marker.
 
 The previous session's cache hid the absence of a real disk-load test. After the
-audit reboot, the saved template failed the TA's outer integrity check. Preserve
-that file, both factory calibration slots and the passcode; do not re-enroll,
-regenerate keys or replace metadata automatically to hide the failure.
+audit reboot the outer integrity check failed because the legacy storage path
+was not restored. Supplying the exact original value ("fingerprint") fixed the
+load; a later fresh enrollment also passed a forced disk reload. Matching still
+fails. Preserve original/fresh files, factory calibration and passcode. See
+FINGERPRINT-HANDOVER.md before further experiments.
 
 ## Files and synchronization
 
@@ -46,9 +48,9 @@ python3 - <<'PY'
 import os, sys
 sys.path.insert(0, 'tools/fingerprint')
 import wire
-# A consistent logical path is authenticated by the TA. Do not change the path
-# for an existing template as a speculative repair or discard its old value.
-packet = wire.storepath('/var/root/fp-research/user-0')
+# The old ENROLL_INIT supplied "fingerprint" as its logical storage path.
+# Restore that exact legacy value for existing files; do not rename it.
+packet = wire.storepath(wire.LEGACY_STORE_PATH)
 fd = os.open('out/fingerprint/private/path-request.bin',
              os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, 'wb') as output:

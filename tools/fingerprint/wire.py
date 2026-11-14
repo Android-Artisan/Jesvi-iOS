@@ -5,6 +5,7 @@ SIZE = 0x2EE00C
 RESPONSE = 0x177008
 ERROR = 0x2EE008
 ENVELOPE = struct.Struct('<4sIIII')
+LEGACY_STORE_PATH = 'fingerprint'
 COMMANDS = (1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13)
 
 
@@ -54,7 +55,7 @@ def prepare(metadata=b'', operation=None):
     return packet
 
 
-def identify_init(template, metadata=b'', path=''):
+def identify_init(template, metadata=b'', path=LEGACY_STORE_PATH):
     if not 0 < len(template) <= 0x64000 or len(metadata) > 0x400:
         raise ValueError('Identify input exceeds wire capacity or template is empty')
     value = path.encode('utf-8')
