@@ -53,7 +53,7 @@ func openRecovery(c Config, archive *os.File) (*linuxDevice, error) {
 	if runtime.GOARCH != "arm64" || os.Geteuid() != 0 || prop("ro.twrp.version") == "" {
 		return nil, errors.New("requires arm64 root TWRP")
 	}
-	if e := verifyIdentity(c, prop("ro.product.model"), prop("ro.boot.bootloader"), prop("ro.product.device"), prop("ro.board.platform"), prop("ro.boot.flash.locked"), prop("ro.boot.vbmeta.device_state")); e != nil {
+	if e := verifyRecoveryIdentity(c, prop); e != nil {
 		return nil, e
 	}
 	readInt := func(path string) (int, error) {

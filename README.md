@@ -21,6 +21,7 @@ instructions on Samsung hardware.
 | Installation steps, current limits and package verification | [Installation guide](docs/release/install.md) |
 | Choose TWRP / Odin / host script and understand recovery | [Flashing design](docs/release/flashing.md) |
 | Configure GitHub, CI and image retention | [Repository and CI](docs/release/operations.md) |
+| Roll back or return to stock Android | [Recovery/rollback guide](docs/release/rollback.md) |
 | Cut a release | [Release checklist](docs/release/checklist.md) |
 | Find subsystem notes | [Documentation index](docs/README.md) |
 
@@ -88,4 +89,5 @@ licenses: [NOTICE](NOTICE), [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md),
 [historical upstream README](docs/upstream/README.md) describes Qualcomm/QEMU work.
 Jesvi iOS is independent of Apple and Samsung.
 
-Local private package automation: [one-command build](docs/release/local-build.md).
+Local full builds produce a TWRP ZIP by default (preflight-only until explicitly
+enabled with `--experimental`). Local private package automation: [one-command build](docs/release/local-build.md).

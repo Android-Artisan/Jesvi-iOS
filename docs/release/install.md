@@ -31,21 +31,16 @@ From the release checkout on a prepared Mac:
 ./run.sh verify --bundle dist/s20-001
 ```
 
-The successful local validation package is at `dist/local-validation/` and its
-archive is `dist/local-validation.tar`. See [local build](local-build.md) for
+The retained local validation candidate is at `dist/local-validation/`. The
+redundant transport tar was removed during authorized cleanup; its TWRP ZIP is
+retained. New local builds generate a TWRP ZIP by default. See [local build](local-build.md) for
 one-time inputs, host tools, caching and logs.
 
-If transporting an archive to another machine, keep its companion `.tar.sha256`.
-For the existing validation archive, verify and extract into a **new** directory:
+Verify a newly built ZIP from its parent directory before any TWRP trial:
 
 ```sh
-# Run from the release checkout; the archive and checksum are in dist/.
-(cd dist && shasum -a 256 -c local-validation.tar.sha256)
-mkdir -p out/install-inspection
-# Use this destination only if local-validation is not already inside it.
-test ! -e out/install-inspection/local-validation
-tar -xf dist/local-validation.tar -C out/install-inspection
-./run.sh verify --bundle out/install-inspection/local-validation
+(cd dist && shasum -a 256 -c s20-001.zip.sha256)
+./run.sh verify --bundle dist/s20-001
 ```
 
 Use the checksum received through a trusted channel when distributing packages;
@@ -139,3 +134,6 @@ coordinate the shared phone and explicit reboot permission before any trial.
 See [flashing design](flashing.md), [validation](validation.md) and the
 [release checklist](checklist.md). Until these gates close, the package is for
 controlled developer qualification rather than an end-user installation release.
+
+[Rollback / return to stock Android](rollback.md) covers the separate recovery
+paths. Restoring BOOT alone is not an Android restoration.

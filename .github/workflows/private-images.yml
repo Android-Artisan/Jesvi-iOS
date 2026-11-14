@@ -1,8 +1,12 @@
-name: Private image candidate
+name: Private TWRP candidate
 # Only enable in a PRIVATE build repository with disposable macOS workers.
-# Never attach the developer's Mac/phone or private inputs to public PR jobs.
 on:
   workflow_dispatch:
+    inputs:
+      experimental_installer:
+        description: Enable hardware-unqualified writes after physical confirmation (otherwise preflight-only)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -24,16 +28,33 @@ jobs:
         run: |
           test -n "$PRIVATE_INPUTS_ROOT"
           python3 tools/release/private_store.py stage --snapshot "$PRIVATE_INPUTS_ROOT"
-      - name: Assemble private candidate
+      - name: Build and verify final TWRP ZIP
         env:
           HACKIOS_IMAGE_CACHE: /var/cache/exynos990/private-images
+          EXPERIMENTAL_INSTALLER: ${{ inputs.experimental_installer }}
         run: |
-          ./build.sh images --device x1slte --development
-          ./build.sh package --output dist/candidate
-          ./run.sh verify --bundle dist/candidate
-      - name: Retain privately
+          if [ "$EXPERIMENTAL_INSTALLER" = true ]; then
+            ./build.sh local --output dist/candidate --experimental
+          else
+            ./build.sh local --output dist/candidate
+          fi
+          test -s dist/candidate.zip
+          test -s dist/candidate.zip.sha256
+          test -s dist/candidate.zip.build.json
+      - name: Retain deduplicated image objects privately
         env:
           PRIVATE_STORE_ROOT: ${{ vars.PRIVATE_STORE_ROOT }}
         run: |
           test -n "$PRIVATE_STORE_ROOT"
           python3 tools/release/private_store.py retain --bundle dist/candidate --store "$PRIVATE_STORE_ROOT"
+      - name: Downloadable ZIP in this private workflow run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x1slte-twrp-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            dist/candidate.zip
+            dist/candidate.zip.sha256
+            dist/candidate.zip.build.json
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

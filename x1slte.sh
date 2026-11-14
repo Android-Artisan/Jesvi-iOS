@@ -34,7 +34,7 @@
 #   ./x1slte.sh wtail                  follow it live (Ctrl-C ends)
 #   ./x1slte.sh hlogo                  (Download Mode) the boot splash: the Apple logo instead of Samsung's
 #   ./x1slte.sh standalone             (once, asks first) the boot image into `boot`: power-on goes to the
-#                                   menu, Android no longer boots (back: heimdall --BOOT $HOME/ios-port-research/device/backup/20261105-203534/boot.img)
+#                                   menu, Android no longer boots (return to Android: full stock restore; see docs/release/rollback.md)
 #
 # Without a cmdline, payload and ship use DEFAULT_CMDLINE: the configuration measured best so far
 # (PLANS/01-performance.md). Never give cpus= and cpumask= together: XNU panics.
@@ -502,7 +502,8 @@ cmd_hlogo() {
 cmd_standalone() {
 	echo "This writes the HackiOS boot image into the phone's \`boot\` partition: every power-on goes to"
 	echo "the HackiOS menu and Android no longer starts (its data is untouched)."
-	echo "Undo: Download Mode, then  $HEIMDALL flash --BOOT $HOME/ios-port-research/device/backup/20261105-203534/boot.img"
+	echo "Return to Android requires full stock firmware restoration and an Android data reset; see docs/release/rollback.md"
+	echo "Restoring BOOT alone cannot restore Android after super/userdata were converted to iOS."
 	printf "Type yes to go on: "
 	read -r answer
 	[ "$answer" = yes ] || die "nothing written"

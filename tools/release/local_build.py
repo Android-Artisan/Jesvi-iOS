@@ -37,7 +37,7 @@ def preflight(output):
     if errors:
         raise ValueError('\n'.join(errors))
 
-def build(output, check_only=False, twrp=False, experimental=False):
+def build(output, check_only=False, twrp=True, experimental=False):
     output = output.absolute()
     preflight(output)
     if check_only:

@@ -63,10 +63,12 @@ empty maintainer arrays until owners volunteer.
   Reports changes; never merges or silently updates the build inputs. Dependabot
   opens reviewed action-version changes. "Auto pull" means check out the triggering
   commit for builds; upstream source updates remain reviewed lock changes.
-- **Private image candidate:** disabled unless `ENABLE_PRIVATE_IMAGE_BUILDS=true`
+- **Private TWRP candidate:** disabled unless `ENABLE_PRIVATE_IMAGE_BUILDS=true`
   in a private repository and run on its default branch. A dedicated disposable
   macOS worker stages the locked input snapshot, builds, verifies and retains it
-  on a private persistent volume. No OS image is uploaded as a GitHub artifact.
+  on a private persistent volume. The final TWRP ZIP/checksum/provenance are uploaded
+  as a **private workflow artifact** for seven days; source/public CI still uploads
+  no OS images. Artifact storage quota must cover the multi-GB package.
 - **Draft source release:** disabled unless `ENABLE_DRAFT_RELEASES=true`. A `v*`
   tag runs strict publication inventory and host checks, then creates a **draft**
   behind the release environment. Initial inventory deliberately blocks this
@@ -131,3 +133,18 @@ recovery/distribution record.
 GitHub's [cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
 and [secure-use guide](https://docs.github.com/en/actions/reference/security/secure-use)
 explain cache visibility, immutable keys, least privilege and action pinning.
+
+## Retrieving the final TWRP ZIP
+
+The full private workflow now calls the same `build.sh local` pipeline as local
+builds and requires its `.zip`, `.zip.sha256` and `.zip.build.json` outputs before
+retention/upload. Its dispatch checkbox `experimental_installer` defaults false
+(read-only TWRP preflight); selecting it enables the unqualified writer, which
+still requires physical holds on the phone. No workflow flashes or reboots a phone.
+
+Download `x1slte-twrp-<commit>-<run-id>` from the private run's artifacts. GitHub's
+UI wraps the files in an outer artifact ZIP: extract that outer ZIP, verify the
+inner `candidate.zip` checksum, and use only **candidate.zip** as the TWRP package.
+Do not select GitHub's outer download ZIP in recovery. The source-only `CI`
+workflow remains kernel/checks only. Remote repository/worker/environment/volumes
+must still be configured; a GitHub run has not been demonstrated in this session.

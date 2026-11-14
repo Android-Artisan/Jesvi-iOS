@@ -1,8 +1,8 @@
 # Local storage cleanup review — 2026-11-14
 
-Read-only inventory of the project workspace. **No cleanup was performed as part
-of this inventory.** The owner asked to review candidates first. Approval to remove
-only this review's obsolete validation builds has been requested separately.
+Initial read-only inventory of the project workspace. The owner subsequently
+authorized cleanup of stale files; see **Cleanup performed** below for actual
+removals and measured reclaimed space. Other agents' files/processes were preserved.
 
 At inspection, `df` reported approximately **45 GiB free** on the 228 GiB data
 volume. The project workspace occupies approximately **59 GiB** by `du`, primarily
@@ -94,3 +94,22 @@ image, perform only the approved removals, then measure `df` again. Keep the
 report updated with actual results; do not report estimated savings as recovered
 space. Compressing old text logs is preferable when their debugging evidence may
 still be useful.
+
+## Cleanup performed — 2026-11-14
+
+The user subsequently authorized local cleanup. Removed only this release task's
+obsolete `xnu-src/`, four superseded `.cache/release-kernel/` entries, and the
+redundant `dist/local-validation.tar` with its checksum. Before removing the tar,
+its candidate manifest was checked against both the retained candidate directory
+and the retained TWRP ZIP. No active build had those trees open.
+
+Measured free space increased from **18,261,491,712** to **24,150,503,424 bytes**:
+**5,889,011,712 bytes (5.49 GiB) recovered**. Later/concurrent activity can change
+free-space readings. The latest kernel key `4c19e43e05d9a776ec9e00a8cd044632db76a152c6bbd08e2a5f4d6bbfeabbec`,
+current source/output, TWRP ZIP, unpacked candidate, private image cache, extraction,
+SDK/toolchains, firmware and all device backups were preserved. Other worktrees
+and running application/agent/fingerprint processes were left untouched.
+
+This recovers disk storage, not application RAM. The inspection showed about
+3.7 GiB of swap in use; no processes were killed and no swap files were removed.
+An exact record is in ignored `out/cleanup-performed.json`.

@@ -48,3 +48,27 @@ func TestUntrustedErrorTextCannotInjectRecoveryCommands(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestSamsungBootloaderPropertiesTakePrecedenceOverGenericRecoveryTemplate(t *testing.T) {
+	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}}
+	values := map[string]string{"ro.boot.em.model": "SM-G980F", "ro.product.model": "SM-G981B", "ro.bootloader": "G980FXXSNHYB7", "ro.product.device": "x1s", "ro.board.platform": "exynos990", "ro.boot.flash.locked": "0", "ro.boot.vbmeta.device_state": "unlocked"}
+	get := func(key string) string { return values[key] }
+	if e := verifyRecoveryIdentity(c, get); e != nil {
+		t.Fatal(e)
+	}
+	values["ro.boot.em.model"] = "SM-G981B"
+	values["ro.product.model"] = "SM-G980F"
+	if e := verifyRecoveryIdentity(c, get); e == nil {
+		t.Fatal("wrong hardware model accepted despite product template")
+	}
+	delete(values, "ro.boot.em.model")
+	values["ro.boot.bootloader"] = "different"
+	if e := verifyRecoveryIdentity(c, get); e == nil {
+		t.Fatal("conflicting bootloaders accepted")
+	}
+	delete(values, "ro.bootloader")
+	values["ro.boot.bootloader"] = "G980FXXSNHYB7"
+	if e := verifyRecoveryIdentity(c, get); e != nil {
+		t.Fatal("qualified fallback rejected", e)
+	}
+}

@@ -85,7 +85,7 @@ def main():
     p = sub.add_parser('local')
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--check-only', action='store_true')
-    p.add_argument('--twrp', action='store_true', help='also build a TWRP preflight ZIP')
+    p.add_argument('--twrp', action=argparse.BooleanOptionalAction, default=True, help='build TWRP ZIP by default; --no-twrp requests a transport tar')
     p.add_argument('--experimental', action='store_true', help='with --twrp, enable unqualified writes after physical confirmation')
     p = sub.add_parser('twrp')
     p.add_argument('--bundle', required=True, type=Path)

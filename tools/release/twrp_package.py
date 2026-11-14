@@ -28,10 +28,22 @@ def package(bundle, output, mode='choose', experimental=False):
     sources = {str(p.relative_to(ROOT)): p for p in (ROOT / 'tools/recovery').iterdir() if p.suffix == '.go' or p.name == 'go.mod'}
     sources['builder'] = Path(__file__)
     sources['toolchain'] = Path(__file__).with_name('go_toolchain.py')
+    sources['filesystem-checks'] = Path(__file__).with_name('filesystem_checks.py')
     source_key = fingerprint(sources, {})
     manifest, device = verify(bundle)
+    avb, avb_key = ROOT / 'inputs/tools/avbtool.py', ROOT / 'inputs/tools/testkey_rsa4096.pem'
+    for tool in (avb, avb_key):
+        if tool.is_symlink() or not tool.is_file():
+            raise ValueError('reviewed AOSP AVB tool/public test key inputs required')
+    ledger = json.loads((ROOT / 'inputs/private-inputs.lock.json').read_text())
+    if fingerprint({'inputs/tools': ROOT / 'inputs/tools'}, {}) != ledger['inputs']['inputs/tools']:
+        raise ValueError('AVB tool inputs differ from reviewed input lock')
+    subprocess.run(['python3', '-I', str(avb), 'verify_image', '--image', str(bundle / 'recovery.img'),
+                    '--key', str(avb_key)], cwd=ROOT, check=True)
     kit = ROOT / 'userland/hfs-kit.bin'
     hfs_kit(kit, device['partitions']['userdata'])
+    from filesystem_checks import verify as verify_filesystems
+    verify_filesystems(bundle / 'recovery.img', bundle / 'system.apfs', kit, device)
     config = {'schema': 1, 'device': device['id'], 'mode': mode,
               'allow_writes': experimental, 'installer_validated': False,
               'models': device['models'], 'bootloaders': device['bootloaders'],
@@ -69,7 +81,10 @@ def package(bundle, output, mode='choose', experimental=False):
                   'Keep verified off-device backups and demonstrated Download Mode rescue.\n'
                   'Existing HFSX data is preserved in update/choose mode. Fresh install destroys userdata.\n'
                   'Physical Volume Up holds are required before writes. Volume Down/Power cancels.\n'
-                  'This is not an authenticated public release. See docs/release/twrp.md.\n').encode())
+                  'To return Android: independently qualified Download Mode/full stock BL/AP/CP/CSC restore, then stock recovery factory reset.\n'
+                  'BOOT-only restoration cannot restore Android super/data. Do not use HOME_CSC for cross-filesystem restoration.\n'
+                  'Previous compatible iOS candidates use update-only ZIPs; arbitrary data downgrades are not guaranteed.\n'
+                  'This is not an authenticated public release. See docs/release/twrp.md and rollback.md.\n').encode())
             z.write(kit, 'hfs-kit.bin')
             for name in ('boot.img', 'recovery.img', 'system.apfs'):
                 z.write(bundle / name, name)
@@ -94,5 +109,5 @@ def package(bundle, output, mode='choose', experimental=False):
         'go_version': subprocess.check_output([str(go), 'version'], text=True).strip(),
         'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         'source_dirty': bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=ROOT)),
-        'hardware_qualified': False, 'writes_enabled': experimental}, indent=2) + '\n')
+        'hardware_qualified': False, 'writes_enabled': experimental, 'avb_test_key_verification': True, 'native_apfs_checks': True, 'hfs_seed_fsck_check': True}, indent=2) + '\n')
     print(f'TWRP ZIP: {output}; writes={experimental}; hardware qualification pending')

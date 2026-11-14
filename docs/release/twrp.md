@@ -42,13 +42,17 @@ From an already built/verified candidate:
 Or build inputs/images/ZIP with one command (no duplicate transport tar):
 
 ```sh
-./build.sh local --output dist/s20-001 --twrp --experimental
+./build.sh local --output dist/s20-001 --experimental
 ```
 
+TWRP is the default local output (`--no-twrp` requests a transport tar).
 Without `--experimental`, the ZIP is preflight-only even if selected in TWRP.
 Existing output paths are refused. The builder uses a checksum-pinned Go toolchain
 (no third-party Go modules), cross-compiles a static Linux/AArch64 executable,
-packages images without extracting them to RAM, checks ZIP CRCs, then runs the
+verifies recovery AVB with the reviewed AOSP tool/public test key, packages images
+without extracting the large system image to RAM, runs native read-only APFS checks and checks an HFSX seed reconstructed in a
+private sparse virtual image (attached read-only, never mounted, then detached),
+checks ZIP CRCs, then runs the
 same payload validators on the host before publishing the ZIP. Companion files
 are `.zip.sha256` and `.zip.build.json` (installer source identity, original
 candidate identity, toolchain, archive checksum and qualification state).
@@ -137,8 +141,11 @@ in memory before writing begins, so their final commits do not depend on a live
 sideload transport. The multi-GB system image is streamed; none of it is unpacked
 to `/tmp` or staged on the data being initialized.
 
-The format-kit CRC and current AVB structure checks are integrity/layout checks,
-not full HFS/APFS filesystem validation or cryptographic release authentication.
+The format-kit CRC, AVB structure checks and host-side public-test-key verification
+are integrity/layout checks,
+not cryptographic release authentication. Native host APFS and reconstructed
+HFSX filesystem checks are now required by the ZIP builder; live filesystem mount
+and hardware behavior remain separate tests.
 The final boot head/AVB behavior, first-install filesystem mount, repeated cold
 boot, preservation of passcode/keychain data, failure interruption and independent
 rescue still need hardware acceptance.
@@ -156,3 +163,7 @@ Sources: [AOSP recovery ZIP layout](https://source.android.com/docs/core/ota/non
 [official S20 Exynos TWRP](https://twrp.me/samsung/samsunggalaxys20.html),
 [Go downloads/checksums](https://go.dev/dl/),
 [Go runtime requirements](https://go.dev/wiki/MinimumRequirements).
+
+For previous iOS candidate restoration and stock Android return, see
+[rollback](rollback.md). The [ExtremeROM comparison](extremerom-review.md) records
+which source details were used and why S10 repartition steps are not copied.

@@ -44,3 +44,24 @@ func verifyIdentity(c Config, model, bootloader, product, soc, locked, state str
 	}
 	return nil
 }
+
+// Samsung recovery templates can report a generic product model. Prefer the
+// bootloader-supplied hardware model used by ExtremeROM's device assertions.
+func verifyRecoveryIdentity(c Config, get func(string) string) error {
+	model := get("ro.boot.em.model")
+	if model == "" {
+		model = get("ro.product.model")
+	}
+	bootloader, fallback := get("ro.bootloader"), get("ro.boot.bootloader")
+	if bootloader != "" && fallback != "" && bootloader != fallback {
+		return errors.New("conflicting bootloader properties")
+	}
+	if bootloader == "" {
+		bootloader = fallback
+	}
+	soc := get("ro.board.platform")
+	if soc == "" {
+		soc = get("ro.hardware")
+	}
+	return verifyIdentity(c, model, bootloader, get("ro.product.device"), soc, get("ro.boot.flash.locked"), get("ro.boot.vbmeta.device_state"))
+}

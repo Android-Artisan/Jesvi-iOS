@@ -10,7 +10,9 @@ This command prepares the pinned iOS 16.5 / 20F66 extraction from Apple's CDN,
 checks its content/recipe receipt, generates the loader identity from Apple’s
 small device-tree member, locks the prepared inputs, compiles the kernel,
 OpenH264, Mesa/AIR and userland, assembles images, packages and verifies the
-candidate, and writes:
+candidate, and writes a **TWRP ZIP by default**. Until hardware qualification, the default
+is read-only preflight; add `--experimental` for the physical-confirmation writer.
+The outputs are:
 
 ```text
 dist/x1slte-candidate-001/
@@ -19,15 +21,17 @@ dist/x1slte-candidate-001/
   system.apfs
   manifest.json
   SHA256SUMS
-dist/x1slte-candidate-001.tar
-dist/x1slte-candidate-001.tar.sha256
+dist/x1slte-candidate-001.zip
+dist/x1slte-candidate-001.zip.sha256
+dist/x1slte-candidate-001.zip.build.json
 ```
 
-The tar is a private development archive. It has no Odin/TWRP installer backend.
+The ZIP uses the native [TWRP backend](twrp.md). It is a private experimental
+candidate, with no hardware qualification or Odin backend.
 No phone is contacted, flashed, formatted or rebooted. There is no claim of
 hardware qualification. Use a new output name for each candidate; existing output
 is never overwritten. Logs are in `out/local-build/01-apple.log` through
-`05-verify.log`; a failed stage stops the pipeline and prints its log path.
+`06-twrp.log`; a failed stage stops the pipeline and prints its log path.
 A per-checkout lock rejects concurrent local builds.
 
 ## One-time setup
@@ -81,9 +85,12 @@ The command completed locally and produced `dist/local-validation.tar` on
 2026-11-14. Actual extraction and system-image cache hits were observed, and the
 packaged system hash matched the cached object. See [validation](validation.md).
 
-## Optional TWRP output
+## Output mode
 
-`./build.sh local --output dist/s20-002 --twrp` emits `dist/s20-002.zip` instead of a duplicate transport tar
-in read-only preflight mode. Add `--experimental` to enable the implemented but
-hardware-unqualified writer and physical confirmation flow. To wrap an existing
-candidate without rebuilding its images, use `./build.sh twrp --bundle ... --output dist/NAME.zip`. See [TWRP package](twrp.md) for exact commands and data policy.
+TWRP ZIP is now the default; `--twrp` remains an explicit equivalent. Add
+`--experimental` to enable the hardware-unqualified writer after physical
+confirmation. To request the older transport tar instead, use `--no-twrp`;
+that tar cannot be flashed in TWRP or Odin. No duplicate tar is generated with ZIP
+output. Existing candidates can be wrapped without rebuilding their images with
+`./build.sh twrp --bundle ... --output dist/NAME.zip`.
+See [TWRP](twrp.md) and [rollback/return to Android](rollback.md).
