@@ -899,6 +899,17 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		sysroot/System/Library/LaunchAngels sysroot/System/Library/xpc/launchd.plist
 	ln -s /redwood/LaunchDaemons sysroot/System/Library/LaunchDaemons
 	mkdir -p sysroot/redwood sysroot/sbin
+	# The default wallpaper (B, 2026-11-14, the user's pick): a Photos poster with its lock-screen clock style,
+	# layout and paired home screen -- PosterBoard's store (PRBPosterExtensionDataStore) reduced to that one poster.
+	# init copies it into a data volume that has no poster store yet (userland/src/init.c, default_wallpaper); a
+	# phone with wallpapers of its own is never touched. 3.5 MB (the editing source is HEIC; snapshots are left out,
+	# PosterBoard renders them again).
+	if [ -d defaults/wallpaper/PRBPosterExtensionDataStore ]; then
+		mkdir -p sysroot/System/Library/Redwood/DefaultWallpaper
+		cp -R defaults/wallpaper/PRBPosterExtensionDataStore sysroot/System/Library/Redwood/DefaultWallpaper/
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type d -exec chmod 0777 {} +
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type f -exec chmod 0644 {} +
+	fi
 	# where the kernel mounts the iOS root container off the phone's flash (boot-arg apfs_volume=):
 	# iOS has no /System/Volumes, and nothing can make a directory in this image once it is built
 	mkdir -p sysroot/System/Volumes/iOS

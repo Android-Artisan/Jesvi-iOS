@@ -1375,6 +1375,79 @@ restore_var(void)
 	}
 }
 
+#ifndef ENOENT
+#define ENOENT 2
+#endif
+
+/* Hand a tree to an owner: every directory and file under PATH, PATH included. 1 if all of it. */
+static int
+chown_tree(const char *path, int uid, int gid)
+{
+	char buf[4096], f[512];
+	struct stat st;
+	off_t position = 0;
+	ssize_t n;
+	int ok, fd;
+
+	if (lstat(path, &st) != 0 || lchown(path, uid, gid) != 0) {
+		return 0;
+	}
+	if ((st.st_mode & S_IFMT) != S_IFDIR) {
+		return 1;
+	}
+	if ((fd = open(path, O_RDONLY | O_DIRECTORY, 0)) < 0) {
+		return 0;
+	}
+	ok = 1;
+	while (ok && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; ok && at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const char *name = ((struct dirent *)(buf + at))->d_name;
+
+			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+				continue;
+			}
+			if (strlen(path) + strlen(name) + 2 > sizeof(f)) {
+				ok = 0;
+				break;
+			}
+			strcpy(f, path);
+			strcpy(f + strlen(f), "/");
+			strcpy(f + strlen(f), name);
+			ok = chown_tree(f, uid, gid);
+		}
+	}
+	close(fd);
+	return ok;
+}
+
+/*
+ * The default wallpaper (userland/build.sh: a Photos poster with its lock-screen clock and paired home
+ * screen, PosterBoard's store reduced to it): copied into a data volume that has no poster store at all --
+ * a new one, or one wiped -- and owned by mobile, as PosterBoard keeps it. A phone with wallpapers of its own
+ * (any store there, even an empty one) is left exactly as it is. After restore_var, so a var_store volume
+ * is judged by what it brought back.
+ */
+static void
+default_wallpaper(void)
+{
+	static const char from[] = "/System/Library/Redwood/DefaultWallpaper/PRBPosterExtensionDataStore";
+	static const char to[] = "/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore";
+	static const char part[] = "/private/var/mobile/Library/Application Support/.PRBPosterExtensionDataStore.redwood";
+	struct stat st;
+	int files = 0;
+
+	if (lstat(from, &st) != 0 || lstat(to, &st) == 0 || errno != ENOENT) {
+		return;
+	}
+	printf("\n-- the default wallpaper (a data volume without one) --\n");
+	/* made under another name and renamed whole: a copy cut short (the phone off halfway) is not a store */
+	if (copy_tree(from, part, &files) && chown_tree(part, 501, 501) && rename(part, to) == 0) {
+		printf("  %d files in %s\n", files, to);
+	} else {
+		printf("  %s: %s (a part left by an earlier try blocks it: %s)\n", to, strerror(errno), part);
+	}
+}
+
 static int
 count_entries(const char *path)
 {
@@ -1818,6 +1891,7 @@ main(int argc, char **argv, char **envp)
 	show_system();
 	mount_writable();
 	restore_var();
+	default_wallpaper();
 	test_files();
 	test_writable();
 	test_memory();
