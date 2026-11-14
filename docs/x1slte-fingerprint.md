@@ -158,7 +158,7 @@ after boot and again after re-locking. This establishes the compatibility
 exchange, not any enrollment, match, signed-token or native-biometric capability.
 `/var/tmp` is cleared on this port's boot; copy the diagnostic client after boot.
 
-## Next prepared test: AUX and service channels (not flashed)
+## AUX and service channels: hardware test passed
 
 `redwood_fp_channels.h` and fixed helpers in the debug port implement the first
 shared-memory steps observed in Samsung's initialization order: per-CPU AUX
@@ -184,9 +184,16 @@ power the fingerprint sensor, enroll, match or change keybag authentication.
 Zero/absent service masks must not be treated as working authentication.
 
 The channel sequence passes host guard/partial-failure tests with ASan/UBSan, and
-the Exynos kernel cross-build passes. It is prepared separately as
-`out/fingerprint/kernel-channels-slot.bin`, not installed. Testing requires a new
-approved reboot, another exact current-slot backup, and these on-phone commands:
+the Exynos kernel cross-build passes. The user approved a second reboot and test. A fresh backup matched the previously
+tested version-only slot, and the loader verified the channel-kernel write. It
+is now the running kernel. The explicit test returned:
+
+`retained AUX=8 service=1 result=0 cpu_mask=0x1 user_mask=0x1`.
+
+A subsequent inspect returned the cached result, and native MKB remained protected
+and locked before first unlock (1 / AKS 0x1). This confirms the first shared-memory
+transport handshake, not trustlet loading or fingerprint authentication. The
+on-phone commands were:
 
 ```sh
 /var/tmp/redwood-fingerprint-probe --inspect
@@ -197,6 +204,53 @@ approved reboot, another exact current-slot backup, and these on-phone commands:
 
 The fixed-command C client refuses a kernel without the expected diagnostic
 prefix and never accepts arbitrary SMC addresses or arguments.
+
+## Next prepared test: IRQ and SYSCONF (not flashed)
+
+The saved base DT `/teegris` node contains GIC SPI 222/223, level-high, corresponding
+to absolute INTID 254/255. The next manually armed `fp.tee-sysconf 1` prototype
+requires a successful complete channel handshake. It claims these otherwise
+unused IRQs, with conflict checks, and sends `{event=254, panic=255, flags=0}` in
+CPU0's dedicated AUX buffer to SMC 0xb2000009. It reads only the first four response
+words: secure OS version, CPU count, big-core mask and flags. CPU count and mask
+shape are validated; a zero SMC result alone is insufficient.
+
+Handlers mask on the first event and increment counters. No firmware scheduling,
+thread pool, log drain or matching is started in the ISR, and panic events
+invalidate the diagnostic's result. This avoids an interrupt storm while the full
+scheduler is absent. IRQs and backing buffers are retained safely until reboot
+once firmware may reference them; this is not production IRQ handling. If an IRQ
+is already claimed or fires before configuration, the exchange is refused. No
+hardware call or IRQ attachment occurs at boot or in inspect mode.
+
+This kernel cross-builds, and host tests cover gating, partial/error conditions,
+invalid response shape and panic rejection. It is staged as
+`out/fingerprint/kernel-sysconf-slot.bin`, not flashed. After an approved reboot,
+repeat the version/channel sequence, then use:
+
+```sh
+/var/tmp/redwood-fingerprint-probe --inspect-sysconf
+/var/tmp/redwood-fingerprint-probe --exchange-sysconf
+```
+
+## Vendor-client reference located
+
+A public Exynos990 vendor reference was located at
+`Exynoobs/proprietary_vendor_samsung_exynos990-common`, commit
+`715080389b102e4d175a9244a84910ee549d3d67` (lineage-19.1). Selected ARM64 ELF client
+libraries and tzdaemon were downloaded only into ignored
+`out/fingerprint/vendor-reference/` for local protocol analysis. They are not
+executed on the phone, linked into the port, or committed. They are not verified
+to match the phone's exact stock firmware version.
+
+Exported symbols include BAuth enrollment, identification, HAT, password and
+session operations, plus TEEC and Samsung TEECS calls. The identification wrappers
+use TEEC InvokeCommand IDs 5 (init), 6 (do) and 7 (final). The common transfer path
+uses a registered partial in/out shared-memory parameter. The TEEC client expects
+`/dev/tzdev`, `/dev/tziwsock` and a loader daemon path. These are observed protocol
+clues, not a ready-to-use matching implementation; no guessed packets were sent.
+Different TA/loading modes and shared-memory layouts must be resolved before
+invoking enrollment or identification on actual firmware.
 
 ## Remaining implementation and traps
 
@@ -248,6 +302,8 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
   tools/fingerprint/test_tee_probe.c -o /tmp/fp-tee-probe && /tmp/fp-tee-probe
 cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
   tools/fingerprint/test_channels.c -o /tmp/fp-channels && /tmp/fp-channels
+cc -std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tools/fingerprint/test_sysconf.c -o /tmp/fp-sysconf && /tmp/fp-sysconf
 python3 tools/passcode/test_build_integration.py
 ```
 
@@ -261,7 +317,7 @@ The status probe cross-compiles with the iPhoneOS16.5 SDK, ARC/blocks, and
 Foundation, LocalAuthentication and IOKit frameworks. No special authentication
 entitlement or match permission is requested. Kernel build: Exynos GICv2
 DEVELOPMENT. Tests validate code/policy/guard behavior; they do not validate a
-physical fingerprint match. The version-only kernel is flashed; the newer channel-handshake kernel remains
+physical fingerprint match. The channel-handshake kernel is flashed; the newer IRQ/SYSCONF kernel remains
 staged. No physical fingerprint match has been attempted.
 
 ## Primary references
@@ -271,3 +327,5 @@ staged. No physical fingerprint match has been attempted.
 - [Apple biometric/passcode requirements](https://support.apple.com/en-mt/guide/security/sec9479035f1/web).
 - [Android fingerprint HAL architecture](https://android.googlesource.com/platform/docs/source.android.com/+/0fda4ae8f8f65df3360a3170059b5ea11c99f7ec/src/devices/tech/security/authentication/fingerprint-hal.jd).
 - [Android authentication tokens and trusted matching](https://source.android.com/docs/security/features/authentication).
+
+- [Public Exynos990 vendor-client reference](https://github.com/Exynoobs/proprietary_vendor_samsung_exynos990-common/tree/715080389b102e4d175a9244a84910ee549d3d67).

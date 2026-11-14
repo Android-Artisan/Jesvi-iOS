@@ -1,3 +1,12 @@
+## 2026-11-14 — TEEGRIS AUX/service handshake succeeds; IRQ/config probe staged
+- Second approved test boot: all 8 AUX registrations and service channel succeeded (result 0, masks 1/1); cached
+  inspect confirmed no retry. Keybag remained protected/locked before first unlock. No fingerprint match attempted.
+- Actual DT confirms TEE IRQ INTIDs 254/255. Next staged kernel has a manually gated bounded SYSCONF exchange,
+  first-event IRQ masking, response validation and panic/error rejection; host tests and kernel build pass.
+- Located a public Exynos990 client-library reference; local-only ELF analysis identifies TEEC identification
+  command IDs 5/6/7. These binaries are not executed/deployed/committed and exact firmware compatibility is unproven.
+- See docs/x1slte-fingerprint.md for test results, remaining matcher/provider work and next-probe boundaries.
+
 ## 2026-11-14 — Fingerprint compatibility SMC returns zero; channels staged
 - User approved the probe reboot and phone takeover. Exact current recovery kernel slot backed up locally before
   flashing; loader verified the new write. Protected keybag restored locked before first unlock (AKS 0x1).

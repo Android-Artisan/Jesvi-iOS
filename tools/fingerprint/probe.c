@@ -13,8 +13,11 @@ int main(int argc,char **argv) {
     } else if(argc==2 && (!strcmp(argv[1],"--inspect-channels") || !strcmp(argv[1],"--connect-channels"))) {
         inspect="fp.tee-channels 0";call="fp.tee-channels 1";prefix="fp.tee-channels:";
         do_call=!strcmp(argv[1],"--connect-channels");
+    } else if(argc==2 && (!strcmp(argv[1],"--inspect-sysconf") || !strcmp(argv[1],"--exchange-sysconf"))) {
+        inspect="fp.tee-sysconf 0";call="fp.tee-sysconf 1";prefix="fp.tee-sysconf:";
+        do_call=!strcmp(argv[1],"--exchange-sysconf");
     } else {
-        fputs("Usage: fingerprint-probe --inspect | --call-once | --inspect-channels | --connect-channels\n",stderr);return 2;
+        fputs("Usage: fingerprint-probe --inspect | --call-once | --inspect-channels | --connect-channels | --inspect-sysconf | --exchange-sysconf\n",stderr);return 2;
     }
     if(geteuid()!=0){fputs("Root is required for this debug diagnostic\n",stderr);return 1;}
     /* Check the fixed command's diagnostic prefix before an armed operation. */

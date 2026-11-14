@@ -254,6 +254,39 @@ static void fp_channel_service_read(uint32_t *cpu,uint32_t *user) {
     memcpy(cpu,(void *)page,4);memcpy(user,(void *)(page+4),4);
 }
 #include <sys/redwood_fp_channels.h>
+/* Actual saved base DT /teegris: SPI 222/223, level-high => GIC INTID 254/255.
+ * An ISR masks on its first event: no interrupt storm before a scheduler exists.
+ * Never acknowledge a panic as a successful operation or start work in the ISR. */
+extern kern_return_t gic_v3_spi_attach_to(uint32_t,bool,void (*)(void *,uint32_t),void *,int);
+extern void gic_v3_spi_mask(uint32_t);
+extern void gic_v3_spi_detach(uint32_t);
+static uint32_t fp_sysconf_event_irqs,fp_sysconf_panic_irqs;
+static void fp_sysconf_irq(void *context,uint32_t intid) {
+    (void)context;gic_v3_spi_mask(intid);
+    if(intid==254)__atomic_fetch_add(&fp_sysconf_event_irqs,1,__ATOMIC_RELAXED);
+    if(intid==255)__atomic_fetch_add(&fp_sysconf_panic_irqs,1,__ATOMIC_RELAXED);
+}
+static unsigned fp_sysconf_event_count(void) {return __atomic_load_n(&fp_sysconf_event_irqs,__ATOMIC_RELAXED);}
+static unsigned fp_sysconf_panic_count(void) {return __atomic_load_n(&fp_sysconf_panic_irqs,__ATOMIC_RELAXED);}
+static bool fp_sysconf_prepare_irqs(void) {
+    if(gic_v3_spi_attach_to(254,false,fp_sysconf_irq,NULL,0)!=KERN_SUCCESS)return false;
+    if(gic_v3_spi_attach_to(255,false,fp_sysconf_irq,NULL,0)!=KERN_SUCCESS) {
+        gic_v3_spi_detach(254);return false;
+    }
+    if(fp_sysconf_event_count() || fp_sysconf_panic_count()) {
+        gic_v3_spi_mask(254);gic_v3_spi_mask(255);return false;
+    }
+    return true;
+}
+static void fp_sysconf_prepare_request(void) {
+    uint32_t request[3]={254,255,0};
+    bzero((void *)fp_channel_pages[0],4096);
+    memcpy((void *)fp_channel_pages[0],request,sizeof(request));fp_channel_flush(fp_channel_pages[0]);
+}
+static void fp_sysconf_read_words(uint32_t words[4]) {
+    fp_channel_flush(fp_channel_pages[0]);memcpy(words,(void *)fp_channel_pages[0],16);
+}
+#include <sys/redwood_fp_sysconf.h>
 #endif
 
 
@@ -347,6 +380,7 @@ run(const char *line)
 
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"fp.tee-sysconf")==0) {fp_tee_sysconf(n==1?v[0]:2);return;}
     if (strcmp(cmd,"fp.tee-channels")==0) {fp_tee_channels(n==1?v[0]:2);return;}
     if (strcmp(cmd,"fp.tee-version")==0) {fp_tee_probe(n==1?v[0]:2);return;}
     if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
