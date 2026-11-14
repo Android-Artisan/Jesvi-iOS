@@ -104,7 +104,7 @@ its candidate manifest was checked against both the retained candidate directory
 and the retained TWRP ZIP. No active build had those trees open.
 
 Measured free space increased from **18,261,491,712** to **24,150,503,424 bytes**:
-**5,889,011,712 bytes (5.49 GiB) recovered**. Later/concurrent activity can change
+**5,889,011,712 bytes (5.48 GiB) recovered**. Later/concurrent activity can change
 free-space readings. The latest kernel key `4c19e43e05d9a776ec9e00a8cd044632db76a152c6bbd08e2a5f4d6bbfeabbec`,
 current source/output, TWRP ZIP, unpacked candidate, private image cache, extraction,
 SDK/toolchains, firmware and all device backups were preserved. Other worktrees
@@ -113,3 +113,18 @@ and running application/agent/fingerprint processes were left untouched.
 This recovers disk storage, not application RAM. The inspection showed about
 3.7 GiB of swap in use; no processes were killed and no swap files were removed.
 An exact record is in ignored `out/cleanup-performed.json`.
+
+After validating the strengthened R2 TWRP archive, its original installer ZIP and
+sidecars were removed as superseded output. Candidate manifest, image CRC/size
+and per-image SHA identities match; all runtime image bytes remain available in
+the retained candidate and R2 archive. The small old build metadata is retained in
+`out/research/superseded-twrp-build.json`. This avoids keeping another 2.5 GiB copy.
+
+Identical generated system-image copies were also compacted using independent
+APFS clone copies of the validated immutable cache object, without changing any
+path, byte content, permission or timestamp. Targets: `userland/system.apfs` and
+`dist/local-validation/system.apfs`. The source and both targets were SHA-256
+verified before replacement; clones were verified afterward and have independent
+inodes. No target was open according to the local process check. This recovered
+another **5,167,788,032 bytes (4.81 GiB)** at measurement.
+All images remain present; `out/compact-images.json` records the operation.

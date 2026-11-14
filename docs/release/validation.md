@@ -169,3 +169,44 @@ They do **not** establish actual TWRP properties/holder cleanup, physical key in
 block ioctl behavior, ZIP64/sideload handling, first HFS mount, sboot/AVB behavior,
 bootability, update compatibility, interruption recovery or Download Mode rescue.
 No phone was accessed, flashed or rebooted. See [TWRP guide](twrp.md) before any trial.
+
+## ExtremeROM re-review, rollback preparation and final ZIP output
+
+Reviewed ExtremeROM source at `2056320784b7d1d88f9e7025f86f7bbd39945d6b`;
+see [comparison](extremerom-review.md). Its S20 physical super size matches our
+profile. Samsung hardware-model/bootloader property precedence was corrected
+and tested. No physical PIT/GPT resize was introduced. Legacy BOOT-only Android
+return wording was corrected; [rollback](rollback.md) separates previous-compatible
+iOS restoration from full stock Android restoration/reset.
+
+The read-only stock-set inspector has synthetic TAR/MD5 tests for complete sets,
+wrong/missing CSC, model/revision mismatch, boot-only AP, corruption and unsafe
+archive inputs. It has not validated a real stock firmware download or performed
+a stock restoration. No claims of Samsung signature/PIT validation are made.
+
+Current retained ZIP: `dist/jesvi-ios-x1slte-experimental-r2.zip`.
+SHA-256: `c70e8c01c71d0d2d6ad13f642d07445b56f0c993a1d18fc882339bfb3b78b5be`. Its images match the retained original candidate;
+the obsolete first ZIP/transport tar were removed to avoid duplicate storage.
+The R2 installer source key was checked against the current recovery/builder sources.
+Native Apple APFS checks passed the root extracted from recovery and system image;
+Apple HFS checking passed the actual format-kit reconstruction on a private
+read-only, unmounted virtual device. It was detached and removed. ZIP assembly now
+requires those checks and AOSP AVB public-test-key verification before publication.
+
+**43 Python tests**, C/passcode tests, **14 Go top-level tests** plus failure subcases,
+Go vet, static Linux/ARM64 cross-build, actionlint and documentation-link checks
+passed. Apple-framework tests were moved to required macOS checks, avoiding an
+invalid attempt to link Darwin frameworks on Ubuntu. Private full builds run
+checks before producing the final ZIP. Local CLI preflight accepted the new default
+ZIP output with `--experimental` and no redundant `--twrp` flag.
+
+Local full builds now emit ZIP by default; `--no-twrp` explicitly requests a tar.
+The private Actions workflow produces the same ZIP/checksum/build receipt and
+uploads a seven-day private downloadable artifact. Its experimental-writer checkbox
+defaults false. Source/public CI still publishes only source-kernel/check artifacts.
+No GitHub repository/worker was configured or workflow remotely run in this session.
+
+The user explicitly restricted this work to the package/DevOps branch. Fingerprint
+work, other agents, their worktrees, physical phones and boot state were untouched.
+Actual TWRP install/update/rollback, mapper cleanup and Download Mode rescue remain
+hardware qualification items; host filesystem checks do not close those gates.
