@@ -81,6 +81,7 @@ def main():
     sub.add_parser('devices')
     sub.add_parser('validate')
     sub.add_parser('lock-inputs')
+    sub.add_parser('identity')
     p = sub.add_parser('local')
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--check-only', action='store_true')
@@ -98,6 +99,13 @@ def main():
             p.add_argument('--development', action='store_true',
                            help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
+    if a.command == 'identity':
+        tree = ROOT / 'sysimage/DeviceTree.d22ap.im4p'
+        if not tree.is_file():
+            run('python3', 'sysimage/fetch-from-ipsw.py', 'Firmware/all_flash/DeviceTree.d22ap.im4p', str(tree) + '.part')
+            Path(str(tree) + '.part').replace(tree)
+        run('bash', 'xnuloader/mkidentity.sh', str(tree))
+        return 0
     if a.command == 'local':
         from local_build import build
         build(a.output, a.check_only)
@@ -147,6 +155,7 @@ def main():
         for name in ('root.apfs', 'system.apfs'):
             if not (ROOT / 'userland' / name).is_file():
                 raise ValueError(f'image builder produced no {name}')
+        run('./build.sh', 'identity', env=env)
         run('bash', 'x1slte.sh', 'embed', env=env)
         run('bash', 'x1slte.sh', 'payload', (ROOT / 'x1slte.cmdline').read_text().strip(), env=env)
         run('bash', 'x1slte.sh', 'pack', env=env)

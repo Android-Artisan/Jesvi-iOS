@@ -24,7 +24,7 @@ def stage(snapshot):
     allowed = {'inputs/x1slte', 'inputs/tools', 'inputs/toolchain.json',
                'sysimage/rootfs', 'sysimage/cryptex', 'sysimage/cryptex-app',
                'sysimage/20F66__iPhone10,3_6', 'sysimage/system.manifest',
-               'sysimage/var.skel', 'sysimage/extraction.json', 'userland/hfs-kit.bin', 'jb'}
+               'sysimage/var.skel', 'sysimage/DeviceTree.d22ap.im4p', 'sysimage/extraction.json', 'userland/hfs-kit.bin', 'jb'}
     import re
     names = list(lock['inputs']) + ['inputs/private-inputs.lock.json']
     for name in names:

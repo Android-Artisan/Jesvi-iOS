@@ -27,7 +27,7 @@ class LocalBuildTests(unittest.TestCase):
                 local_build.build(output)
             verify.assert_called_once_with(root)
             self.assertFalse(any('sysimage/fetch.sh' in args for args in commands))
-            self.assertEqual([a[1] for a in commands], ['lock-inputs','images','package','verify'])
+            self.assertEqual([a[1] for a in commands], ['identity','lock-inputs','images','package','verify'])
             with tarfile.open(str(output)+'.tar') as tar:
                 self.assertEqual(len(tar.getmembers()), 5)
             self.assertTrue(Path(str(output)+'.tar.sha256').is_file())

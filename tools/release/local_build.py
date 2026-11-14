@@ -68,6 +68,7 @@ def build(output, check_only=False):
                 (ROOT / 'sysimage' / name).unlink(missing_ok=True)
             run('01-apple: fetch and extract pinned Apple inputs', ['bash', 'sysimage/fetch.sh'], dict(os.environ, KEEP='1'))
             verify_extraction(ROOT)
+        run('01b-identity: prepare Apple device-tree identity', ['./build.sh', 'identity'])
         # Existing board inputs are never silently blessed after changes.
         ledger = ROOT / 'inputs/private-inputs.lock.json'
         if ledger.exists():

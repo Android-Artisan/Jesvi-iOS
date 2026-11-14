@@ -7,7 +7,8 @@ On the prepared macOS release checkout:
 ```
 
 This command prepares the pinned iOS 16.5 / 20F66 extraction from Apple's CDN,
-checks its content/recipe receipt, locks the prepared inputs, compiles the kernel,
+checks its content/recipe receipt, generates the loader identity from Apple’s
+small device-tree member, locks the prepared inputs, compiles the kernel,
 OpenH264, Mesa/AIR and userland, assembles images, packages and verifies the
 candidate, and writes:
 
