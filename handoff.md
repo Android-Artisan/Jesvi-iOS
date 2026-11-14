@@ -84,3 +84,10 @@
 - JPEG cannot establish whether the speckle is Bayer-phase/readout mismatch, channel-dependent offsets amplified by gain, or demosaic noise. No evidence yet supports calling this a Quad Bayer/four-in-one CFA mismatch. Need the current RAW buffer and header to distinguish them.
 - Armed existing rear-only `redwood-raw-dump` in the active mediaserverd tuning directory. It consumes one upcoming rear frame and overwrites the old private `redwood-raw.bin`; no colour/exposure/tuning values changed, no service restart or reboot. This is a nearby preview RAW, not guaranteed the exact JPEG exposure. Retrieve promptly after rear Camera is opened; record that limitation.
 - Optional JPEG band-stat script did not run because the default host Python lacks Pillow; visual inspections succeeded. No numerical JPEG statistics claimed.
+
+## Covered-lens RAW diagnosis, 21:47–21:51
+
+- User reports phone was restarting during previous transfer; no reboot issued by this session. Reconnected to same 21:16:40 kernel; development library persists. Partial RAW transfer excluded. Initial overlapping app/probe session excluded; all subsequent captures run with Camera closed.
+- User explicitly confirmed rear lens fully covered and Camera closed. Captured 1000 and 20000 lines at gains 32/128/256/512, plus AE's 20436 lines at gains 32/64/128/256/384/512. Independent gain-256/20436 holdout captured afterward.
+- Covered RAW confirms large channel/spatial pedestal errors, not merely JPEG tint: at 8x/1000 lines, tile means span roughly 15..95 depending on CFA site and location. At 20436 lines and 8x, per-site ranges are 14.9..47.8, 23.5..61.3, 12.0..50.4, 21.2..54.2. Existing four uniform inside-table offsets cannot remove these spatial biases. Short exposure has an additional row transition; do not extrapolate one calibration across that state change.
+- Building a rear-only additive dark-grid correction, gated by exact binned readout/exposure/frame timing and measured gain range. This is module calibration, not stock GRAS lens shading or proof of a Quad Bayer layout. Holdout evaluation required before deployment.

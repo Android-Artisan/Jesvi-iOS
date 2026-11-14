@@ -1,4 +1,6 @@
-/* Bounded S20 driver check. Explicit binned modes; no full rear or image retention. */
+/* Bounded S20 driver check. Explicit binned modes; optional private RAW dump.
+ * usage: probe SENSOR [RAW_PATH [EXPOSURE_LINES GAIN_REGISTER]]
+ * Run only with Camera closed and no other reader. */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -7,13 +9,17 @@
 #include <unistd.h>
 #include "redwood_camera.h"
 int main(int argc, char **argv) {
-    unsigned sensor = argc == 2 ? (unsigned)atoi(argv[1]) : 1;
+    unsigned sensor = argc >= 2 ? (unsigned)atoi(argv[1]) : 1;
     if (sensor != 1 && sensor != 2) return 2;
+    if (argc != 2 && argc != 3 && argc != 5) return 2;
+    unsigned lines=argc==5?(unsigned)strtoul(argv[3],NULL,10):1001;
+    unsigned gain=argc==5?(unsigned)strtoul(argv[4],NULL,10):32;
+    if (lines<16 || lines>22000 || gain<32 || gain>512) return 2;
     int fd = open(REDWOOD_CAMERA_DEVICE, O_RDWR);
     if (fd < 0) { perror("open"); return 1; }
     struct redwood_camera_command c = {.command=REDWOOD_CAMERA_SENSOR,.a=sensor,.b=sensor==1?2:1};
     if (write(fd,&c,sizeof(c)) != sizeof(c)) { perror("sensor"); close(fd); return 1; }
-    c=(struct redwood_camera_command){.command=REDWOOD_CAMERA_EXPOSURE,.a=1001,.b=32};
+    c=(struct redwood_camera_command){.command=REDWOOD_CAMERA_EXPOSURE,.a=lines,.b=gain};
     int bad=0;
     for (int i=0;i<36;i++) {
         struct redwood_camera_frame f;
@@ -23,7 +29,22 @@ int main(int argc, char **argv) {
         if(n!=sizeof(f) || memcmp(f.magic,REDWOOD_CAMERA_MAGIC,8)) { perror("frame"); bad=1; break; }
         if (i==0 && write(fd,&c,sizeof(c)) != sizeof(c)) { perror("exposure"); bad=1; break; }
         printf("%d sensor=%u %ux%u seq=%llu exposure=%u gain=%u line_ns=%u frame=%u\n",i,f.sensor,f.width,f.height,(unsigned long long)f.sequence,f.exposure_lines,f.gain,f.line_ns,f.frame_lines);
-        if(f.sensor!=sensor || (sensor==1 && (f.width!=2016 || f.height!=1512 || f.line_ns!=1468 || (i>4 && f.exposure_lines!=1000)))) bad=1;
+        if(f.sensor!=sensor || (sensor==1 && (f.width!=2016 || f.height!=1512 || f.line_ns!=1468 || (i>4 && f.exposure_lines!=(lines&~1u))))) bad=1;
+    }
+    if (!bad && argc >= 3) {
+        struct redwood_camera_frame f;
+        if (read(fd,&f,sizeof(f)) != sizeof(f)) { perror("dump header"); bad=1; }
+        else {
+            size_t bytes=sizeof(f)+(size_t)f.stride*f.height;
+            void *frame=bytes<=32*1024*1024?malloc(bytes):NULL;
+            if (!frame || read(fd,frame,bytes)!=(ssize_t)bytes) { perror("dump frame"); bad=1; }
+            else {
+                FILE *out=fopen(argv[2],"wb");
+                if (!out) { perror("dump file"); bad=1; }
+                else { if (fwrite(frame,1,bytes,out)!=bytes) bad=1; if(fclose(out)) bad=1; }
+            }
+            free(frame);
+        }
     }
     close(fd);
     return bad;
