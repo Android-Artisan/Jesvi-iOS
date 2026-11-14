@@ -99,6 +99,14 @@ are not in it, and an offset is credited to the nearest method below it, so read
 Debug output that cost frame time (GL stats from the render thread, backboardd's console os_log, wake accounting,
 progressd's crash loop) is off or gone: `docs/x1slte-debug.md` lists every switch and how to turn it back on.
 
+Drag latency, measured (2026-11-14 11:10, `kern.redwood.touch_lat=1` live, 5,900 touch samples while dragging Settings and
+unlocking): touch chip -> iOS 0.3 ms (instant); waiting until a frame starts drawing 9 ms median, 46 ms p90 (the app's
+handling and the next tick); **drawing a frame 10.3 ms median, 20 ms p90** -- over the 8.3 ms of a 120 Hz frame; GPU done
+and handed over 1.5 ms; scanned into the panel 4 ms; frames every 13 ms median (~75 fps), 25 ms p90. The drawing thread
+is backboardd's `com.apple.coreanimation.display.primary` (stackshots: ~48 % running, ~38 % idle in its run loop,
+~13 % in IOKit calls -- IOSurface imports of the apps' surfaces and the framebuffer's methods). Next: the sampler on that
+thread (mode 2, fixed in cce323b) to find what fills the 10 ms; then the unlock swipe's blur cost.
+
 What other ports found (newer projects in `git/`): Scion (S9) the same icon-building hitches and the 30 fps caps;
 Ken-u MaliMetal (RK3588) 8-10 -> ~50 fps scrolling by keeping the render thread off slow cores, a fixed GPU clock and
 zero-copy scanout (all of which this port has); Redfin (Pixel 5) UI threads on big cores and vsync phase. None has
