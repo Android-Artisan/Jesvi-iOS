@@ -1,3 +1,55 @@
+# Start here: live Camera brightness installation (latest checkpoint)
+
+Worktree: `/Users/jesvi/ios-port-research/work/hackios-camera-improve`, branch
+`feat/s20-camera-quality`. Separate aux inventory is on `feat/s20-rear-aux`,
+commit22256e72, in `work/hackios-camera-aux`; read docs/x1slte-camera-aux.md.
+
+## Installed now
+
+- `/var/jb/usr/lib/TweakInject/RedwoodCameraBrightness.dylib` and matching filter.
+  Signed arm64 SHA25684f57fa867544e048c22ff078d830848709375b662c8c73c2724409decd289fe;
+  downloaded readback matches byte-for-byte. SpringBoard resprung and loader log
+  confirms it opened this exact named tweak. No kernel flash or reboot performed.
+- Revised rule reads SpringBoard `_accessibilityFrontMostApplication` identity;
+  known API/nil app yields Camera=false, unknown shape falls back to heartbeat.
+  This removes dependence on adding Camera injection to the existing read-only
+  image. Remount attempt failed before system-file/tweak mutation; injection
+  config and runtime list remain unchanged. Original front media path untouched.
+- Initial live state outside Camera: native auto1, raw30241/65536 (UI45.94%).
+  After activation it remains auto1 at the same level; foreground log Camera=0.
+  Camera has not launched yet after respring: requested user unlock/open it.
+  Do not claim entry/exit/manual/lock or reboot tests passed without fresh evidence.
+- Phone lock held by codex-camera-quality during this installation. Always check
+  tools/phone-lock.sh status before touching it; never reboot without permission.
+
+## Complete validation / rollback
+
+1. User unlocks and opens Camera. `/var/root/set-display-70 --status` should show
+   auto0, raw45220/65536 (UI70%). Check foreground Camera=1/hold log and recovery
+   record at `/var/mobile/Library/Preferences/com.redwood.camera-brightness.restore.plist`.
+2. Leave Camera for Settings/Home: auto must return to prior1; journal removed.
+   Check manual slider change is retained while Camera stays open. Repeat with
+   auto initially off and confirm exit leaves it off. Restore user's normal auto1.
+3. Check Control Center, Camera termination and display off/wake, then request
+   explicit approval before any reboot persistence test. No such approval yet.
+4. Emergency release: create `/var/jb/etc/redwood-camera-brightness.disabled`;
+   wait for restoration and verify status, then remove dylib+filter and respring
+   only if uninstalling. Keep rule loaded until recovery completes. If UI cannot
+   be used, restore auto via `/var/root/set-display-70 --auto-on` after disabling.
+5. Private backups/artifacts: build/camera-device-20261114/brightness-install;
+   device `/var/root/camera-brightness-rollback`. Backed up injection lists were
+   never replaced. Diagnostic helper supports --status, --auto-on, --auto-off,
+   --slider 0..1, --set70 (last is GLOBAL, not lifecycle behaviour).
+
+Host sanitizer policy tests, strict signed iOS builds and passcode integration
+checks pass. Runtime foreground API inside SpringBoard still needs Camera-entry
+validation. Accepted master02636ecf must be explicitly integrated before future
+full image/kernel builds; do not flash old staged rear candidates over it.
+Main rear grain/tint is unresolved, native12MP and auxiliary bring-up remain
+uninstalled. Front stays original; optional experimental profile stays uninstalled.
+
+---
+
 # S20 camera deployment handoff
 
 ## Current state

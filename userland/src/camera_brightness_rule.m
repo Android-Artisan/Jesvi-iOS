@@ -22,6 +22,25 @@ static struct cb_state state;
 static NSDictionary *recovery;
 static BOOL restoreSent;
 static double readyAfter;
+static int lastCamera=-2;
+/* SpringBoard can identify its foreground app without injecting Camera. This
+ * also works on existing read-only images whose loader list predates Camera.
+ * An unsupported API returns unknown and falls back to the renewable lease. */
+static int cameraFromSpringBoard(void){
+    id app=UIApplication.sharedApplication;
+    SEL front=sel_registerName("_accessibilityFrontMostApplication");
+    if(![app respondsToSelector:front])return -1;
+    id active=((id(*)(id,SEL))objc_msgSend)(app,front);
+    if(!active)return 0;
+    for(NSString *name in @[@"bundleIdentifier",@"displayIdentifier"]){
+        SEL ident=NSSelectorFromString(name);
+        if([active respondsToSelector:ident]){
+            id value=((id(*)(id,SEL))objc_msgSend)(active,ident);
+            if([value isKindOfClass:NSString.class])return [value isEqualToString:@"com.apple.camera"]?1:0;
+        }
+    }
+    return -1;
+}
 static mach_timebase_info_data_t tb;
 static double seconds(uint64_t ticks){return (double)ticks*tb.numer/tb.denom/1e9;}
 static id property(NSString *key){
@@ -88,7 +107,9 @@ static void ruleTick(void){
         if(recovery){restoreTick(now);return;}
         if(now<readyAfter)return;
         uint64_t lease=0;if(notify_get_state(leaseToken,&lease)!=NOTIFY_STATUS_OK)lease=0;
-        struct cb_input input={.camera=cb_lease_valid(now,seconds(lease)),.enabled=access(disabledPath,F_OK)!=0,
+        int detected=cameraFromSpringBoard();
+        if(detected!=lastCamera){NSLog(@"redwood camera brightness: foreground Camera=%d",detected);lastCamera=detected;}
+        struct cb_input input={.camera=detected>=0?detected!=0:cb_lease_valid(now,seconds(lease)),.enabled=access(disabledPath,F_OK)!=0,
             .display_on=boolean(@"DisplayOn"),.automatic=boolean(@"DisplayBrightnessAuto"),.ui=slider(),.now=now};
         struct cb_plan plan=cb_plan_step(state,input);
         if(plan.clear){recovery=record(state);restoreSent=NO;restoreTick(now);return;}

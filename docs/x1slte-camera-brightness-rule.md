@@ -1,8 +1,9 @@
 # Persistent Camera-only display-brightness rule
 
-**Staged, compiled and host-tested; NOT installed/device-verified.** The other
-agent owns the phone. This checkpoint performs no SSH, install, process restart
-or reboot. The earlier manual auto-off70 diagnostic was not this rule.
+**Installed for live validation; reboot persistence not tested.** The running
+read-only system image was preserved. SpringBoard was resprung, not rebooted.
+See the latest handoff entry for actual device results. The earlier global
+auto-off70 diagnostic was not this rule.
 
 ## Requested behaviour
 
@@ -22,7 +23,11 @@ or reboot. The earlier manual auto-off70 diagnostic was not this rule.
 `userland/src/camera_brightness_rule.m` is one standalone tweak filtered to
 Camera and SpringBoard. Camera sends a renewable foreground notification lease.
 SpringBoard owns brightness changes, independently of Camera's lifetime.
-Background clears the lease; a dead/hung Camera expires within two seconds.
+On current SpringBoard, `_accessibilityFrontMostApplication` supplies the
+authoritative foreground identity, so the data-volume installation does not
+require Camera injection on older read-only images. Unknown API/object shapes
+fall back to the renewable Camera lease. Background clears that lease; a dead
+Camera lease expires within two seconds.
 Control Center's inactive-foreground phase does not intentionally end the lease;
 only background does, and the timer is in common run-loop modes.
 
@@ -67,12 +72,12 @@ behaviour or reboot persistence. Those remain mandatory device checks.
 2. Install the built dylib and matching filter plist together into
    `/var/jb/usr/lib/TweakInject/` (readable dylib,0644 plist). The filter includes
    only `com.apple.camera` and `com.apple.springboard`.
-3. Ensure the persistent `/redwood/etc/inject.conf` and current runtime injection
-   list include the existing tweak loader for Camera. Append Camera to that
-   entry while retaining every unrelated injection. `userland/build.sh` now adds
-   Camera to the same loader list for subsequent image builds. SpringBoard
-   already loads that loader. Do not overwrite the running root image to install
-   this tweak or replace the passcode bridge.
+3. SpringBoard already loads the tweak loader on this image. Verify foreground
+   detection in its logs before accepting the installation. Current live setup
+   requires no injection-list change. The attempted `/redwood` remount failed
+   read-only before any system files were changed. Future images retain the
+   Camera loader entry for the optional heartbeat fallback. Do not replace the
+   root image or passcode bridge just to install this rule.
 4. Restart Camera and activate the new SpringBoard tweak in an agreed respring
    window. No phone reboot is needed for initial testing. Test auto-on and
    auto-off entry/exit, a manual slider change, Control Center, lock/wake and a
@@ -85,3 +90,11 @@ Create `/var/jb/etc/redwood-camera-brightness.disabled` to release an active hol
 and prevent new holds. Keep the library present until restoration is confirmed;
 then remove the dylib/filter and restart the affected processes if uninstalling.
 The disabled flag is persistent and must be removed to re-enable the rule.
+
+## Explicit diagnostic controls
+
+`set-display-70` defaults to read-only status. `--auto-on` and `--auto-off`
+explicitly change native auto mode; `--slider 0..1` changes only the manual
+request. `--set70` retains the earlier global auto-off70 diagnostic. These are
+manual test controls, not the lifecycle rule; use only during an owned phone
+session and restore the user’s prior mode afterward.
