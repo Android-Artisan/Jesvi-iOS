@@ -17,9 +17,21 @@
 struct isp;
 void isp_set_tone(struct isp *isp, float contrast);
 /* Copied with each frame's ISP state; never shared with the next frame's reader. */
+#define BLACK_GRID_W 17
+#define BLACK_GRID_H 13
+#define BLACK_PROFILES 8
+struct isp_black_calibration {
+    uint32_t width, height, bayer, line_ns, frame_lines, exposure_lines, profiles, grid_w, grid_h, gain_unity;
+    struct { uint32_t gain; float grid[4][BLACK_GRID_H][BLACK_GRID_W]; } profile[BLACK_PROFILES];
+};
+bool isp_load_black_calibration(struct isp_black_calibration *cal, const char *path);
+bool isp_apply_black_calibration(struct isp *isp, const struct isp_black_calibration *cal,
+    const struct redwood_camera_frame *f);
 struct isp_black_levels {
     int site[4], low[4]; /* raw 2x2 site order, above and below band_row */
     uint32_t band_row;   /* 0: no lower band; otherwise an even raw-image row */
+    bool spatial;
+    float grid[4][BLACK_GRID_H][BLACK_GRID_W]; /* additive RAW pedestal at tile centres */
 };
 
 struct isp_stats {

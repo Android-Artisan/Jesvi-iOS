@@ -91,3 +91,10 @@
 - User explicitly confirmed rear lens fully covered and Camera closed. Captured 1000 and 20000 lines at gains 32/128/256/512, plus AE's 20436 lines at gains 32/64/128/256/384/512. Independent gain-256/20436 holdout captured afterward.
 - Covered RAW confirms large channel/spatial pedestal errors, not merely JPEG tint: at 8x/1000 lines, tile means span roughly 15..95 depending on CFA site and location. At 20436 lines and 8x, per-site ranges are 14.9..47.8, 23.5..61.3, 12.0..50.4, 21.2..54.2. Existing four uniform inside-table offsets cannot remove these spatial biases. Short exposure has an additional row transition; do not extrapolate one calibration across that state change.
 - Building a rear-only additive dark-grid correction, gated by exact binned readout/exposure/frame timing and measured gain range. This is module calibration, not stock GRAS lens shading or proof of a Quad Bayer layout. Holdout evaluation required before deployment.
+
+## Dark-grid candidate validation failed; not deployed
+
+- Built a frame-owned 17x13 additive black-grid backend and exact-state private calibration loader; front rejected, no calibration file installed. Candidate library built locally, not copied to phone. Host sanitizer tests and iOS build pass.
+- Crucial holdout FAILED: corrected max tile bias 38.108 RAW counts, site mean biases [7.982,4.508,2.969,7.466]. Most lower rows repeat, upper region differs. Do not claim a fix or assume sensor sequencing alone; opaque coverage/capture timing must be ruled out too. Requested another covered repeat.
+- Detailed reproduction/format/limits: docs/x1slte-camera-dark-grid.md. Private candidate SHA-256 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b. Existing phone library remains the earlier verified implementation.
+- Samsung source explicitly does not list binned 2016x1512 as LN2-supported. Its full-mode LN2 writes/constraints cannot be applied to this mode as a one-register fix.

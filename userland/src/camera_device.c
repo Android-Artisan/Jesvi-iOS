@@ -1787,6 +1787,7 @@ worker_body(void *context)
 	struct stream *s = stream_of(o);
 	struct redwood_camera_frame head;
 	struct isp isp;
+	struct isp_black_calibration rear_dark;
 	struct isp_stats st;
 	uint8_t *buffer = NULL, *buffers[2] = { NULL, NULL };
 	size_t bytes = 0;
@@ -1828,6 +1829,11 @@ worker_body(void *context)
 		say("the %s asked for before the first frame", want_rear ? "rear main" : "front sensor");
 	}
 	isp_init(&isp);
+	memset(&rear_dark, 0, sizeof(rear_dark));
+	if (s->camera->sensor == 1 && isp_load_black_calibration(&rear_dark,
+	    rw_path("redwood-rear-dark-grid", (char[160]){0}, 160))) {
+		say("rear dark-grid loaded: %u gains, exact exposure %u lines", rear_dark.profiles, rear_dark.exposure_lines);
+	}
 	{
 		/* the tone curve's contrast (redwood-contrast in the tuning directory, 0 to 1; 0.35 if absent) */
 		FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");
@@ -2198,6 +2204,8 @@ worker_body(void *context)
 		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
+		bool spatial_black = isp_apply_black_calibration(&isp, &rear_dark, f);
+		if (spatial_black && s->frames % 60 == 0) say("rear dark-grid active: gain %u, exposure %u", f->gain, f->exposure_lines);
 		struct redwood_camera_command c;
 
 		uint64_t t_stats = mach_absolute_time();

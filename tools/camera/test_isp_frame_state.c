@@ -94,6 +94,39 @@ int main(void)
     isp_render_still_nv12(&snapshot,&frame,banded,by,W,buv,W,W,H,0,H,false);
     assert(memcmp(fy,by,sizeof(fy))==0 && memcmp(fuv,buv,sizeof(fuv))==0);
 
+    /* A private spatial map must reach preview/stats/full/still with the same CFA offsets. */
+    struct isp spatial=snapshot;
+    spatial.black.spatial=true;
+    for(unsigned k=0;k<4;k++) for(unsigned yy=0;yy<BLACK_GRID_H;yy++)
+        for(unsigned xx=0;xx<BLACK_GRID_W;xx++) spatial.black.grid[k][yy][xx]=(float)upper[k];
+    struct isp one_band=snapshot;
+    one_band.black.band_row=0;
+    uint8_t one_raw[STRIDE*H]; raw_frame(one_raw,&one_band);
+    render(&spatial,one_raw,out); assert(memcmp(out,expected,sizeof(out))==0);
+    isp_measure(&spatial,&frame,one_raw,&a); isp_measure(&flat,&frame,uniform,&b);
+    for(unsigned k=0;k<3;k++) assert(a.mean[k]==b.mean[k]);
+    isp_render_full_nv12(&spatial,&frame,one_raw,by,W,buv,W,0,H,false);
+    assert(memcmp(fy,by,sizeof(fy))==0 && memcmp(fuv,buv,sizeof(fuv))==0);
+    isp_render_still_nv12(&spatial,&frame,one_raw,by,W,buv,W,W,H,0,H,false);
+    assert(memcmp(fy,by,sizeof(fy))==0 && memcmp(fuv,buv,sizeof(fuv))==0);
+
+    struct isp_black_calibration cal={.width=2016,.height=1512,.bayer=1,.line_ns=1468,
+        .frame_lines=22564,.exposure_lines=20436,.profiles=2,.gain_unity=32};
+    cal.profile[0].gain=32; cal.profile[1].gain=128;
+    for(unsigned k=0;k<4;k++) for(unsigned yy=0;yy<BLACK_GRID_H;yy++)
+        for(unsigned xx=0;xx<BLACK_GRID_W;xx++) {
+            cal.profile[0].grid[k][yy][xx]=20;
+            cal.profile[1].grid[k][yy][xx]=44;
+        }
+    struct redwood_camera_frame cf={.sensor=1,.format=1,.width=2016,.height=1512,.bayer=1,
+        .line_ns=1468,.frame_lines=22564,.exposure_lines=20436,.gain_unity=32,.gain=80};
+    assert(isp_apply_black_calibration(&spatial,&cal,&cf));
+    assert(spatial.black.grid[0][0][0]==32);
+    cf.sensor=2; assert(!isp_apply_black_calibration(&spatial,&cal,&cf) && !spatial.black.spatial);
+    cf.sensor=1; cf.exposure_lines--; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
+    cf.exposure_lines++; cf.gain=129; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
+    cf.gain=31; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
+
     /* Two capture/render states may coexist; no process-global pedestal remains. */
     struct thread_job jobs[2]={{.snapshot=snapshot,.raw=banded},{.snapshot=reader,.raw=banded}};
     pthread_t threads[2];

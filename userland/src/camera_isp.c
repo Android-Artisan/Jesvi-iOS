@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -59,6 +60,84 @@ cell_places(uint32_t bayer, int *r, int *b)
 	*b = blue[bayer & 3];
 }
 
+/* Private module dark calibration. Reject partial, nonfinite or mismatched profiles. */
+bool
+isp_load_black_calibration(struct isp_black_calibration *cal, const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    char magic[8];
+    memset(cal, 0, sizeof(*cal));
+    if (!fp) return false;
+    bool ok = fread(magic, 1, 8, fp) == 8 && memcmp(magic, "RWBLK001", 8) == 0 &&
+        fread(&cal->width, sizeof(uint32_t), 10, fp) == 10 &&
+        cal->width == 2016 && cal->height == 1512 && cal->bayer <= 3 &&
+        cal->line_ns == 1468 && cal->frame_lines == 22564 &&
+        cal->exposure_lines >= 16 && cal->exposure_lines <= 22524 &&
+        cal->profiles >= 2 && cal->profiles <= BLACK_PROFILES &&
+        cal->grid_w == BLACK_GRID_W && cal->grid_h == BLACK_GRID_H && cal->gain_unity == 32;
+    for (unsigned i = 0; ok && i < cal->profiles; i++) {
+        ok = fread(&cal->profile[i].gain, 4, 1, fp) == 1 &&
+            fread(cal->profile[i].grid, sizeof(cal->profile[i].grid), 1, fp) == 1 &&
+            cal->profile[i].gain >= 32 && cal->profile[i].gain <= 512 &&
+            (i == 0 || cal->profile[i].gain > cal->profile[i-1].gain);
+        for (unsigned k = 0; ok && k < 4; k++)
+            for (unsigned y = 0; ok && y < BLACK_GRID_H; y++)
+                for (unsigned x = 0; ok && x < BLACK_GRID_W; x++) {
+                    float v = cal->profile[i].grid[k][y][x];
+                    ok = isfinite(v) && v >= 0 && v <= 256;
+                }
+    }
+    if (ok) ok = fgetc(fp) == EOF && !ferror(fp);
+    fclose(fp);
+    if (!ok) memset(cal, 0, sizeof(*cal));
+    return ok;
+}
+
+bool
+isp_apply_black_calibration(struct isp *isp, const struct isp_black_calibration *cal,
+    const struct redwood_camera_frame *f)
+{
+    isp->black.spatial = false;
+    if (!cal || cal->profiles < 2 || cal->profiles > BLACK_PROFILES || f->sensor != 1 || f->format != 1 ||
+        f->width != cal->width || f->height != cal->height || f->bayer != cal->bayer ||
+        f->line_ns != cal->line_ns || f->frame_lines != cal->frame_lines ||
+        f->exposure_lines != cal->exposure_lines || f->gain_unity != cal->gain_unity ||
+        f->gain < cal->profile[0].gain || f->gain > cal->profile[cal->profiles-1].gain) return false;
+    unsigned a = 0;
+    while (a + 2 < cal->profiles && f->gain > cal->profile[a+1].gain) a++;
+    unsigned b = a + 1;
+    float t = (float)(f->gain - cal->profile[a].gain) / (cal->profile[b].gain - cal->profile[a].gain);
+    for (unsigned k = 0; k < 4; k++)
+        for (unsigned y = 0; y < BLACK_GRID_H; y++)
+            for (unsigned x = 0; x < BLACK_GRID_W; x++) {
+                float lo = cal->profile[a].grid[k][y][x], hi = cal->profile[b].grid[k][y][x];
+                isp->black.grid[k][y][x] = lo + t * (hi - lo);
+            }
+    isp->black.spatial = true;
+    return true;
+}
+
+/* Tile-centred coordinates, clamped at outer centres. No scene-derived black estimate. */
+static inline int
+black_at(const struct isp *isp, const struct redwood_camera_frame *f, unsigned x, unsigned y)
+{
+    if (!isp) return (int)f->black;
+    unsigned site = (y & 1) * 2 + (x & 1);
+    if (!isp->black.spatial)
+        return (isp->black.band_row && y >= isp->black.band_row ? isp->black.low : isp->black.site)[site];
+    float gx = ((float)x + 0.5f) * BLACK_GRID_W / f->width - 0.5f;
+    float gy = ((float)y + 0.5f) * BLACK_GRID_H / f->height - 0.5f;
+    gx = gx < 0 ? 0 : gx > BLACK_GRID_W-1 ? BLACK_GRID_W-1 : gx;
+    gy = gy < 0 ? 0 : gy > BLACK_GRID_H-1 ? BLACK_GRID_H-1 : gy;
+    unsigned ix = (unsigned)gx, iy = (unsigned)gy;
+    unsigned jx = ix+1 < BLACK_GRID_W ? ix+1 : ix, jy = iy+1 < BLACK_GRID_H ? iy+1 : iy;
+    float tx = gx-ix, ty = gy-iy;
+    const float (*g)[BLACK_GRID_W] = isp->black.grid[site];
+    float top = g[iy][ix] + tx*(g[iy][jx]-g[iy][ix]);
+    float bottom = g[jy][ix] + tx*(g[jy][jx]-g[jy][ix]);
+    return (int)(top + ty*(bottom-top) + 0.5f);
+}
+
 /* Decode a raw 2x2 cell using this frame's immutable black correction. */
 static inline void
 cell(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, uint32_t cy, uint32_t cx, int v[4])
@@ -66,13 +145,10 @@ cell(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t 
     const uint8_t *top = raw + (size_t)cy * 2 * f->stride;
     const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + f->stride;
     unsigned o = (cx & 1) * 2;
-    const int *bl = isp == NULL ? NULL : isp->black.band_row > 0 && cy * 2 >= isp->black.band_row ?
-        isp->black.low : isp->black.site;
-
-    v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - (bl ? bl[0] : (int)f->black);
-    v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - (bl ? bl[1] : (int)f->black);
-    v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - (bl ? bl[2] : (int)f->black);
-    v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - (bl ? bl[3] : (int)f->black);
+    v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - black_at(isp, f, cx*2, cy*2);
+    v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - black_at(isp, f, cx*2+1, cy*2);
+    v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - black_at(isp, f, cx*2, cy*2+1);
+    v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - black_at(isp, f, cx*2+1, cy*2+1);
     for (int i = 0; i < 4; i++) v[i] = v[i] < 0 ? 0 : v[i];
 }
 
@@ -796,13 +872,12 @@ unpack_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 {
 	y = y < 0 ? 0 : y >= (int)f->height ? (int)f->height - 1 : y;
 	const uint8_t *line = raw + (size_t)y * f->stride;
-	const int *bl = isp->black.band_row > 0 && (uint32_t)y >= isp->black.band_row ? isp->black.low : isp->black.site;
 
 	for (uint32_t x = 0; x + 3 < f->width + 3 && x < f->width; x += 4) {
 		const uint8_t *g = line + (x >> 2) * 5;
 
 		for (int i = 0; i < 4 && x + i < f->width; i++) {
-			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - bl[(y & 1) * 2 + ((x + i) & 1)];
+			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - black_at(isp, f, x + i, (unsigned)y);
 
 			out[x + i] = v < 0 ? 0 : v;
 		}
