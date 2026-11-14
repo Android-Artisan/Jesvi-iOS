@@ -30,3 +30,6 @@ assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
   Traps: a driver copy in /var/jb next to the image's one gives backboardd two libredwoodair copies (black snapshots);
   the callservicesd job must point at /var/jb/redwood/callservicesd (build.sh fixes it right before root.apfs);
   keep libredwood-metaloff on PosterBoard until the scrambled-text bug is fixed.
+- Build trap: on macOS `userland/build-gpu-y2s.sh` puts `xnu-deps/host-macos/bin` first on PATH, whose `plutil` is a
+  NO-OP shell script. Any `plutil -replace/-convert` in build.sh silently does nothing there; edit plists with python3
+  plistlib (as the callservicesd job fix does).

@@ -651,9 +651,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# with OSLOG=com.apple.backboardd for the console copy)
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
+	# (python, not plutil: on macOS the build's PATH has xnu-deps/host-macos/bin/plutil, a no-op stand-in)
 	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
-		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+		python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 	fi
 fi
 # Explicit experimental image profile; ordinary builds retain their current job list.
@@ -791,8 +793,9 @@ fi
 # callservicesd runs from /var/jb/redwood, whatever wrote its job (mkjobs, or a stale one when the job section was
 # skipped on a machine without the extracted iOS root): checked here, right before the boot volume is made (B, 2026-11-14)
 if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
-	plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-	plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+	python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
