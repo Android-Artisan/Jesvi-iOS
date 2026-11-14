@@ -47,7 +47,7 @@ EMBED=out/x1slte-embed.img
 PAYLOAD=out/x1slte-payload.bin
 PAYLOAD_AT=$((0x100870))                # FD at page + 112 = 0x870, payload at FD + 0x100000
 PAYLOAD_MAX=$((0x80000))
-DEFAULT_CMDLINE="touch_ts=1 bms=1 mali=1 cpumask=0x3f fb_threads=6"   # 4x A55 + 2x A76; the M5s idle at 266 MHz (no DVFS yet)
+DEFAULT_CMDLINE=$(cat x1slte.cmdline)   # tracked working profile, including software-passcode persistence
 KERNEL_BUILD=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
 
 die() { echo "x1slte.sh: $*" >&2; exit 1; }

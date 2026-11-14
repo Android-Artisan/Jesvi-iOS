@@ -109,9 +109,13 @@ static const struct {
 	 * lpmd engages earlier at 76 C M5, 80 C A76/GPU, 82 C A55.
 	 */
 	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 82, 90 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 82, 90 },
+	/* cl1's second step 1482, not 1066 (B, 2026-11-14): above 90 C the A76 fell from 1794 to 1066 at once (log: "cl1 zone
+	 * mid 90 C: step 2, 1066 MHz") and frame preparation with it -- the same cliff as the GPU's 572 -> 377 */
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1482000, 1794000, 1, 82, 90 },
 	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1586000, 0, 78, 86 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 90 },
+	/* g3d's second step 455, not 377 (B, 2026-11-14): one step of the GPU's own table down from 572, not two -- above
+	 * 90 C swipes went from 572 straight to 377 and the frames past 35 ms doubled (fb histograms); the trip is ~108 C */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  455000,  572000,  3, 82, 90 },
 	{ D_MIF, "mif",       "dvfs_mif", 2028000, 0,       0,       -1, 0, 0 },  /* (2730 = LPDDR5 top: heat for no UI gain, 18:50); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
@@ -132,6 +136,7 @@ static volatile uint8_t *intr, *sram, *cmu_top;
 static struct channel ch_dvfs, ch_tmu;
 static uint32_t targets[NDOMAINS];
 
+uint32_t redwood_dvfs_log = 0;          /* kern.redwood.dvfs_log: every clock change in the log */
 static void dlog(const char *format, ...) __printflike(1, 2);
 
 static void
@@ -342,8 +347,12 @@ set_rate(unsigned domain, uint32_t khz)
 	uint32_t cmd[4] = { domain, khz, FREQ_REQ, 0 };
 	int ret = ipc(&ch_dvfs, cmd);
 
-	dlog("domain %u to %u kHz: %s (%#x %#x %#x %#x)", domain, khz, ret == 0 ? "answered" : ret == 1 ? "sent, no answer" :
-	    "NOT sent", cmd[0], cmd[1], cmd[2], cmd[3]);
+	/* every clock change was a log line (~200 in a few minutes of use, B 2026-11-14): only failures now, all of them
+	 * with kern.redwood.dvfs_log=1 */
+	if (ret != 0 || redwood_dvfs_log) {
+		dlog("domain %u to %u kHz: %s (%#x %#x %#x %#x)", domain, khz, ret == 0 ? "answered" : ret == 1 ? "sent, no answer" :
+		    "NOT sent", cmd[0], cmd[1], cmd[2], cmd[3]);
+	}
 	return ret < 0 ? -1 : 0;
 }
 

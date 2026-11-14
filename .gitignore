@@ -5,6 +5,7 @@
 !/.gitignore
 !/README.md
 !/CONTRIBUTING.md
+!/AGENTS.md
 !/ci/
 !/.github/
 !/.editorconfig
@@ -57,6 +58,7 @@ __pycache__/
 !/qemu/*.py
 
 /userland/*
+!/userland/software-passcode-config.sh
 !/userland/build.sh
 !/userland/*.py
 !/userland/rc.*

@@ -1,3 +1,41 @@
+## 2026-11-14 — Persistent software passcode and clean-build defaults
+- Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
+  `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.
+- User confirmed Settings stays enabled, initial boot asks for the code, and second unlock requires it after the
+  display-off bridge was installed. The standalone bridge lives on persistent `/var/jb`; the same code is built
+  into `libredwood-sb.dylib`, including the tracked prebuilt, for clean images without that tweak installation.
+- Clean-build trap fixed: tracked `x1slte.cmdline` now includes `softpasscode=1` and `autounlock=0`; default payload
+  uses that profile. `userland/build.sh` follows it for unprofiled/S20 builds, and x1slte's common profile sets
+  `SOFTWARE_PASSCODE=1`. Keep native keybagd, the PID 1 restore handoff and immediate-lock policy together.
+- Full implementation, ABI details, tests, staging/deployment boundaries, security limits and **Traps and recovery**:
+  `docs/x1slte-passcode.md`. Read before modifying authentication, boot args, root assembly or native keybagd.
+- Host verifier/ABI/file-guard tests, clean root-assembly integration test, iOS helper/SpringBoard cross-build and
+  Exynos GICv2 kernel build passed. A complete fresh IPSW/firmware build was not run; no new reboot in this step.
+- Open: software-only UI authentication, reversible legacy key wrapping, volatile retry counters, no SEP security.
+  Optimized kernel/hardened startup helper are staged, not flashed. UI negative-code/reboot tests of the standalone
+  bridge remain separate validation tasks. The user accepted the swipe threshold; no gesture change is claimed.
+- Local `main` and `master` contain this work. Remote publishing remains blocked by unavailable GitHub credentials;
+  do not overwrite divergent remote main to bypass that problem.
+
+## 2026-11-14 (13:25, B) — idle power, softer thermal steps, quieter log
+- Wi-Fi broad scans coalesced (`kern.redwood.wifi_scan_gap`, 30 s): idle big cores 85-90 % asleep (was 19-32 %), 0.76 A from USB, 62-63 C.
+- Thermal second step: GPU 455 MHz (was 377), A76 1482 MHz (was 1066) above 90 C.
+- Log: DVFS changes only on failure (`kern.redwood.dvfs_log=1`), BT vendor lines capped, launchd quiet by default (`QUIET=0`).
+- metaloff out of the boot list (mediaserverd stack overflow). Build: callservicesd job fixed with python (macOS build's plutil is a no-op).
+- One clean build of everyone's work flashed (main = master = x1slte, all active branches aligned; devops pending). Details: docs/x1slte-debug.md.
+
+## 2026-11-14 (B) — Metal driver, wallpapers, call screen fixes
+- Metal driver (CoreImage correct on the Mali, matches macOS on 7 filters): unbound texture/sampler placeholders,
+  simdgroup barriers, dispatch-sized threadgroup memory, sampler 0 for read(), Apple's 32-wide SIMD width, GPU->IOSurface
+  write-back, YUV 420f planes, float CoreVideo formats, ASTC, no-copy buffers/textures, app-memory IOSurfaces as copies.
+- Per-process Metal: libredwood-metalon (Photos/Gradient/Emoji poster helpers) and libredwood-metaloff (PosterBoard,
+  AegirPoster, WeatherPoster, mediaserverd) in the boot inject list; system-wide is `metal_props on` (live, not at boot).
+- Wallpaper: Photos "Use as Wallpaper" works; gallery via duetexpertd (job allowed + libredwood-duet data-vault skip);
+  parallax only for Apple posters, rests unless tilted 2.5 pt (GPU ~97% idle at rest); custom pictures stay still.
+- Calls: callservicesd job forced to /var/jb/redwood (macOS builds packed the stock /System path -> no call screen);
+  RedwoodPhone ignores the duplicate cold-launch dial (outgoing calls were cancelled at once).
+- Details, switches and traps: docs/x1slte-wallpaper-metal.md. Native-calls design (CommCenter identity): sessions/B.md.
+
 ## 2026-11-14 (10:40) — Real 120 Hz: scrolling "a lot better" (user-verified)
 - iOS ran its frame clock at 60 while the panel scanned 120 (CADisplay.refreshRate 16.7 ms): backboardd now gets
   CA_HEARTBEAT_RATE=120 in fb_mode 1/3 (8.3 ms). Apps get the ProMotion opt-in (QuartzCore capped apps at 60): `app_fps=0` off.

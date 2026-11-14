@@ -146,3 +146,30 @@ and issuing `fastboot oem write recovery 2000000`, then rebooting.
 All source changes are committed on local `main`. Remote push to
 `upstream/x1slte-efficiency` was attempted but failed because GitHub credentials
 were unavailable; the unrelated remote `main` was not overwritten.
+
+
+## Passcode-session responsiveness observations (14 November 2026)
+
+Automatic cooling remained enabled (`efficiency_auto=1`, manual efficiency and
+LPM both 0), with mask 15. Earlier active samples showed temperatures around
+82–85 C; heavier rendering reached big/mid/little/GPU 93/90/94/91 C. One heavy
+10-second window averaged A55/A76/M5/GPU at 1053/1066/1196/377 MHz. These are
+applied clocks under existing thermal protection, not evidence of a CPU-bound
+credential daemon. `keybagd` and `lpmd` sampled at 0% CPU; backboardd reached 99%
+in a busy sample. GPU telemetry showed 5614 fragment jobs over 5 seconds (2265 ms
+busy), plus 5613 vertex/tiler/compute jobs (404 ms). This port's rendering can
+produce substantial work even when individual jobs are short.
+
+Frame diagnostics in several windows recorded maxima of 65–89 ms; these samples
+cover mixed UI activity and do not isolate a passcode transition. There were
+198553 free 16-KiB pages (about 3.0 GiB), and the native UFS counters showed zero
+errors. Wallpaper diagnostics reported parallax off. No thermal ceiling was
+raised, memory cap coupled to CPU temperature, diagnostic poller installed, or
+UI effect forcibly disabled during this check.
+
+The user's final clarification concerned the early swipe threshold into the
+passcode view, and they accepted the transition. No gesture/animation change or
+frame-rate improvement is claimed. The separate software-passcode empty-probe
+optimization removes unnecessary KDF work but is staged for a future kernel
+boot, not measured as a fix for renderer stutters. See `x1slte-passcode.md` for
+implementation, validation boundaries and the persistent repeat-lock bridge.

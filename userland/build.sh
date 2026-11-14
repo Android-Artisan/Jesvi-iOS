@@ -77,6 +77,7 @@
 set -e -o pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
+source ./software-passcode-config.sh
 
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
 LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
@@ -142,8 +143,10 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
-/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
-/var/jb/usr/lib/libredwood-metaloff.dylib PosterBoard AegirPoster mediaserverd WeatherPoster"}
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd"}
+# (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
+#  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
+#  CollectionsPoster with metalon. Add it live to kern.exec_inject when metal_props is switched on.)
 # libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
 # with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
@@ -221,6 +224,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/thermald src/thermald.c
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
+		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
 		$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
 		{ ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
@@ -436,6 +440,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		cp obj/redwood-cellulard root/bin/
 	fi
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
+	[ -f obj/softkeybag-init ] && cp obj/softkeybag-init root/bin/
 	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
@@ -620,7 +625,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# lines about its own business in the first minutes and pushes everything else out of the
 	# kernel's log; the daemons keep their own standard error on the console all the same.
 	rm -f root/etc/quiet
-	[ -n "$QUIET" ] && : > root/etc/quiet
+	# on by default since 2026-11-14 (B): launchd's notices were the largest share of the log; QUIET=0 brings them back
+	[ "${QUIET-1}" != 0 ] && : > root/etc/quiet
 	# the jobs the iOS launchd will see (/System/Library/LaunchDaemons is a symlink to this directory).
 	# With FLASHBOOT=1 the root will be Apple's whole volume on the flash, not the part of it that fits in
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
@@ -658,10 +664,18 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# with OSLOG=com.apple.backboardd for the console copy)
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
+	# (python, not plutil: on macOS the build's PATH has xnu-deps/host-macos/bin/plutil, a no-op stand-in)
 	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
-		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+		python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 	fi
+fi
+# Explicit experimental image profile; ordinary builds retain their current job list.
+# Match with softpasscode=1 in the kernel boot line. Restore the saved software bag
+# before launchd, and use the native daemon with private file permissions.
+if [ "${SOFTWARE_PASSCODE:-0}" = 1 ]; then
+	python3 ../tools/passcode/prepare-root.py root --binaries obj
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/
@@ -789,6 +803,13 @@ if [ -f root/bin/bluetool_stub ]; then
 fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
+# callservicesd runs from /var/jb/redwood, whatever wrote its job (mkjobs, or a stale one when the job section was
+# skipped on a machine without the extracted iOS root): checked here, right before the boot volume is made (B, 2026-11-14)
+if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+	python3 -c 'import plistlib,sys
+p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
+plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 

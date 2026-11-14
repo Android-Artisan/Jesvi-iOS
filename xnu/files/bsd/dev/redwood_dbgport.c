@@ -487,6 +487,17 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
     "optional mild software display warmth (0 or 1)");
 
+/* kern.redwood.dvfs_log (bsd/dev/redwood_exynos_acpm.c): every clock change in the log; 0 failures only */
+extern uint32_t redwood_dvfs_log;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dvfs_log, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_dvfs_log, 0,
+    "log every DVFS clock change; 0 failures only");
+
+/* kern.redwood.wifi_scan_gap (bsd/dev/redwood_sta.c): broad Wi-Fi scans sooner than this many seconds after the last
+ * real one are answered from its results; 0 every scan to the radio */
+extern uint32_t redwood_wifi_scan_gap;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, wifi_scan_gap, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_wifi_scan_gap, 0,
+    "seconds a broad Wi-Fi scan is answered from the last one; 0 off");
+
 /* kern.redwood.touch_lat: the touch-to-panel latency lines ("tl:", tools/latency.py) live, as boot-arg touch_lat=1 */
 extern uint32_t redwood_touch_lat_live;
 SYSCTL_UINT(_kern_redwood, OID_AUTO, touch_lat, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_touch_lat_live, 0,

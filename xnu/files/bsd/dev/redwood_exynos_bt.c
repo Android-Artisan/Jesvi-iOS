@@ -133,6 +133,8 @@ wr(uint32_t off, uint32_t v)
 static void
 bt_log(const char *fmt, ...) __printflike(1, 2);
 
+static unsigned bt_vendor_said;        /* vendor command lines: the first 40 only (B, 2026-11-14) */
+
 static void
 bt_log(const char *fmt, ...)
 {
@@ -359,7 +361,7 @@ pending_answered(uint16_t op, uint8_t status, const char *how)
 		if (pending[i].op == op && pending[i].at != 0) {
 			pending[i].at = 0;
 			if (status != 0) {
-				bt_log("bt: the chip answers vendor command %#06x with status %#x (%s)\n", op, status, how);
+				if (bt_vendor_said++ < 40) bt_log("bt: the chip answers vendor command %#06x with status %#x (%s)\n", op, status, how);
 			}
 			return;
 		}
@@ -1076,7 +1078,7 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 				h[8] = (uint8_t)(bt_speed >> 16); h[9] = (uint8_t)(bt_speed >> 24);
 				bt_log("bt: bluetoothd asks for UART speed %u: kept at %u\n", want, bt_speed);
 			} else {
-				bt_log("bt: bluetoothd sends vendor command %#06x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+				if (bt_vendor_said++ < 40) bt_log("bt: bluetoothd sends vendor command %#06x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
 				    op, plen, have > 0 ? h[4] : 0, have > 1 ? h[5] : 0, have > 2 ? h[6] : 0, have > 3 ? h[7] : 0,
 				    have > 4 ? h[8] : 0, have > 5 ? h[9] : 0, have > 6 ? h[10] : 0, have > 7 ? h[11] : 0);
 			}

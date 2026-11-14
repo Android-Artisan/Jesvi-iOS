@@ -17,12 +17,14 @@
  * another network -- as iOS itself rejoins the networks it knows. If that other network cannot
  * be joined (a wrong passphrase), the standing one is joined again.
  */
+#include <kern/clock.h>
 #include <kern/kalloc.h>
 #include <kern/locks.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
+#include <mach/mach_time.h>
 #include <sys/errno.h>
 #include <sys/redwood_input.h>
 #include <sys/redwood_sta.h>
@@ -64,6 +66,18 @@ heard_one(const struct redwood_sta_bss *bss, __unused void *context)
 		lck_mtx_unlock(&sta_lock);
 	}
 }
+
+/*
+ * kern.redwood.wifi_scan_gap (B, 2026-11-14): wifid asks for a full scan every few seconds even while joined, and a
+ * scan polls the radio's rings every 0.2-1 ms for up to 2 s on whatever core -- measured: a scan every ~4 s, the big
+ * cores woken ~140 times a second by it with the screen off (~4.5 W from USB at idle, 66 C). A broad scan (no name,
+ * no channel list) asked for sooner than this many seconds after the last real one is answered from the list that
+ * scan heard, which is kept here anyway; a scan for a named network or given channels always goes to the radio.
+ * 0: every scan to the radio, as before.
+ */
+uint32_t redwood_wifi_scan_gap = 30;
+static uint64_t sta_last_scan_at;               /* mach_absolute_time of the last real scan's end, 0 none */
+static unsigned sta_scans_answered;
 
 static void
 sta_runs(__unused void *parameter, __unused wait_result_t result)
@@ -141,12 +155,29 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			bzero(&fallback, sizeof(fallback));
 			lck_mtx_unlock(&sta_lock);
 		} else if (do_scan) {
-			error = ops->scan(&scan);
-			lck_mtx_lock(&sta_lock);
-			heard_count = 0;
-			lck_mtx_unlock(&sta_lock);
-			ops->heard(heard_one, NULL);
-			redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, error);
+			uint64_t now = mach_absolute_time(), gap = 0;
+			bool broad = scan.ssid_length == 0 && scan.frequency_count == 0;
+
+			nanoseconds_to_absolutetime((uint64_t)redwood_wifi_scan_gap * NSEC_PER_SEC, &gap);
+			if (broad && redwood_wifi_scan_gap != 0 && sta_last_scan_at != 0 && heard_count > 0 &&
+			    now - sta_last_scan_at < gap) {
+				/* answered from what the last scan heard: the list stays as it is */
+				if (++sta_scans_answered % 64 == 1) {
+					printf("wifi: %u broad scans answered from the last one (kern.redwood.wifi_scan_gap=%u s)\n",
+					    sta_scans_answered, redwood_wifi_scan_gap);
+				}
+				redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, 0);
+			} else {
+				error = ops->scan(&scan);
+				lck_mtx_lock(&sta_lock);
+				heard_count = 0;
+				lck_mtx_unlock(&sta_lock);
+				ops->heard(heard_one, NULL);
+				if (broad && error == 0) {
+					sta_last_scan_at = mach_absolute_time();
+				}
+				redwood_apple80211_event(REDWOOD_STA_SCAN_DONE, error);
+			}
 		}
 
 		lck_mtx_lock(&sta_lock);

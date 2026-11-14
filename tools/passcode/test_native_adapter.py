@@ -44,6 +44,7 @@ static void *kauth_cred_get() { return nullptr; }
 static bool kauth_cred_issuser(void*) { return privileged; }
 struct Crypto { void *ccsha256_di, *cchmac_fn; } crypto{(void*)1,(void*)1};
 static Crypto *g_crypto_funcs = &crypto;
+static const uint8_t bagUUID[16] = {0x72,0x65,0x64,0x77,0x6f,0x6f,0x64,0,0x6b,0x65,0x79,0x62,0x61,0x67,0,1};
 static swkb_state gSoftBags[16]; static bool gSoftUsed[16];
 static uint64_t softNow() { return 100; }
 static void softRandom(void *out,size_t n) { memset(out,0x5a,n); }
@@ -82,6 +83,7 @@ static int change(unsigned bag,const char *old,const char *next,unsigned flags=0
 int main() {
  uint64_t create[]={0,(uint64_t)-1,0,0,0,0},bag=0,clone=0;
  assert(call(2,create,6,&bag)==0 && bag>0);
+ assert(!memcmp(gSoftBags[0].record.uuid,bagUUID,sizeof(bagUUID)));
  assert(change((unsigned)bag,"","probe-A")==0);
  assert(call(8,&bag,1)==0 && gSoftBags[bag].locked);
  uint64_t bad[]={bag,(uint64_t)"wrong",5};
@@ -116,6 +118,10 @@ int main() {
  assert(call(5,install,4)==kIOReturnNotPrivileged && !gSoftBags[0].record.has_secret);
  privileged=true;
  assert(call(5,install,4)==0 && gSoftBags[0].locked && gSoftBags[0].record.has_secret);
+ uint64_t epilogue[]={0,(uint64_t)"wrong",5};
+ assert(call(0x69,epilogue,3)==kIOReturnNotPermitted && gSoftBags[0].locked);
+ epilogue[1]=(uint64_t)"probe-B";epilogue[2]=7;
+ assert(call(0x69,epilogue,3)==0 && gSoftBags[0].locked); /* completion cannot unlock by itself */
  assert(call(4,&loaded,1)==0 && !gSoftUsed[loaded]);
  assert(gSoftBags[0].record.has_secret); /* unload candidate does not remove system */
  record.rounds++;
