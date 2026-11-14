@@ -85,12 +85,19 @@ static bool wallpaper_poster_moves(void)
             return false;
         }
         const char *p=WM_SEND(const char*,provider,"UTF8String");
-        char allow[512]="com.apple.WallpaperKit.CollectionsPoster";
+        /* Apple's own posters move; the user's pictures (Photos, the legacy photo poster) stay still.
+         * HomePosterMotionProviders, when set, replaces this rule with an exact list. */
+        char allow[512]="";
         CFTypeRef v=CFPreferencesCopyAppValue(CFSTR("HomePosterMotionProviders"),CFSTR("com.redwood.motion"));
         if(v) { if(CFGetTypeID(v)==CFStringGetTypeID()) CFStringGetCString(v,allow,sizeof(allow),kCFStringEncodingUTF8); CFRelease(v); }
-        for(char *tok=strtok(allow,", ");tok;tok=strtok(NULL,", ")) if(p && !strcmp(p,tok)) { wallpaper_why(p); return true; }
-        wallpaper_why(p?p:"?");
-        return false;
+        if(!p) { wallpaper_why("?"); return false; }
+        if(allow[0]) {
+            for(char *tok=strtok(allow,", ");tok;tok=strtok(NULL,", ")) if(!strcmp(p,tok)) { wallpaper_why(p); return true; }
+            wallpaper_why(p); return false;
+        }
+        bool apple=!strncmp(p,"com.apple.",10) && !strstr(p,"PhotosPosterProvider") && !strstr(p,"LegacyPoster");
+        wallpaper_why(p);
+        return apple;
     }
     wallpaper_why("no wallpaper window");
     return false;
