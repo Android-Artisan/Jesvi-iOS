@@ -715,13 +715,9 @@ battery_view_set_shows_percentage(id self, SEL sel, BOOL shows)
 	original_battery_view_set_shows_percentage(self, sel, (soc >= 0 && soc <= 100 && !battery_power_source()) ? YES : shows);
 }
 
-static bool sbs_island_present(void);   /* src/statusbar_shift.h (included below) */
-static bool sbs_bolt_on_island(void);
 static BOOL
 battery_view_should_show_bolt(id self, SEL sel)
 {
-	/* (2026-11-15) an island phone shows charging in the island; the bolt in the battery icon is a second one */
-	if (sbs_island_present() && !sbs_bolt_on_island()) return NO;
 	int charging = sysctl_int("kern.redwood.battery_charging");
 	int present = sysctl_int("kern.redwood.battery_present");
 	int plugged = sysctl_int("kern.redwood.battery_charger_present");
