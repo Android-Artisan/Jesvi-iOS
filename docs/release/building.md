@@ -142,3 +142,13 @@ ordering and all toolchain inputs are controlled and demonstrated.
   They are outside this no-phone release entry point.
 - Never clean or rebuild another agent's directory. Preserve its pending work;
   merge/cherry-pick the reviewed release commits into the final source branch.
+
+### Source-only development builds
+
+`images --development` disables the legacy userland prebuilt fallback and builds
+OpenH264 from its reviewed commit into `.cache/release-deps/openh264-source`.
+Mesa/AIR is compiled locally with at most four workers by default (`JOBS` overrides).
+The full image build requires a freshly prepared, reviewed extraction matching the
+current selection recipe. Do not change `.done-rootfs` timestamps to bypass that
+check. Host validation also needs a C compiler for the data-mount policy test.
+Normal boot has no data formatter; a first-install initializer remains unqualified.

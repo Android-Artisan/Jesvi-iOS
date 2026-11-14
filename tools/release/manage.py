@@ -93,7 +93,7 @@ def main():
             p.add_argument('--jobs', type=int, default=4)
         elif cmd == 'images':
             p.add_argument('--development', action='store_true',
-                           help='acknowledge unqualified legacy prebuilts; private candidate only')
+                           help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
     if a.command == 'lock-inputs':
         from private_inputs import write
@@ -132,6 +132,8 @@ def main():
         # Build locally, never export xnu-src over the source under review.
         run('bash', 'ci/build-kernel.sh', '4')
         shutil.copyfile(ROOT / 'out/kernel/mach.x1slte', ROOT / 'out/mach.x1slte')
+        run('bash', 'ci/build-openh264.sh', env=env)
+        env['OPENH264'] = str(ROOT / '.cache/release-deps/openh264-source')
         run('bash', 'userland/build-gpu-y2s.sh', env=env)
         for name in ('root.apfs', 'system.apfs'):
             if not (ROOT / 'userland' / name).is_file():

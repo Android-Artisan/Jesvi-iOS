@@ -66,3 +66,39 @@ the release tests and workflow lint passed again after the clean merge.
 
 Use the [release checklist](checklist.md) to close these gaps. Do not turn a passing
 kernel build or these host tests into a claim that the release is ready to flash.
+
+## Continuation: merged release validation
+
+Merged the latest committed `x1slte` snapshot `8d584cc` into this branch as
+`ef711056`. The other checkout remains on `x1slte`; no device action occurred.
+
+- Fresh Mesa 25.0.7 softpipe/Panfrost and AIR/Metal compiler build passed, with
+  four compile workers. Source archive SHA verification now works with the macOS
+  host's SHA tooling. Mesa's Python build dependencies still need a version lock.
+- OpenH264 source at `1bca62311e447fd9c39fc93de2c4b96cd5ce971c` compiled for iOS
+  arm64 in this worktree. The image CLI now builds its own pinned dependency.
+- Boot-time HFS formatting was removed. Persistent mode halts on unreadable,
+  missing/damaged or unmountable data instead of formatting or silently booting
+  with volatile data. The C policy test covers all outcomes; modified init also
+  cross-compiled successfully. Hardware validation is outstanding.
+- Image staging now uses independent inodes (APFS clone copies on macOS), with
+  a mutation test proving staging cannot change the locked input file. Directory
+  symlinks and nested destinations are rejected.
+- **28 release Python tests**, the C data policy test, and passcode build,
+  file-restore and native-adapter tests passed after the merge. The passcode tests
+  are now included in the normal CI entry point. Actionlint passed all workflows.
+- Source userland compilation and APFS root generation passed before and after
+  the merge. The merged root includes the native keybagd/guarded restore chain.
+  Complete system generation remains blocked by the extraction recipe freshness
+  check: the independently copied extraction predates the checked-out selection
+  recipe. Its timestamp was not touched to bypass this protection. A new reviewed
+  extraction is required before claiming a complete candidate. Missing firmware
+  categories and locally installed bootstrap components also need qualification.
+- No recovery candidate was assembled, published or flashed from these partial
+  results. Offline first-install initialization, AVB verification, filesystem
+  validation and actual install/update/rescue tests remain release blockers.
+
+The earlier missing-input description records the initial audit state. Sanitized,
+independent copies of the extraction, firmware, UEFI and DT inputs were subsequently
+staged locally; owner credentials, personal apps and compiled userland were excluded.
+The supplied UEFI artifact was hash-checked, not rebuilt from source in this step.
