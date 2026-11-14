@@ -1,3 +1,11 @@
+## 2026-11-14 — Camera correctness fixes staged on feat/s20-camera-quality (not deployed)
+- Frame-owned black/band correction and preview-cache identity remove reader/render global-state sharing.
+- Rear tap exposure uses the same correction as rendering; normal rear exposure rounds to even lines.
+- Rear timing metadata follows Samsung's pixel clock; failed exposure writes stop through normal cleanup.
+- Host RAW10/concurrency sanitizer tests, I2C fault injection, 66000 exposure-bound cases, iOS arm64 media/diagnostic
+  cross-build and isolated GICv2 kernel build pass. No phone access/reboot; fingerprint phone ownership preserved.
+- See docs/x1slte-camera-implementation.md for artifacts, limits and integration/testing requirements.
+
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
   `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.

@@ -1,5 +1,7 @@
 # Galaxy S20 camera bring-up tools
 
+Implementation status and host-only build/test commands: [primary camera quality fixes](../../docs/x1slte-camera-implementation.md).
+
 Research preservation and complete handoff: [S20 camera research archive](../../docs/x1slte-camera-research-handoff.md).
 
 Current offline stock-versus-port quality investigation: [x1slte-camera-quality](../../docs/x1slte-camera-quality.md).

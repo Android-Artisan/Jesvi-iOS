@@ -18,6 +18,7 @@
 #include <sys/redwood_audio.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
+#include "redwood_camera_s20_controls.h"
 #include "redwood_camera_s20_3j1.h"
 #include "redwood_camera_s20_2ld.h"
 #include "redwood_camera_s20_2ld_ret.h"
@@ -307,7 +308,20 @@ static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
 static volatile bool cam_s20_exp_pending;
 static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
 static bool cam_s20_stream_cached;
+static bool cam_s20_stream_exposure_failed;
 static volatile uint8_t *cam_s20_optical_dma;
+
+static bool
+cam_s20_exposure_write16(void *context, uint16_t reg, uint16_t value)
+{
+    return cam_3j1_write16(context, reg, value);
+}
+
+static bool
+cam_s20_exposure_write8(void *context, uint16_t reg, uint8_t value)
+{
+    return cam_3j1_write8(context, reg, value);
+}
 
 static void
 cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
@@ -677,13 +691,20 @@ read_id:
 						uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
 
 						cam_s20_exp_pending = false;
-						/* (the SMIA registers are on page 0x4000: the tables leave others selected) */
-						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
-						(void)cam_3j1_write8(&sensor_bus, 0x0104, 1);
-						if (ef) (void)cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)ef);
-						(void)cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)el);
-						(void)cam_3j1_write16(&sensor_bus, 0x0204, (uint16_t)eg);
-						(void)cam_3j1_write8(&sensor_bus, 0x0104, 0);
+						const struct redwood_2ld_control_io io = {
+						    .context = &sensor_bus, .write16 = cam_s20_exposure_write16, .write8 = cam_s20_exposure_write8
+						};
+						uint16_t failed_reg;
+
+						if (!redwood_2ld_write_exposure(&io, el, eg, ef, &failed_reg)) {
+							/* Do not emit future frames tagged with an unacknowledged request.
+							 * Break through the normal DMA abort/stream-off cleanup below. */
+							cam_s20_stream_exposure_failed = true;
+							cam_s20_stream_errors++;
+							ok = false;
+							(void)snprintf(phase, sizeof(phase), "rear exposure I2C reg %#x", failed_reg);
+							break;
+						}
 					}
 					if (cam_s20_af_pending && cam_s20_af_ready) {
 						uint32_t want = cam_s20_af_want;
@@ -735,7 +756,7 @@ read_id:
 		(void)cam_3j1_write16(&sensor_bus, 0x0100, 0x0000);
 		cam_s20_wait_ms(40);
 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
-		(void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
+		if (ok) (void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
 	}
 stream_done:
 	if (rx_saved) {
@@ -1081,10 +1102,11 @@ redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 	uint64_t args[2] = { cam_s20_rear ? 2 : 1, 14 };
 	if (fn == NULL || cam_s20_stream_fn != NULL) return false;
 	cam_s20_stream_frames = cam_s20_stream_errors = 0;
+	cam_s20_stream_exposure_failed = false;
 	cam_s20_stream_fn = fn;
 	cam_s20_dma_pattern(args, 2, out, cap);
 	cam_s20_stream_fn = NULL;
-	return cam_s20_stream_frames != 0;
+	return cam_s20_stream_frames != 0 && !cam_s20_stream_exposure_failed;
 }
 
 static void

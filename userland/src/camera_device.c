@@ -1296,7 +1296,7 @@ af_go(int device, struct af *af, uint32_t target)
 }
 
 static void
-af_frame(int device, struct af *af, const struct redwood_camera_frame *f, const uint8_t *raw, const float window[4], bool locked)
+af_frame(int device, struct af *af, const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, const float window[4], bool locked)
 {
 	float level, sharpness;
 	unsigned needed = f->gain >= 16 * f->gain_unity ? 2 : 1;      /* (in the dark, two frames to a measurement) */
@@ -1315,7 +1315,7 @@ af_frame(int device, struct af *af, const struct redwood_camera_frame *f, const 
 		af_go(device, af, af->target);          /* (the next step of a longer way) */
 		return;
 	}
-	sharpness = isp_sharpness(f, raw, window[0], window[1], window[2], window[3], &level);
+	sharpness = isp_sharpness(isp, f, raw, window[0], window[1], window[2], window[3], &level);
 	af->sum_sharpness += sharpness;
 	af->sum_level += level;
 	if (++af->measured < needed) {
@@ -2021,10 +2021,9 @@ worker_body(void *context)
 				}
 				black = rear_black;
 			}
-			isp_black = black;
 			fw->black = (uint32_t)black;
 			for (int k = 0; k < 4; k++) {
-				isp_black4[k] = black;
+				isp.black.site[k] = black;
 			}
 			if (fw->width == 2016 && fw->gain_unity > 0) {
 				/*
@@ -2051,7 +2050,7 @@ worker_body(void *context)
 
 				t = t < 0 ? 0 : t > 1 ? 1 : t;
 				for (int k = 0; k < 4; k++) {
-					isp_black4[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
+					isp.black.site[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
 				}
 			}
 		}
@@ -2111,7 +2110,7 @@ worker_body(void *context)
 			 */
 			struct redwood_camera_frame *fd = (void *)buffer;
 
-			isp_band_row = 0;
+			isp.black.band_row = 0;
 			if (fd->width == 4032 && fd->gain_unity > 0) {
 				static float dark[12][9];
 				static int dark_n = -1, band = 1914;
@@ -2170,20 +2169,14 @@ worker_body(void *context)
 							for (int i = 0; i < 1024; i++) total += hist[bnd][k][i];
 							for (v = 0; v < 1023 && acc + hist[bnd][k][v] < total * 3 / 1000 + 1; v++) acc += hist[bnd][k][v];
 							v = v > 64 ? 64 : v;
-							if (bnd == 0) isp_black4[k] = v; else isp_black4_low[k] = v;
+							if (bnd == 0) isp.black.site[k] = v; else isp.black.low[k] = v;
 						}
 					}
-					for (int k = 0; k < 2; k++) {
-						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
-
-						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
-						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
-					}
-					isp_band_row = band;
+					isp.black.band_row = band;
 					if (++dark_looked % 60 == 1) {
-						say("rear black measured: above %d %d %d %d, below %d %d %d %d", isp_black4[0], isp_black4[1],
-						    isp_black4[2], isp_black4[3], isp_black4_low[0], isp_black4_low[1], isp_black4_low[2],
-						    isp_black4_low[3]);
+						say("rear black measured: above %d %d %d %d, below %d %d %d %d", isp.black.site[0], isp.black.site[1],
+						    isp.black.site[2], isp.black.site[3], isp.black.low[0], isp.black.low[1], isp.black.low[2],
+						    isp.black.low[3]);
 					}
 				}
 				if (dark_n > 0) {
@@ -2196,16 +2189,10 @@ worker_body(void *context)
 
 					t = t < 0 ? 0 : t > 1 ? 1 : t;
 					for (int k = 0; k < 4; k++) {
-						isp_black4[k] = (int)(dark[a][1 + k] + t * (dark[b][1 + k] - dark[a][1 + k]) + 0.5f);
-						isp_black4_low[k] = (int)(dark[a][5 + k] + t * (dark[b][5 + k] - dark[a][5 + k]) + 0.5f);
+						isp.black.site[k] = (int)(dark[a][1 + k] + t * (dark[b][1 + k] - dark[a][1 + k]) + 0.5f);
+						isp.black.low[k] = (int)(dark[a][5 + k] + t * (dark[b][5 + k] - dark[a][5 + k]) + 0.5f);
 					}
-					for (int k = 0; k < 2; k++) {
-						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
-
-						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
-						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
-					}
-					isp_band_row = band;
+					isp.black.band_row = band;
 				}
 			}
 		}
@@ -2286,7 +2273,13 @@ worker_body(void *context)
 			uint32_t cw = f->width / 2, chh = f->height / 2, n = 0;
 			double sum = 0;
 
-			if (tapped) {
+			if (tapped && (f->width == 2016 || f->width == 4032)) {
+				double green;
+				uint32_t cells = isp_window_green(&isp, f, raw, s->af_window[0], s->af_window[1],
+				    s->af_window[2], s->af_window[3], &green);
+
+				if (cells > 16) st.mean[1] = 0.75 * green + 0.25 * st.mean[1];
+			} else if (tapped) {
 				uint32_t x0 = (uint32_t)(s->af_window[0] * cw), x1 = (uint32_t)(s->af_window[2] * cw);
 				uint32_t y0 = (uint32_t)(s->af_window[1] * chh), y1 = (uint32_t)(s->af_window[3] * chh);
 				int r_at = (int)(f->bayer & 3), b_at = 3 - (int)(f->bayer & 3);   /* (as camera_isp.c's cell_places) */
@@ -2360,7 +2353,7 @@ ae_done:;
 			af.now = true;
 			af.sweep = true;
 		}
-		af_frame(device, &af, f, raw, s->af_window, s->af_locked);
+		af_frame(device, &af, &isp, f, raw, s->af_window, s->af_locked);
 		s->stats_ticks += mach_absolute_time() - t_stats;
 		s->frames++;
 

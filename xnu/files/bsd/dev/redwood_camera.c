@@ -68,6 +68,7 @@
  * CSID-lite 0, IFE-lite 0, one match register and context of the SMMU) are written the same way, read back
  * where they keep what they are given, and taken back in the reverse order.
  */
+#include "redwood_camera_s20_controls.h"
 #include <kern/clock.h>
 #include <kern/locks.h>
 #include <kern/thread.h>
@@ -3333,6 +3334,8 @@ exposure_limits(uint32_t *lines, uint32_t *gain, uint32_t *frame_lines)
 	if (*lines > *frame_lines - EXPOSURE_MARGIN) {
 		*lines = *frame_lines - EXPOSURE_MARGIN;
 	}
+	/* Samsung normal-mode CIT is even; normalize after the final frame clamp. */
+	if (s20_real && s20_rear_now) *lines = redwood_2ld_even_exposure(*lines);
 }
 
 /*
@@ -4192,9 +4195,9 @@ ios_select(unsigned index, uint32_t mode_n)
 		/* SAK3J1 2x2-binned 1824x1368 at 30: line length 0x4940, frame length 0x597 (cam_s20_full=0) */
 		{ 1824, 1368, 0, 0, 4, 0, 9, 805000000, 18752, 1431, 30000, RAW10_DT },
 		/* the rear main S5K2LD 2016x1512 at 30 (Samsung setA): line length 0x08e0, frame length 0x5824; C-PHY 3 trios */
-		{ 2016, 1512, 0, 0, 4, 0, 9, 1537927680, 2272, 22564, 30000, RAW10_DT },
+		{ 2016, 1512, 0, 0, 3, 1, 7, REDWOOD_2LD_PIXEL_CLOCK, 2272, 22564, 30000, RAW10_DT },
 		/* the rear main's full 4032x3024 at 30 (setA A0, what the stock camera uses): line length 0x1090, frame 0x2f80 */
-		{ 4032, 3024, 0, 0, 4, 0, 9, 1537927680, 4240, 12160, 30000, RAW10_DT },
+		{ 4032, 3024, 0, 0, 3, 1, 7, REDWOOD_2LD_PIXEL_CLOCK, 4240, 12160, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
@@ -4252,6 +4255,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		return false;
 	}
 	ios_line_ns = (uint32_t)(1000000000000ull / ((uint64_t)ios_mode->fps_milli * ios_mode->frame_length));
+	if (s20_real && s20_rear_now) ios_line_ns = redwood_2ld_line_ns(ios_mode->line_length);
 	uint32_t pattern = 0, count = 0;
 	const struct ctab_entry *tpgon;
 
