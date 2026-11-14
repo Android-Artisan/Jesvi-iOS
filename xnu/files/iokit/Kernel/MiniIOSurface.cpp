@@ -159,7 +159,7 @@ static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
  * any other, and shown by copying.
  */
 static TUNABLE(uint32_t, gSurfaceContiguous, "fb_scaler", 0);
-#define SURFACE_CONTIGUOUS_FROM (2000000u)     /* pixels: full-screen (1125 x 2436 here) */
+#define SURFACE_CONTIGUOUS_FROM (1200000u)     /* pixels: full-screen (1125 x 2436 at 3x, 750 x 1624 at 2x: fbscale / fb_mode 3-4) */
 
 static bool
 surfaceContiguous(IOMemoryDescriptor * memory)

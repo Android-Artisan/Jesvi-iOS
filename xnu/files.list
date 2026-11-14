@@ -239,6 +239,7 @@ bsd/sys/redwood_lx.h
 bsd/sys/redwood_m2m.h
 bsd/sys/redwood_mali.h
 bsd/sys/redwood_net.h
+bsd/sys/redwood_power_policy.h
 bsd/sys/redwood_qmi.h
 bsd/sys/redwood_qrtr.h
 bsd/sys/redwood_sensors.h

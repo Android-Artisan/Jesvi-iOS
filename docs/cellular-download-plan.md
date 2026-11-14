@@ -585,6 +585,28 @@ in Messages, no calls.
 - From boot (no hands): image inject.conf has `libredwood-tweaks.dylib Preferences imagent`; RedwoodSMS in /var/jb;
   redwood-ims (/var/root) started by redwood-cellulard; SMSC in /var/root/cell-smsc.
 
+## 2026-11-13 17:50 — Control Center cellular button: not solved yet (A)
+
+- iOS hides it because MobileGestalt says HasBaseband = false, cellular-data = false (no Apple baseband).
+- Control Center's ConnectivityModule (loaded into SpringBoard at the first opening):
+  CCUIConnectivityModuleViewController (_setupPortraitButtons, _setupLandscapeButtons, _makeButtonWithClass:,
+  cellularDataButton, portrait/landscape/buttonViewControllers) and CCUIConnectivityCellularDataViewController
+  (buttonTapped:, _toggleState, _updateState, _isCellularDataButtonDemoMode, _isCellularDataRestricted).
+- libredwood-sb (cell_sb.h) hooks them at module load (dyld add-image) and on viewWillAppear: the cellular button is
+  made by the module's factory and inserted after airplane mode; the tap sends data/nodata; the state follows data_on.
+  All 7 hooks install, but the button is not shown and "button added" is never logged -> the button object most likely
+  already exists in the lists and the compressed 2x2 layout picks its four buttons elsewhere (AirDrop takes the slot).
+  Next: sb-dump the arrays' contents at viewWillAppear, find the layout's choice (viewWillLayoutSubviews /
+  _compressedButtonSize), or set the cellular button where AirDrop is.
+- Tools for this without new images: /var/tmp/redwood-cell/sb-dump ("CLASSPART [METHODPART]", class + instance methods
+  and matching images to the console) and sb-hook ("CLASS SELECTOR YES|NO|DATA" for BOOL getters).
+- Lesson: the deploy tool can fail to reach fastboot ("did not reach Log access") and the phone then boots the OLD image;
+  always compare the md5 of /redwood/lib/<lib> with the build after a deploy.
+- ControlCenterCellularDataButtonDemoMode (com.apple.springboard / com.apple.controlcenter) did not show the button;
+  set back to false.
+- 17:58: the whole Control Center attempt was REMOVED at the user's request (main 5146306): no hooks in
+  ConnectivityModule, no module-load callback, no sb-dump/sb-hook. The notes above stay for a later attempt;
+  the code is in main's history (5588958 and before).
 ## 2026-11-13 18:35 — stability fixes; calls: groundwork (session B)
 
 Stability (all on main, prebuilt redwood-cellulard + redwood-ims updated, live on the phone):
@@ -776,3 +798,13 @@ For Jio's call: local = our IMS IPv6 and CALL_RTP_PORT/+1; remote = the SDP's c=
   redwood-cellulard loads / cell-toc.bin), map CAL_IOVA_VSS there, zero the abox-vss magic word (+0x700000), send
   Calliope SYSTEM_CALL on/off at call start/end (abox_vss_notify_call -> abox_set_system_state), set the
   "incall-handset" routes. Then the caller should hear the S20's mic and vice versa.
+
+
+## 2026-11-14 — calls work: the AP is the voice engine (A)
+The CP's CPVE accepted every command (16/06, 16/01, 16/02, 16/03) but never took the RTP stream: the caller's packets
+(dport 50010/50011) arrive at the AP on SBD channels 10/11 as bare IPv6. So the voice is done on the AP, as a VoIP app
+does it: redwood-ims (`tools/cellular/ims-media.h`) decodes/encodes AMR-NB with opencore-amr and plays/records through
+/dev/redwood-audio and /dev/redwood-mic; redwood-cellulard hands those packets to the IMS interface; redwood-ims adds a
+host route to the media peer (only the P-CSCFs were routed: "No route to host"). Verified both ways by the user.
+The ABOX/Calliope route (cpcall, call-audio.sh, abox_tplg ids) stays documented here and in SHIPPING.md but is unused.
+Testing rule learned: never restart redwood-ims/cellulard while a call is up (the network keeps the call: "busy").

@@ -790,6 +790,22 @@ lock_long_press(id self, SEL selector, id recognizer)
 static BOOL
 unlock(void)
 {
+	/* The bring-up/remote helper must never dismiss a passcode-protected UI.
+	 * Native authentication handles those unlocks. Unknown state fails closed. */
+	static int (*keybag_state)(CFDictionaryRef);
+	static bool keybag_looked_up;
+	if (!keybag_looked_up) {
+		keybag_state = dlsym(RTLD_DEFAULT, "MKBGetDeviceLockState");
+		if (!keybag_state) {
+			void *mkb = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_LAZY);
+			if (mkb) keybag_state = dlsym(mkb, "MKBGetDeviceLockState");
+		}
+		keybag_looked_up = true;
+	}
+	if (!keybag_state || keybag_state(NULL) != 3) {
+		say("redwood: unlock helper: passcode set or keybag state unavailable; native authentication required\n");
+		return YES;
+	}
 	Class cls = objc_getClass("SBLockScreenManager");
 	SEL shared = sel_registerName("sharedInstance"), locked = sel_registerName("isUILocked");
 	SEL unlock_ui = sel_registerName("unlockUIFromSource:withOptions:");
@@ -1458,9 +1474,11 @@ control_center_fades(const char *arguments)
 
 /* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
 #include "island_sb.h"
+#include "wallpaper_motion.h"
 /* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
 #include "cell_sb.h"
 #include "statusbar_shift.h"
+#include "phone_dial.h"
 
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
@@ -1522,6 +1540,9 @@ redwood_springboard_init(void)
 	 * run here before UIKit caches the iPhone X's SPU capabilities. */
 	extern void redwood_coremotion_fixes(void);
 	redwood_coremotion_fixes();
+	if (strcmp(name, "SpringBoard") == 0) {
+		phone_system_hook();        /* RedwoodPhone's calls get the full call screen (phone_dial.h) */
+	}
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
 
@@ -1545,6 +1566,7 @@ redwood_springboard_init(void)
 	 */
 	mps_unsupported_returns_nil();
 	island_start();
+	wallpaper_motion_start();
 	cell_start();
 	statusbar_shift_start();
 	load_tweaks();

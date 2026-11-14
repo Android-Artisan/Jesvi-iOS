@@ -627,6 +627,15 @@ int rwa_dispatch_buffers(struct rwa_compute *compute, const struct rwa_bindings 
 			 const unsigned groups[3], const unsigned group_size[3],
 			 char *why, size_t why_size);
 
+/*
+ * rwa_dispatch_buffers with Metal's -setThreadgroupMemoryLength:atIndex: (index 0): the size
+ * of a kernel's threadgroup ARGUMENT, which only the dispatch knows. 0 when there is none.
+ */
+int rwa_dispatch_tg(struct rwa_compute *compute, const struct rwa_bindings *bindings,
+		    const struct rwa_buffer_bind *table, unsigned table_count,
+		    const unsigned groups[3], const unsigned group_size[3],
+		    unsigned threadgroup_length, char *why, size_t why_size);
+
 /* Wait for everything dispatched so far, with a real fence. 0, or -1 and a sentence. */
 int rwa_finish(struct rwa_device *device, char *why, size_t why_size);
 /* rwa_finish in two: flush and take the fence; then wait for it (any thread, without the lock). */

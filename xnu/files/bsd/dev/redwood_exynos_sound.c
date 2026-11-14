@@ -601,21 +601,46 @@ amp_prepare(struct amp *a)
 	return true;
 }
 
-static uint32_t amps_volume_reg = L41_VOL_MUTE;        /* as amp_prepare() leaves them */
+static uint32_t amps_volume_reg[2] = { L41_VOL_MUTE, L41_VOL_MUTE };   /* as amp_prepare() leaves them */
+
+/*
+ * Calls (A, 2026-11-14): kern.redwood.snd_route 0 = the speakers (both amplifiers, as always), 1 = the earpiece: the
+ * top amplifier alone (it drives the earpiece/top speaker), kern.redwood.snd_ear_below eighths of a dB further down
+ * (default 18 dB), the bottom one muted. redwood-ims sets 1 when a call's voice starts and 0 when it ends; the call
+ * screen's speaker button switches (RedwoodPhone).
+ */
+static int snd_route;
+static int snd_ear_below = 18 * 8;
+static int snd_call;                    /* a VoLTE call's voice is playing (redwood-ims): the audio plug-in writes nothing */
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_call, CTLFLAG_RW | CTLFLAG_LOCKED, &snd_call, 0,
+    "a VoLTE call in progress: iOS's audio plug-in leaves /dev/redwood-audio to redwood-ims");
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_route, CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, &snd_route, 0,
+    "speaker route: 0 speakers, 1 earpiece (top amplifier only, quieter)");
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_ear_below, CTLFLAG_RW | CTLFLAG_LOCKED, &snd_ear_below, 0,
+    "earpiece level: eighths of a dB below the speakers' level");
 
 static void
 amps_volume(uint32_t below, bool muted)
 {
-	uint32_t reg = (muted || below >= 816) ? L41_VOL_MUTE : (uint32_t)(-(int32_t)below) & 0x7ff;
-
-	if (reg == amps_volume_reg) {
-		return;
-	}
-	amps_volume_reg = reg;
 	for (unsigned i = 0; i < 2; i++) {
-		if (amps[i].present) {
-			amp_update(&amps[i], L41_AMP_DIG_VOL_CTRL, 0x7ff << 3, reg << 3);
+		uint32_t b = below;
+		bool m = muted;
+
+		if (snd_route == 1) {
+			if (i == 1) {
+				m = true;               /* the bottom speaker: off in the earpiece route */
+			} else {
+				b += (uint32_t)(snd_ear_below > 0 ? snd_ear_below : 0);
+			}
 		}
+		uint32_t reg = (m || b >= 816) ? L41_VOL_MUTE : (uint32_t)(-(int32_t)b) & 0x7ff;
+
+		if (reg == amps_volume_reg[i] || !amps[i].present) {
+			continue;
+		}
+		amps_volume_reg[i] = reg;
+		amp_update(&amps[i], L41_AMP_DIG_VOL_CTRL, 0x7ff << 3, reg << 3);
 	}
 }
 
@@ -753,7 +778,7 @@ amps_bring_up(void)
 	bool any = false;
 
 	/* A reset invalidates cached volume and previous presence results. */
-	amps_volume_reg = L41_VOL_MUTE;
+	amps_volume_reg[0] = amps_volume_reg[1] = L41_VOL_MUTE;
 	for (unsigned i = 0; i < 2; i++) {
 		amps[i].present = false;
 	}

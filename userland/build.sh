@@ -139,7 +139,11 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-tweaks.dylib Preferences imagent
 /redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
 /redwood/lib/libredwood-finder.dylib lockdownd
-/redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}"}
+/redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
+/var/jb/redwood/lib/libredwood-calls.dylib callservicesd
+/var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/var/jb/usr/lib/libredwood-metaloff.dylib PosterBoard AegirPoster mediaserverd WeatherPoster"}
 # libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
 # with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
@@ -614,6 +618,24 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
+	# calls on iOS's own call screen (A, 2026-11-14): callservicesd (CallKit's daemon; the system image leaves framework
+	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
+	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
+	# /var/jb/Applications) as the CallKit provider of redwood-ims
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
+	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
+			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+	else
+		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
+		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
+		# call reached the call screen): the job as it runs on the phone, kept in the tree
+		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
+		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
 	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
@@ -622,6 +644,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
+	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+	fi
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/

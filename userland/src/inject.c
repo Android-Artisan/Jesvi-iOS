@@ -1790,6 +1790,13 @@ redwood_init(void)
 	if (strcmp(name, "Camera") == 0) {
 		camera_front_by_default();
 	}
+	/* the call hooks live outside the boot image (A, 2026-11-14), so they change without a reboot:
+	 * /var/jb/redwood/lib/libredwood-calls.dylib (userland/src/calls_tweak.c), in the Phone app and the call screen */
+	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+		if (dlopen("/var/jb/redwood/lib/libredwood-calls.dylib", RTLD_NOW) == NULL) {
+			say("redwood: %s: no call hooks (%s)\n", name, dlerror());
+		}
+	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;

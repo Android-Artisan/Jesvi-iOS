@@ -225,12 +225,17 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'Blue
         # these start, crash and are asked for again, over and over. (aggregated, which was among them, is where
         # iOS 16 keeps its power log -- com.apple.powerlog.plxpclogger.xpc and the rest -- that Settings > Battery
         # waits for; it now runs through a session.)
-        'homed', 'routined', 'duetexpertd', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
+        'homed', 'routined', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
         # x1slte (2026-11-06): Visual Voicemail spins without a baseband (85 % of a core, the SoC at 92-94 C)
         'voicemail.vmd',
         # x1slte (2026-11-06): coreduetd (66 %) asks for duetexpertd's services (denied above) without end, and biomed
         # (32 %) streams for it: two cores' worth of heat for app predictions this port does not use
         'coreduetd', 'biomed')
+# duetexpertd is let through again (B, 2026-11-14): it fills the wallpaper gallery ("Add New Wallpaper",
+# com.apple.proactive.FaceSuggestions.xpc; without it PosterBoard aborts on a nil gallery). It starts on demand
+# and sits idle; coreduetd, which asked for it without end, stays denied. It traps in
+# ATXEnableMobileAssetDataVault (a data vault this kernel cannot make): /var/jb/usr/lib/libredwood-duet.dylib
+# (inject list, build.sh) skips that call.
 
 # ALLOW="word ..." in the environment lets jobs through that DENY would stop: for trying one out
 DENY = tuple(word for word in DENY if word not in os.environ.get('ALLOW', '').split())
