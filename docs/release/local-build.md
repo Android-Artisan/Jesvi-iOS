@@ -80,3 +80,10 @@ Keep `inputs/`, `.cache/`, `sysimage` downloads and `out/` local and private.
 The command completed locally and produced `dist/local-validation.tar` on
 2026-11-14. Actual extraction and system-image cache hits were observed, and the
 packaged system hash matched the cached object. See [validation](validation.md).
+
+## Optional TWRP output
+
+`./build.sh local --output dist/s20-002 --twrp` emits `dist/s20-002.zip` instead of a duplicate transport tar
+in read-only preflight mode. Add `--experimental` to enable the implemented but
+hardware-unqualified writer and physical confirmation flow. To wrap an existing
+candidate without rebuilding its images, use `./build.sh twrp --bundle ... --output dist/NAME.zip`. See [TWRP package](twrp.md) for exact commands and data policy.

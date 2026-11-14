@@ -48,7 +48,8 @@ that the remote workflows or complete private image path have been executed.
 - [ ] Release debug service exposure, SSH provisioning and identity generation reviewed;
       no developer keys/passwords/calibration identities embedded.
 - [x] Boot-time formatting removed; failed reads/headers/mounts halt persistent-data boot.
-- [ ] Explicit offline first-install initializer implemented and qualified on hardware.
+- [x] Experimental TWRP writer and explicit offline HFSX initializer implemented and host-tested.
+- [ ] TWRP writer, first-install initializer, update preservation and rescue qualified on hardware.
 - [ ] Exact TWRP build/model properties, bootloader/unlock prerequisites and AVB behavior
       recorded; full image/manifest authentication implemented.
 - [ ] First-install writer implemented with preflight, streaming, readback, no protected

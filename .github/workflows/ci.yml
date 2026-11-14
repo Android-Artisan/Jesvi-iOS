@@ -17,6 +17,7 @@ jobs:
         with:
           persist-credentials: false
       - run: bash ci/check.sh
+      - run: bash ci/check-recovery.sh
       - run: python3 tools/release/audit.py --output out/publication-audit.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

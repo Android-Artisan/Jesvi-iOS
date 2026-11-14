@@ -5,11 +5,15 @@ has no qualified install command yet.** The package manifest deliberately says
 `installer_validated: false`. `run.sh` supports offline `verify` and `plan` only.
 A successful build/cache check does not establish that this exact candidate boots.
 
+An [experimental TWRP ZIP](twrp.md) is now implemented, including a preflight-only
+mode and an explicitly enabled writer. It still needs controlled hardware
+qualification; the guide below describes the transaction and the older tar archive.
+
 ## Pick the correct path
 
 | Starting point | Intended path | Current limit |
 |---|---|---|
-| Stock Android on a new supported S20 | Exact-device Download Mode/TWRP preparation, backups, explicit fresh installation | Offline HFSX initialization and the complete installer transaction remain unimplemented/unqualified |
+| Stock Android on a new supported S20 | Exact-device Download Mode/TWRP preparation, backups, explicit fresh installation | Experimental ZIP implements initialization/transaction; hardware qualification remains |
 | Existing iOS development phone | Controlled update preserving existing HFSX userdata and software keybags | The new candidate and update/readback/rescue path need device testing |
 | Other Exynos 990 model or storage variant | Add and qualify that board first | The S20 package cannot be reused solely because the SoC matches |
 
@@ -124,8 +128,8 @@ coordinate the shared phone and explicit reboot permission before any trial.
 
 ## What remains before an install command can be published
 
-- Implement the device probe, verified external backups and readback writer.
-- Implement explicit offline HFSX initialization and its fresh-install gate.
+- Qualify the implemented device probe, readback writer and physical confirmations.
+- Qualify offline HFSX initialization; prepare and verify backups separately.
 - Verify complete APFS integrity, actual AVB/BOOT behavior and release authenticity.
 - Test first install, preserving updates, wrong-target rejection, interrupted
   writes, corrupt data, power loss and independent Download Mode rescue.

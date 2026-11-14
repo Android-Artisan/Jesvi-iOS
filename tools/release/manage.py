@@ -27,7 +27,7 @@ def profile(name):
     if d['installer_validated']:
         # No device is qualified yet. A future qualification PR must change this
         # code and include its evidence, rather than flipping a JSON boolean.
-        raise ValueError('installer qualification is not implemented; see docs/release/flashing.md')
+        raise ValueError('installer hardware qualification is not recorded; see docs/release/twrp.md')
     if d['status'] != 'unmaintained':
         if not d['models'] or not d['bootloaders'] or not d['evidence']:
             raise ValueError(f'missing identity/evidence: {name}')
@@ -85,6 +85,13 @@ def main():
     p = sub.add_parser('local')
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--check-only', action='store_true')
+    p.add_argument('--twrp', action='store_true', help='also build a TWRP preflight ZIP')
+    p.add_argument('--experimental', action='store_true', help='with --twrp, enable unqualified writes after physical confirmation')
+    p = sub.add_parser('twrp')
+    p.add_argument('--bundle', required=True, type=Path)
+    p.add_argument('--output', required=True, type=Path)
+    p.add_argument('--mode', choices=['choose', 'update', 'fresh'], default='choose')
+    p.add_argument('--experimental', action='store_true', help='enable unqualified device writes after physical confirmation')
     p = sub.add_parser('package')
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
@@ -99,6 +106,10 @@ def main():
             p.add_argument('--development', action='store_true',
                            help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
+    if a.command == 'twrp':
+        from twrp_package import package
+        package(a.bundle, a.output, a.mode, a.experimental)
+        return 0
     if a.command == 'identity':
         tree = ROOT / 'sysimage/DeviceTree.d22ap.im4p'
         if not tree.is_file():
@@ -108,7 +119,9 @@ def main():
         return 0
     if a.command == 'local':
         from local_build import build
-        build(a.output, a.check_only)
+        if a.experimental and not a.twrp:
+            raise ValueError('--experimental requires --twrp')
+        build(a.output, a.check_only, a.twrp, a.experimental)
         return 0
     if a.command == 'lock-inputs':
         from private_inputs import write

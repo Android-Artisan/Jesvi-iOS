@@ -17,6 +17,7 @@ instructions on Samsung hardware.
 | Understand release readiness and design decisions | [Release research](docs/release/research.md) |
 | Build/check from a fresh clone | [Build guide](docs/release/building.md) |
 | Add another Exynos 990 device | [Porting guide](docs/release/porting.md) |
+| Build an experimental TWRP ZIP | [TWRP package](docs/release/twrp.md) |
 | Installation steps, current limits and package verification | [Installation guide](docs/release/install.md) |
 | Choose TWRP / Odin / host script and understand recovery | [Flashing design](docs/release/flashing.md) |
 | Configure GitHub, CI and image retention | [Repository and CI](docs/release/operations.md) |

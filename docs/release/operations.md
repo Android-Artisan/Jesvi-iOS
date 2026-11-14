@@ -55,7 +55,8 @@ empty maintainer arrays until owners volunteer.
 ## Workflows included
 
 - **CI:** all pushes/PRs/dispatches → registry, unit tests and shell syntax → macOS
-  source kernel. Exact compiler/OS/architecture/source cache key; no fallback key.
+  source kernel. Recovery CI also runs file-backed transaction tests, Go vet and
+  static Linux/ARM64 cross-compilation with a pinned toolchain. Exact compiler/OS/architecture/source cache key; no fallback key.
   Cache writes only on non-PR runs. Only source-built kernel/provenance/checksums are
   uploaded. Job permissions are read-only; checkout credentials are not persisted.
 - **Upstream watch:** weekly/manual read-only `ls-remote` against the input lock and `ci/upstream-watch.json` for HakiOS upstream.

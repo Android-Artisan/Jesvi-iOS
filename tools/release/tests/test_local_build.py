@@ -47,3 +47,21 @@ class LocalBuildTests(unittest.TestCase):
                     local_build.build(output)
             self.assertFalse(any('package' in a for a in commands))
             self.assertFalse(Path(str(output)+'.tar').exists())
+
+class RecoveryOutputTests(unittest.TestCase):
+    def test_twrp_pipeline_omits_duplicate_tar_and_propagates_explicit_write_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / 'dist/candidate'
+            commands = []
+            def run(args, **kwargs):
+                commands.append(args)
+                if 'package' in args:
+                    output.mkdir(parents=True)
+                return type('Result', (), {'returncode': 0})()
+            with patch.object(local_build, 'ROOT', root), patch.object(local_build, 'preflight'), \
+                 patch.object(local_build, 'verify_extraction'), \
+                 patch.object(local_build.subprocess, 'run', side_effect=run):
+                local_build.build(output, twrp=True, experimental=True)
+            self.assertEqual(commands[-1], ['./build.sh','twrp','--bundle',str(output),'--output',str(output)+'.zip','--experimental'])
+            self.assertFalse(Path(str(output)+'.tar').exists())

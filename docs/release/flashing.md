@@ -8,7 +8,8 @@ For package verification and the user-facing process, read the
 For a first release, qualify **TWRP for first installation**, **Odin/Download Mode
 for bootstrap and rescue**, and **a host helper for input verification, progress,
 backups and readback**. A `.sh` file is an interface, not a flashing protocol.
-There is no qualified installer in this branch; `run.sh` only verifies files and
+The [experimental TWRP backend](twrp.md) implements this transaction, but is not
+yet qualified on hardware; `run.sh` only verifies files and
 prints an offline plan. Do not turn the research `x1slte.sh` flash functions into
 public one-click instructions without the tests below.
 
@@ -86,8 +87,8 @@ metadata; these are different checks.
    not zero the rest of super: its tail is reserved for loader logs.
 8. **Initialize data only on an explicit fresh install.** Normal init now only mounts an existing HFSX volume. An absent/damaged header,
    read failure or failed mount halts persistent-data boot without formatting.
-   The offline initializer and its explicit fresh-install authorization still need
-   implementation and hardware qualification. Updates must preserve userdata.
+   The experimental offline initializer and its physical fresh-install confirmation
+   are implemented; hardware qualification remains. Updates must preserve userdata.
 9. **Only after successful readback:** record the installed version/layout marker,
    save the log on the host, then reboot. Do not reboot on failure or falsely claim
    success. Recovery has already been overwritten, so rescue must remain possible

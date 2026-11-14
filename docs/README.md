@@ -6,6 +6,7 @@ folder is the entry point for new developers; subsystem notes remain research ev
 - [Research and decisions](release/research.md)
 - [Build instructions](release/building.md)
 - [Device maintainer guide](release/porting.md)
+- [Experimental TWRP ZIP and data policy](release/twrp.md)
 - [Installation process and current limits](release/install.md)
 - [One-command local build](release/local-build.md)
 - [Flashing and delivery](release/flashing.md)

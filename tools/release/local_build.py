@@ -32,12 +32,12 @@ def preflight(output):
     for name in ('rootfs', 'cryptex', 'cryptex-app'):
         if (ROOT / 'sysimage' / name).is_symlink():
             errors.append('shared extraction directory symlink: ' + name)
-    if output.exists() or output.is_symlink() or Path(str(output) + '.tar').exists():
+    if output.exists() or output.is_symlink() or Path(str(output) + '.tar').exists() or Path(str(output) + '.zip').exists():
         errors.append('output already exists; choose a new candidate path')
     if errors:
         raise ValueError('\n'.join(errors))
 
-def build(output, check_only=False):
+def build(output, check_only=False, twrp=False, experimental=False):
     output = output.absolute()
     preflight(output)
     if check_only:
@@ -82,6 +82,13 @@ def build(output, check_only=False):
         run('03-build: compile and assemble images', ['./build.sh', 'images', '--development'])
         run('04-package: assemble candidate', ['./build.sh', 'package', '--output', str(output)])
         run('05-verify: verify candidate', ['./run.sh', 'verify', '--bundle', str(output)])
+        if twrp:
+            args = ['./build.sh', 'twrp', '--bundle', str(output), '--output', str(output) + '.zip']
+            if experimental:
+                args.append('--experimental')
+            run('06-twrp: build native recovery ZIP', args)
+            print(f'Private TWRP package: {output}.zip; hardware qualification pending', flush=True)
+            return
         archive = Path(str(output) + '.tar')
         pending = Path(str(archive) + '.part')
         try:
