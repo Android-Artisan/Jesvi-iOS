@@ -1,3 +1,14 @@
+# Latest live installation handoff (supersedes staged-only status below)
+
+Camera-only brightness was installed subsequently from `feat/s20-camera-quality`
+commit `42b1dd4d`. Read the authoritative latest device state and rollback in
+[/Users/jesvi/ios-port-research/work/hackios-camera-improve/handoff.md](/Users/jesvi/ios-port-research/work/hackios-camera-improve/handoff.md)
+before any phone operation. Installation/readback/SpringBoard loading confirmed;
+Camera entry/exit/manual/lock and reboot validation still pending. No reboot or
+system-image write. This aux branch retains independent offline sensor research.
+
+---
+
 # S20 camera deployment handoff
 
 ## Current state
