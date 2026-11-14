@@ -429,9 +429,45 @@ hc_query_refusal(const uint8_t *upiu, uint32_t dw0)
 	return NULL;
 }
 
+/*
+ * The RPMB unit for the secure world (A, 2026-11-14; bsd/dev/redwood_teegris.c's secure RPMB service, Samsung's
+ * scsi_srpmb.c): only while ufshc_security() runs, only SECURITY PROTOCOL OUT/IN (b5/a2) with Samsung's protocol
+ * 0xEC / specific 0x0001, or REQUEST SENSE, to the RPMB well-known unit 0xC4. The frames are made and signed by
+ * the secure world (an RPMB write is authenticated by the device's key); nothing else reaches this unit.
+ */
+#define RPMB_WLUN       0xc4
+static volatile bool hc_rpmb_open;
+
+static bool
+hc_rpmb_permitted(const uint8_t *upiu, uint32_t dw0)
+{
+	const uint8_t *cdb = upiu + 16;
+	uint32_t dd = dw0 & UTRD_DD_MASK;
+
+	if (!hc_rpmb_open || (upiu[0] & 0x3f) != UPIU_COMMAND || upiu[2] != RPMB_WLUN || (dw0 & UTRD_CT_MASK) != UTRD_CT_UFS) {
+		return false;
+	}
+	if (cdb[0] == 0x03) {           /* REQUEST SENSE: clears the unit attention after a reset */
+		return dd == UTRD_DD_IN && !(upiu[1] & UPIU_FLAG_WRITE);
+	}
+	if (cdb[1] != 0xec || cdb[2] != 0x00 || cdb[3] != 0x01) {
+		return false;
+	}
+	if (cdb[0] == 0xb5) {
+		return dd == UTRD_DD_OUT && (upiu[1] & UPIU_FLAG_WRITE);
+	}
+	if (cdb[0] == 0xa2) {
+		return dd == UTRD_DD_IN && (upiu[1] & UPIU_FLAG_READ);
+	}
+	return false;
+}
+
 static bool
 ufshc_permitted(const uint8_t *upiu, uint32_t dw0)
 {
+	if (hc_rpmb_permitted(upiu, dw0)) {
+		return true;
+	}
 	const char *why = (upiu[0] & 0x3f) == UPIU_QUERY_REQ ? hc_query_refusal(upiu, dw0) : hc_is_write(upiu) ? hc_write_refusal(upiu, dw0, hc_wwin.set, hc_wwin.lun, hc_wwin.first, hc_wwin.end) :
 	    hc_refusal(upiu, dw0, hc_lun_mask, false);
 
@@ -1558,6 +1594,91 @@ ufshc_write(uint8_t lun, uint64_t offset, const uint8_t *src, uint64_t len)
 			head++;
 		}
 	}
+	return error;
+}
+
+/*
+ * One SECURITY PROTOCOL OUT (out = true: `len` bytes of `buf` to the device) or IN (`len` bytes into `buf`) to the
+ * RPMB unit, as Samsung's srpmb_scsi_ioctl() builds it. A unit attention (the first access after a reset) is cleared
+ * with REQUEST SENSE and the command tried once more.
+ */
+int
+ufshc_security(bool out, uint8_t *buf, uint32_t len)
+{
+	int error = EIO;
+
+	if (!hc_usable || !hc_in || hc_dead || hc_closed || len == 0 || len > hc_slot_buffer) {
+		return ENXIO;
+	}
+	hc_rpmb_open = true;
+	for (int attempt = 0; attempt < 2 && error != 0; attempt++) {
+		struct hc_slot *s = hc_take(true);
+		struct hc_cmd c;
+
+		if (s == NULL) {
+			error = ENXIO;
+			break;
+		}
+		bzero(&c, sizeof(c));
+		c.upiu[0] = UPIU_COMMAND;
+		c.upiu[1] = out ? UPIU_FLAG_WRITE : UPIU_FLAG_READ;
+		c.upiu[2] = RPMB_WLUN;
+		c.upiu[3] = (uint8_t)s->number;
+		c.upiu[12] = (uint8_t)(len >> 24);
+		c.upiu[13] = (uint8_t)(len >> 16);
+		c.upiu[14] = (uint8_t)(len >> 8);
+		c.upiu[15] = (uint8_t)len;
+		c.upiu[16] = out ? 0xb5 : 0xa2;
+		c.upiu[17] = 0xec;              /* SECU_PROT_UFS */
+		c.upiu[18] = 0x00;              /* SECU_PROT_SPEC_CERT_DATA 0x0001 */
+		c.upiu[19] = 0x01;
+		c.upiu[22] = (uint8_t)(len >> 24);
+		c.upiu[23] = (uint8_t)(len >> 16);
+		c.upiu[24] = (uint8_t)(len >> 8);
+		c.upiu[25] = (uint8_t)len;
+		c.dw0 = UTRD_CT_UFS | (out ? UTRD_DD_OUT : UTRD_DD_IN);
+		if (out) {
+			memcpy(s->data, buf, len);
+		} else {
+			bzero(s->data, len);
+		}
+		FlushPoC_DcacheRegion((vm_offset_t)s->data, len);
+		error = hc_place(s, &c, len);
+		if (error == 0) {
+			error = hc_ring(s);
+		}
+		if (error == 0) {
+			error = hc_complete(s, out ? "RPMB security out" : "RPMB security in", false);
+			if (error == 0 && !out) {
+				FlushPoC_DcacheRegion((vm_offset_t)s->data, len);
+				memcpy(buf, s->data, len);
+			}
+		}
+		if (error != ETIMEDOUT) {
+			hc_give(s);
+		}
+		if (error == EIO && attempt == 0) {
+			/* REQUEST SENSE (18 bytes) to the unit, then once more */
+			struct hc_slot *r = hc_take(true);
+
+			if (r != NULL) {
+				bzero(&c, sizeof(c));
+				c.upiu[0] = UPIU_COMMAND;
+				c.upiu[1] = UPIU_FLAG_READ;
+				c.upiu[2] = RPMB_WLUN;
+				c.upiu[3] = (uint8_t)r->number;
+				c.upiu[15] = 18;
+				c.upiu[16] = 0x03;
+				c.upiu[20] = 18;
+				c.dw0 = UTRD_CT_UFS | UTRD_DD_IN;
+				if (hc_place(r, &c, 18) == 0 && hc_ring(r) == 0) {
+					(void)hc_complete(r, "RPMB request sense", true);
+				}
+				hc_give(r);
+			}
+		}
+	}
+	hc_rpmb_open = false;
 	return error;
 }
 
