@@ -10,8 +10,8 @@ xnu-clang -arch arm64 -isysroot ${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk -O1 
 codesign -f -s - obj/libredwood-calls.dylib 2>/dev/null
 echo "built obj/libredwood-calls.dylib"
 if [ "${1:-}" = install ]; then
-	ssh s20 'test ! -f /var/tmp/redwood-cell/call' || { echo "a call is up: not installed"; exit 1; }
+	ssh s20 '! grep -q "^active" /var/tmp/redwood-cell/call 2>/dev/null' || { echo "a call is up: not installed"; exit 1; }
 	scp -q -O obj/libredwood-calls.dylib s20:/var/jb/redwood/lib/libredwood-calls.dylib.new
 	ssh s20 'mkdir -p /var/jb/redwood/lib; mv -f /var/jb/redwood/lib/libredwood-calls.dylib.new /var/jb/redwood/lib/libredwood-calls.dylib; sync;
-	  killall -9 MobilePhone InCallService 2>/dev/null; echo "installed; Phone app and call screen restarted"'
+	  killall -9 InCallService 2>/dev/null; echo "installed; call screen restarted (the Phone app picks it up at its next start)"'
 fi
