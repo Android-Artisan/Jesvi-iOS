@@ -19,4 +19,6 @@ head = subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=
 if head != lock['commit'] or subprocess.check_output(['git','-C',str(source),'status','--porcelain','--untracked-files=no']):
     raise SystemExit('OpenH264 source differs from reviewed lock')
 PY
-make -C .cache/release-deps/openh264-source -j4 OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" libraries
+# OpenH264 probes xcrun with --sdk, which the kernel's Linux shim does not support.
+# Keep native host tools first while passing the reviewed iOS SDK explicitly.
+PATH="/usr/bin:/bin:$PATH" make -C .cache/release-deps/openh264-source -j4 OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" libraries
