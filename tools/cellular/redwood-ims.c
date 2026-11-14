@@ -606,6 +606,7 @@ static void call_media(int start);
 static void call_bye(void);
 static void call_ui_poll(void);
 static void call_cancel(int sock);
+static void call_sdp_from(const char *r);
 static int call_ports, call_sock = -1, call_portc;
 static const char *call_user;
 
@@ -804,6 +805,48 @@ call_media(int start)
     }
 }
 
+
+/*
+ * A request in the call's dialog that may carry an SDP offer -- a re-INVITE or an UPDATE: the network refreshes the
+ * session (session timers) or moves the media. Answered 200 with its own Via/From/To/CSeq and our SDP, the media
+ * following a new remote address/port. (Before 2026-11-14 a re-INVITE was taken for the first INVITE again and
+ * answered with the first INVITE's CSeq, an UPDATE got 200 without SDP: long calls would be dropped.)
+ */
+static void call_sdp_answer(char *sdp,size_t cap)
+{
+    unsigned sid=arc4random();
+    snprintf(sdp,cap,
+        "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
+        "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
+        "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
+        "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
+        sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
+}
+static void call_reinvite(int fd,const char *r)
+{
+    char via[1200],fr[400],to[400],cq[80],ci[200],m[4096],sdp[700];
+    call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));hdr(r,"Call-ID",ci,sizeof(ci));
+    int offer=strstr(r,"\r\n\r\nv=0")!=NULL;
+    if (offer) {
+        char oc[96]="",om[96]="";snprintf(oc,sizeof(oc),"%s",call.sdp_c);snprintf(om,sizeof(om),"%s",call.sdp_m);
+        call_sdp_from(r);
+        if ((strcmp(oc,call.sdp_c) || strcmp(om,call.sdp_m)) && med.run) {   /* the media moved: follow it */
+            printf("%s call: media moves to [%s]:%s\n",ts_now(),call.sdp_c,call.sdp_m);
+            call_media(0);call_media(1);
+        }
+    }
+    call_sdp_answer(sdp,sizeof(sdp));
+    int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
+        "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
+        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces,timer\r\n",
+        via,fr,to,ci,cq,call_user,call_ip6,call_ports);
+    char se[80];
+    if (hdr(r,"Session-Expires",se,sizeof(se))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Session-Expires: %s\r\nRequire: timer\r\n",se);
+    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(sdp),sdp);
+    if (send(fd,m,(size_t)o,0)<0 && call_sock>=0) send(call_sock,m,(size_t)o,0);
+    printf("%s call: in-dialog %.*s answered 200 (with SDP)\n",ts_now(),(int)(strchr(r,' ')-r),r);
+}
+
 /* an INVITE; returns 1 when handled here (answer mode), 0 for the old busy path */
 static int
 call_invite(int fd,const char *r)
@@ -812,7 +855,10 @@ call_invite(int fd,const char *r)
     if (call.state) {
         /* the P-CSCF drops and reopens its connection and resends the INVITE (2026-11-13 23:10: our 100/180 went
          * into the closed one, "Broken pipe"): the same Call-ID moves the call to the new connection */
-        char ci[200];
+        char ci[200],tt[300];
+        if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid) && call.state>=2 && hdr(r,"To",tt,sizeof(tt)) && strstr(tt,"tag=")) {
+            call_reinvite(fd,r);return 1;   /* a re-INVITE in the dialog (session refresh, media change) */
+        }
         if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid)) {
             call.fd=fd;printf("%s call: INVITE again on a new connection: carried on there\n",ts_now());
             if (call.state==1) {call_respond("100 Trying",NULL);call_respond("180 Ringing",NULL);}
@@ -861,6 +907,7 @@ call_request(int fd,const char *r)
             if (call.ui) call_ui_state("up %u",call.id);fflush(stdout);}
         return 1;
     }
+    if (!strncmp(r,"UPDATE ",7)) {call_reinvite(fd,r);return 1;}
     char m[2048],via[1200],fr[400],to[400],cq[80];int o;
     call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));
     o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
@@ -1164,6 +1211,17 @@ call_ui_poll(void)
     closedir(d);
 }
 
+
+/* leaving with a call up (the registration connection is gone): close it at the network as far as we still can, and
+ * on the call screen, so neither side keeps a call nobody has (afterwards: "busy") */
+static void call_abort(const char *why)
+{
+    if (!call.state) return;
+    if (call.out && call.state!=3) call_cancel(call_sock);
+    else if (call.state==1) call_respond("480 Temporarily Unavailable",NULL);
+    else call_bye();
+    call_end(why);
+}
 static int ims_cmd_fd=-1;
 static void ims_cmd_poll(int sock,int portc)
 {
@@ -1359,7 +1417,7 @@ int main(int argc,char **argv)
     snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+        if (time(NULL)-registered_at>6600 && !call.state) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
@@ -1368,7 +1426,7 @@ int main(int argc,char **argv)
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
             static time_t ka;time_t t=time(NULL);
-            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
             /* (2026-11-14) the P-CSCF's own connections to our port-s, too: a dead one is closed at once, so the next
              * call comes on a fresh connection instead of waiting out a dead one (late rings, lost CANCELs) */
             static time_t kc;
@@ -1389,7 +1447,7 @@ int main(int argc,char **argv)
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {if (call.state && call.fd==cs[i-base]) call.fd=s;close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
+            if (g<=0) {if (i>=base) {if (call.state && call.fd==cs[i-base]) call.fd=s;close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) {
                 char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
