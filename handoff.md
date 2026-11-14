@@ -120,3 +120,9 @@
 - Phone restarted again (live boot time22:22:25). This session issued no reboot then. Brief SSH refusal delayed rollback; restored after SSH returned. No second kernel has been flashed. Existing combined21:16:40 kernel remains.
 - User requests display fixed at70% whenever Camera is open; separate display-only task, not exposure/ISP tuning. Investigating reversible Camera lifecycle brightness hold with automatic-brightness restoration. Do not conflate display brightness with sensor exposure.
 - User emphasizes sensor/protocol/layout reused from front. Confirmed Samsung2LD bayer_order GR/BG; module DT image VC0 RAW10/PDAF VC1; port rear uses C-PHY3/CSIS0/WDMA2 and packed format7, unlike front D-PHY4/CSIS1/WDMA1. Continue checking actual readout and state, not just declared metadata. Diagnostic kernel prepared, NOT installed; reboot permission still required.
+
+## Front baseline confirmed; brightness request withdrawn
+
+- User confirms front camera is back to normal with original system library. Keep that as the default front path, not merely its numerical tuning values. User requests an opt-in flag for the newer experimental front profile, independently of rear research; do not mislabel it verified Samsung tuning.
+- Traced ALS/display path versus AE: inject_sensors uses automatic_lux/DisplayBrightnessAuto/DisplayNitsKey; camera AE uses RAW statistics, exposure/gain and frame timing. No direct ALS-to-AE dependency found. Screen light can indirectly illuminate a front scene; preview/display changes must still be distinguished experimentally.
+- User withdrew the70%-brightness/auto-brightness-pause request after this explanation. No brightness override, notifier, daemon or setting was installed/changed. Read-only --probe ran only. Uninstalled prototype sources/builds retained privately under build/camera-device-20261114/brightness, removed from working source. Leave normal display behaviour alone.
