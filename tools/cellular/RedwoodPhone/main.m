@@ -274,6 +274,14 @@ static NSString *rp_intent_number(NSUserActivity *ua)
 static void rp_start_call(NSString *num)
 {
     if (!num.length) { rp_log(@"dial: no number in the request"); return; }
+    /* a cold launch hands the same dial over twice (launch options, then continueUserActivity); the second
+     * CXStartCallAction fails (CallKit error 7) and the call was cancelled at once (B, 2026-11-14 07:54) */
+    static NSString *lastNum;
+    static CFAbsoluteTime lastAt;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (lastNum && [lastNum isEqualToString:num] && now - lastAt < 3.0) { rp_log(@"dial: same request again, ignored"); return; }
+    lastNum = [num copy];
+    lastAt = now;
     static CXCallController *cc;
     if (!cc) cc = [CXCallController new];
     CXHandle *h = [[CXHandle alloc] initWithType:CXHandleTypePhoneNumber value:num];
