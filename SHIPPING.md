@@ -1,3 +1,14 @@
+## 2026-11-14 — Default wallpaper: the user's photo poster ships with the image
+- `92857ab9`: the user's Photos poster (their picture, lock-screen clock style, layout, paired home screen) is the
+  wallpaper of a phone whose data volume has no poster store yet: a fresh install or a factory reset.
+- `userland/defaults/wallpaper/PRBPosterExtensionDataStore/59` (3.5 MB: PosterBoard's store reduced to that one poster,
+  snapshots left out, editing source as HEIC) -> system image `/System/Library/Redwood/DefaultWallpaper` (build.sh)
+  -> `init` `default_wallpaper()` copies it (part name, renamed whole) to `/var/mobile/Library/Application Support`,
+  owned by mobile. A phone with wallpapers of its own is never touched.
+- Verified on the phone (user, 2026-11-14 22:40): the shipped store alone, swapped in over an Apple wallpaper and
+  resprung, shows the photo with the same clock style on lock and home screen ("perfecto").
+- Takes effect with the next system image (`userland/build-gpu-y2s.sh` rebuilds the prebuilt init too).
+
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
   `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.
