@@ -23,7 +23,7 @@ Local evidence sources (not public artifacts): `device/DEVICE.md`,
 `device/dump/20261105-203631/partition-sizes.txt` and the owner's stock boot/DT data.
 Repository implementation: `common/devices/x1slte.conf`, `x1slte.sh` pack/payload/
 standalone functions, `xnu/files/bsd/dev/redwood_ufs.c` data-size check,
-`userland/src/init.c` HFS initialization, `tools/hfs-kit-any.py` format.
+`userland/src/init.c` mount-only HFS policy, `tools/hfs-kit-any.py` format.
 
 TWRP identifies the S20 Exynos family as `x1s`; `x1slte` is this project's board id.
 The recovery product aliases in the profile are provisional until the exact chosen

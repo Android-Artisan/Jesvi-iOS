@@ -1,5 +1,8 @@
 # Flashing, recovery and delivery
 
+For package verification and the user-facing process, read the
+[installation guide](install.md).
+
 ## Current answer
 
 For a first release, qualify **TWRP for first installation**, **Odin/Download Mode
@@ -77,8 +80,9 @@ metadata; these are different checks.
    file limit; use tested USB/SD filesystem or chunked streaming. ZIP64 support in
    the specific recovery must be tested if a monolithic ZIP is offered.
 7. **Write and read back system**, then **runtime recovery**, then **BOOT last**.
-   Writing BOOT last reduces premature entry into an incomplete port but is not
-   atomic rollback. Verify complete intended ranges and exact byte counts. Do
+   Initialize/validate data for an explicitly confirmed fresh install before
+   committing BOOT. Writing BOOT last reduces premature entry into an incomplete
+   port but is not atomic rollback. Verify complete intended ranges and exact byte counts. Do
    not zero the rest of super: its tail is reserved for loader logs.
 8. **Initialize data only on an explicit fresh install.** Normal init now only mounts an existing HFSX volume. An absent/damaged header,
    read failure or failed mount halts persistent-data boot without formatting.

@@ -6,8 +6,8 @@ proposed repository: `ios-exynos990`.
 
 The S20 runs the port; a general-purpose installer is **not yet qualified**.
 The current storage layout replaces Android in `super`, uses all `userdata` for
-HFS+, and uses `recovery` for the runtime. **First boot may erase userdata. TWRP is
-replaced by the runtime image.** Do not follow upstream Qualcomm `fastboot boot`
+HFS+, and uses `recovery` for the runtime. **Fresh installation requires explicit
+userdata initialization and replaces TWRP. Normal boot never formats userdata.** Do not follow upstream Qualcomm `fastboot boot`
 instructions on Samsung hardware.
 
 ## Start here
@@ -17,6 +17,7 @@ instructions on Samsung hardware.
 | Understand release readiness and design decisions | [Release research](docs/release/research.md) |
 | Build/check from a fresh clone | [Build guide](docs/release/building.md) |
 | Add another Exynos 990 device | [Porting guide](docs/release/porting.md) |
+| Installation steps, current limits and package verification | [Installation guide](docs/release/install.md) |
 | Choose TWRP / Odin / host script and understand recovery | [Flashing design](docs/release/flashing.md) |
 | Configure GitHub, CI and image retention | [Repository and CI](docs/release/operations.md) |
 | Cut a release | [Release checklist](docs/release/checklist.md) |
@@ -39,7 +40,7 @@ code helps, but does not establish panel, camera, memory or partition compatibil
 
 ## Developer commands
 
-Python 3.9+ and Git are enough for host checks. The kernel adapter currently uses
+Host checks need Python 3.9+, Git and a C compiler. The kernel adapter currently uses
 macOS and native compiler tools; see the build guide for dependencies.
 
 ```sh
