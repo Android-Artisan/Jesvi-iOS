@@ -20,7 +20,7 @@
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
 static double sbs_lead = 0;      /* Apple's place (the user, 2026-11-15: reset; "lead=N" in the conf moves the time N/2 pt left) */
 static double sbs_icons = 1.08;  /* "icons=F": the status bar icons (signal, Wi-Fi, battery) F times Apple's size (the user, 2026-11-15: "just a little big"); icons=1: Apple's */
-static int sbs_bolt = 0;         /* "bolt=1": keep the bolt's zoom-in on island phones too (default: none; the island animates charging) */
+static int sbs_bolt = 0;         /* "bolt=1": keep the bolt's animation on island phones too (default: no animation; the island animates charging) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -165,7 +165,7 @@ sbs_lco(id self, SEL cmd)
  * the same amount (user 2026-11-13: "the battery ... too much to the right"). It is given back here, plus `trail`
  * points more inward (conf trail=, default 0). Added on Split1125's own metaclass (the method is inherited).
  */
-static double sbs_trail = 4;     /* (2026-11-15: a little room right of the battery; "trail=0": Apple's) */
+static double sbs_trail = 0;
 static double (*sbs_orig_tco)(id, SEL);
 
 static double
@@ -374,15 +374,26 @@ sbs_island_present(void)
 	return cached == 1;
 }
 /*
- * The bolt's zoom-in (2026-11-15): when charging starts, the notch layout animates the bolt beside the battery in with
- * -_additionAnimationForBatteryCharging (and out with -_removalAnimationForBatteryCharging). On an island phone the
- * island animates charging, so those answer nil: the bolt just appears/goes. The bolt itself stays (the user).
+ * The bolt next to the battery (2026-11-15): with the percentage shown inside the battery, iOS 16 draws the charging
+ * bolt as a separate display item of _UIStatusBarBatteryItem (+chargingDisplayIdentifier), not through _UIBatteryView's
+ * _shouldShowBolt. The bolt is kept (the user: the symbol stays, only the animation is redundant with the island's):
+ * the animation iOS returns for that display item is dropped, so it appears and goes without animating.
  */
+static id (*sbs_orig_battery_apply)(id, SEL, id, id);
 static id
-sbs_no_animation(id self, SEL cmd)
+sbs_battery_apply(id self, SEL cmd, id update, id item)
 {
-	(void)self; (void)cmd;
-	return nil;
+	id r = sbs_orig_battery_apply(self, cmd, update, item);
+	static id charging_id;
+
+	if (charging_id == nil) {
+		charging_id = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("_UIStatusBarBatteryItem"), sel_registerName("chargingDisplayIdentifier"));
+	}
+	id ident = item != nil ? ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("identifier")) : nil;
+	if (charging_id != nil && ident != nil && ((bool (*)(id, SEL, id))objc_msgSend)(ident, sel_registerName("isEqual:"), charging_id)) {
+		return nil;     /* the bolt stays; only its appear/disappear animation goes (the island animates charging) */
+	}
+	return r;
 }
 static bool
 sbs_bg_disabled(id self, SEL cmd)
@@ -409,16 +420,13 @@ sbs_island_hook(void *unused)
 		return;
 	}
 	if (!sbs_bolt) {
-		/* no bolt zoom-in/out (every process) */
-		Class sc = objc_getClass("_UIStatusBarVisualProvider_Split");
-		const char *names[] = { "_additionAnimationForBatteryCharging", "_removalAnimationForBatteryCharging" };
-		for (int i = 0; sc != NULL && i < 2; i++) {
-			Method am = class_getInstanceMethod(sc, sel_registerName(names[i]));
-			if (am != NULL) {
-				method_setImplementation(am, (IMP)sbs_no_animation);
-			}
+		/* the bolt beside the battery (every process: SpringBoard's status bar and apps') */
+		Class ic = objc_getClass("_UIStatusBarBatteryItem");
+		Method am = ic ? class_getInstanceMethod(ic, sel_registerName("applyUpdate:toDisplayItem:")) : NULL;
+		if (am != NULL && sbs_orig_battery_apply == NULL) {
+			sbs_orig_battery_apply = (id (*)(id, SEL, id, id))method_setImplementation(am, (IMP)sbs_battery_apply);
+			sbs_log("island: charging bolt animation off%.0f%.0f", 0, 0);
 		}
-		sbs_log("island: charging bolt zoom off (%.0f)%.0f", sc != NULL, 0);
 	}
 	if (em != NULL) {
 		if (!class_addMethod(ec, es, (IMP)sbs_bg_disabled, method_getTypeEncoding(em))) {
