@@ -102,3 +102,8 @@ The earlier missing-input description records the initial audit state. Sanitized
 independent copies of the extraction, firmware, UEFI and DT inputs were subsequently
 staged locally; owner credentials, personal apps and compiled userland were excluded.
 The supplied UEFI artifact was hash-checked, not rebuilt from source in this step.
+
+Merged kernel build completed successfully at `8d2d12b6` with
+`source_dirty: false`: **15,161,848 bytes**, below the 16 MiB limit. SHA-256:
+`4aee6fc2bd598506f14fe2138947c1d0185ef67346c9c7890dcd38d417f3b7d1`. The isolated pinned OpenH264 fetch/build helper also
+completed successfully. Neither output establishes phone boot qualification.
