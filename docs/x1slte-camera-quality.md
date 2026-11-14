@@ -6,6 +6,15 @@ service restart, flash or reboot were performed. The workspace phone lock was
 held by B for fingerprint work. Existing fingerprint edits were left alone.
 This is an offline investigation, **not a stock-quality implementation**.
 
+## Follow-up: typed tuning decoder
+
+The 65-key layout is now recovered and validated across all 122 local ISP entries
+(7930 named blocks). Typed CCM, GRAS LUT and BLC fields and source-based scenario
+labels are decoded offline. See [the format report](x1slte-camera-tuning-format.md)
+for offsets, evidence, tools and remaining conversion limits. The initial findings
+below describe the earlier investigation stage; its serializer-recovery task has
+now advanced. No runtime tuning has been installed.
+
 ## Hardware and the pixel-technology question
 
 This project's x1slte phone is SM-G980F / Exynos990. Existing successful sensor

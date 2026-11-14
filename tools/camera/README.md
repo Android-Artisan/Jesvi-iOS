@@ -1,6 +1,7 @@
 # Galaxy S20 camera bring-up tools
 
 Current offline stock-versus-port quality investigation: [x1slte-camera-quality](../../docs/x1slte-camera-quality.md).
+Typed stock tuning decoder and reproduction commands: [ISV8 format report](../../docs/x1slte-camera-tuning-format.md).
 The dated bring-up status below is historical; physical rear capture now works.
 
 
