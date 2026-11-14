@@ -596,6 +596,7 @@ static struct {
     unsigned id;                        /* this call's number, for the call screen */
     int out;                            /* we called (state 10 dialling, then 2 alerting/answered, 3 up) */
     char branch[40];unsigned rseq_acked;
+    char tag[80];                       /* the call screen's tag of an outgoing call (for an early cancel) */
 } call;
 /* call numbers unique across restarts (the call screen remembers ended numbers: after a restart "call 1" was taken
  * for an old one and an incoming call never rang, 2026-11-14 05:00) */
@@ -977,6 +978,7 @@ static void call_dial(int sock,const char *tag,const char *number)
     snprintf(call.to,sizeof(call.to),"<%s>;tag=%08x",sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random());
     snprintf(call.from,sizeof(call.from),"<%s>",tel);         /* (the far end: To of our requests, its tag added later) */
     snprintf(call.contact,sizeof(call.contact),"<%s>",tel);
+    snprintf(call.tag,sizeof(call.tag),"%s",tag);
     call_ui_state("dialing %u %s",call.id,tag);
     char sdp[700];unsigned sid=arc4random();
     snprintf(sdp,sizeof(sdp),
@@ -1022,7 +1024,28 @@ static void call_out_request(int sock,const char *method,unsigned cseq,const cha
 static int call_out_response(int sock,const char *r)
 {
     char ci[200],cq[80];
-    if (!call.out || !call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
+    if (!hdr(r,"Call-ID",ci,sizeof(ci))) return 0;
+    if ((!call.out || !call.state || strcmp(ci,call.cid)) && !strncmp(r,"SIP/2.0 2",9) && hdr(r,"CSeq",cq,sizeof(cq)) && strstr(cq,"INVITE")) {
+        /* an answer to an INVITE of ours we have already given up (05:34: the callee picked up after we cancelled and
+         * the call ran in the background): ACK it and hang up at once */
+        char to[400],fr[400],ct[400],rr[600]="",uri[400]="";
+        hdr(r,"To",to,sizeof(to));hdr(r,"From",fr,sizeof(fr));
+        if (hdr(r,"Contact",ct,sizeof(ct))) {const char *a=strchr(ct,'<'),*e=a?strchr(a,'>'):NULL;if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1);}
+        const char *list[8];int nr=0;size_t L=0;
+        for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:")) && nr<8;q+=2) list[nr++]=q+2;
+        for (int k=nr-1;k>=0;k--) {const char *e=strstr(list[k],"\r\n");const char *v=list[k]+13;while (*v==' ') v++;L+=(size_t)snprintf(rr+L,sizeof(rr)-L,"Route: %.*s\r\n",(int)(e-v),v);}
+        if (!uri[0]) return 1;
+        char m[3000];
+        for (int k=0;k<2;k++) {
+            int o=snprintf(m,sizeof(m),"%s %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%sMax-Forwards: 70\r\n"
+                "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
+                k?"BYE":"ACK",uri,call_ip6,call_portc,arc4random(),rr[0]?rr:sms_route,fr,to,ci,k?"2 BYE":"1 ACK");
+            send(sock,m,(size_t)o,0);
+        }
+        printf("%s call: an answer to a call already ended: ACK + BYE\n",ts_now());
+        return 1;
+    }
+    if (!call.out || !call.state || strcmp(ci,call.cid)) return 0;
     if (!hdr(r,"CSeq",cq,sizeof(cq))) return 1;
     if (!strstr(cq,"INVITE")) {                             /* PRACK/BYE answers */
         int c2=atoi(r+8);
@@ -1101,10 +1124,21 @@ call_ui_poll(void)
     struct dirent *e;
     while ((e=readdir(d))) {
         if (strncmp(e->d_name,"cmd.",4)) continue;
-        char fn[300],line[100]="";unsigned id=0;
+        char fn[300],line[100]="";unsigned id=0;struct stat cst;
         snprintf(fn,sizeof(fn),CALL_UI_DIR "/%s",e->d_name);
+        int stale=!stat(fn,&cst) && time(NULL)-cst.st_mtime>10;
         FILE *f=fopen(fn,"r");if (f) {if (!fgets(line,sizeof(line),f)) line[0]=0;fclose(f);}
         unlink(fn);
+        if (stale && !strncmp(line,"dial ",5)) {   /* (a dial from before we could take it: the user has long given up) */
+            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> dial (stale, dropped)\n",ts_now());
+            call_ui_state("ended 0 stale %s",tg);continue;
+        }
+        if (!strncmp(line,"cancel ",7)) {           /* the user ended a call still being dialled */
+            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> cancel\n",ts_now());
+            if (call.out && call.state && call.state!=3 && !strcmp(tg,call.tag)) {call_cancel(call_sock);call_end("cancelled here");}
+            else if (call.out && call.state==3 && !strcmp(tg,call.tag)) {call_bye();call_end("hung up here");}
+            continue;
+        }
         char verb[20]="";if (sscanf(line,"%19s %u",verb,&id)<1) continue;
         printf("%s call: screen -> %s\n",ts_now(),verb);
         if (!strcmp(verb,"dial")) {char tag[80],num[64];if (sscanf(line,"%*s %79s %63s",tag,num)==2) call_dial(call_sock,tag,num);continue;}

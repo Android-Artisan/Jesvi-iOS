@@ -128,6 +128,8 @@ static void rp_cmd_quiet(NSString *line)
             rp_log(@"call %@ ended (%@)", cid, why);
             [self.provider reportCallWithUUID:u endedAtDate:[NSDate date] reason:r];
         }
+    } else if ([w[0] isEqualToString:@"dialing"] && w.count >= 3 && !self.dialing[w[2]]) {
+        rp_cmd([NSString stringWithFormat:@"end %@", cid]);   /* (a dial the user has already ended) */
     } else if ([w[0] isEqualToString:@"dialing"] && w.count >= 3) {
         NSUUID *u = self.dialing[w[2]];
         if (u) { self.calls[cid] = u; [self.dialing removeObjectForKey:w[2]]; [self.outgoing addObject:u];
@@ -179,6 +181,11 @@ static void rp_session_for_call(void)
 {
     NSNumber *cid = [self idFor:a.callUUID];
     if (cid && ![self.done containsObject:cid]) { [self.done addObject:cid]; rp_cmd([NSString stringWithFormat:@"end %@", cid]); }
+    else if (!cid) {
+        /* still being dialled (redwood-ims has not named it yet): cancel by its tag (05:34: a hang-up during "calling"
+         * was lost and the call went out anyway) */
+        for (NSString *tag in [self.dialing allKeysForObject:a.callUUID]) { rp_cmd([NSString stringWithFormat:@"cancel %@", tag]); [self.dialing removeObjectForKey:tag]; }
+    }
     [a fulfill];
 }
 - (void)provider:(CXProvider *)p performSetMutedCallAction:(CXSetMutedCallAction *)a
@@ -193,6 +200,12 @@ static void rp_session_for_call(void)
     rp_session_for_call();
     NSString *num = a.handle.value ?: @"";
     NSString *tag = [[a.callUUID UUIDString] substringToIndex:8];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/ims-registered"]) {
+        /* VoLTE not registered (yet): fail now instead of a dial that goes out much later */
+        rp_log(@"dial refused: VoLTE is not registered");
+        [a fail];
+        return;
+    }
     self.dialing[tag] = a.callUUID;
     rp_log(@"dialling (from the Phone app)");
     rp_cmd_quiet([NSString stringWithFormat:@"dial %@ %@", tag, [[num componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] componentsJoinedByString:@""]]);
