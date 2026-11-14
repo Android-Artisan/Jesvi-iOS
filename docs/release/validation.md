@@ -3,7 +3,9 @@
 Worktree: `work/hackios-release-devops`, branch `release/exynos990-devops`, based on
 `e3589a1cade9bfe06d0438d805147e33b18de8d7`. The active `x1slte` checkout and its
 untracked files were preserved. No phone connection, flash, reboot, push, remote
-setting change or GitHub workflow dispatch was performed.
+setting change or GitHub workflow dispatch was performed. Newer committed main-line
+snapshot `a64ecd4` was subsequently merged into this isolated branch as `563e270`;
+the release tests and workflow lint passed again after the clean merge.
 
 ## Passed locally
 
@@ -56,7 +58,8 @@ setting change or GitHub workflow dispatch was performed.
 - Publication inventory/provenance review remains open: the initial tracked-tree
   audit found 164 review items, including 154 binaries/artifacts and 42
   research/prebuilt items (categories overlap). A secret-pattern scan cannot clear
-  their provenance or redistribution status.
+  their provenance or redistribution status. The integrated tree has **174** review
+  items (156 binary/artifact and 51 research/prebuilt, overlapping).
 
 Use the [release checklist](checklist.md) to close these gaps. Do not turn a passing
 kernel build or these host tests into a claim that the release is ready to flash.

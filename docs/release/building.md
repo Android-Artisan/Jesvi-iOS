@@ -96,6 +96,12 @@ The legacy userland build can use prebuilts and optional components: do not call
 this a qualified all-source release until every required binary and firmware input
 has a manifest/provenance entry and a clean build has been demonstrated.
 
+The newer calls recipe can extract a missing `callservicesd` into rootfs. Prepare
+that extraction and the matching call-provider/tweak inputs **before** creating the
+private input lock. If a build changes locked inputs, the final verification fails
+instead of silently retaining a candidate from a different snapshot. Calls/runtime
+components still need explicit clean-image qualification.
+
 The candidate packager checks geometry, Android v2/Samsung DT table, footer bounds,
 Mach-O/APFS presence and HFS kit CRC/capacity, then writes exactly `boot.img`,
 `recovery.img`, `system.apfs`, `manifest.json` and `SHA256SUMS` to a new directory.

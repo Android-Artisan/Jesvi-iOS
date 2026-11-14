@@ -12,6 +12,7 @@ folder is the entry point for new developers; subsystem notes remain research ev
 - [Measured S20 evidence](release/device-evidence.md)
 - [Shipping observations](../SHIPPING.md)
 - [Cellular](cellular-download-plan.md), [S20 modem](cellular-s20.md)
+- [Calls](x1slte-calls.md), [efficiency](x1slte-efficiency.md), [passcode](x1slte-passcode.md)
 - [Audio](x1slte-audio.md), [Bluetooth](x1slte-bluetooth.md)
 - [Display](x1slte-display.md), [brightness](x1slte-auto-brightness.md)
 - [Games/OpenGL ES](x1slte-games-gl.md), [background work](x1slte-background.md)

@@ -11,7 +11,10 @@ installation, clean-build reproducibility and recovery are independent acceptanc
 This review starts from local commit `e3589a1` on `x1slte`. Work is isolated in branch
 `release/exynos990-devops`; the other agent's checkout, untracked files, phone and
 build outputs were not changed. The branch must be reconciled with later main-line
-changes before release, especially `userland/build.sh` and `x1slte.sh`.
+changes before release, especially `userland/build.sh` and `x1slte.sh`. During the
+final review, committed main-line snapshot `a64ecd4` was merged into this isolated
+branch (`563e270`); its new calls/display/power changes are preserved. Any later
+active work still needs the same integration review.
 
 ## What the audit found
 
@@ -33,7 +36,9 @@ changes before release, especially `userland/build.sh` and `x1slte.sh`.
 | Recovery | Runtime replaces TWRP; AVB footer covers the boot head, not all runtime payload bytes | Reinstall/rollback and full-payload integrity need explicit validation |
 | Runtime formatting | `init.c` may initialize HFS when it finds no valid data filesystem | Dirty update and failed filesystem detection must be reviewed before public flashing |
 
-The inventory is triage, not a claim that all 164 files are forbidden. Some are
+After integration with `a64ecd4`, the tracked-tree inventory contains **174** review
+items (156 binaries/artifacts; 51 research/prebuilt items, overlapping). The
+inventory is triage, not a claim that all flagged files are forbidden. Some are
 project-built binaries, some donor vendor modules, and some research files. The
 scanner does not certify history or inspect encoded firmware arrays. For example,
 `redwood_focaltech_fw.h` / `hakios.focaltech_fw.h`, camera tables and inherited UEFI
