@@ -1,17 +1,24 @@
 # S20 ultrasonic fingerprint research
 
-## Status (2026-11-14 18:23): enrollment works; no unlock yet
+## Status (2026-11-14, protocol audit)
 
-Enrollment through the phone's own FINGE TA reached 100 % (16 accepted touches, 10 retries) under XNU.
-The template exists only in TA memory until a reboot. Identify, template persistence and the iOS Touch ID
-bridge are not done. See "Enrollment protocol (working)" below for every value.
+Factory-calibrated enrollment reached 100%. A 376,182-byte template is saved on
+this phone with mode 0600; both factory CBGE files remain private with mode 0600.
+A live, no-finger `fp idinit` check accepted that saved template and returned
+`1:` (enrolled finger ID 1). **No successful match or native fingerprint unlock
+has been verified.** The recorded identify runs returned no-match, including
+with the enrolled thumb. File save/load works; matching after reboot and automatic
+startup restoration remain unverified.
 
-Branch `feat/s20-fingerprint` starts at local main/master `8d584cc` (14 November
-2026), including the newer A76/GPU thermal steps, Wi-Fi scan coalescing and quieter
-logs. Main/master are not advanced with this experiment. The user approved the first
-probe boot and explicitly authorized taking control of the shared phone lock.
-Fingerprint enrollment has not been performed. The current passcode stays
-under the existing software-keybag implementation.
+Work remains on `feat/s20-fingerprint`; main/master and the release DevOps worktree
+are untouched by this audit. Earlier dated sections below are research history;
+where they disagree, the protocol audit below is the current evidence. In
+particular, missing HAT/SID metadata is an authentication integration problem,
+but is not a proven explanation for all no-match results.
+
+The audit kernel is built locally, **not flashed**. Its status reports
+`fingerprint wire: audit-v1 (research only)`. No reboot is implied by a source
+commit or build. The existing software passcode remains the unlock backend.
 
 The user wants the actual under-display fingerprint sensor to authenticate native
 iOS unlock, with passcode fallback. Merely detecting a finger, fabricating a
@@ -394,8 +401,9 @@ IDENTIFY_INIT (cmd 5): op 1, +0x8 chunk (0, or 0xffffffff = re-arm without data)
 +0x110 (len +0x64110), encrypted metadata at +0x64114 (len +0x64514), 0x45 bytes params at +0x64518. Template from
 ENROLL_DO at 100 % (+0x177024, len +0x1db024; header "FPV3" "1000"), saved to /var/root/fp-template.bin. TA decrypts it
 (get_uniquekey kdf) and parses it (version 51.2). IDENTIFY_DO (cmd 6) runs the same 4->5->6 machine; error 32 (0x20) =
-no match. Every attempt so far: no match. Missing vs Samsung: the HAT (secure user id) at enroll and the metadata from
-CONTROL 0x2d SAVE_SECAUTH_ID (TA refuses with "sid is 0"), which Samsung passes back at IDENTIFY_INIT. Next step.
+no match. Every attempt so far: no match. Missing vs Samsung: the enrollment HAT and sealed secure-ID metadata
+(CONTROL 0x2d SAVE_SECAUTH_ID refuses with "sid is 0"). Their absence is a known authentication gap,
+but the cause of the no-match results remains unproven; see the protocol audit.
 
 ### Still to do
 
@@ -479,3 +487,119 @@ physical fingerprint match. The IRQ/SYSCONF kernel is flashed and its exchange p
 - [Android authentication tokens and trusted matching](https://source.android.com/docs/security/features/authentication).
 
 - [Public Exynos990 vendor-client reference](https://github.com/Exynoobs/proprietary_vendor_samsung_exynos990-common/tree/715080389b102e4d175a9244a84910ee549d3d67).
+
+## Protocol audit: distinguish matching from authentication
+
+This audit reads both the normal-world client (`libbauthtzcommon.so`,
+`libbauthserver.so`) and the FINGE TA. Addresses below use Ghidra's +0x100000
+image base, not runtime addresses. Runtime trace addresses relocate at boot.
+Generated decompiles, firmware, templates, HATs and calibration remain local;
+they are not source files to distribute.
+
+### Confirmed response layout
+
+The original parser confused the internal match-index field with the public
+wire reply. TA wrapper `FUN_0011993c` calls `FUN_00111a38`, maps the internal index
+through `FUN_001206b8`, and constructs a different response:
+
+| Absolute shared-buffer offset | IDENTIFY_DO meaning |
+| --- | --- |
+| `0x177004` | echoed command, must be 6 |
+| `0x177008` | response operation |
+| `0x17700c` | inner TA error |
+| `0x177010` | timeout |
+| `0x177014` | quality flags |
+| `0x177018` | matched score |
+| `0x17701c` | enrolled bio/finger ID; zero is not a valid match |
+| `0x177020` | **not populated as the match index by this wrapper** |
+| `0x2db048` | returned 69-byte HAT, if present; never log it |
+| `0x2db08d` | token-present flag (written as an unaligned word) |
+| `0x2ee008` | outer TA error |
+
+`FUN_001210f0`, case 6, has a no-match branch that returns **error 0x20 with
+op 0 or 0x4d**. Op 0x4d is not match success. A zero-filled/unpopulated `r[6]`
+is not proof either. The old `r[6] != -1 || op == 0x4d` check is removed.
+
+The new parser checks transport, buffer bounds, response command, both errors,
+terminal op, expected finger ID and the token-present flag. The score word is
+logged as an opaque diagnostic; Samsung's wrapper does not require it to be positive.
+It calls that result **SENSOR MATCH candidate**, never verified authentication:
+the HAT MAC, challenge, secure user ID, freshness and keybag binding still need
+verification before any native unlock consumer can use it. No such consumer is
+added. Synthetic tests include empty/truncated replies, a wrong command, a failed
+transport, mismatched errors, no-match/op77, missing token flag and wrong IDs.
+
+`IDENTIFY_INIT`'s returned ID list is at `0x177014`, with length at `0x1771a4`.
+The single-finger prototype now requires exactly `1:`; malformed, duplicate,
+empty or unexpected IDs stop the test before capture. The request is cleared
+in full as Samsung's client does. Both init commands now validate their command
+responses; ENROLL_INIT clears and checks the TA error rather than returning only
+the TEEC transport result.
+
+### Repaired decompiler analysis
+
+`QFP_DatabaseInject` at `0x15341c` uses two-instruction outlined branch stubs at
+`0x10fb2c`, `0x10fbac`, `0x10fbb4`. Ghidra initially treated these jumps as calls
+and split the function into misleading short pieces. Its reconstructed function
+spans `0x15341c..0x15361f` plus those outlines. The same issue occurs in
+`decode_each_templ_ver3` (`0x11f750..0x11fbdf`).
+
+The reproducible helper is [DecompileOutlined.java](../tools/fingerprint/reverse/DecompileOutlined.java).
+Run it with `-readOnly`; it joins only a two-instruction outline that branches
+back into the supplied function range. The ELF and saved Ghidra project are not
+modified. See [the reverse-engineering instructions](../tools/fingerprint/reverse/README.md).
+
+The complete database function deserializes every supplied template before an
+optional clone/transformation controlled by the flag array. Seeing a flag of zero
+alone does **not** prove the template was skipped. Likewise, SID/HAT fields must
+not be guessed from partial decompiles.
+
+The fully reconstructed `decode_each_templ_ver3` checks outer and inner HMACs,
+decrypts the container, checks the Android user ID, creates the bio ID list and
+copies the decrypted payload into the internal template array. The live Init
+result `1:` is evidence that one template was decoded and identified; it is not
+evidence of a successful comparison with a new capture.
+
+### Calibration and persistence corrections
+
+Error 68 was previously interpreted as a request to recalibrate. That was a
+hypothesis contradicted by subsequent capture diagnostics. The enrollment loop
+now stops on this error and preserves the working factory calibration; it does
+not automatically run `fp cbge`. Manual factory calibration loading remains.
+Short template writes now report failure; oversized template input is freed;
+raw template-header words and unpopulated response words are no longer logged.
+Saved-file readability does not prove a fingerprint can authenticate after reboot.
+
+### Remaining work and next live check
+
+1. Deploy the audit kernel only after reboot approval. First verify its status
+   marker, software passcode and re-lock behavior; retain a read-back kernel backup.
+2. Restore the existing factory CBGE slots using the documented working sequence,
+   then run Identify Init against the existing template. Stop if the TA rejects
+   it or returns an unexpected ID list. Do not start a fresh enrollment by default.
+3. Trace one bounded Identify Do attempt with the correct reply fields and
+   correlation to the TA's capture/VerifyInject path. A no-finger dry run can
+   validate state transitions, but cannot establish matching. Ask for same-thumb
+   and different-finger trials only after the request sequence is checked.
+4. Resolve the actual comparison failure from evidence. Do not lower matcher
+   thresholds, fabricate a positive result or assume a missing HAT is the cause.
+5. Implement legitimate challenge-bound enrollment/authentication and native
+   passcode/keybag integration. Android's [Gatekeeper documentation](https://source.android.com/docs/security/features/authentication/gatekeeper)
+   describes secure-world signed tokens and secure user IDs; a custom unsigned
+   HAT or arbitrary local SID is not a substitute. Do not overwrite Gatekeeper
+   state or export its key while researching this.
+
+Validation (host only):
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I xnu/files/bsd tools/fingerprint/test_wire.c -o out/fingerprint/test-wire
+out/fingerprint/test-wire
+clang -std=c11 -Wall -Wextra -Werror tools/fingerprint/test_policy.c \
+  -o out/fingerprint/test-policy
+out/fingerprint/test-policy
+python3 tools/passcode/test_build_integration.py
+```
+
+Host tests and kernel compilation do not qualify fingerprint unlock or prove a
+live match. The audit build has not been installed on the phone.

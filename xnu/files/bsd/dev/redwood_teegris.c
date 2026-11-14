@@ -21,7 +21,7 @@
  *     (TEECS_OpenSession, so no loader daemon), invoke, close.
  *
  * Started on demand: sysctl kern.redwood.tee "start". Status and tests: see tee_sysctl() at the end.
- * No fingerprint operation is made here; this is the transport the fingerprint TA needs.
+ * Fingerprint TA research commands are manually armed; no native biometric unlock is exposed.
  */
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -33,6 +33,7 @@
 #include <sys/proc.h>
 #include <sys/time.h>
 #include <sys/redwood_teegris.h>
+#include <sys/redwood_fp_wire.h>
 #include <kern/thread.h>
 #include <kern/locks.h>
 #include <kern/sched_prim.h>
@@ -2589,8 +2590,8 @@ fp_power(void)
 
 /*
  * "run N OP SECONDS": Samsung's loop (libbauthserver check_opcode): command N again and again with the op code the TA
- * answered, until it answers 0, fails, or SECONDS pass. Op 4 (WAIT_INTERRUPT) waits for the sensor's interrupt there;
- * here the sensor is simply asked again every 30 ms. Op 7: sleep the timeout. Each step's response head is logged.
+ * answered, until it answers 0, fails, or SECONDS pass. Op 4 waits for steady contact on the sensor's screen area.
+ * Op 7 sleeps the requested timeout. Each step's response head is logged.
  */
 /* ENROLL_INIT as Samsung's enroll() sends it: user id "0", finger index IDX (1-4), 7, a name */
 static uint32_t
@@ -2598,7 +2599,7 @@ fp_einit(uint32_t idx)
 {
 	uint32_t e;
 
-		bzero(fp_buf, 0x200);
+	bzero(fp_buf, 0x200);
 	bzero(fp_buf + 0x177000, 0x40);
 	*(uint32_t *)(fp_buf + 0x0) = 2;            /* libbauthtzcommon: the command at +0 and +4 */
 	*(uint32_t *)(fp_buf + 0x4) = 2;
@@ -2607,6 +2608,7 @@ fp_einit(uint32_t idx)
 	*(uint32_t *)(fp_buf + 0x110) = idx;
 	*(uint32_t *)(fp_buf + 0x114) = 7;
 	memcpy(fp_buf + 0x118, "fingerprint", 11);
+	*(uint32_t *)(fp_buf + FP_WIRE_ERROR) = 0;
 	{
 		uint32_t origin = 0;
 
@@ -2614,7 +2616,10 @@ fp_einit(uint32_t idx)
 		e = tee_invoke_shm(&fp_ses, 2, fp_shm_id, FP_SHM_SIZE, &origin);
 		lck_mtx_unlock(&tee_client_lock);
 	}
-	return e;
+	if (e == 0 && *(uint32_t *)(fp_buf + 0x177004) != 2) {
+		return 0x14; /* Samsung client: missing/wrong response command */
+	}
+	return e != 0 ? e : *(uint32_t *)(fp_buf + FP_WIRE_ERROR);
 }
 
 /* one bare command (no data) with op code OP; the TA's error, or the invoke's result when that failed */
@@ -2675,6 +2680,9 @@ fp_tmpl_save(void)
 	err = vn_rdwr(UIO_WRITE, vp, (caddr_t)fp_tmpl, (int)fp_tmpl_len, 0, UIO_SYSSPACE, IO_NODELOCKED | IO_SYNC,
 	    vfs_context_ucred(vctx), &resid, vfs_context_proc(vctx));
 	vnode_close(vp, FWRITE, vctx);
+	if (err == 0 && resid != 0) {
+		err = EIO;
+	}
 	tee_say("fp template: saved %u bytes to %s (error %d)\n", fp_tmpl_len, FP_TMPL_PATH, err);
 	return err;
 }
@@ -2688,7 +2696,11 @@ fp_tmpl_load(void)
 	if (fp_tmpl != NULL && fp_tmpl_len != 0) {
 		return 0;
 	}
-	if ((buf = tee_read_file(FP_TMPL_PATH, &size)) == NULL || size == 0 || size > FP_TMPL_MAX) {
+	buf = tee_read_file(FP_TMPL_PATH, &size);
+	if (buf == NULL || size == 0 || size > FP_TMPL_MAX) {
+		if (buf != NULL) {
+			tz_free(buf, size);
+		}
 		tee_say("fp template: none saved (enroll first)\n");
 		return ENOENT;
 	}
@@ -2710,9 +2722,7 @@ fp_tmpl_take(void)
 {
 	uint32_t len = *(uint32_t *)(fp_buf + 0x1db024);
 
-	tee_say("fp template: enroll handed out %u bytes, head %08x %08x %08x %08x\n", len,
-	    *(uint32_t *)(fp_buf + 0x177024), *(uint32_t *)(fp_buf + 0x177028), *(uint32_t *)(fp_buf + 0x17702c),
-	    *(uint32_t *)(fp_buf + 0x177030));
+	tee_say("fp template: enroll handed out %u bytes\n", len);
 	if (len == 0 || len > FP_TMPL_MAX) {
 		return;
 	}
@@ -2739,8 +2749,8 @@ fp_idinit(uint32_t chunk)
 	if (chunk == 0 && fp_tmpl_load() != 0) {
 		return 0x3a;
 	}
-	bzero(fp_buf, 0x110);
-	bzero(fp_buf + 0x64110, 0x500);
+	/* Same complete request clearing as BAuth_Identify_Init. */
+	bzero(fp_buf, 0x645c1);
 	bzero(fp_buf + 0x177000, 0x1b0);
 	*(uint32_t *)(fp_buf + 0x0) = 5;
 	*(uint32_t *)(fp_buf + 0x4) = 5;
@@ -2755,7 +2765,23 @@ fp_idinit(uint32_t chunk)
 	lck_mtx_lock(&tee_client_lock);
 	result = tee_invoke_shm(&fp_ses, 5, fp_shm_id, FP_SHM_SIZE, &origin);
 	lck_mtx_unlock(&tee_client_lock);
-	return result != 0 ? result : *(uint32_t *)(fp_buf + 0x2ee008);
+	if (result == 0 && *(uint32_t *)(fp_buf + 0x177004) != 5) {
+		return 0x14;
+	}
+	if (result == 0 && *(uint32_t *)(fp_buf + 0x17700c) !=
+	    *(uint32_t *)(fp_buf + FP_WIRE_ERROR)) {
+		return 0x14;
+	}
+	if (result == 0 && *(uint32_t *)(fp_buf + FP_WIRE_ERROR) == 0) {
+		uint32_t length = *(uint32_t *)(fp_buf + 0x1771a4);
+		uint32_t ids = fp_wire_id_mask(fp_buf + 0x177014, length);
+
+		tee_say("fp idinit: template list mask %#x (expected finger 1), length %u\n", ids, length);
+		if (ids != 1) {
+			return 0x21; /* This prototype loads exactly one enrolled finger. */
+		}
+	}
+	return result != 0 ? result : *(uint32_t *)(fp_buf + FP_WIRE_ERROR);
 }
 
 /* wait until no finger is on the sensor's spot for 100 ms (or the deadline) */
@@ -2868,9 +2894,9 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 		timeout = r[2];
 		steps++;
 		if (r[0] != last || same++ % 100 == 0) {
-			tee_say("fp run %u step %u: op %u -> result %#x status %#x op %u error %#x timeout %d bad %u gpa1 %02x | %08x %08x %08x %08x %08x %08x %08x\n",
+			tee_say("fp run %u step %u: op %u -> result %#x status %#x op %u error %#x timeout %d bad %u gpa1 %02x | %08x %08x %08x %08x\n",
 			    n, steps, op, result, status, r[0], error, (int)timeout, bad_quality, *(volatile uint32_t *)(gpa1 + 4) & 0xff,
-			    r[1], r[3], r[4], r[5], r[6], r[7], r[8]);
+			    r[1], r[3], r[4], r[5]);
 			if (r[0] != last) {
 				same = 1;
 			}
@@ -2881,42 +2907,43 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 		 * ENROLL_FINAL (4) op loop -> ENROLL_INIT again, until progress 100. A bad image (0x27/0x29) takes the same
 		 * ENROLL_FINAL path (0x4eb44 -> 0x4ef4c), not a cancel. DO again without that is refused (39); 67 = bad state.
 		 */
-		if (n == 6 && result == 0 && (error != 0 || r[0] == 0 || r[0] == 0x4d)) {
-			/* IDENTIFY_DO result: r[6] (+0x177020) = matched template, -1 = none (TA dispatcher case 6) */
+		if (n == 6) {
+			enum fp_wire_result reply = fp_wire_identify(fp_buf, FP_SHM_SIZE, result, 1);
 			uint32_t e;
 
-			tee_say("fp run 6: result error %#x | r0-8 %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", error, r[0], r[1], r[2],
-			    r[3], r[4], r[5], r[6], r[7], r[8]);
-			if (error == 0 && (r[6] != 0xffffffffu || r[0] == 0x4d)) {
-				good++;
-				tee_say("fp run 6: MATCH (template %d, op %u)\n", (int)r[6], r[0]);
-			} else if (error == 0) {
-				tee_say("fp run 6: NO MATCH\n");
-			} else {
-				bad_quality++;
-				tee_say("fp run 6: bad image (%#x): lift and press again, quality %08x\n", error, r[3]);
-			}
-			fp_wait_lift(n, deadline);
-			e = fp_idinit(0xffffffffu);
-			if (e != 0) {
-				tee_say("fp run 6: re-arm failed (%#x): stop\n", e);
+			if (reply == FP_WIRE_PROTOCOL_ERROR) {
+				tee_say("fp run 6: invalid response: transport %#x status %#x error %#x inner %#x op %u: stop\n",
+				    result, status, error, r[1], r[0]);
 				break;
 			}
-			op = 1;
-			continue;
+			if (reply != FP_WIRE_PENDING) {
+				/* Raw wrapper 0x11993c returns score at r[4], bio ID at r[5].
+				 * r[6] is not populated. A token-present flag is not HMAC proof. */
+				if (reply == FP_WIRE_MATCH_CANDIDATE) {
+					good++;
+					tee_say("fp run 6: SENSOR MATCH candidate (bio %u score %u; token not verified)\n", r[5], r[4]);
+				} else if (reply == FP_WIRE_NO_MATCH) {
+					tee_say("fp run 6: NO MATCH\n");
+				} else {
+					bad_quality++;
+					tee_say("fp run 6: capture rejected (%#x): lift and press again, quality %08x\n", error, r[3]);
+				}
+				fp_wait_lift(n, deadline);
+				e = fp_idinit(0xffffffffu);
+				if (e != 0) {
+					tee_say("fp run 6: re-arm failed (%#x): stop\n", e);
+					break;
+				}
+				op = 1;
+				continue;
+			}
 		}
 		if (n == 3 && result == 0 && error == 0x44) {
-			/* 68: the TA wants the sensor's calibration (CBGE) loaded first -- load_cbge */
-			uint32_t e = 0;
-
-			fp_cbge();                      /* the IPC line (CBGE_REQUIRED) fired: calibrate again, as new_cbge_mode does */
-			tee_say("fp run 3: calibration done (%s): press again\n", tee_last);
-			if (e != 0 || ++refused > 3) {
-				break;
-			}
-			fp_wait_lift(n, deadline);
-			op = 1;
-			continue;
+			/* This is not proof that CBGE is required. The same result was
+			 * observed for capture failures; automatic calibration here
+			 * previously replaced the working factory background model. */
+			tee_say("fp run 3: capture error 0x44: stop; factory calibration preserved\n");
+			break;
 		}
 		if (n == 3 && result == 0 && (error == 0x27 || error == 0x29 || error == 0x43 || (error == 0 && r[0] == 0))) {
 			uint32_t progress = r[4], e;
@@ -2963,7 +2990,6 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 			refused = 0;                    /* a capture is under way */
 		}
 		if (op == 4) {
-			/* WAIT_INTERRUPT: the sensor's IPC line (GPA1-3) or its wake-up line (GPA1-1) going high */
 			/*
 			 * The S20 starts a capture from the touch panel (finger on display), not from the sensor's lines: wait
 			 * for a finger held FP_HOLD_MS on the sensor's spot (x centred, 32 mm up: 0-65535 units).
@@ -3302,7 +3328,7 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 
 	snprintf(out, sizeof(out), "%s\nsmcs %llu schedules %llu event irqs %llu panic irqs %llu cpu_mask %#x user_mask %#x "
 	    "pending cmds %d log lines %llu ree_time %llu\nstorage requests %llu unanswered %llu last cmd %u pending %d\n"
-	    "RPMB irqs %d requests %llu errors %llu\nlast: %s\n",
+	    "RPMB irqs %d requests %llu errors %llu\nfingerprint wire: audit-v1 (research only)\nlast: %s\n",
 	    tee_status, tee_smcs, tee_schedules, tz_events_irq, tz_panic_irq, tz_cpu_mask(), tz_user_cpu_mask(), tz_nr_cmds,
 	    iwlog_lines, ree_time_answers, ts_requests, ts_unanswered, ts_last_cmd, ts_pending, srpmb_irqs, srpmb_requests,
 	    srpmb_errors, tee_last);

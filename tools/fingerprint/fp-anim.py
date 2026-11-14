@@ -21,7 +21,7 @@ ART = r'''
            '-.._____..-'
 '''.strip('\n').split('\n')
 COL = {'white': '\033[1;97m', 'green': '\033[1;92m', 'red': '\033[1;91m', 'grey': '\033[90m'}
-TXT = {'match': 'MATCH  -- that is you', 'nomatch': 'NO MATCH -- not this finger',
+TXT = {'match': 'SENSOR MATCH -- token unverified', 'nomatch': 'NO MATCH -- not this finger',
        'white': 'PRESS the sensor', 'green': 'HOLD...  reading your finger', 'red': 'NOT GOOD -- lift your finger',
        'grey': 'waiting for the phone...', 'done': 'ENROLLED  -- all done'}
 RST = '\033[0m'
@@ -49,7 +49,7 @@ def draw():
 def event(text):
     global state, progress, good, bad, red_until, msg
     now = time.time()
-    if 'fp run 6: MATCH' in text:
+    if 'fp run 6: SENSOR MATCH candidate' in text:
         good += 1
         state, red_until, msg = 'match', now + 2.0, 'lift; press again to test'
         return
