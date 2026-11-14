@@ -109,7 +109,9 @@ static const struct {
 	 * lpmd engages earlier at 76 C M5, 80 C A76/GPU, 82 C A55.
 	 */
 	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 82, 90 },
-	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 82, 90 },
+	/* cl1's second step 1482, not 1066 (B, 2026-11-14): above 90 C the A76 fell from 1794 to 1066 at once (log: "cl1 zone
+	 * mid 90 C: step 2, 1066 MHz") and frame preparation with it -- the same cliff as the GPU's 572 -> 377 */
+	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1482000, 1794000, 1, 82, 90 },
 	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1586000, 0, 78, 86 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
 	/* g3d's second step 455, not 377 (B, 2026-11-14): one step of the GPU's own table down from 572, not two -- above
 	 * 90 C swipes went from 572 straight to 377 and the frames past 35 ms doubled (fb histograms); the trip is ~108 C */
