@@ -18,6 +18,9 @@ the release tests and workflow lint passed again after the clean merge.
   **15,144,376 bytes**, below the **16,777,216-byte** loader limit. Compiler: Apple
   clang 21.0.0 on the supplied Apple Silicon macOS host. Build metadata/checksum are
   written to ignored `out/kernel/`; no firmware or iOS system image was built.
+  The later integrated build at `3fe9bd2` also passed from clean source, producing
+  **15,161,256 bytes** with `source_dirty: false`; SHA-256:
+  `b9cdbbcf48cb8dcc87604a216835b501a22f7a7080472f0929489c166721432c`.
 - **27 Python tests** (`bash ci/check.sh`): nested content changes with unchanged
   mtimes; copy/location and mtime stability; mode/options/add/remove invalidation;
   checksum corruption; failed atomic publication; concurrent cache writers;

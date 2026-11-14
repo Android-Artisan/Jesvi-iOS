@@ -9,6 +9,7 @@ folder is the entry point for new developers; subsystem notes remain research ev
 - [Flashing and delivery](release/flashing.md)
 - [GitHub, CI and caches](release/operations.md)
 - [Release checklist](release/checklist.md)
+- [Local storage cleanup review](release/storage-audit.md)
 - [Measured S20 evidence](release/device-evidence.md)
 - [Shipping observations](../SHIPPING.md)
 - [Cellular](cellular-download-plan.md), [S20 modem](cellular-s20.md)
