@@ -100,3 +100,13 @@
 - Samsung source explicitly does not list binned 2016x1512 as LN2-supported. Its full-mode LN2 writes/constraints cannot be applied to this mode as a one-register fix.
 
 - Additional source trace: Samsung module DT separates VC0 RAW10 image from VC1 tail-PDAF in both binned and full modes. Port selects VC0/0x2b and packed Android10. Source-level routing matches; this does not establish every RAW sample's correctness, but does not support blindly changing the CFA or treating PDAF rows as normal image pixels. Details in the dark-grid document.
+
+## Fresh covered repeats validate a partial correction; ready for userland-only trial
+
+- User confirmed opaque coverage again. Two independent 8x/20436-line captures agree. Existing inside-table maximum absolute tile bias ~23 counts becomes 1.618 / 1.633; per-site spatial-bias RMS ~8.8..11.9 becomes ~0.51..0.58 counts.
+- Additional 14.5x (interpolated gain 464) and 16x holdouts improve spatial-bias RMS from ~13..21 to ~1.55..2.24 counts, but maximum local bias remains 7..8 counts and random RMS remains high (~21..28 counts). Do NOT label this full noise reduction or stock-quality acceptance.
+- Earlier failed holdout retained, cause unresolved (coverage/state/timing). Fresh independent repeats provide substantially better evidence. Evaluator now uses the real gain-dependent original inside table at every gain; prior high-gain numbers incorrectly used an 8x comparison and are superseded.
+- Explicit partial-improvement gate: spatial-bias RMS reduced at least 50% at every CFA site and mean signed bias below 2 counts. All four fresh holdouts pass this gate. The earlier absolute <5 worst-tile gate is not claimed passed at high gain. Edge-slope extrapolation experiment did not help; rejected in favour of bounded interpolation.
+- Full host sanitizer/regression suites and signed iOS candidate build pass; loader/trailing-input and front/exposure/gain-gate tests added. Candidate library remains SHA-256 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b (verify build output before installation).
+- Next authorized action: back up active dev library, upload/read-back-check candidate and private module calibration, restart only mediaserverd, verify loaded/active logs and performance in app. No front tuning or kernel installation in this trial.
+- Separately built rear diagnostic kernel: root-only `camera_rear_diag` options snapshotted per session (bit0 stock no-hold sequence, bit1 cold sensor); default 0 retains existing behaviour. Host I2C fault tests and isolated GICv2 kernel build pass. Tracked/build overlay sources match. NOT installed; any future reboot requires user approval.

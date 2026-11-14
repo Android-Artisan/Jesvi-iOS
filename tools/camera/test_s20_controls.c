@@ -31,6 +31,17 @@ int main(void)
     count=0;fail_at=99;
     assert(redwood_2ld_write_exposure(&io,1000,64,0,&failed));
     assert(count==5 && events[2].reg==0x0202);
+    /* Samsung USE_GROUP_PARAM_HOLD=0 path: exactly four writes and no hold register. */
+    count=0;fail_at=99;
+    assert(redwood_2ld_write_exposure_mode(&io,false,1000,64,22564,&failed));
+    assert(count==4 && events[0].reg==0xfcfc && events[1].reg==0x0340 &&
+        events[2].reg==0x0202 && events[3].reg==0x0204);
+    for(unsigned i=0;i<4;i++) {
+        count=0;fail_at=i;
+        assert(!redwood_2ld_write_exposure_mode(&io,false,1000,64,22564,&failed));
+        assert(count==i+1 && failed==events[i].reg);
+        for(unsigned j=0;j<count;j++) assert(events[j].reg!=0x0104);
+    }
     assert(redwood_2ld_line_ns(2272)==1468 && redwood_2ld_line_ns(4240)==2740);
 
     mode.frame_length=22564;

@@ -293,6 +293,10 @@ static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: hal
  * bit-banged I2C was most of the ~3.1 s every start and flip took. redwood_camera_s20_rear_cool() (the camera
  * thread, 20 s after the last session) takes it down as a session's end used to. cam_s20_rear_warm=0: never warm.
  */
+/* Rear diagnostic options: bit0 stock-style no hold, bit1 force cold sessions.
+ * Root-only writes; each session takes one snapshot. Default zero preserves behavior. */
+static int cam_s20_rear_diag;
+void redwood_camera_s20_rear_cool(void);
 static bool cam_s20_rear_warm;
 static struct {
 	uint8_t p02[3], p03[3];
@@ -361,6 +365,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char acked[96] = "";
 	bool pmic03_ready = false, sensor_ready = false, clock_ready = false, rails02 = false, rails03 = false;
 	bool ok = false, sensor_ack = false, warm_start = false, cold_again = false;
+	unsigned diag = (unsigned)__atomic_load_n(&cam_s20_rear_diag, __ATOMIC_RELAXED);
 	uint32_t clock_offsets[4] = { CMU_CIS_CLK0_MUX, CMU_CIS_CLK0_DIV, CMU_CIS_CLK0_GATE, CMU_CIS_CLK0_QCH };
 	unsigned i;
 
@@ -375,6 +380,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"error\",\"phase\":\"CMU map\"}\n");
 		return;
 	}
+	if (diag & 2U) redwood_camera_s20_rear_cool();
 	cam_pmic03_bus.bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM0);
 	cam_pmic03_bus.sda_bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM1);
 	pmic03_ready = true;
@@ -696,7 +702,7 @@ read_id:
 						};
 						uint16_t failed_reg;
 
-						if (!redwood_2ld_write_exposure(&io, el, eg, ef, &failed_reg)) {
+						if (!redwood_2ld_write_exposure_mode(&io, !(diag & 1U), el, eg, ef, &failed_reg)) {
 							/* Do not emit future frames tagged with an unacknowledged request.
 							 * Break through the normal DMA abort/stream-off cleanup below. */
 							cam_s20_stream_exposure_failed = true;
@@ -789,6 +795,7 @@ cleanup:
 		uint32_t want = 1;
 
 		(void)PE_parse_boot_argn("cam_s20_rear_warm", &want, sizeof(want));
+		if (diag & 2U) want = 0;
 		if (want && ok && cam_s20_stream_fn != NULL && cam_s20_stream_frames != 0 && clock_ready && rails02 && rails03) {
 			/* kept warm: the sensor in standby (stream off above), everything else as it is */
 			if (!cam_s20_rear_warm) {
@@ -1053,7 +1060,21 @@ cam_s20_frame_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
 	lck_mtx_unlock(&cam_frame_lock);
 	return error;
 }
+static int
+cam_s20_rear_diag_sysctl(struct sysctl_oid *oidp, __unused void *arg1,
+    __unused int arg2, struct sysctl_req *req)
+{
+    int value = __atomic_load_n(&cam_s20_rear_diag, __ATOMIC_RELAXED);
+    int error = sysctl_handle_int(oidp, &value, 0, req);
+    if (error || !req->newptr) return error;
+    if (value < 0 || value > 3) return EINVAL;
+    __atomic_store_n(&cam_s20_rear_diag, value, __ATOMIC_RELAXED);
+    return 0;
+}
+
 SYSCTL_DECL(_kern_redwood);
+SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_rear_diag, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    0, 0, cam_s20_rear_diag_sysctl, "I", "Next rear session: bit0 no group hold; bit1 cold start");
 int redwood_camera_s20_turn;    /* kern.redwood.camera_turn: libredwood-media turns the front camera's pictures (bit 0) */
 SYSCTL_INT(_kern_redwood, OID_AUTO, camera_turn, CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, &redwood_camera_s20_turn, 0, "");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_LOCKED,

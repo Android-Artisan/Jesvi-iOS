@@ -30,7 +30,7 @@ struct redwood_2ld_control_io {
  * No retries: a partial transaction must end the stream through normal cleanup.
  */
 static inline bool
-redwood_2ld_write_exposure(const struct redwood_2ld_control_io *io,
+redwood_2ld_write_exposure_mode(const struct redwood_2ld_control_io *io, bool grouped,
     uint32_t lines, uint32_t gain, uint32_t frame_lines, uint16_t *failed_reg)
 {
     uint16_t failed = 0;
@@ -38,12 +38,19 @@ redwood_2ld_write_exposure(const struct redwood_2ld_control_io *io,
         *failed_reg = 0xfcfc;
         return false;
     }
-    if (!io->write8(io->context, 0x0104, 1)) failed = 0x0104;
+    if (grouped && !io->write8(io->context, 0x0104, 1)) failed = 0x0104;
     if (!failed && frame_lines && !io->write16(io->context, 0x0340, (uint16_t)frame_lines)) failed = 0x0340;
     if (!failed && !io->write16(io->context, 0x0202, (uint16_t)lines)) failed = 0x0202;
     if (!failed && !io->write16(io->context, 0x0204, (uint16_t)gain)) failed = 0x0204;
-    if (!io->write8(io->context, 0x0104, 0) && !failed) failed = 0x0104;
+    if (grouped && !io->write8(io->context, 0x0104, 0) && !failed) failed = 0x0104;
     *failed_reg = failed;
     return failed == 0;
+}
+/* Existing callers retain grouped operation. Stock-style no-hold is explicit. */
+static inline bool
+redwood_2ld_write_exposure(const struct redwood_2ld_control_io *io,
+    uint32_t lines, uint32_t gain, uint32_t frame_lines, uint16_t *failed_reg)
+{
+    return redwood_2ld_write_exposure_mode(io, true, lines, gain, frame_lines, failed_reg);
 }
 #endif

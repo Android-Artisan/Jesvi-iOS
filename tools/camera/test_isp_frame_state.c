@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "camera_isp.h"
 
 #define W 8
@@ -126,6 +127,25 @@ int main(void)
     cf.sensor=1; cf.exposure_lines--; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
     cf.exposure_lines++; cf.gain=129; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
     cf.gain=31; assert(!isp_apply_black_calibration(&spatial,&cal,&cf));
+
+    /* Loader rejects malformed/trailing input private calibration. */
+    cal.grid_w=BLACK_GRID_W; cal.grid_h=BLACK_GRID_H;
+    char path[]="/tmp/rear-dark-loader.XXXXXX";
+    int temp=mkstemp(path); assert(temp>=0); close(temp);
+    FILE *cp=fopen(path,"wb"); assert(cp);
+    assert(fwrite("RWBLK001",1,8,cp)==8);
+    assert(fwrite(&cal.width,4,10,cp)==10);
+    for(unsigned k=0;k<2;k++) {
+        assert(fwrite(&cal.profile[k].gain,4,1,cp)==1);
+        assert(fwrite(cal.profile[k].grid,sizeof(cal.profile[k].grid),1,cp)==1);
+    }
+    assert(fclose(cp)==0);
+    struct isp_black_calibration loaded;
+    assert(isp_load_black_calibration(&loaded,path) && loaded.profiles==2);
+    cp=fopen(path,"ab"); assert(cp); fputc(0,cp); fclose(cp);
+    assert(!isp_load_black_calibration(&loaded,path) && loaded.profiles==0);
+    cp=fopen(path,"wb"); assert(cp); fwrite("RWBLK001",1,8,cp); fclose(cp);
+    assert(!isp_load_black_calibration(&loaded,path)); unlink(path);
 
     /* Two capture/render states may coexist; no process-global pedestal remains. */
     struct thread_job jobs[2]={{.snapshot=snapshot,.raw=banded},{.snapshot=reader,.raw=banded}};
