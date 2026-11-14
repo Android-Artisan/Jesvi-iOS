@@ -52,8 +52,20 @@ static id wallpaper_send_if(id obj,const char *name)
 {
     if(!obj) return nil;
     SEL sel=sel_registerName(name);
-    if(!((BOOL(*)(id,SEL,SEL))objc_msgSend)(obj,sel_registerName("respondsToSelector:"),sel)) return nil;
-    return ((id(*)(id,SEL))objc_msgSend)(obj,sel);
+    if(((BOOL(*)(id,SEL,SEL))objc_msgSend)(obj,sel_registerName("respondsToSelector:"),sel))
+        return ((id(*)(id,SEL))objc_msgSend)(obj,sel);
+    /* no getter: the instance variable, as key-value coding would read it */
+    char ivar[96]; snprintf(ivar,sizeof(ivar),"_%s",name);
+    for(Class k=object_getClass(obj);k;k=class_getSuperclass(k)) {
+        Ivar iv=class_getInstanceVariable(k,ivar);
+        if(iv) { const char *t=ivar_getTypeEncoding(iv); return t&&t[0]=='@'?object_getIvar(obj,iv):nil; }
+    }
+    return nil;
+}
+static void wallpaper_why(const char *why)
+{
+    static char last[160];
+    if(strncmp(last,why,sizeof(last)-1)) { snprintf(last,sizeof(last),"%s",why); fprintf(stderr,"redwood: wallpaper motion v2: poster check: %s\n",why); }
 }
 static bool wallpaper_poster_moves(void)
 {
@@ -61,20 +73,26 @@ static bool wallpaper_poster_moves(void)
     id windows=WM_SEND(id,app,"windows");
     for(unsigned long i=0;i<WM_SEND(unsigned long,windows,"count");i++) {
         id window=WM_SEND1(id,windows,"objectAtIndex:",unsigned long,i);
-        if(WM_SEND1(id,window,"viewWithTag:",long,0x52575750)) return false;   /* our own still picture */
+        if(WM_SEND1(id,window,"viewWithTag:",long,0x52575750)) { wallpaper_why("our still picture is shown"); return false; }
         if(!wallpaper_kind(window,"_SBWallpaperSecureWindow")) continue;
         id root=WM_SEND(id,window,"rootViewController");
         id inner=wallpaper_send_if(root,"viewController");
         if(!inner && root) { Ivar iv=class_getInstanceVariable(object_getClass(root),"_viewController"); if(iv) inner=object_getIvar(root,iv); }
         id provider=wallpaper_send_if(wallpaper_send_if(wallpaper_send_if(inner,"posterController"),"configuration"),"providerBundleIdentifier");
-        if(!provider) return false;
+        if(!provider) {
+            id pc=wallpaper_send_if(inner,"posterController"),cfg=wallpaper_send_if(pc,"configuration");
+            wallpaper_why(!root?"no root controller":!inner?"no wallpaper controller":!pc?"no poster controller":!cfg?"no configuration":"no provider id");
+            return false;
+        }
         const char *p=WM_SEND(const char*,provider,"UTF8String");
         char allow[512]="com.apple.WallpaperKit.CollectionsPoster";
         CFTypeRef v=CFPreferencesCopyAppValue(CFSTR("HomePosterMotionProviders"),CFSTR("com.redwood.motion"));
         if(v) { if(CFGetTypeID(v)==CFStringGetTypeID()) CFStringGetCString(v,allow,sizeof(allow),kCFStringEncodingUTF8); CFRelease(v); }
-        for(char *tok=strtok(allow,", ");tok;tok=strtok(NULL,", ")) if(p && !strcmp(p,tok)) return true;
+        for(char *tok=strtok(allow,", ");tok;tok=strtok(NULL,", ")) if(p && !strcmp(p,tok)) { wallpaper_why(p); return true; }
+        wallpaper_why(p?p:"?");
         return false;
     }
+    wallpaper_why("no wallpaper window");
     return false;
 }
 static bool wallpaper_motion_enabled(void)
