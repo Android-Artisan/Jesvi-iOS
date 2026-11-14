@@ -19,6 +19,17 @@ head = subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=
 if head != lock['commit'] or subprocess.check_output(['git','-C',str(source),'status','--porcelain','--untracked-files=no']):
     raise SystemExit('OpenH264 source differs from reviewed lock')
 PY
-# OpenH264 probes xcrun with --sdk, which the kernel's Linux shim does not support.
-# Keep native host tools first while passing the reviewed iOS SDK explicitly.
-PATH="/usr/bin:/bin:$PATH" make -C .cache/release-deps/openh264-source -j4 OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" libraries
+# OpenH264 evaluates an xcrun SDK probe even with SDKROOT on the command line.
+# Resolve that probe to our supplied SDK; CLT-only Macs have no registered iOS SDK.
+mkdir -p .cache/release-deps/openh264-tools
+cat > .cache/release-deps/openh264-tools/xcrun <<'SH'
+#!/bin/sh
+if [ "$1" = --sdk ] && [ "${3:-}" = --show-sdk-path ]; then
+    printf '%s\n' "$OPENH264_SDK"
+    exit 0
+fi
+exec /usr/bin/xcrun "$@"
+SH
+chmod +x .cache/release-deps/openh264-tools/xcrun
+OPENH264_SDK="$THEOS/sdks/iPhoneOS16.5.sdk" PATH="$PWD/.cache/release-deps/openh264-tools:/usr/bin:/bin:$PATH" \
+    make -C .cache/release-deps/openh264-source -j4 OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT="$THEOS/sdks/iPhoneOS16.5.sdk" libraries
