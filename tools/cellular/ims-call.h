@@ -64,6 +64,7 @@ struct sc {
     /* session timer */
     int se, we_refresh; time_t refreshed;
     int peer_update;                    /* the other side allows UPDATE */
+    int heard;                          /* outgoing: the network answered (100 Trying or more) */
     unsigned rseq_acked;
     char why[96];                       /* why it ended */
     char reason_tag[24];                /* ended reason, one word, for the call screen */
@@ -78,6 +79,12 @@ static int call_session;                /* a call session (one or more calls) is
 
 static void calls_snapshot(int force);
 static void call_media_sync(void);
+
+/* (A, 2026-11-15) message building never runs past the buffer: MSG_CAT appends only while there is room, and a
+ * message that did not fit (o >= sizeof(m)) is not sent -- a cut-off SIP message is worse than none, and sending
+ * the would-be length would read past the buffer */
+#define MSG_CAT(m, o, ...) do { if ((o) >= 0 && (o) < (int)sizeof(m)) (o) += snprintf((m) + (o), sizeof(m) - (size_t)(o), __VA_ARGS__); } while (0)
+#define MSG_FITS(m, o) ((o) > 0 && (o) < (int)sizeof(m))
 
 /* ---------------------------------------------------------------- small SIP helpers */
 
@@ -259,19 +266,20 @@ static void call_respond(struct sc *c, const char *status, const char *body, con
     int code = atoi(status);
     o = snprintf(m, sizeof(m), "SIP/2.0 %s\r\n%s", status, c->inv_via);
     /* Record-Route goes back in every dialog-making response (18x/2xx: RFC 3261 12.1.1) */
-    if (code > 100 && code < 300) o += snprintf(m + o, sizeof(m) - (size_t)o, "%s", c->inv_rr);
-    o += snprintf(m + o, sizeof(m) - (size_t)o, "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n",
+    if (code > 100 && code < 300) MSG_CAT(m, o, "%s", c->inv_rr);
+    MSG_CAT(m, o, "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n",
         c->remote, c->local, c->cid, c->inv_cseq);
     if (code != 100) {
-        o += snprintf(m + o, sizeof(m) - (size_t)o,
+        MSG_CAT(m, o,
             "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
             "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE,INFO\r\nSupported: replaces,timer\r\n",
             call_user, call_ip6, call_ports);
     }
-    if (extra) o += snprintf(m + o, sizeof(m) - (size_t)o, "%s", extra);
-    if (body) o += snprintf(m + o, sizeof(m) - (size_t)o, "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s", strlen(body), body);
-    else o += snprintf(m + o, sizeof(m) - (size_t)o, "Content-Length: 0\r\n\r\n");
+    if (extra) MSG_CAT(m, o, "%s", extra);
+    if (body) MSG_CAT(m, o, "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s", strlen(body), body);
+    else MSG_CAT(m, o, "Content-Length: 0\r\n\r\n");
     char what[60]; snprintf(what, sizeof(what), "%.40s (call %u)", status, c->id);
+    if (!MSG_FITS(m, o)) { printf("%s call: --> %s NOT SENT (too long)\n", ts_now(), what); return; }
     sip_send(c->fd, m, (size_t)o, what);
 }
 /* a plain response to a request r (its Via/From/To/Call-ID/CSeq) */
@@ -282,11 +290,12 @@ static void sip_reply(int fd, const char *r, const char *status, const char *ext
     hdr(r, "From", fr, sizeof(fr)); hdr(r, "To", to, sizeof(to)); hdr(r, "Call-ID", ci, sizeof(ci)); hdr(r, "CSeq", cq, sizeof(cq));
     int o = snprintf(m, sizeof(m), "SIP/2.0 %s\r\n%sFrom: %s\r\nTo: %s%s\r\nCall-ID: %s\r\nCSeq: %s\r\n%s",
         status, via, fr, to, strstr(to, "tag=") ? "" : ";tag=rwx1", ci, cq, extra ? extra : "");
-    if (sdp) o += snprintf(m + o, sizeof(m) - (size_t)o,
+    if (sdp) MSG_CAT(m, o,
         "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
         "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s", call_user, call_ip6, call_ports, strlen(sdp), sdp);
-    else o += snprintf(m + o, sizeof(m) - (size_t)o, "Content-Length: 0\r\n\r\n");
+    else MSG_CAT(m, o, "Content-Length: 0\r\n\r\n");
     char what[80]; snprintf(what, sizeof(what), "%.30s to %.10s", status, r);
+    if (!MSG_FITS(m, o)) { printf("%s call: --> %s NOT SENT (too long)\n", ts_now(), what); return; }
     sip_send(fd, m, (size_t)o, what);
 }
 /* a request of ours in the dialog (BYE, ACK, PRACK, re-INVITE, UPDATE), on our registration connection */
@@ -300,13 +309,14 @@ static void call_request_out(struct sc *c, const char *method, unsigned cseq, co
         "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u %s\r\n",
         method, uri, call_ip6, call_portc, br, c->route[0] ? c->route : sms_route, c->local, c->remote, c->cid, cseq, method);
     if (strcmp(method, "ACK") && strcmp(method, "BYE"))
-        o += snprintf(m + o, sizeof(m) - (size_t)o,
+        MSG_CAT(m, o,
             "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n",
             call_user, call_ip6, call_ports);
-    if (extra) o += snprintf(m + o, sizeof(m) - (size_t)o, "%s", extra);
-    if (sdp) o += snprintf(m + o, sizeof(m) - (size_t)o, "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s", strlen(sdp), sdp);
-    else o += snprintf(m + o, sizeof(m) - (size_t)o, "Content-Length: 0\r\n\r\n");
+    if (extra) MSG_CAT(m, o, "%s", extra);
+    if (sdp) MSG_CAT(m, o, "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s", strlen(sdp), sdp);
+    else MSG_CAT(m, o, "Content-Length: 0\r\n\r\n");
     char what[60]; snprintf(what, sizeof(what), "%s (call %u)", method, c->id);
+    if (!MSG_FITS(m, o)) { printf("%s call: --> %s NOT SENT (too long)\n", ts_now(), what); return; }
     sip_send(call_sock, m, (size_t)o, what);
 }
 /* CANCEL of our INVITE (same branch, CSeq number of the INVITE) */
@@ -321,6 +331,7 @@ static void call_cancel(struct sc *c, const char *reason)
         "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 CANCEL\r\n%sContent-Length: 0\r\n\r\n",
         c->ruri[0] ? c->ruri : uri, call_ip6, call_portc, c->branch, sms_route, c->local, to, c->cid, reason ? reason : "");
     char what[40]; snprintf(what, sizeof(what), "CANCEL (call %u)", c->id);
+    if (!MSG_FITS(m, o)) { printf("%s call: --> %s NOT SENT (too long)\n", ts_now(), what); return; }
     sip_send(call_sock, m, (size_t)o, what);
 }
 static void call_bye(struct sc *c)
@@ -398,9 +409,11 @@ static void calls_snapshot(int force)
         struct sc *c = &calls[i];
         if (c->st == CS_FREE) continue;
         int hold = (c->lhold ? 1 : 0) | (c->rhold ? 2 : 0);
+        if (o >= sizeof(b)) break;
         o += (size_t)snprintf(b + o, sizeof(b) - o, "call %u %s %s %d %s %s %s\n", c->id, c->out ? "out" : "in", cs_name[c->st], hold,
             c->number[0] ? c->number : "-", c->tag[0] ? c->tag : "-", c->st == CS_GONE && c->reason_tag[0] ? c->reason_tag : "-");
     }
+    if (o >= sizeof(b)) b[sizeof(b) - 1] = 0;
     if (!force && !strcmp(b, prev) && now - last < 2) return;
     int changed = strcmp(b, prev) != 0;
     snprintf(prev, sizeof(prev), "%s", b); last = now;
@@ -538,8 +551,8 @@ static int call_invite(int fd, const char *r)
     printf("%s call %u: INCOMING%s, AMR PT %d, media port %u%s\n", ts_now(), c->id, c->number[0] ? "" : " (number withheld)", c->pt, c->rport,
         calls_live() > 1 ? " -- call waiting" : "");
     {   /* root-only, for working out network behaviour */
-        char fn[96]; snprintf(fn, sizeof(fn), "/var/root/ims-invite-%ld.txt", (long)time(NULL));
-        int f = open(fn, O_WRONLY | O_CREAT | O_TRUNC, 0600); if (f >= 0) { (void)!write(f, r, strlen(r)); close(f); }
+        /* (one file, the latest: one per call grew without end and kept every caller's number) */
+        int f = open("/var/root/ims-invite-last.txt", O_WRONLY | O_CREAT | O_TRUNC, 0600); if (f >= 0) { (void)!write(f, r, strlen(r)); close(f); }
     }
     call_respond(c, "100 Trying", NULL, NULL);
     call_respond(c, "180 Ringing", NULL, NULL);
@@ -672,13 +685,14 @@ static void call_dial(const char *tag, const char *number)
         "P-Preferred-Identity: <%s>\r\n"
         "P-Early-Media: supported\r\n"
         "%s"
-        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE,INFO\r\nSupported: replaces,timer\r\n"
+        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE,INFO\r\nSupported: 100rel,replaces,timer\r\n"
         "Session-Expires: 1800\r\nMin-SE: 90\r\n"
         "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",
         tel, call_ip6, call_portc, c->branch, sms_route, c->local, c->remote, c->cid,
         call_user, call_ip6, call_ports, sms_impu[0] ? sms_impu : "sip:anonymous@anonymous.invalid",
         clir > 0 ? "Privacy: id\r\n" : clir < 0 ? "Privacy: none\r\n" : "", strlen(sdp), sdp);
     printf("%s call %u: OUTGOING%s\n", ts_now(), c->id, clir > 0 ? " (number withheld)" : "");
+    if (!MSG_FITS(m, o)) { printf("%s call %u: INVITE too long, not sent\n", ts_now(), c->id); call_gone(c, "failed", "INVITE too long"); return; }
     if (send(call_sock, m, (size_t)o, 0) != o) { printf("%s call %u: INVITE send failed: %s\n", ts_now(), c->id, strerror(errno)); call_gone(c, "failed", "could not send"); return; }
     printf("%s call: --> INVITE (call %u)\n", ts_now(), c->id);
     calls_snapshot(1);
@@ -692,6 +706,7 @@ static void call_ack_failure(struct sc *c, const char *r)
     int o = snprintf(m, sizeof(m), "ACK %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\nMax-Forwards: 70\r\n%s"
         "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n",
         c->ruri, call_ip6, call_portc, c->branch, sms_route, c->local, to, c->cid);
+    if (!MSG_FITS(m, o)) { printf("%s call: --> ACK (of a failure) NOT SENT (too long)\n", ts_now()); return; }
     sip_send(call_sock, m, (size_t)o, "ACK (of a failure)");
 }
 /* the end reason of a failure code, for the call screen and the log */
@@ -780,6 +795,7 @@ static int call_response(const char *r)
         return 1;
     }
     printf("%s call %u: <-- %d\n", ts_now(), c->id, code);
+    c->heard = 1;
     if (code == 100) return 1;
     if (hdr(r, "To", to, sizeof(to)) && strstr(to, "tag=")) snprintf(c->remote, sizeof(c->remote), "%s", to);
     if (code > 100 && code < 300) {
@@ -930,7 +946,10 @@ static void call_tick(void)
             else if (now - c->answered >= 32) { call_bye(c); call_gone(c, "failed", "no ACK and no voice in 32 s after our 200"); }
             break;
         case CS_OUT_TRY:
-            if (now - c->at >= CALL_TRYING_S) { call_cancel(c, NULL); call_gone(c, "no-answer", "no response from the network"); }
+            /* 32 s is for no response at all (RFC 3261 timer B); after 100 Trying the network is working on it -- its
+             * 18x can come late (Jio held them ~20 s, 2026-11-15) -- so a heard call waits like a ringing one */
+            if (!c->heard && now - c->at >= CALL_TRYING_S) { call_cancel(c, NULL); call_gone(c, "no-answer", "no response from the network"); }
+            else if (c->heard && now - c->at >= CALL_ALERT_S) { call_cancel(c, NULL); call_gone(c, "no-answer", "not answered"); }
             break;
         case CS_OUT_ALERT:
             if (now - c->alert_at >= CALL_ALERT_S) { call_cancel(c, NULL); call_gone(c, "no-answer", "not answered"); }

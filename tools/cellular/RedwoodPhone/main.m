@@ -9,7 +9,6 @@
  *   alive  touched every 5 s: redwood-ims only rings the screen while this app runs (else it answers 486 as before)
  * Log: /var/mobile/Library/Logs/redwood-phone.log (numbers are not logged).
  */
-#include "../calls-mode.h"
 #import <Foundation/Foundation.h>
 #import <CallKit/CallKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -330,15 +329,6 @@ int main(int argc, char **argv)
     if (svc && !strncmp(svc, "UIKitApplication", 16)) {
         dlopen("/System/Library/PrivateFrameworks/TelephonyUtilities.framework/TelephonyUtilities", RTLD_NOW);
         @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass([RPApp class])); }
-    }
-    /* calls-mode.h: RedwoodPhone is the legacy stack's provider. calls=1: not used (exit 0: launchd leaves it down);
-     * calls=2: waits until the native provider has failed this boot, then takes over */
-    if (calls_mode() == 1) { rp_log(@"calls=1 (native): RedwoodPhone not used"); return 0; }
-    if (calls_mode() == 2) {
-        if (!calls_native_failed()) rp_log(@"calls=2: standing by while the native provider works");
-        while (calls_mode() == 2 && !calls_native_failed()) sleep(5);
-        if (calls_mode() == 1) return 0;
-        rp_log(@"native provider failed this boot: RedwoodPhone takes the calls");
     }
     @autoreleasepool {
         rp_log(@"RedwoodPhone starting (pid %d)", getpid());

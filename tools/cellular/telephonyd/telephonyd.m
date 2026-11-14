@@ -15,7 +15,6 @@
  * accepted), so the call screen never shows a state the network does not have.
  * Log: /var/mobile/Library/Logs/redwood-telephonyd.log (no phone numbers).
  */
-#include "../calls-mode.h"
 #import <Foundation/Foundation.h>
 #import <CallKit/CallKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -147,7 +146,10 @@ static CXCallEndedReason ended_reason(RWCall *c)
 - (void)endUUID:(NSUUID *)u reason:(CXCallEndedReason)r why:(NSString *)why
 {
     if (!u || [self.finished containsObject:u]) return;
+    /* (bounded: an ended call only needs guarding against a second end report for a while) */
+    if (self.finished.count > 64) [self.finished removeAllObjects];
     [self.finished addObject:u];
+    [self.connectingReported removeObject:u]; [self.connectedReported removeObject:u];
     CXAnswerCallAction *a = self.answers[u]; if (a) { [a fail]; [self.answers removeObjectForKey:u]; }
     CXSetHeldCallAction *h = self.holds[u]; if (h) { [h fail]; [self.holds removeObjectForKey:u]; }
     tlog(@"call ended (%@) -> reason %ld", why, (long)r);
@@ -165,11 +167,22 @@ static CXCallEndedReason ended_reason(RWCall *c)
         [[NSFileManager defaultManager] setAttributes:@{NSFileModificationDate: [NSDate date]} ofItemAtPath:a error:nil];
     }
     [self timeouts];
-    NSString *text = [NSString stringWithContentsOfFile:[Dir stringByAppendingString:@"/calls"] encoding:NSUTF8StringEncoding error:nil];
+    /* (cheap path, 2026-11-15) the list changes every ~2 s and this runs 7 times a second: unchanged file (same mtime
+     * and size) -> only the staleness check on what was read last, no read or parse */
+    static struct timespec seen_m; static off_t seen_n = -1; static int seen_pid; static long seen_t;
+    struct stat cst;
+    NSString *cpath = [Dir stringByAppendingString:@"/calls"];
+    if (!stat(cpath.UTF8String, &cst) && cst.st_size == seen_n && cst.st_mtimespec.tv_sec == seen_m.tv_sec &&
+        cst.st_mtimespec.tv_nsec == seen_m.tv_nsec && self.lastText) {
+        if (time(NULL) - seen_t > 12 || (seen_pid > 0 && kill(seen_pid, 0) != 0 && errno == ESRCH)) [self imsGone:@"redwood-ims stopped"];
+        return;
+    }
+    NSString *text = [NSString stringWithContentsOfFile:cpath encoding:NSUTF8StringEncoding error:nil];
     NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
     NSArray<NSString *> *head = lines.count ? [lines[0] componentsSeparatedByString:@" "] : @[];
     if (head.count < 5 || ![head[0] isEqualToString:@"ims"]) { [self imsGone:@"no snapshot"]; return; }
     int pid = head[1].intValue; long t = head[2].longLongValue;
+    seen_m = cst.st_mtimespec; seen_n = cst.st_size; seen_pid = pid; seen_t = t;
     self.registered = head[4].intValue != 0;
     /* redwood-ims rewrites it every 2 s: older than 12 s, or its process gone, means no calls exist at the network side
      * any more as far as anybody can act on them */
@@ -359,38 +372,13 @@ static CXCallEndedReason ended_reason(RWCall *c)
 }
 @end
 
-/* calls=0, or mode 2 after the native provider failed this boot: legacy (RedwoodPhone) runs instead; exit 0 keeps
- * launchd from starting us again (KeepAlive SuccessfulExit false) */
-static void td_mode_gate(void)
+/* CallKit must accept us as the telephony provider within 30 s; if not, exit non-zero and launchd starts us again
+ * (KeepAlive SuccessfulExit false, ThrottleInterval 3) -- a plain retry, there is no other provider to fall back to */
+static void td_watchdog(void)
 {
-    int m = calls_mode();
-    if (!calls_use_native()) {
-        tlog(@"calls=%d%s: the legacy stack (RedwoodPhone) has the calls; not starting", m, m == 2 ? " and the native provider failed this boot" : "");
-        exit(0);
-    }
-    /* starts this boot: a provider that keeps crashing before it registers counts as failed (mode 2) */
-    char id[64], prev[64] = { 0 }; int n = 0;
-    calls_boot_id(id, sizeof(id));
-    NSString *sf = [Dir stringByAppendingString:@"/telephonyd-starts"];
-    FILE *f = fopen(sf.UTF8String, "r");
-    if (f) { if (fscanf(f, "%63s %d", prev, &n) != 2) n = 0; fclose(f); }
-    if (strcmp(prev, id)) n = 0;
-    n++;
-    f = fopen(sf.UTF8String, "w"); if (f) { fprintf(f, "%s %d\n", id, n); fclose(f); }
-    if (m == 2 && n > 5) {
-        tlog(@"started %d times this boot without staying up: falling back to the legacy stack", n);
-        calls_mark_native_failed("restarts");
-        exit(0);
-    }
-    /* registration watchdog: CallKit must accept us as the telephony provider within 30 s */
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (td_registered) return;
-        if (calls_mode() == 2) {
-            tlog(@"not registered as the telephony provider after 30 s: falling back to the legacy stack");
-            calls_mark_native_failed("not-registered");
-            exit(0);
-        }
-        tlog(@"not registered as the telephony provider after 30 s (calls=1: trying again)");
+        tlog(@"not registered as the telephony provider after 30 s: starting again");
         exit(1);
     });
 }
@@ -399,7 +387,7 @@ int main(void)
 {
     @autoreleasepool {
         tlog(@"redwood-telephonyd starting (pid %d)", getpid());
-        td_mode_gate();
+        td_watchdog();
         static TD *td; td = [TD new];
         [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *t) { [td tick]; }];
         [[NSRunLoop mainRunLoop] run];

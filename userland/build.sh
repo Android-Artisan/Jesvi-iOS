@@ -628,10 +628,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
 	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
 	# /var/jb/Applications) as the CallKit provider of redwood-ims
-	# Calls (A, 2026-11-15): both providers ship; each decides at start from /var/jb/etc/redwood-calls.conf
-	# (tools/cellular/calls-mode.h: calls=1 native, the default -- redwood-telephonyd as the telephony provider; 0 legacy
-	# RedwoodPhone + the old engine; 2 native with fallback). A provider not in use exits 0 and launchd leaves it down.
-	CALL_PROVIDER="../tools/cellular/telephonyd/com.redwood.telephonyd.plist ../tools/cellular/RedwoodPhone/com.redwood.phone.plist"
+	# Calls (A, 2026-11-15; native only, the user's decision): redwood-telephonyd (/var/jb/redwood/bin, installed by
+	# tools/cellular/telephonyd/install.sh) is the telephony CallKit provider under CommCenter's identity. RedwoodPhone,
+	# the third-party style provider of the old engine, is no longer shipped.
+	CALL_PROVIDER=../tools/cellular/telephonyd/com.redwood.telephonyd.plist
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
 	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then

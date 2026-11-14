@@ -18,7 +18,8 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 0;      /* (off by default: user 2026-11-13 22:20, "go back to default"; was 3..20) */
+static double sbs_lead = 12;     /* the left padding removed (user 2026-11-15); "lead=0" in the conf: Apple's place (was 0 since 2026-11-13 22:20) */
+static int sbs_bolt = 0;         /* "bolt=1": keep the battery icon's bolt on island phones (the island shows charging) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -372,6 +373,17 @@ sbs_island_present(void)
 	return cached == 1;
 }
 static bool
+sbs_bolt_on_island(void)
+{
+	return sbs_bolt != 0;
+}
+static bool
+sbs_no_bolt(id self, SEL cmd)
+{
+	(void)self; (void)cmd;
+	return false;
+}
+static bool
 sbs_bg_disabled(id self, SEL cmd)
 {
 	(void)self; (void)cmd;
@@ -394,6 +406,14 @@ sbs_island_hook(void *unused)
 	(void)unused;
 	if (done || !sbs_island_present()) {
 		return;
+	}
+	if (!sbs_bolt && strcmp(getprogname(), "SpringBoard") != 0) {
+		/* apps: no bolt in the battery icon either (SpringBoard's own bolt hook in inject_sb.c asks the same) */
+		Class bc = objc_getClass("_UIBatteryView");
+		Method bm = bc ? class_getInstanceMethod(bc, sel_registerName("_shouldShowBolt")) : NULL;
+		if (bm != NULL) {
+			method_setImplementation(bm, (IMP)sbs_no_bolt);
+		}
 	}
 	if (em != NULL) {
 		if (!class_addMethod(ec, es, (IMP)sbs_bg_disabled, method_getTypeEncoding(em))) {
@@ -421,8 +441,6 @@ statusbar_shift_start(void)
 
 	sbs_provider_hook(NULL);                /* always (cheap: one class method, only acts off the notch layouts) */
 	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_provider_hook);
-	sbs_island_hook(NULL);                  /* island phones only: plain time, the island shows the activity */
-	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_island_hook);
 
 	if (f != NULL) {
 		size_t n = fread(b, 1, sizeof(b) - 1, f);
@@ -440,11 +458,17 @@ statusbar_shift_start(void)
 		if (p != NULL) {
 			sbs_trail = atof(p + 6);
 		}
+		p = strstr(b, "bolt=");
+		if (p != NULL) {
+			sbs_bolt = atoi(p + 5);
+		}
 		p = strstr(b, "cut=");
 		if (p != NULL) {
 			sbs_cut = atof(p + 4);
 		}
 	}
+	sbs_island_hook(NULL);                  /* island phones only: plain time and no bolt, the island shows those */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_island_hook);
 	if (sbs_lead <= 0 && sbs_cut <= 0 && sbs_trail == 0 && sbs_notch <= 0) {
 		return;                         /* the default: Apple's status bar, nothing hooked */
 	}

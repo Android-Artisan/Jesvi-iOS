@@ -30,7 +30,6 @@
 #include <signal.h>
 #include <dirent.h>
 #include "sms-pdu.h"
-#include "calls-mode.h"
 
 /* every log line about calls carries the time (A, 2026-11-14: late rings could not be measured without it) */
 static const char *ts_now(void)
@@ -619,11 +618,6 @@ int main(int argc,char **argv)
     pfk=socket(PF_KEY,SOCK_RAW,PF_KEY_V2);
     if (argc>1 && !strcmp(argv[1],"--pfkey")) {printf("PF_KEY socket: %s\n",pfk>=0?"available":strerror(errno));return pfk<0;}
     if (argc>1 && !strcmp(argv[1],"--flush")) {ipsec_flush();printf("SAs and policies flushed\n");return 0;}
-    if (!calls_use_native()) {  /* calls-mode.h: calls=0, or mode 2 after the native provider failed this boot */
-        const char *legacy[]={"/var/root/redwood-ims.legacy","/var/root/redwood-ims.before-native"};
-        for (int i=0;i<2;i++) if (!access(legacy[i],X_OK)) {printf("calls=%d: the legacy engine runs (%s)\n",calls_mode(),legacy[i]);fflush(stdout);execv(legacy[i],argv);}
-        printf("calls=%d: no legacy engine on the phone: the native one runs\n",calls_mode());
-    }
     if (load_cfg()) {fprintf(stderr,"redwood-ims: no IMS PDN yet (/var/tmp/redwood-cell/ims)\n");return 1;}
     {   /* one client only: an older one (e.g. left by a restarted redwood-cellulard) is stopped first -- two clients
          * flush each other's SAs and neither can send */
@@ -798,10 +792,6 @@ int main(int argc,char **argv)
     call_registered=1;calls_snapshot(1);   /* (a fresh start: the call screen ends any call it still shows from before) */
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        {   /* calls=2: the native provider failed this boot -> leave (no call up); cellulard starts us again, as legacy */
-            static time_t mc;time_t t=time(NULL);
-            if (t-mc>=5) {mc=t;if (!calls_live() && calls_mode()==2 && calls_native_failed()) {printf("native provider failed: handing over to the legacy engine\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
-        }
         if (time(NULL)-registered_at>6600 && !calls_live()) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
@@ -851,24 +841,24 @@ int main(int argc,char **argv)
                 char via[900],fr[300],to[300],ci[200],cq[80];int o=0;
                 if (invite) {
                     o=snprintf(m,sizeof(m),"SIP/2.0 100 Trying\r\n");
-                    const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
-                    if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
-                    if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s\r\n",to);
-                    if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
-                    if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
-                    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-                    if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);
+                    const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");if (!e2) break;MSG_CAT(m,o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
+                    if (hdr(r,"From",fr,sizeof(fr))) MSG_CAT(m,o,"From: %s\r\n",fr);
+                    if (hdr(r,"To",to,sizeof(to))) MSG_CAT(m,o,"To: %s\r\n",to);
+                    if (hdr(r,"Call-ID",ci,sizeof(ci))) MSG_CAT(m,o,"Call-ID: %s\r\n",ci);
+                    if (hdr(r,"CSeq",cq,sizeof(cq))) MSG_CAT(m,o,"CSeq: %s\r\n",cq);
+                    MSG_CAT(m,o,"Content-Length: 0\r\n\r\n");
+                    if (MSG_FITS(m,o)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}
                 }
                 o=snprintf(m,sizeof(m),"SIP/2.0 %s\r\n",status);
-                const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
+                const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");if (!e2) break;MSG_CAT(m,o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
                 (void)via;
-                if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
-                if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s%s\r\n",to,strstr(to,"tag=")?"":";tag=rw1");
+                if (hdr(r,"From",fr,sizeof(fr))) MSG_CAT(m,o,"From: %s\r\n",fr);
+                if (hdr(r,"To",to,sizeof(to))) MSG_CAT(m,o,"To: %s%s\r\n",to,strstr(to,"tag=")?"":";tag=rw1");
                 (void)status;
-                if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
-                if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
-                o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-                if (strncmp(r,"ACK",3)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}
+                if (hdr(r,"Call-ID",ci,sizeof(ci))) MSG_CAT(m,o,"Call-ID: %s\r\n",ci);
+                if (hdr(r,"CSeq",cq,sizeof(cq))) MSG_CAT(m,o,"CSeq: %s\r\n",cq);
+                MSG_CAT(m,o,"Content-Length: 0\r\n\r\n");
+                if (strncmp(r,"ACK",3)) {if (MSG_FITS(m,o)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}}
                 sms_incoming(s,r,(size_t)g,portc);
             }
         }
