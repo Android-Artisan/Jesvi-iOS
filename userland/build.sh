@@ -628,19 +628,27 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
 	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
 	# /var/jb/Applications) as the CallKit provider of redwood-ims
+	# Native calls (feat/native-calls, B/A 2026-11-15): redwood-telephonyd (/var/jb/redwood/bin, tools/cellular/telephonyd)
+	# is the telephony CallKit provider under CommCenter's identity, so iOS treats calls as carrier calls. NATIVE_CALLS=0
+	# brings back RedwoodPhone (the third-party style CallKit app) for comparison.
+	if [ "${NATIVE_CALLS-1}" != 0 ]; then
+		CALL_PROVIDER=../tools/cellular/telephonyd/com.redwood.telephonyd.plist
+	else
+		CALL_PROVIDER=../tools/cellular/RedwoodPhone/com.redwood.phone.plist
+	fi
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
 	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
 		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
 			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+		cp "$CALL_PROVIDER" root/LaunchDaemons/
 	else
 		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
 		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
 		# call reached the call screen): the job as it runs on the phone, kept in the tree
 		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
-		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+		cp "$CALL_PROVIDER" root/LaunchDaemons/
 	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
