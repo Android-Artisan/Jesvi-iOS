@@ -922,9 +922,17 @@ IOMobileFramebuffer::start(IOService * provider)
 	fRowBytes = vinfo.v_rowbytes;
 	fWidth = gFBWidth ? gFBWidth : fPanelWidth;
 	fHeight = gFBHeight ? gFBHeight : fPanelHeight;
-	if (gFBScale != 0 && gFBScale != kFBDefaultScale) {
+	/*
+	 * The drawing follows the panel's mode (B, 2026-11-14): at 720 x 1600 (fb_mode=3/4) the iPhone's
+	 * 1125 x 2436 was drawn and then shrunk to 0.42 of its pixels on every frame -- 2.4 times the GPU's
+	 * work for nothing shown. There iOS draws the same 375 x 812 points at two pixels a point
+	 * (750 x 1624, its @2x artwork), about what the panel shows. 1080 x 2400 and the native mode keep
+	 * three. fbscale= given on the command line wins (fbscale=3: as before).
+	 */
+	uint32_t autoScale = gFBScale != 0 ? gFBScale : (gScaler && (gFbMode == 3 || gFbMode == 4)) ? 2 : 0;
+	if (autoScale != 0 && autoScale != kFBDefaultScale) {
 		static const char * const places[][2] = { { "/chosen", "display-scale" }, { "/product", "artwork-scale-factor" } };
-		uint32_t scale = gFBScale;
+		uint32_t scale = autoScale;
 
 		fWidth = kFBPointsWide * scale;
 		fHeight = kFBPointsHigh * scale;
