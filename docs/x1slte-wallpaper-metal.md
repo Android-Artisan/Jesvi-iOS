@@ -38,7 +38,9 @@ the same pixels as macOS (blur edge differs by 1-2). `mtlk.m` runs MPS's
   (`MetalPluginName = ../../../../var/jb/Library/Extensions/RedwoodMetal`), and the driver loads the
   `libredwoodair.dylib` next to its own executable (only when not under `/System`).
 - Enabled through `kern.exec_inject` (live): append `;/var/jb/usr/lib/libredwood-metalon.dylib PROC1 PROC2 ...`.
-  Currently: `PhotosPosterProvider` (and, under test, `PosterBoard CollectionsPoster GradientPosterExtension EmojiPosterExtension WeatherPoster`).
+  Currently: `PhotosPosterProvider GradientPosterExtension EmojiPosterExtension`.
+  NOT for `PosterBoard` (with our driver its bold titles render as scrambled glyphs; it works without Metal),
+  `CollectionsPoster` (stack overflow) or `WeatherPoster` (SIGSEGV in CoreFoundation from IOKit) -- both crash-looped with it.
 - Revert: `/redwood/bin/rwsys kern.exec_inject "$(cat /var/root/exec_inject.boot2)"` (the boot's list, saved).
 - Metal stays OFF system-wide (`metal_props`), because every new mediaserverd aborted with it on (2026-11-12).
 - To ship: `DRIVERS=softpipe,panfrost AIR=1 tools/mk-mesa.sh` + userland build, image rebuild, reboot.
@@ -53,7 +55,9 @@ Installed: `/var/jb/usr/lib/TweakInject/RedwoodWallpaperMotion.dylib` (filter `R
 - Each 20 Hz sensor step is a 66 ms Core Animation from the presentation value: the render server glides it at display rate.
 - Moves under 0.25 pt are skipped: a still phone does no wallpaper work (measured: parallax costs ~1% backboardd CPU).
 - Only for Apple's collection posters (provider `com.apple.WallpaperKit.CollectionsPoster`, read from
-  `_SBWallpaperSecureWindow.rootViewController.viewController.posterController.configuration.providerBundleIdentifier`).
+  `_SBWallpaperSecureWindow.rootViewController.viewController.posterController.configuration.providerBundleIdentifier`;
+  `posterController` has no getter, so each step falls back to the `_name` instance variable). The log says why:
+  "wallpaper motion v2: poster check: ...".
   A photo poster, or our own still picture (section 3), stays still and the motion sensor is off.
 - Off automatically: screen off, wallpaper hidden, Reduce Motion, Low Power Mode.
 
@@ -79,6 +83,18 @@ covers the lock poster (UIImageView tag 0x52575750) and is mirrored to home; `Wa
 Checked every 2 s and on `notify com.redwood.wallpaper.changed`. An empty folder removes the overlay, and then the
 poster chosen in Photos / Settings shows. While a picture is in the folder it wins over the Photos poster.
 
-## 4. Tools on the phone
+## 4. Wallpaper gallery ("Add New Wallpaper", Settings previews)
+
+The gallery is filled by `duetexpertd` (`com.apple.proactive.FaceSuggestions.xpc`), which the port's launch list
+leaves out. Without it the gallery is empty and PosterBoard aborts ("attempt to insert nil object from objects[1]").
+- Started by hand: `/var/jb/redwood/com.apple.duetexpertd.plist` (from the image's `System/Library/xpc/launchd.plist`),
+  `launchctl bootstrap system ...` (undo: `launchctl bootout system/com.apple.duetexpertd`). Lost at reboot.
+- It traps in `ATXEnableMobileAssetDataVault` (a data vault this kernel cannot make): `libredwood-duet.dylib`
+  (MSHookFunction, `/var/jb/usr/lib`, exec_inject `duetexpertd`) skips that call.
+- `libredwood-crashlog.dylib` (exec_inject any process): signal / uncaught exception / exit() backtrace to
+  `/var/tmp/crash.<proc>.txt` -- how the trap above was found.
+- To make permanent: add com.apple.duetexpertd to the image's LaunchDaemons and the hook to the image.
+
+## 5. Tools on the phone
 `/var/root/citest [image]`, `/var/root/mtlk`, `/var/root/air_run` (new build), `/var/root/rwpref`,
 `/var/root/rwp PROC` (rwprobe: `snap PATH`, `find Class`, `kv ADDR keypath`, `ivars ADDR`, ...).
