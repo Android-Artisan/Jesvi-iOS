@@ -98,3 +98,5 @@
 - Crucial holdout FAILED: corrected max tile bias 38.108 RAW counts, site mean biases [7.982,4.508,2.969,7.466]. Most lower rows repeat, upper region differs. Do not claim a fix or assume sensor sequencing alone; opaque coverage/capture timing must be ruled out too. Requested another covered repeat.
 - Detailed reproduction/format/limits: docs/x1slte-camera-dark-grid.md. Private candidate SHA-256 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b. Existing phone library remains the earlier verified implementation.
 - Samsung source explicitly does not list binned 2016x1512 as LN2-supported. Its full-mode LN2 writes/constraints cannot be applied to this mode as a one-register fix.
+
+- Additional source trace: Samsung module DT separates VC0 RAW10 image from VC1 tail-PDAF in both binned and full modes. Port selects VC0/0x2b and packed Android10. Source-level routing matches; this does not establish every RAW sample's correctness, but does not support blindly changing the CFA or treating PDAF rows as normal image pixels. Details in the dark-grid document.

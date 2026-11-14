@@ -60,3 +60,15 @@ if reproducibility remains poor; full-resolution Bayer/PDAF interpretation and
 stock low-noise setup remain separate unresolved work. Do not enable LN2 for
 the binned mode: the local Samsung driver only lists four full-resolution modes
 as low-noise supported. Do not silently deploy unvalidated gradient compensation.
+
+## CSI virtual-channel check
+
+Local Samsung `module_dt/module_2ld.dtsi`, mode4, explicitly describes 2016x1512
+30 fps: VC0 RAW10 image 2016x1512; VC1 RAW10 tail-PDAF 2016x378;
+VC0 embedded-8 data 2016x2. Full mode0 similarly separates the 4032x3024
+VC0 image from 4032x756 VC1 tail-PDAF. Current rear CSIS0 input register 0x0040
+is programmed for VC0/data-type 0x2b, and WDMA format 7 is packed Android/MIPI
+RAW10. This routing agrees at source level; it is not evidence that the port
+must demosaic the PDAF tail as image pixels. Further per-frame routing/layout
+validation remains useful, especially for full-resolution mode. Do not label
+the visible noise as a four-in-one or PDAF-layout fault without that evidence.
