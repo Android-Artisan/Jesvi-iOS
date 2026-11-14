@@ -145,6 +145,9 @@ def mode_bits(text):
 
 
 def wanted_file(path, size):
+    # CallKit's executable must be prepared before the input snapshot is locked.
+    if path == 'System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd':
+        return True
     lproj = re.search(r'/([^/]+)\.lproj/', path)
     if lproj and lproj.group(1) not in KEEP_LANG:
         return False

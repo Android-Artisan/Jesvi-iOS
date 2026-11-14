@@ -639,7 +639,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
 	# /var/jb/Applications) as the CallKit provider of redwood-ims
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
-	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
+	if [ "${REQUIRE_SOURCE:-0}" = 1 ]; then
+		[ -f "$IOS/rootfs/$CSD" ] || { echo "build.sh: callservicesd missing from prepared extraction" >&2; exit 1; }
+	else
+		[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
+	fi
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
 		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
 			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
@@ -972,6 +976,10 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 			ln -sf /var/jb/usr/bin/$c sysroot/bin/$c
 		done
 		echo "  the package manager's prefix: $(du -sh sysroot/jb | cut -f1) as /jb (init puts it at /var/jb)"
+	fi
+	if [ -f "$IOS/rootfs/$CSD" ]; then
+		mkdir -p sysroot/jb/redwood
+		cp "$IOS/rootfs/$CSD" sysroot/jb/redwood/callservicesd
 	fi
 	# An application of this port's own, registered the same free way the prefix's are: a plain
 	# directory in /Applications, which the LaunchServices database is rebuilt from at every boot
