@@ -45,6 +45,38 @@ static id wallpaper_current_view(void)
     }
     return nil;
 }
+/* Parallax belongs to Apple's own collection wallpapers; a photo or a picture laid over the
+ * poster (custom_wallpaper.m's tag) stays still, which is also what costs nothing.
+ * HomePosterMotionProviders (com.redwood.motion): comma-separated provider ids to allow. */
+static id wallpaper_send_if(id obj,const char *name)
+{
+    if(!obj) return nil;
+    SEL sel=sel_registerName(name);
+    if(!((BOOL(*)(id,SEL,SEL))objc_msgSend)(obj,sel_registerName("respondsToSelector:"),sel)) return nil;
+    return ((id(*)(id,SEL))objc_msgSend)(obj,sel);
+}
+static bool wallpaper_poster_moves(void)
+{
+    id app=WM_SEND(id,objc_getClass("UIApplication"),"sharedApplication");
+    id windows=WM_SEND(id,app,"windows");
+    for(unsigned long i=0;i<WM_SEND(unsigned long,windows,"count");i++) {
+        id window=WM_SEND1(id,windows,"objectAtIndex:",unsigned long,i);
+        if(WM_SEND1(id,window,"viewWithTag:",long,0x52575750)) return false;   /* our own still picture */
+        if(!wallpaper_kind(window,"_SBWallpaperSecureWindow")) continue;
+        id root=WM_SEND(id,window,"rootViewController");
+        id inner=wallpaper_send_if(root,"viewController");
+        if(!inner && root) { Ivar iv=class_getInstanceVariable(object_getClass(root),"_viewController"); if(iv) inner=object_getIvar(root,iv); }
+        id provider=wallpaper_send_if(wallpaper_send_if(wallpaper_send_if(inner,"posterController"),"configuration"),"providerBundleIdentifier");
+        if(!provider) return false;
+        const char *p=WM_SEND(const char*,provider,"UTF8String");
+        char allow[512]="com.apple.WallpaperKit.CollectionsPoster";
+        CFTypeRef v=CFPreferencesCopyAppValue(CFSTR("HomePosterMotionProviders"),CFSTR("com.redwood.motion"));
+        if(v) { if(CFGetTypeID(v)==CFStringGetTypeID()) CFStringGetCString(v,allow,sizeof(allow),kCFStringEncodingUTF8); CFRelease(v); }
+        for(char *tok=strtok(allow,", ");tok;tok=strtok(NULL,", ")) if(p && !strcmp(p,tok)) return true;
+        return false;
+    }
+    return false;
+}
 static bool wallpaper_motion_enabled(void)
 {
     bool (*reduce_motion)(void)=dlsym(RTLD_DEFAULT,"UIAccessibilityIsReduceMotionEnabled");
@@ -165,7 +197,10 @@ static void wallpaper_motion_start(void)
     dispatch_source_set_event_handler(timer,^{
         double now=mach_absolute_time()*(double)tb.numer/tb.denom/1e9;
         if(now-scan_at>1) {
-            scan_at=now;allowed=wallpaper_motion_enabled();
+            scan_at=now;
+            {   static int last_moves=-1; bool moves=wallpaper_poster_moves();
+                allowed=wallpaper_motion_enabled() && moves;
+                if(moves!=last_moves) { last_moves=moves; fprintf(stderr,"redwood: wallpaper motion v2: poster %s\n",moves?"is Apple's collection: parallax on":"is a still picture: parallax off"); } }
             CFPreferencesAppSynchronize(CFSTR("com.redwood.motion"));
             amplitude=wallpaper_pref(CFSTR("HomePosterMotionAmplitude"),40,0,60);
             pose.range=wallpaper_pref(CFSTR("HomePosterMotionRange"),15,3,60)*M_PI/180;
