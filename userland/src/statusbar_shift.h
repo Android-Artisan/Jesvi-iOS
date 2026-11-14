@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 12;     /* the left padding removed (user 2026-11-15); "lead=0" in the conf: Apple's place (was 0 since 2026-11-13 22:20) */
+static double sbs_lead = 0;      /* Apple's place (the user, 2026-11-15: reset; "lead=N" in the conf moves the time N/2 pt left) */
 static int sbs_bolt = 0;         /* "bolt=1": keep the battery icon's bolt on island phones (the island shows charging) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
@@ -383,6 +383,27 @@ sbs_no_bolt(id self, SEL cmd)
 	(void)self; (void)cmd;
 	return false;
 }
+/*
+ * The bolt next to the battery (2026-11-15): with the percentage shown inside the battery, iOS 16 draws the charging
+ * bolt as a separate display item of _UIStatusBarBatteryItem (+chargingDisplayIdentifier), not through _UIBatteryView's
+ * _shouldShowBolt. After iOS has applied an update to a display item, the charging one is switched off here.
+ */
+static id (*sbs_orig_battery_apply)(id, SEL, id, id);
+static id
+sbs_battery_apply(id self, SEL cmd, id update, id item)
+{
+	id r = sbs_orig_battery_apply(self, cmd, update, item);
+	static id charging_id;
+
+	if (charging_id == nil) {
+		charging_id = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("_UIStatusBarBatteryItem"), sel_registerName("chargingDisplayIdentifier"));
+	}
+	id ident = item != nil ? ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("identifier")) : nil;
+	if (charging_id != nil && ident != nil && ((bool (*)(id, SEL, id))objc_msgSend)(ident, sel_registerName("isEqual:"), charging_id)) {
+		((void (*)(id, SEL, bool))objc_msgSend)(item, sel_registerName("setEnabled:"), false);
+	}
+	return r;
+}
 static bool
 sbs_bg_disabled(id self, SEL cmd)
 {
@@ -406,6 +427,15 @@ sbs_island_hook(void *unused)
 	(void)unused;
 	if (done || !sbs_island_present()) {
 		return;
+	}
+	if (!sbs_bolt) {
+		/* the bolt beside the battery (every process: SpringBoard's status bar and apps') */
+		Class ic = objc_getClass("_UIStatusBarBatteryItem");
+		Method am = ic ? class_getInstanceMethod(ic, sel_registerName("applyUpdate:toDisplayItem:")) : NULL;
+		if (am != NULL && sbs_orig_battery_apply == NULL) {
+			sbs_orig_battery_apply = (id (*)(id, SEL, id, id))method_setImplementation(am, (IMP)sbs_battery_apply);
+			sbs_log("island: charging bolt beside the battery off%.0f%.0f", 0, 0);
+		}
 	}
 	if (!sbs_bolt && strcmp(getprogname(), "SpringBoard") != 0) {
 		/* apps: no bolt in the battery icon either (SpringBoard's own bolt hook in inject_sb.c asks the same) */
