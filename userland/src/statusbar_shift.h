@@ -19,6 +19,7 @@
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
 static double sbs_lead = 0;      /* Apple's place (the user, 2026-11-15: reset; "lead=N" in the conf moves the time N/2 pt left) */
+static double sbs_icons = 1.08;  /* "icons=F": the status bar icons (signal, Wi-Fi, battery) F times Apple's size (the user, 2026-11-15: "just a little big"); icons=1: Apple's */
 static int sbs_bolt = 0;         /* "bolt=1": keep the bolt's animation on island phones too (default: no animation; the island animates charging) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
@@ -445,6 +446,31 @@ sbs_island_hook(void *unused)
 	}
 }
 
+/* the icons' size: the notch layout's normalIconScale times `icons` (Split1125's own instance method) */
+static double (*sbs_orig_icon_scale)(id, SEL);
+static double
+sbs_icon_scale(id self, SEL cmd)
+{
+	return sbs_orig_icon_scale(self, cmd) * sbs_icons;
+}
+static void
+sbs_icons_hook(void *unused)
+{
+	Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+	SEL s = sel_registerName("normalIconScale");
+	Method m = sc ? class_getInstanceMethod(sc, s) : NULL;
+
+	(void)unused;
+	if (m == NULL || sbs_orig_icon_scale != NULL || sbs_icons <= 0.5 || sbs_icons >= 2 || sbs_icons == 1) {
+		return;
+	}
+	sbs_orig_icon_scale = (double (*)(id, SEL))method_getImplementation(m);
+	if (!class_addMethod(sc, s, (IMP)sbs_icon_scale, method_getTypeEncoding(m))) {
+		method_setImplementation(m, (IMP)sbs_icon_scale);      /* (Split1125's own) */
+	}
+	sbs_log("icons: x%.2f (%.0f)", sbs_icons, 0);
+}
+
 static void
 statusbar_shift_start(void)
 {
@@ -470,6 +496,10 @@ statusbar_shift_start(void)
 		if (p != NULL) {
 			sbs_trail = atof(p + 6);
 		}
+		p = strstr(b, "icons=");
+		if (p != NULL) {
+			sbs_icons = atof(p + 6);
+		}
 		p = strstr(b, "bolt=");
 		if (p != NULL) {
 			sbs_bolt = atoi(p + 5);
@@ -479,6 +509,8 @@ statusbar_shift_start(void)
 			sbs_cut = atof(p + 4);
 		}
 	}
+	sbs_icons_hook(NULL);                   /* every phone: the icons' size */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_icons_hook);
 	sbs_island_hook(NULL);                  /* island phones only: plain time and no bolt, the island shows those */
 	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_island_hook);
 	if (sbs_lead <= 0 && sbs_cut <= 0 && sbs_trail == 0 && sbs_notch <= 0) {
