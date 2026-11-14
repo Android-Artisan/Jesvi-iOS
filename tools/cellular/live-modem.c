@@ -1075,9 +1075,14 @@ static int online_handshake(unsigned seconds)
         if (online && stay_mode && ims_fd>=0) {
             /* the VoLTE/SMS client (redwood-ims, /var/root): started once IMS is up, started again when it leaves
              * (fresh registration every ~110 min, or a lost connection), at most every 30 s. /var/root/cell-noimsclient: never */
-            static pid_t ims_pid;static uint64_t ims_spawned;struct stat st2;
-            if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {printf("cellular: IMS client left\n");fflush(stdout);ims_pid=0;}
-            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull) {
+            static pid_t ims_pid;static uint64_t ims_spawned,ims_gap=30000000ull;struct stat st2;
+            if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {
+                /* (A, 2026-11-14) a long, healthy run that ended (a dropped registration connection, the ~110 min
+                 * refresh): start again after 2 s, not 30 -- no VoLTE meanwhile; quick failures stay 30 s apart */
+                ims_gap=now_us(NULL)-ims_spawned>120000000ull?2000000ull:30000000ull;
+                printf("cellular: IMS client left (again in %llu s)\n",ims_gap/1000000);fflush(stdout);ims_pid=0;ims_spawned=now_us(NULL);
+            }
+            if (!ims_pid && now_us(NULL)-ims_spawned>ims_gap) {
                 /* a client already running (e.g. started before this process was exec'd again by a watchdog): keep it */
                 FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int other=0;
                 if (q) {if (fscanf(q,"%d",&other)!=1) other=0;fclose(q);}
@@ -1090,7 +1095,7 @@ static int online_handshake(unsigned seconds)
                 } else if (other>1) unlink("/var/tmp/redwood-cell/ims.pid");
                 if (other==-1) goto ims_done;
             }
-            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
+            if (!ims_pid && now_us(NULL)-ims_spawned>ims_gap && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
                 posix_spawn_file_actions_t fa;posix_spawn_file_actions_init(&fa);
                 posix_spawn_file_actions_addopen(&fa,1,"/var/tmp/redwood-ims.log",O_WRONLY|O_CREAT|O_APPEND,0600);
                 posix_spawn_file_actions_adddup2(&fa,1,2);posix_spawn_file_actions_addopen(&fa,0,"/dev/null",O_RDONLY,0);
