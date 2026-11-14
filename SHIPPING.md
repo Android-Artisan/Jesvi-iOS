@@ -1,3 +1,22 @@
+## 2026-11-14 — Persistent software passcode and clean-build defaults
+- Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
+  `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.
+- User confirmed Settings stays enabled, initial boot asks for the code, and second unlock requires it after the
+  display-off bridge was installed. The standalone bridge lives on persistent `/var/jb`; the same code is built
+  into `libredwood-sb.dylib`, including the tracked prebuilt, for clean images without that tweak installation.
+- Clean-build trap fixed: tracked `x1slte.cmdline` now includes `softpasscode=1` and `autounlock=0`; default payload
+  uses that profile. `userland/build.sh` follows it for unprofiled/S20 builds, and x1slte's common profile sets
+  `SOFTWARE_PASSCODE=1`. Keep native keybagd, the PID 1 restore handoff and immediate-lock policy together.
+- Full implementation, ABI details, tests, staging/deployment boundaries, security limits and **Traps and recovery**:
+  `docs/x1slte-passcode.md`. Read before modifying authentication, boot args, root assembly or native keybagd.
+- Host verifier/ABI/file-guard tests, clean root-assembly integration test, iOS helper/SpringBoard cross-build and
+  Exynos GICv2 kernel build passed. A complete fresh IPSW/firmware build was not run; no new reboot in this step.
+- Open: software-only UI authentication, reversible legacy key wrapping, volatile retry counters, no SEP security.
+  Optimized kernel/hardened startup helper are staged, not flashed. UI negative-code/reboot tests of the standalone
+  bridge remain separate validation tasks. The user accepted the swipe threshold; no gesture change is claimed.
+- Local `main` and `master` contain this work. Remote publishing remains blocked by unavailable GitHub credentials;
+  do not overwrite divergent remote main to bypass that problem.
+
 ## 2026-11-14 (10:40) — Real 120 Hz: scrolling "a lot better" (user-verified)
 - iOS ran its frame clock at 60 while the panel scanned 120 (CADisplay.refreshRate 16.7 ms): backboardd now gets
   CA_HEARTBEAT_RATE=120 in fb_mode 1/3 (8.3 ms). Apps get the ProMotion opt-in (QuartzCore capped apps at 60): `app_fps=0` off.

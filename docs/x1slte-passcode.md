@@ -105,6 +105,34 @@ It is staged in `prebuilt/userland/softkeybag-init`; the current boot used the
 previous helper. These changes are intended for the next prepared image, not a
 reason to reboot a working test session.
 
+## Clean-build and agent handoff
+
+The tracked S20 `x1slte.cmdline` now enables `softpasscode=1` and keeps
+`autounlock=0`. The default `x1slte.sh payload` uses this tracked profile rather
+than the old minimal bring-up line. `metal_profile=1` was removed to leave room
+under the loader's 550-character resolved-command limit, including local Bluetooth
+address expansion; display preset selection was not changed by this update.
+
+`userland/software-passcode-config.sh` enables the full integration by default
+for explicit x1slte and unprofiled builds in this checkout when the tracked boot
+line enables it. Explicit other DEVICE profiles retain their behavior, and an
+explicit SOFTWARE_PASSCODE override is respected. The common x1slte profile also
+sets SOFTWARE_PASSCODE=1. An intentional opt-out must account for any saved code;
+never boot an existing protected device with just half this integration removed.
+
+Both source builds and PREBUILT builds include the immediate-lock SpringBoard
+code and restore binary. The clean assembly test starts with an empty fixture,
+adds the tracked binaries/job/startup wrapper, and verifies a second assembly is
+idempotent. It also checks profile selection, explicit overrides, the boot-line
+budget and presence of the bridge in the tracked binary. This does not claim a
+fresh full IPSW/firmware image was built or flashed in this session.
+
+`AGENTS.md` points future repository agents here. `SHIPPING.md` records the release
+entry; the shared workspace `NEXT.md` links this worktree and the integration
+warning. Other existing worktrees are separate branches: they must merge or
+cherry-pick the accepted commits before deploying, rather than assuming local
+main updates their files automatically.
+
 ## Limits
 
 This is software authentication for this SEP-less development port, not a Secure
@@ -149,6 +177,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror tools/passcode/test_software_keybag.c -o /
 /tmp/test-software-keybag
 python3 tools/passcode/test_native_adapter.py
 python3 tools/passcode/test_restore_files.py
+python3 tools/passcode/test_build_integration.py
 ```
 
 The host test compares the actual KDF against CommonCrypto's independent PBKDF2

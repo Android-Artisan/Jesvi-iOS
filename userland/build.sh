@@ -77,6 +77,7 @@
 set -e
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
+source ./software-passcode-config.sh
 
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
 LD="-Wl,-e,_start -Wl,-pagezero_size,0x100000000"
