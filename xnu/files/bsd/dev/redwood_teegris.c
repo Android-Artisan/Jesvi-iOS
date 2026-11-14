@@ -2608,10 +2608,10 @@ extern volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
 #define FP_HOLD_MS      150
 
 static void
-fp_run(uint32_t n, uint32_t op, uint32_t seconds)
+fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 {
 	uint64_t deadline;
-	uint32_t steps = 0, last = ~0u, same = 0, bad_quality = 0, good = 0;
+	uint32_t steps = 0, last = ~0u, same = 0, bad_quality = 0, good = 0, refused = 0;
 	volatile uint8_t *gpa1 = redwood_gpio_bank(0x15850000, 0x20);
 
 	tee_say("fp run %u: gpa1 con %08x dat %02x pud %08x\n", n, *(volatile uint32_t *)gpa1,
@@ -2647,16 +2647,16 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds)
 		if (result == 0 && error == 0x27 && (n == 3 || n == 6)) {
 			uint32_t e1, e2;
 
-			bad_quality++;                  /* BAD_QUALITY: Samsung closes the touch (ENROLL_FINAL op 1), then again */
-			if (n == 3) {
-				uint32_t ef = fp_call(4, 1);
-
-				tee_say("fp run 3: bad image: enroll-final %#x op %u | %08x %08x %08x %08x\n", ef, r[0], r[1], r[3],
-				    r[4], r[5]);
-			} else if (op == 1) {                  /* refused at once (no capture): cancel, init again */
+			bad_quality++;                  /* BAD_QUALITY: go on with op `recover`; 0, or refused at once: reset */
+			if (recover != 0 && !(op == recover && refused++ > 0)) {
+				op = recover;
+				continue;
+			}
+			refused = 0;
+			if (op == 1 || recover == 0 || true) {
 				e1 = fp_call(10, 1);
 				e2 = fp_call(n - 1, 1);
-				tee_say("fp run %u: bad image refused at once: reset (cancel %#x init %#x), progress lost\n", n, e1, e2);
+				tee_say("fp run %u: bad image: reset (cancel %#x init %#x), progress lost\n", n, e1, e2);
 				if (e1 != 0 || e2 != 0) {
 					break;
 				}
@@ -2665,17 +2665,16 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds)
 			continue;
 		}
 		if (result == 0 && error == 0 && r[0] == 0 && n == 3) {
-			uint32_t ef, progress = r[4];
+			uint32_t progress = r[4];
 
 			good++;
-			ef = fp_call(4, 1);             /* Samsung's enroll(): ENROLL_FINAL after every ENROLL_DO */
-			tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u; enroll-final %#x op %u | %08x %08x %08x %08x %08x\n", good,
-			    progress, ef, r[0], r[1], r[3], r[4], r[5], r[6]);
-			if (progress >= 100 || r[4] >= 100) {
+			refused = 0;
+			tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u | %08x %08x %08x %08x\n", good, progress, r[1], r[3], r[5], r[6]);
+			if (progress >= 100) {
 				break;
 			}
-			while (redwood_touch_mask != 0 && mach_absolute_time() < deadline) {
-				delay(10000);           /* lift the finger before the next sample */
+			for (uint32_t w = 0; w < 150 && redwood_touch_mask != 0; w++) {
+				delay(10000);           /* the finger lifted (at most 1.5 s) */
 			}
 			op = 1;
 			continue;
@@ -2684,6 +2683,9 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds)
 			break;
 		}
 		op = r[0];
+		if (op == 5) {
+			refused = 0;                    /* a capture is under way */
+		}
 		if (op == 4) {
 			/* WAIT_INTERRUPT: the sensor's IPC line (GPA1-3) or its wake-up line (GPA1-1) going high */
 			/*
@@ -2738,9 +2740,9 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 		return;
 	}
 	if (strncmp(p, "run ", 4) == 0) {
-		uint32_t v[3] = { 0, 0, 10 }, k = 0;
+		uint32_t v[4] = { 0, 0, 10, 0 }, k = 0;
 
-		for (p += 4; *p && k < 3; k++) {
+		for (p += 4; *p && k < 4; k++) {
 			v[k] = 0;
 			while (*p == ' ') {
 				p++;
@@ -2749,7 +2751,7 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 				v[k] = v[k] * 10 + (uint32_t)(*p++ - '0');
 			}
 		}
-		fp_run(v[0], v[1], v[2] ? v[2] : 10);
+		fp_run(v[0], v[1], v[2] ? v[2] : 10, v[3]);
 		return;
 	}
 	while (*p >= '0' && *p <= '9') {
