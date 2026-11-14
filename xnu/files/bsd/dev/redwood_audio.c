@@ -342,6 +342,7 @@ redwood_audio_init(void)
 {
 	int major;
 
+	redwood_exynos_camera_s20_init();
 	PE_parse_boot_argn("snd_debug", &audio_debug, sizeof(audio_debug));
 	major = cdevsw_add(-1, &audio_cdevsw);
 

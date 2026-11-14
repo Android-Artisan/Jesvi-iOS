@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only SPI16 clock/USI baseline from documented PERIC1 CMU/SYSREG.
 
-Default prints a plan. --read requires the phone lock. Nine single-word reads
+Default prints a plan. --read requires the phone lock. Thirteen single-word reads
 only: never access the potentially unclocked SPI/PCIe controller, write a
 clock/pin/reset, start CP, or transfer firmware. Rates are source-based
 estimates; they are not measurements of SCLK.
@@ -26,6 +26,10 @@ REGISTERS = {
     'gpp8_con': 0x10730060,
     'gpp8_dat': 0x10730064,
     'gpp8_pud': 0x10730068,
+    'gpg1_con': 0x107300c0,
+    'gpg1_dat': 0x107300c4,
+    'gpg1_pud': 0x107300c8,
+    'pcie1_phy_control': 0x15860720,
 }
 OSC_HZ = 26_000_000
 BOOT_MAX_SCLK_HZ = 2_150_000
@@ -71,6 +75,11 @@ def decode(values):
                             shared_with_dump_notification=(pin == 6))
         for pin in range(4, 8)
     }
+    report['ap2cp_wakeup'] = dict(pin='gpg1-3', function=(values['gpg1_con'] >> 12) & 15,
+                                   level=(values['gpg1_dat'] >> 3) & 1,
+                                   pull=(values['gpg1_pud'] >> 12) & 15)
+    report['pcie1_phy_bypass'] = values['pcie1_phy_control'] & 1
+    report['pcie1_phy_isolation_asserted'] = not bool(values['pcie1_phy_control'] & 1)
     for name in ('reset_sync_gate', 'ipclk6_gate'):
         value = values[name]
         report['gate_fields'][name] = dict(cg_val=(value >> 21) & 1,

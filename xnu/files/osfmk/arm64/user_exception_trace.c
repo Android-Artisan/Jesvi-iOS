@@ -27,6 +27,8 @@ extern char *proc_name_address(struct proc *p);
 void user_exception_trace(exception_type_t exception, mach_exception_data_t code, mach_msg_type_number_t count, thread_t thread);
 
 static TUNABLE(uint32_t, user_exception_trace_enabled, "systrace", 0);
+/* uexc=1: the same crash report without systrace's system-call logging (B, 2026-11-12) */
+static TUNABLE(uint32_t, user_exception_trace_only, "uexc", 0);
 
 static bool
 plausible_user_address(uint64_t address)
@@ -45,7 +47,7 @@ user_exception_trace(exception_type_t exception, mach_exception_data_t code, mac
 	task_t task;
 	struct proc *proc;
 
-	if (!user_exception_trace_enabled || thread != current_thread()) {
+	if ((!user_exception_trace_enabled && !user_exception_trace_only) || thread != current_thread()) {
 		return;
 	}
 	if (exception != EXC_BAD_ACCESS && exception != EXC_BAD_INSTRUCTION && exception != EXC_ARITHMETIC &&

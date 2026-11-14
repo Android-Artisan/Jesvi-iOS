@@ -19,6 +19,7 @@
  * does not read back ends the light for the run. Off at the run's end and on a panic's way out.
  */
 #include <kern/clock.h>
+#include <kern/locks.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
@@ -27,6 +28,7 @@
 #include <sys/conf.h>
 #include <sys/errno.h>
 #include <sys/redwood_bbi2c.h>
+#include <sys/redwood_dbgport.h>
 #include <sys/redwood_input.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
@@ -41,18 +43,39 @@
 #define CTRL1_TORCH_ON          0xC0U
 #define CTRL1_LV_EN             0x08U
 #define HOTTEST_BATTERY_C       45
+#define REG_BUCK2_CTRL1         0x0dU
+#define REG_LDO1_CTRL           0x1eU
+#define REG_LDO5_CTRL           0x22U
+#define REG_LDO6_CTRL           0x23U
+#define REG_LDO11_CTRL          0x28U
+#define REG_LDO12_CTRL          0x29U
+#define REG_LDO14_CTRL          0x2bU
+#define REG_LDO16_CTRL          0x2dU
 
 static const uint8_t torch_table[10] = { 3, 5, 5, 6, 6, 8, 8, 8, 10, 10 };     /* the dtbo's, 20 mA a step */
 
 static struct redwood_bbi2c bus = { .name = "s2mpb02 bus gpp3-2/3", .scl = 2, .sda = 3, .half_us = 4 };
+static LCK_GRP_DECLARE(s2mpb02_lck_grp, "redwood-s2mpb02");
+static LCK_MTX_DECLARE(s2mpb02_lock, &s2mpb02_lck_grp);
 static volatile uint32_t wanted, shown;
 static uint32_t max_secs = 600;
-static volatile bool usable, lit, broken;
+static volatile bool usable, lit, broken, bus_ready;
+
+static bool
+get_unlocked(uint8_t reg, uint8_t *v)
+{
+	return redwood_bbi2c_read_reg(&bus, PMIC_ADDR, reg, v, 1);
+}
 
 static bool
 get(uint8_t reg, uint8_t *v)
 {
-	return redwood_bbi2c_read_reg(&bus, PMIC_ADDR, reg, v, 1);
+	bool ok;
+
+	lck_mtx_lock(&s2mpb02_lock);
+	ok = get_unlocked(reg, v);
+	lck_mtx_unlock(&s2mpb02_lock);
+	return ok;
 }
 
 /* only the two registers above, and only the bits named; read back */
@@ -61,19 +84,152 @@ put_bits(uint8_t reg, uint8_t mask, uint8_t value)
 {
 	uint8_t before = 0, after = 0, want;
 
-	if (broken || (reg != REG_FLED_CTRL1 && reg != REG_FLED_CUR1) || !get(reg, &before)) {
+	if (reg != REG_FLED_CTRL1 && reg != REG_FLED_CUR1) {
+		return false;
+	}
+	lck_mtx_lock(&s2mpb02_lock);
+	if (broken || !get_unlocked(reg, &before)) {
+		lck_mtx_unlock(&s2mpb02_lock);
 		return false;
 	}
 	want = (uint8_t)((before & ~mask) | (value & mask));
 	if (want == before) {
+		lck_mtx_unlock(&s2mpb02_lock);
 		return true;
 	}
-	if (!redwood_bbi2c_write_reg(&bus, PMIC_ADDR, reg, want) || !get(reg, &after) || after != want) {
+	if (!redwood_bbi2c_write_reg(&bus, PMIC_ADDR, reg, want) || !get_unlocked(reg, &after) || after != want) {
 		printf("torch: s2mpb02 %#04x %#04x -> %#04x read back %#04x: no more writes this run\n", reg, before, want, after);
 		broken = true;
+		lck_mtx_unlock(&s2mpb02_lock);
 		return false;
 	}
+	lck_mtx_unlock(&s2mpb02_lock);
 	return true;
+}
+
+/* The S20 rear main module also uses these shared rails. Permit only their enable bits and BUCK2's
+ * two enable bits; voltage selectors and every other PMIC register remain outside this interface. */
+bool
+redwood_s2mpb02_camera_bits(uint8_t reg, uint8_t mask, uint8_t value)
+{
+	uint8_t before = 0, after = 0, want;
+	/* 0x0b BUCK1 (1.3 V), 0x0f buck-boost (3.5 V), 0x2f LDO18 (3.3 V): always-on/boot-on in Samsung's x1slte DT,
+	 * off after S-Boot; they feed the camera LDOs (B, 2026-11-11). */
+	uint8_t allowed = (reg == REG_BUCK2_CTRL1 || reg == 0x0b || reg == 0x0f) ? 0xc0 : reg == 0x2f ? 0x80 :
+	    (reg == REG_LDO1_CTRL || reg == REG_LDO5_CTRL || reg == REG_LDO6_CTRL ||
+	    REG_LDO11_CTRL == reg || REG_LDO12_CTRL == reg || REG_LDO14_CTRL == reg || REG_LDO16_CTRL == reg) ? 0x80 : 0;
+	bool ok = false;
+
+	if (allowed == 0 || mask != allowed || (value & ~mask) != 0) return false;
+	lck_mtx_lock(&s2mpb02_lock);
+	if (!bus_ready || broken || !get_unlocked(reg, &before)) goto done;
+	want = (uint8_t)((before & ~mask) | value);
+	if (want == before) {
+		ok = true;
+		goto done;
+	}
+	if (redwood_bbi2c_write_reg(&bus, PMIC_ADDR, reg, want) && get_unlocked(reg, &after) &&
+	    (after & mask) == (want & mask)) {
+		ok = true;
+	} else {
+		printf("camera: S2MPB02 reg %#x enable update failed (was %#x, wanted %#x, read %#x)\n", reg, before, want, after);
+	}
+done:
+	lck_mtx_unlock(&s2mpb02_lock);
+	return ok;
+}
+
+/* x1slte dtbo.0: VT core 1.05 V, IO 1.8 V, analog 2.95 V, AF 2.8 V.
+ * LDO5 uses 12.5 mV steps from 0.6 V; the other three use 25 mV steps.
+ * A cold PMIC reset leaves core at 1.2 V and analog at 2.8 V. Save/restore
+ * selectors independently of enable bits; serialize with the flashlight. */
+bool
+redwood_s2mpb02_front_voltages(uint8_t saved[4], bool restore)
+{
+	static const uint8_t regs[4] = { REG_LDO5_CTRL, REG_LDO6_CTRL, REG_LDO11_CTRL, REG_LDO16_CTRL };
+	static const uint8_t target[4] = { 0x24, 0x30, 0x5e, 0x58 };
+	uint8_t before[4], after, want;
+	bool ok = false;
+	unsigned i;
+	if (!saved) return false;
+	lck_mtx_lock(&s2mpb02_lock);
+	if (!bus_ready || broken) goto done;
+	for (i = 0; i < 4; i++) if (!get_unlocked(regs[i], &before[i])) goto done;
+	if (!restore) for (i = 0; i < 4; i++) saved[i] = before[i] & 0x7f;
+	ok = true;
+	for (i = 0; i < 4; i++) {
+		want = (before[i] & 0x80) | ((restore ? saved[i] : target[i]) & 0x7f);
+		if (want != before[i] && (!redwood_bbi2c_write_reg(&bus, PMIC_ADDR, regs[i], want) ||
+		    !get_unlocked(regs[i], &after) || after != want)) {
+			ok = false;
+			if (!restore) {
+				for (unsigned j = 0; j <= i; j++) {
+					if (!redwood_bbi2c_write_reg(&bus, PMIC_ADDR, regs[j], before[j]) ||
+					    !get_unlocked(regs[j], &after) || after != before[j]) broken = true;
+				}
+				break;
+			}
+		}
+	}
+done:
+	lck_mtx_unlock(&s2mpb02_lock);
+	return ok;
+}
+
+bool
+redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value)
+{
+	bool ok;
+	if (value == NULL || (reg != REG_BUCK2_CTRL1 && reg != 0x0b && reg != 0x0f && reg != 0x2f && reg != REG_LDO1_CTRL && reg != REG_LDO5_CTRL &&
+	    reg != REG_LDO6_CTRL && reg != REG_LDO11_CTRL && reg != REG_LDO12_CTRL && reg != REG_LDO14_CTRL && reg != REG_LDO16_CTRL)) return false;
+	lck_mtx_lock(&s2mpb02_lock);
+	ok = bus_ready && !broken && get_unlocked(reg, value);
+	lck_mtx_unlock(&s2mpb02_lock);
+	return ok;
+}
+
+static void
+camera_pmic_snapshot(const uint64_t *v, unsigned n, char *out, size_t cap)
+{
+	static const uint8_t regs[] = { REG_ID, REG_BUCK2_CTRL1, REG_LDO5_CTRL, REG_LDO6_CTRL, REG_LDO11_CTRL, REG_LDO12_CTRL, REG_LDO16_CTRL };
+	static const char *names[] = { "id", "buck2", "ldo5_vt_core", "ldo6_vt_io", "ldo11_vt_analog", "ldo12_front", "ldo16_vt_af" };
+	uint8_t values[sizeof(regs)] = { 0 };
+	bool ok = true;
+	size_t used;
+
+	if (cap == 0) return;
+	if (!bus_ready) {
+		(void)snprintf(out, cap, "camera-s2mpb02: bus-not-ready; read-only; no writes\n");
+		return;
+	}
+	lck_mtx_lock(&s2mpb02_lock);
+	for (unsigned i = 0; i < sizeof(regs); i++) {
+		if (!get_unlocked(regs[i], &values[i])) ok = false;
+	}
+	lck_mtx_unlock(&s2mpb02_lock);
+	used = (size_t)snprintf(out, cap, "{\"device\":\"S2MPB02\",\"address\":\"0x59\",\"read_only\":true,\"result\":\"%s\"", ok ? "ok" : "i2c_error");
+	for (unsigned i = 0; i < sizeof(regs) && used < cap; i++) {
+		if (i < 2) {
+			used += (size_t)snprintf(out + used, cap - used, ",\"%s\":{\"reg\":\"0x%02x\",\"value\":\"0x%02x\"}", names[i], regs[i], values[i]);
+		} else {
+			used += (size_t)snprintf(out + used, cap - used, ",\"%s\":{\"reg\":\"0x%02x\",\"value\":\"0x%02x\",\"enabled\":%s}",
+			    names[i], regs[i], values[i], (values[i] & 0x80) ? "true" : "false");
+		}
+	}
+	if (used < cap) used += (size_t)snprintf(out + used, cap - used, "}\n");
+	/* Second line (B, 2026-11-11): the whole map 0x00..0x2f, read-only, for comparison with Samsung's dump
+	 * (BUCK1 0x0b/0x0c, BUCK2 0x0d/0x0e, buck-boost 0x0f/0x10, LDO1..18 0x1e..0x2f). */
+	if (n > 0 && v[0] == 1 && used < cap) {
+		used += (size_t)snprintf(out + used, cap - used, "map:");
+		lck_mtx_lock(&s2mpb02_lock);
+		for (unsigned r = 0; r <= 0x2f && used + 8 < cap; r++) {
+			uint8_t val = 0;
+			bool got = get_unlocked((uint8_t)r, &val);
+			used += (size_t)snprintf(out + used, cap - used, got ? " %02x=%02x" : " %02x=ERR", r, val);
+		}
+		lck_mtx_unlock(&s2mpb02_lock);
+		if (used < cap) (void)snprintf(out + used, cap - used, "\n");
+	}
 }
 
 static bool
@@ -160,10 +316,45 @@ torch_thread(__unused void *parameter, __unused wait_result_t result)
 		redwood_bbi2c_restore(&bus);
 		return;
 	}
+	bus_ready = true;
+	(void)redwood_dbgport_add("cam.pmic", ": read-only S2MPB02 camera-rail register snapshot", camera_pmic_snapshot);
 	if (!get(REG_ID, &id) || !get(REG_FLED_CTRL1, &c1) || !get(REG_FLED_CUR1, &cur) || !get(REG_FLED_TIME1, &t1)) {
 		printf("torch: %s; the S2MPB02 does not answer at %#x\n", line, PMIC_ADDR);
 		redwood_bbi2c_restore(&bus);
 		return;
+	}
+	/* Samsung's x1slte DT keeps S2MPB02 BUCK1 (1.3 V), the buck-boost (3.5 V) and LDO18 (3.3 V) always-on/boot-on;
+	 * S-Boot leaves them off. Without them the front SAK3J1 answers I2C but never starts its MIPI link (proven
+	 * 2026-11-11 on Samsung's kernel: same sequence, supplies off -> 0 frames, on -> 15). On from boot, like Samsung,
+	 * so they are settled long before a camera opens. cam_pmic_base=0 leaves them as the bootloader did. */
+	{
+		uint32_t base = 1;
+		(void)PE_parse_boot_argn("cam_pmic_base", &base, sizeof(base));
+		if (base) {
+			/* The voltages first, as Samsung's regulator init does from its DT (min = max): BUCK1 and BUCK2
+			 * 1.3 V (0x90: 0.4 V + 144 * 6.25 mV), buck-boost 3.5 V (0x48: 2.6 V + 72 * 12.5 mV). After a hard
+			 * reset the chip has BUCK1 at 0xc0 (1.6 V) and BUCK2 at 0x40 (0.8 V): with 0.8 V in, the sensor's
+			 * 1.05 V core LDO cannot regulate -- the camera worked only while Samsung's values survived warm
+			 * restarts (seen 2026-11-11 after a forced power-off). */
+			static const uint8_t volt[3][2] = { { 0x0c, 0x90 }, { 0x0e, 0x90 }, { 0x10, 0x48 } };
+			for (unsigned k = 0; k < 3; k++) {
+				uint8_t was = 0, now = 0;
+				lck_mtx_lock(&s2mpb02_lock);
+				bool rd = get_unlocked(volt[k][0], &was);
+				bool wr = rd && (was == volt[k][1] || redwood_bbi2c_write_reg(&bus, PMIC_ADDR, volt[k][0], volt[k][1]));
+				bool ok2 = wr && get_unlocked(volt[k][0], &now) && now == volt[k][1];
+				lck_mtx_unlock(&s2mpb02_lock);
+				printf("camera: S2MPB02 reg %#x voltage %#x -> %#x %s\n", volt[k][0], was, now, ok2 ? "ok" : "FAILED");
+			}
+			delay_for_interval(2, NSEC_PER_MSEC);
+			bool b1 = redwood_s2mpb02_camera_bits(0x0b, 0xc0, 0xc0);
+			delay_for_interval(2, NSEC_PER_MSEC);
+			bool bb = redwood_s2mpb02_camera_bits(0x0f, 0xc0, 0xc0);
+			delay_for_interval(2, NSEC_PER_MSEC);
+			bool l18 = redwood_s2mpb02_camera_bits(0x2f, 0x80, 0x80);
+			printf("camera: S2MPB02 base supplies BUCK1 %s, buck-boost %s, LDO18 %s\n",
+			    b1 ? "on" : "FAILED", bb ? "on" : "FAILED", l18 ? "on" : "FAILED");
+		}
 	}
 	printf("torch: %s; S2MPB02 id %#04x, FLED_CTRL1 %#04x CUR1 %#04x TIME1 %#04x\n", line, id, c1, cur, t1);
 	/* Samsung's setup: low-voltage mode off, the light off */

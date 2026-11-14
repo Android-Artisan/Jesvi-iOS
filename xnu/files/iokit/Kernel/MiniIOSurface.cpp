@@ -159,7 +159,7 @@ static TUNABLE(uint32_t, gSurfaceClear, "surf_clear", 1);
  * any other, and shown by copying.
  */
 static TUNABLE(uint32_t, gSurfaceContiguous, "fb_scaler", 0);
-#define SURFACE_CONTIGUOUS_FROM (2000000u)     /* pixels: full-screen (1125 x 2436 here) */
+#define SURFACE_CONTIGUOUS_FROM (1200000u)     /* pixels: full-screen (1125 x 2436 at 3x, 750 x 1624 at 2x: fbscale / fb_mode 3-4) */
 
 static bool
 surfaceContiguous(IOMemoryDescriptor * memory)
@@ -233,20 +233,72 @@ poolGive(int slot)
  * allocator as surfaces. Never guess a free physical address below 4 GB.
  * The caller must keep this reservation if DMA cannot be proved stopped. */
 static int gCameraPoolSlot = -1;
+static int gCameraPoolSlot2 = -1;      /* the next slot as well, when the camera asks for more than one slot (adjacent: contiguous) */
+static int gCameraPoolSlot3 = -1;      /* and the one after it: the rear main's full 4032x3024 RAW10, double-buffered (~31 MB) */
 static IOMemoryDescriptor *gCameraPoolMemory;
 static IOMemoryMap *gCameraPoolMap;
+static IOMemoryMap *gCameraPoolCached;  /* a second, cached mapping for reading finished frames fast (B, 2026-11-11) */
 
 extern "C" bool redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt);
 extern "C" void redwood_camera_dma_put(void);
+extern "C" void *redwood_camera_dma_cached(void);
+/* on by default since kernel 19:xx (the writable cached mapping streamed fine in Camera.app); boot-arg cam_dma_cached=0 or
+ * the debug port's cam.s20.cached 0 turns it off */
+extern "C" { int redwood_camera_cached_enable = 1; }
+
+/* The camera's slot once more, through the caches: for reading only, after the reader has had the lines of what it
+ * reads forgotten (dc ivac); the device writes this memory behind the caches' back. NULL if it cannot be had. */
+extern "C" void *
+redwood_camera_dma_cached(void)
+{
+	void *virt = NULL;
+	/* OFF until switched on at run time (debug port: cam.s20.cached 1): the first try (kernel 18:26:35, the
+	 * mapping read-only) hung the boot when mediaserverd opened the camera -- dc ivac wants write permission.
+	 * Never on from the boot line, so a fault here cannot stop the phone from starting. */
+	{
+		static bool argued;
+		uint32_t off = 1;
+		if (!argued) { argued = true; if (PE_parse_boot_argn("cam_dma_cached", &off, sizeof(off)) && off == 0) redwood_camera_cached_enable = 0; }
+	}
+	if (!redwood_camera_cached_enable) return NULL;
+	if (!gSurfaceLock) return NULL;
+	IOLockLock(gSurfaceLock);
+	if (gCameraPoolMemory != NULL && gCameraPoolCached == NULL) {
+		/* (writable though only read: the cache maintenance the reader does, dc ivac, faults on a read-only page) */
+		gCameraPoolCached = gCameraPoolMemory->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapCopybackCache);
+	}
+	if (gCameraPoolCached != NULL) virt = (void *)gCameraPoolCached->getVirtualAddress();
+	IOLockUnlock(gSurfaceLock);
+	return virt;
+}
 
 extern "C" bool
 redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 {
-	if (!bytes || bytes > POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
+	if (!bytes || bytes > 3ULL * POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
 	IOLockLock(gSurfaceLock);
 	if (gCameraPoolSlot >= 0) { IOLockUnlock(gSurfaceLock); return false; }
 	uint64_t address = 0;
-	int slot = poolTake(bytes, &address);
+	int slot = -1;
+	if (bytes <= POOL_SLOT) {
+		slot = poolTake(bytes, &address);
+	} else {
+		/* two (or three) adjacent free slots, taken together (full-resolution camera frames, double-buffered: about
+		 * 25 MB for the front's 3648x2736, 31 MB for the rear main's 4032x3024) */
+		uint32_t n = bytes > 2ULL * POOL_SLOT ? 3 : 2;
+		(void)poolTake(1, &address);    /* (looks the pool up once) */
+		poolGive((int)((address - gPoolBase) / POOL_SLOT));
+		for (uint32_t i = 0; gPoolBase && i + n - 1 < gPoolSlots; i++) {
+			uint32_t used = gPoolUsed, run = ((1u << n) - 1) << i;
+			if (!(used & run) && OSCompareAndSwap(used, used | run, &gPoolUsed)) {
+				slot = (int)i;
+				gCameraPoolSlot2 = (int)i + 1;
+				gCameraPoolSlot3 = n == 3 ? (int)i + 2 : -1;
+				address = gPoolBase + (uint64_t)i * POOL_SLOT;
+				break;
+			}
+		}
+	}
 	IOMemoryDescriptor *md = slot >= 0 && address + bytes <= (1ULL << 32) ?
 	    IOMemoryDescriptor::withPhysicalAddress(address, bytes, kIODirectionInOut) : NULL;
 	IOMemoryMap *map = md ? md->createMappingInTask(kernel_task, 0,
@@ -254,6 +306,10 @@ redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 	if (!map) {
 		OSSafeReleaseNULL(md);
 		poolGive(slot);
+		poolGive(gCameraPoolSlot2);
+		gCameraPoolSlot2 = -1;
+		poolGive(gCameraPoolSlot3);
+		gCameraPoolSlot3 = -1;
 		IOLockUnlock(gSurfaceLock);
 		return false;
 	}
@@ -271,10 +327,15 @@ redwood_camera_dma_put(void)
 {
 	if (!gSurfaceLock) return;
 	IOLockLock(gSurfaceLock);
+	OSSafeReleaseNULL(gCameraPoolCached);
 	OSSafeReleaseNULL(gCameraPoolMap);
 	OSSafeReleaseNULL(gCameraPoolMemory);
 	poolGive(gCameraPoolSlot);
 	gCameraPoolSlot = -1;
+	poolGive(gCameraPoolSlot2);
+	gCameraPoolSlot2 = -1;
+	poolGive(gCameraPoolSlot3);
+	gCameraPoolSlot3 = -1;
 	IOLockUnlock(gSurfaceLock);
 }
 

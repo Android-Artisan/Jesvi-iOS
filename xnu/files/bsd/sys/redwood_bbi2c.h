@@ -32,13 +32,16 @@ void redwood_gpio_func(volatile uint8_t *bank, uint32_t pin, uint32_t func);
 void redwood_gpio_pull(volatile uint8_t *bank, uint32_t pin, uint32_t pull);
 uint32_t redwood_gpio_get(volatile uint8_t *bank, uint32_t pin);
 void redwood_gpio_set(volatile uint8_t *bank, uint32_t pin, uint32_t value);
+void redwood_gpio_restore(volatile uint8_t *bank, uint32_t pin, uint32_t con, uint32_t pud, uint32_t dat);
 
 struct redwood_bbi2c {
 	const char             *name;
-	volatile uint8_t       *bank;
+	volatile uint8_t       *bank;       /* SCL bank; SDA uses this too unless sda_bank is set */
+	volatile uint8_t       *sda_bank;   /* optional, for board routes with the lines in different banks */
 	uint32_t                scl, sda;
 	uint32_t                half_us;
-	uint32_t                saved_con, saved_pud;
+	uint32_t                saved_con, saved_pud, saved_dat;
+	uint32_t                saved_sda_con, saved_sda_pud, saved_sda_dat;
 	uint32_t                stretch_timeouts;
 };
 

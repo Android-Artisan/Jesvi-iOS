@@ -1176,7 +1176,9 @@ brightness_registry_fix(void)
     if (memcmp(stub, expected, sizeof(expected))) {
         say("redwood: ALS registry bridge: unexpected stub %08x %08x %08x\n", stub[0], stub[1], stub[2]); return;
     }
-    io_service_t backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
+    io_service_t backing = IOServiceGetMatchingService(0, IOServiceNameMatching("RedwoodAmbientLightSensor"));
+    /* Compatibility with older kernels while updating the bridge independently. */
+    if (!backing) backing = IOServiceGetMatchingService(0, IOServiceMatching("IOMobileFramebuffer"));
     uint64_t id = 0;
     if (!backing || IORegistryEntryGetRegistryEntryID(backing, &id) != KERN_SUCCESS) {
         if (backing) IOObjectRelease(backing);
@@ -1481,7 +1483,8 @@ input_thread(__unused void *arg)
  *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
  * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
  * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
- * Boot-arg idle_lock=0 off (default), 1 only an untouched wake (lock_s), 2 also Auto-Lock when in use.
+ * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s; the default since 2026-11-13, the user's wish), 2 also
+ * Auto-Lock when in use (the default 2026-11-12..13). /var/jb/etc/redwood-idle.conf "mode=N" overrides it at every wake.
  */
 static int
 auto_lock_seconds(void)
@@ -1522,7 +1525,7 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_s = 10, auto_s = 60, mode = 0;
+	int lock_s = 10, auto_s = 60, mode = 1;     /* (default 1 since 2026-11-13, the user's wish; was 2) */
 	uint64_t woke_at = 0;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
@@ -1540,7 +1543,7 @@ idle_thread(__unused void *argument)
 		}
 	}
 	if (mode == 0) {
-		return NULL;                    /* off (the default, the user's choice 2026-11-07): iOS's own, broken, idle timer */
+		return NULL;                    /* idle_lock=0: iOS's own, broken, idle timer */
 	}
 	say("redwood: idle timer (idle_lock=%d): %d s after a wake with no touch%s\n", mode, lock_s,
 	    mode >= 2 ? ", Auto-Lock's time once touched" : "");
@@ -1565,6 +1568,20 @@ idle_thread(__unused void *argument)
 			was_on = true;
 			last_input_at = woke_at = now;
 			auto_s = auto_lock_seconds();
+			/* /var/jb/etc/redwood-idle.conf "mode=0|1|2" switches it without a rebuild, read at every wake */
+			{
+				FILE *f = fopen("/var/jb/etc/redwood-idle.conf", "r");
+				char b[32] = "";
+				if (f != NULL) {
+					size_t n = fread(b, 1, sizeof(b) - 1, f);
+					fclose(f);
+					b[n] = 0;
+					char *p = strstr(b, "mode=");
+					if (p != NULL && p[5] >= '0' && p[5] <= '2') {
+						mode = p[5] - '0';
+					}
+				}
+			}
 			continue;
 		}
 		/*
@@ -1572,6 +1589,9 @@ idle_thread(__unused void *argument)
 		 * used: woken and not touched since -> lock_s (a glance, a wake in the pocket); touched since -> Auto-Lock.
 		 */
 		locked = last_input_at <= woke_at;
+		if (mode == 0) {
+			continue;                       /* (redwood-idle.conf mode=0: off) */
+		}
 		if (!locked && mode < 2) {
 			continue;                       /* idle_lock=1: only a wake that nobody touched */
 		}
@@ -1700,6 +1720,61 @@ opengl_es(void)
 	gl_function_refused = (void (*)(unsigned))dlsym(library, "redwood_gl_function_refused");
 }
 
+
+/*
+ * Camera.app opens on the front camera in Photo (2026-11-12, the user's wish: the S20's one working camera is
+ * the front one). Camera.app goes back to its defaults -- the back camera, Photo -- once its reset time
+ * (CAMUserPreferenceResetTimeoutDate, a few minutes after it was left) has passed; it reads that as it starts
+ * or comes back (-[CAMUserPreferences readPreferencesWithOverrides:...]). Here, just before, a reset that is
+ * due is done our way: the front camera and Photo written, and the reset time pushed on.
+ */
+static IMP camera_read_prefs_original;
+
+static BOOL
+camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call_active, BOOL *should_reset)
+{
+	CFStringRef app = CFSTR("com.apple.camera");
+	CFDateRef until = CFPreferencesCopyAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), app);
+	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+	if (until == NULL || CFGetTypeID(until) != CFDateGetTypeID() || CFDateGetAbsoluteTime(until) <= now) {
+		int front = 1, photo = 0;
+		CFNumberRef device = CFNumberCreate(NULL, kCFNumberIntType, &front), mode = CFNumberCreate(NULL, kCFNumberIntType, &photo);
+		CFDateRef later = CFDateCreate(NULL, now + 600);
+
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureDevice"), device, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureMode"), mode, app);
+		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"), later, app);
+		CFPreferencesAppSynchronize(app);
+		CFRelease(device);
+		CFRelease(mode);
+		CFRelease(later);
+		say("redwood: Camera: its reset was due: the front camera and Photo instead\n");
+	}
+	if (until != NULL) {
+		CFRelease(until);
+	}
+	return ((BOOL (*)(id, SEL, id, long, BOOL, BOOL *))camera_read_prefs_original)(self, selector, overrides, emulation, call_active,
+	    should_reset);
+}
+
+static void
+camera_front_by_default(void)
+{
+	Class c = objc_getClass("CAMUserPreferences");
+	Method m = c != Nil ? class_getInstanceMethod(c,
+	    sel_registerName("readPreferencesWithOverrides:emulationMode:callActive:shouldResetCaptureConfiguration:")) : NULL;
+
+	if (m == NULL) {
+		say("redwood: Camera: no -[CAMUserPreferences readPreferencesWithOverrides:...]: the camera's defaults left alone\n");
+		return;
+	}
+	camera_read_prefs_original = method_setImplementation(m, (IMP)camera_read_prefs);
+	say("redwood: Camera: opens on the front camera in Photo after its reset time\n");
+}
+
+#include "statusbar_shift.h"
+
 __attribute__((constructor))
 static void
 redwood_init(void)
@@ -1712,6 +1787,16 @@ redwood_init(void)
 		return;
 	}
 	slide = (uintptr_t)cache - CACHE_BASE;
+	if (strcmp(name, "Camera") == 0) {
+		camera_front_by_default();
+	}
+	/* the call hooks live outside the boot image (A, 2026-11-14), so they change without a reboot:
+	 * /var/jb/redwood/lib/libredwood-calls.dylib (userland/src/calls_tweak.c), in the Phone app and the call screen */
+	if (strcmp(name, "MobilePhone") == 0 || strcmp(name, "InCallService") == 0) {
+		if (dlopen("/var/jb/redwood/lib/libredwood-calls.dylib", RTLD_NOW) == NULL) {
+			say("redwood: %s: no call hooks (%s)\n", name, dlerror());
+		}
+	}
 	if (strcmp(name, "backboardd") == 0) {
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;
@@ -1758,6 +1843,7 @@ redwood_init(void)
 		 * moved the start of the event server onto the moment make_service() now knows how to
 		 * survive; not tried again since, and until it is, the five seconds stay.)
 		 */
+		redwood_coremotion_fixes();     /* backboardd also consumes motion; it has no Apple SPU */
 		redwood_sensors_early();        /* CMDeviceOrientationManager taken over, if the kernel has sensors */
 		input_start();
 	} else if (strncmp(name, "containermanagerd", 17) == 0) {
@@ -1766,5 +1852,6 @@ redwood_init(void)
 		redwood_location_fixes();
 	} else {
 		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
+		statusbar_shift_start();        /* the status bar's left side (src/statusbar_shift.h) */
 	}
 }

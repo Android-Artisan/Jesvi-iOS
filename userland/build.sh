@@ -136,9 +136,16 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences
+/redwood/lib/libredwood-tweaks.dylib Preferences imagent
 /redwood/lib/libredwood-files.dylib fileproviderd LocalStorageFileProvider SaveToFiles com.apple.DocumentManager.Service
-/redwood/lib/libredwood-finder.dylib lockdownd"}
+/redwood/lib/libredwood-finder.dylib lockdownd
+/redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
+/var/jb/redwood/lib/libredwood-calls.dylib callservicesd
+/var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/var/jb/usr/lib/libredwood-metaloff.dylib PosterBoard AegirPoster mediaserverd WeatherPoster"}
+# libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
+# with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
 # list above because it changes what the daemon believes: AMS's account is made to answer with the
 # storefront Apple's bag server returned for this device, which is how the App Store is asked whether
@@ -212,6 +219,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/thermald src/thermald.c
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
+		$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
+		{ ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
@@ -316,7 +325,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
 			-o obj/libredwood.dylib src/inject.c src/inject_sensors.c src/inject_location.c
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-			-o obj/libredwood-sb.dylib src/inject_sb.c
+			-o obj/libredwood-sb.dylib src/inject_sb.c src/inject_location.c
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
@@ -328,15 +337,19 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreFoundation -framework MobileActivation \
 			-o obj/libredwood-finder.dylib src/inject_finder.c
 		$DYN -o obj/LocalFilesHost src/local_files_host.c
-		$DYN -fobjc-arc -framework Foundation -o obj/register_finder_host src/register_finder_host.m
+		$DYN -fobjc-arc -framework Foundation -framework Security -o obj/register_finder_host src/register_finder_host.m
 		${LDID:-ldid} -S../tools/storage/register-finder-host.entitlements obj/register_finder_host
 		$DYN -framework CoreFoundation -framework SystemConfiguration -o obj/device_name src/device_name.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
 			-o obj/libredwood-app.dylib src/inject_app.c
+		# (+ src/h264_encoder.c: a software H.264 encoder for VideoToolbox, the S20 having no AVE; OpenH264 from
+		#  ../../third-party/openh264, built with: make OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT=<sdk> libraries)
+		OH=${OPENH264:-../../third-party/openh264}
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
-			-framework CoreVideo -framework IOSurface -lobjc \
-			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
+			-framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -I$OH/codec/api \
+			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c src/h264_encoder.c \
+			$OH/libopenh264.a
 		# ... and inside appstored (STOREFRONT=1), which answers with a storefront and watches for a bag
 		# request being built (src/inject_store.c)
 		# (-lc++abi for __cxa_throw: every C++ exception thrown in the process is watched, which is how
@@ -380,6 +393,12 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			$DYN -dynamiclib -install_name /redwood/lib/libredwood-gl.dylib -Iobj -framework CoreFoundation \
 				-framework IOKit -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-gl.dylib \
 				src/eagl.c src/gl_osmesa.c
+			# OpenGL ES for games by Mesa instead of iOS's GL-on-Metal (src/eagl_app.m); no -framework
+			# OpenGLES: its gl* names must bind to Mesa's, or every call loops back into iOS's library
+			./mkeagl.py src/eagl_slots.txt $M/gl.xml $M/exported-gl.txt src/eagl_app.m > obj/eagl_app_gen.h
+			$DYN -fobjc-arc -dynamiclib -install_name /redwood/lib/libredwood-eagl.dylib -Iobj -framework Foundation \
+				-framework QuartzCore -framework IOSurface -lobjc $M/libOSMesa.8.dylib -o obj/libredwood-eagl.dylib \
+				src/eagl_app.m
 			$DYN -framework CoreFoundation -framework IOKit $M/libOSMesa.8.dylib -o obj/gl_test src/gl_test.c
 			# ... and what this GPU makes of an unsigned integer turned into a float (src/u2f_test.c)
 			$DYN $M/libOSMesa.8.dylib -o obj/u2f_test src/u2f_test.c
@@ -404,7 +423,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
+	[ -f ../prebuilt/userland/redwood-cellulard ] && cp ../prebuilt/userland/redwood-cellulard root/bin/
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
+	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
 	[ -f obj/metal_dev ] && cp obj/metal_dev root/bin/
@@ -524,6 +546,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		if [ -f obj/u2f_test ]; then cp obj/u2f_test root/bin/; fi   # an "if": see the inject.conf loop below
 		[ -f obj/air_run ] && cp obj/air_run root/bin/
 		[ "$GL" = test ] || cp obj/libredwood-gl.dylib root/lib/
+		[ -f obj/libredwood-eagl.dylib ] && cp obj/libredwood-eagl.dylib root/lib/
 	fi
 	# a program is not started with a library that is not there: it would not start at all
 	echo "$INJECT" | while read -r library names; do
@@ -593,7 +616,26 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
-	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist root/LaunchDaemons/
+	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
+	# calls on iOS's own call screen (A, 2026-11-14): callservicesd (CallKit's daemon; the system image leaves framework
+	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
+	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
+	# /var/jb/Applications) as the CallKit provider of redwood-ims
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
+	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
+			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+	else
+		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
+		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
+		# call reached the call screen): the job as it runs on the phone, kept in the tree
+		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
+		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
 	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
@@ -602,6 +644,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
 	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
+	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+	fi
 fi
 # firmware of the phone's own hardware, where somebody has pulled it from the phone's Android into ../fw-gpu
 # (it is the vendor's and never in the repository): the kernel's GPU bring-up, bsd/dev/redwood_adreno.c, finds it in fw/

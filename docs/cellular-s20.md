@@ -1,22 +1,26 @@
 # Galaxy S20 cellular: implementation log and checklist
 
-**Latest hardware status, 2026-11-11 ~11:49:** memory bring-up now passes on
-our ORIGINAL working UEFI: all three CP ranges reserved, every CP page verified
-Normal Non-cacheable, iOS boot and kernel-return checks pass, memory audit exits
-0. This uses opt-in boot-service reservations, avoiding the failed native FD.
-Read-only GPIO/clock/pin baselines are complete. Original BOOT was restored after
-each bounded test; phone is back on its original images and released. No CP
-power/reset/SPI/firmware/DMA/NV action has occurred. LTE/calls remain unavailable.
+**Latest hardware status, 2026-11-12 15:08:** real modem BOOT and PCIe
+endpoint now work in bounded LIVE tests. BOOT64496B transferred, link reached
+L0, distinct ROOT Type1 versus modem Type0 endpointa5a5144d confirmed. Endpoint
+bus mastering cleared, shutdown verified; iOS remains running. No restart for
+live iterations. Latest reserved-memory loader + SPI8 kernel are installed,
+preserving latest camera/island/root changes. Earlier “not installed/no BOOT”
+entries below are historical.
 
-Status 2026-11-11: **LTE and calls do not work on our S20 yet.** This branch
-contains the upstream comparison, firmware/framing tools, memory audit, compiled
-loader changes, matching UEFI source, and a built Settings UI. It does not enable
-a modem or publish invented registration state. UI deployment status is tracked
-separately in [cellular-ui.md](cellular-ui.md).
+**LTE and calls still do not work yet.** Remaining firmware/download queues,
+XNU NormalNC shared-memory backend and precise DMA permissions, Samsung IPC,
+SIM registration, packet path and IMS/voice/audio remain. SIM is currently OUT;
+later target Jio India. See [next backend checklist](cellular-download-plan.md)
+and [approach/flow](cellular-flow.md). Cellular Settings is installed and
+user-confirmed, reporting unavailable service honestly.
 
-Latest UI checkpoint: corrected `PSUIPrefsListController` hook is installed;
-the user confirmed the Cellular page on the phone. No modem/loader/UEFI runtime
-change was deployed with it.
+Phone held codex-cellular by explicit user handoff. CP is OFF with reset/power
+held LOW; no pending reboot, flash job or automatic retry. Full42 Python and
+C sanitizer suite pass, including2612 combined-link I/O fault cases plus
+BME/header/timeout checks. Most recent evidence:
+logs/cellular/live-modem-20261112-150813-567721. Root `sessions/codex-cellular.md`
+contains the resumable handoff. No partition writes for these live tests.
 
 ## Isolation and ownership
 
@@ -561,3 +565,420 @@ The firmware BOOT bytes have not been transmitted to the phone.
 
 User-facing flow/comparison and remaining proof:
 [cellular-flow.md](cellular-flow.md).
+
+
+### UEFI mappings and real SPI internal loopback — 2026-11-11 ~12:16
+
+The original firmware can add missing peripheral MMIO mappings through DXE.
+A preflight verified every page as Device/identity before known-safe reads.
+CMU PERIC1 and SPI16 were GCD holes and were added; SYSREG/GPIO already had
+Device mappings. UEFI reads matched the kernel GPIO/clock baseline. SPI was
+mapped/translated but not read during that first test. Added mappings live only
+until cold reset. Original BOOT was restored, iOS returned in63s; job exit0.
+
+The next preflight exercised actual SPI16 INTERNAL LOOPBACK with a generated
+16-byte pattern, not firmware. It required reserved/live Normal-NC3/3, no USI
+owner, external GPP8 pads left as GPIO inputs, stable/enabled gates and safe
+CP control levels. It selected oscillator/divide4, enabled USI SPI mode and
+internal loopback, then used the same bounded PIO engine. **Completed16,
+received16, mismatches0, error0. Controller readback/restoration1; clock/USI/pin
+restoration1.** External pins remained inputs; no CP power/reset/pinmux write,
+CP firmware, NV or subscriber operation occurred. Fallback booted iOS in98s.
+Original BOOT was restored byte-for-byte; iOS returned in74s. Visible job
+`build/cellular-spi-loopback.log/.exit`: exit0. Private report
+`out/cellular/m0-20261111/spi-loopback-preflight-report.txt`.
+
+Build-only guards require CELLULAR_SPI_LOOPBACK together with the original-loader
+preflight, MMIO preflight and CP reservations. They cannot enter a normal loader
+build. Probe RAM reports now allow16KiB and reject truncation; the reader remains
+compatible with old8KiB reports. No caller sends real BOOT yet.
+
+Further board facts verified before CP control writes:
+
+- **AP2CP_WAKE is GPG1-3**, PERIC1 bank `0x107300c0`; baseline input/low/pulldown.
+  It shares a GPIO bank with Bluetooth, so future RMW must preserve other pins.
+- **GPM30-0 is CP2AP_WAKE**, an input; renamed in the read-only GPIO tool to
+  avoid driving the wrong direction.
+- Modem PCIe endpoint host `pcie@13D20000`, ch-num1, uses DT **pmu-offset0x720**.
+  Do not copy the neighboring host's0x71c or a driver's default macro. Actual
+  PMU `0x15860720` reads0, PHY isolation asserted. No PCIe controller read.
+- Updated read-only13-word baseline evidence:
+  `logs/cellular/clocks-20261111-122121-801233/report.json`.
+
+User now targets Jio India LTE/VoLTE with a physical SIM inserted. This does not
+mean our backend has read/detected the SIM. See [cellular-jio.md](cellular-jio.md).
+
+### GPIO ownership proven; powered BOOT probe prepared — 2026-11-11
+
+The GPIO-low preflight passed on hardware: all five AP outputs verified LOW,
+then original direction/value fields and neighboring pins verified restored.
+POWER_ON was never raised. `build/cellular-gpio-low.log/.exit` records exit0,
+byte-exact original BOOT restoration and iOS return in74s.
+
+The real BOOT adapter now compiles and the lifecycle/packaging host tests pass.
+It includes a one-attempt latch, CRC validation, existing baseline/PHY guards,
+2-second PIO limit, shutdown readback and a RAM-retaining failure hold. Review
+fixed cleanup treating a failed settling delay as safe; the failure model now
+allows timer failure before any elapsed time. Cleanup-only retry also checks
+the delay and AP status/wake outputs. No actual powered BOOT test yet.
+
+**Deployment baseline changed:** camera/Files/Developer Mode and Finder work
+advanced while cellular was inactive. codex-files currently owns the phone.
+Do not run old m0 deployment/rollback scripts against this newer installation.
+Under the next phone lock, capture fresh BOOT/recovery/kernel baselines, verify
+matching installed payload and original-loader fallback, then build a fresh
+candidate. Preserve the newer kernel/root/arguments. Old backups remain only
+historical recovery evidence, not a current rollback target.
+
+Next acceptance checklist:
+
+- [x] GPIO LOW-only writes, neighbor preservation and restoration on phone.
+- [x] CRC-checked BOOT-only packaging and guarded power lifecycle compiled.
+- [x] Host tests:30 Python,23 memory/cache,163840 allocator comparisons,
+  eight SPI streams/six failures,22 lifecycle callback failures.
+- [ ] Fresh baseline and isolated candidate after current phone holder finishes.
+- [ ] One powered BOOT transfer with bounded shutdown and current BOOT restored.
+- [ ] Prove CP acceptance through PCIe1/firmware handshake; TX alone is insufficient.
+- [ ] MAIN/APM boot, IPC, SIM state, Jio LTE registration/data, then IMS/VoLTE/audio.
+
+Samsung source clarifies the next boundary: `cpif/boot_device_spi.c:33` only
+reports SPI transfer status. `modem_ctrl_s5100.c:649` polls CP2AP_WAKE up to
+200 times with20ms sleeps, then `start_normal_boot` registers PCIe.
+`link_device.c:3120` waits200ms, powers PCIe, requires a discovered modem PCI
+device and initializes MSI. Our CP2AP_WAKE already reads high with a pull-up
+before boot, so copying that GPIO check alone would falsely imply acceptance.
+The first bounded BOOT probe deliberately leaves PCIe isolated and reports
+acceptance unproven; PCIe enumeration is a separate implementation/test stage.
+
+### Offline packaging and result audit — 2026-11-11 ~16:15
+
+Fixed powered-probe marker detection in the fallback packager. The actual
+compiled probe now completes offline packaging/AVB verification against the
+historical full backup; BOOT64496 bytes, CRC checked, fallback and firmware
+preserved, footer unchanged. This old-baseline artifact is not for deployment.
+Manifest includes exact standalone candidate/original-prefix hashes and size.
+
+Added `tools/cellular/boot-audit.py`: rejects missing/mixed reports, incomplete
+transfer/packet counts, failed prerequisites and unsafe cleanup; separates
+controller success from unproven CP/SIM/LTE/VoLTE and partition restoration.
+Host suite now35 Python tests plus existing sanitizer models, all passing.
+Phone remains with codex-files; no phone writes or modem power-up this turn.
+
+### First powered S5123 BOOT transfer — PASSED 2026-11-11
+
+User explicitly assigned phone turn. Fresh current installation backed up twice
+with matching BOOT/recovery prefix and verified AVB. Probe preserved its kernel,
+root, arguments, firmware and installed-loader fallback. Test ran in visible
+`build/cellular-powered-boot.py`; log/exit records exit0.
+
+- Reserved/live-NC3/3, MMIO,16-byte internal loopback and GPIO-low checks pass.
+- Reset/power sequence and SPI pad ownership readbacks pass.
+- Actual firmware BOOT:64496 queued/completed bytes,1008 packets, PIO error0.
+- Four-second input observation: first0x2,last0x6,changed0x6,rising0x6;
+  bit0 PHONE_ACTIVE,bit1 CP2AP_WAKE,bit2 PS_HOLD. Wake and power-hold transitions
+  are observed; PHONE_ACTIVE remains0. This is not yet PCIe/firmware acceptance.
+- Shutdown reset/power0 verified; SPI/clock/pad/AP ownership restored1;
+  lifecycle phase6/error0/cleanup_safe1, before releasing CP RAM.
+- Original installed kernel returned116s after probe. Current BOOT restored,
+  independent byte-exact readback passed; final iOS returned66s.
+- Post-restore GPIO/clock reads match pretest baseline, PHY1 isolation0.
+  Cold reboot returned reset/power pins to original input ownership.
+
+Private evidence under `out/cellular/current-baseline-20261111/`: baseline.json,
+cp-boot-report.txt, current backup and candidate. Historical name is a timestamp,
+not a claim that the backup remains current after other agents deploy. Refresh
+before the next flash. Subsequent Finder work has already advanced installation.
+
+### PCIe1 prerequisite baseline — 2026-11-11 21:20
+
+New `s5123-pcie-baseline.py` performs21 whitelisted one-word CMU/GPIO/PMU
+reads only, requires phone lock. It never accesses isolated ELBI/DBI/PHY or
+writes shared HSI2 clocks (storage also uses HSI2). Phone report complete:
+PHY control0, GPF3 CON/DAT0 and pull0x11, bus/ref mux0x10, eight gate fields
+0x200000, dummy refQCH2 and other sixQCH0x3f0002. Saved evidence:
+`logs/cellular/pcie-baseline-20261111-212046-524852/report.json`.
+
+Source board overlay fragment135 selects chip-ver1 (EVT1); fragment88 enables
+PCIe2 with MSI and endpoint type4. Base node name pcie2 means channel1. PERST
+is GPF3-1, CLKREQ GPF3-0, bank13c30000. Use PMU offset720, not header default71c.
+No controller/link access yet. Next: isolated UEFI mapping/access and shutdown
+preflight, EVT1 PHY + bounded PCIe1 link/enumeration; then MAIN/APM/IPC and SIM.
+
+### PCIe mapping pass; root-access probe FAILED; recovery — Nov11/12
+
+Mapping-only test `build/cellular-pcie-map.log/.exit`:exit0, all9 live Device
+identity mappings pass, clock/pin baseline matches. iOS returned114s, current
+BOOT restored independently byte-exact, final iOS64s. It did not dereference
+ELBI/PHY/DBI. Private baseline `pcie-baseline-20261111-2125`.
+
+The separate `CELLULAR_PCIE_ACCESS_PREFLIGHT` attempted idle/gate guards,
+ELBI LTSSM read, PHY D8 input-clock snapshot/set28, root DBI identity/command
+and ELBI link-state reads, then D8 restore. **The phone did not return to SSH;
+runner exit1. User put it in Download Mode. No valid report was recovered;
+the exact access that stalled is UNKNOWN.** Successful mappings and gate bits
+were insufficient evidence that these controller reads were safe.
+
+The access flag is now blocked by build.sh. Code retained only as a failed
+experiment for diagnosis. Do not run old access-candidate/runner again. Review
+controller reset/isolation/clock and security state against working Samsung
+boot before another access; persist checkpoints before any risky MMIO. No
+modem power/link/DMA request was in this failed probe. Earlier powered SPI
+BOOT pass remains valid and distinct from failed PCIe access.
+
+Recovery Nov12: B had prepared newer22:07 normal main images after the failure.
+Verified matching BOOT/recovery prefix and AVB; no probe entries. User authorized
+recovery. Flashing ONLY normal BOOT via Heimdall returned0. Backup/source copied
+privately to `out/cellular/recovery-20261112`; SHA256 of normal BOOT:
+4ed24ba3bb47d14bb5ed2098e3dcbc51a7a6512383585773e442271b94a174cc.
+Visible runner `build/cellular-recover-20261112.py/.log/.exit`; final SSH/readback
+result must be checked. Recovery/kernel/data partitions not written in this run.
+
+Recovery final result: `build/cellular-recover-20261112.exit` is0. iOS/SSH
+returned; independently read installed BOOT equals verified normal-boot.bin
+byte-for-byte. Failed probe removed, phone left running normal iOS.
+
+### Correction after user battery report; isolated retest — Nov12
+
+User reports the earlier PCIe experiment worked and the later Download Mode
+followed battery exhaustion. We have no saved valid report from that attempt:
+classify its no-SSH result as **inconclusive**, not a confirmed MMIO hang or a
+confirmed pass. The prior hang diagnosis above is superseded. Recovery passed.
+
+Live battery read:5%,3687mV,+711mA,external power/charging; subsequently6->7%.
+New battery-gate.py rejects reboot testing below10%/3700mV or without positive
+charging/external power, including missing/ambiguous battery properties. Three
+new tests bring Python suite to38; sanitizer models still pass.
+
+Retest requires CELLULAR_PCIE_ACCESS_RETEST=1. Checkpoints now persist through
+the existing loader log before each potentially hazardous access. If a checkpoint
+write fails, controller access is abandoned and cleanup runs. Source review
+found Samsung probe invokes resumed_phydown (including isolation bypass/PHY
+initialization) before later rd_own_conf, so the old cold-access assumption was
+incomplete regardless of battery.
+
+Revised preflight: with CP off, all clock gates enabled and pins unowned, hold
+PERST low, temporarily bypass PHY isolation, then checkpoint/read LTSSM, PHY
+clock and root-port identity/state. Restore input-clock value, PHY isolation
+and PERST ownership. No CP power, link training, ATU, endpoint or DMA request.
+This access probe does not yet replay the full EVT1 PHY calibration table.
+
+Fresh double-read/AVB backup: out/cellular/access-retest-20261112. The first
+charge dispatcher was stopped before flashing while prerequisites were revised;
+the new visible job cellular-pcie-charge-retest-v2 waits for two ready battery
+readings, then runner rechecks charge/current kernel/BOOT immediately before
+writing. Outcome pending; saved candidate is pcie-access-isolation-candidate.
+
+EVT1 calibration preparation: phy-plan.py extracts110 ordered PHY writes from
+pinned pcie-exynos9830-rc-cal.c (SHA256
+9d0c3a2442f79cb63a7b36e6d8d8c711a9fbdae1a787cbddfdfaf7f7cf3e8805), retaining
+repeats/lane offsets and attribution. This subsection alone is not a boot
+sequence.40 host Python tests plus existing sanitizer models now pass.
+
+### Live-first direction and helper — Nov12
+
+User asked to avoid wasted reboots and notify before restarts. Previous charge
+dispatcher had exited BEFORE flashing when B took the phone lock. Current live
+inventory:96%,4222mV,external power,0mA/noncharging near full; kernel provides
+generic debug r/w/m/sr/sw but no cellular/PCIe commands, no IOPCIDevice entries.
+Metadata snapshots: logs/cellular/live-inventory-20261112-100650. This inventory
+is not a PCIe MMIO test. Battery gate now accepts near-full noncharging state.
+
+New live-pcie helper uses the existing sysctl. Default --status reads only known
+prerequisites. --root-id requires CP off/unowned pins and enabled clocks; temporarily
+asserts PERST low, bypasses PHY isolation, selects input clock28, reads ROOT
+identity/status, then restores original clock/isolation/pin ownership. No link,
+ATU, endpoint, firmware, shared-clock or DMA writes. Phase output is flushed
+before I/O; live-run.py saves transcript/result, checks phone lock and charge,
+and never flashes/reboots. Timeout is unknown remote state: do not retry blindly.
+
+Build/signature verification pass. Host model:58 single failures before/after
+I/O effects, ownership refusal and permanent cleanup failure; sanitizer models
+and41 Python tests pass. Live hardware run remains pending phone handoff from B.
+Host model success is not proof of controller access.
+
+REA reference reviewed: git/morluto__rea at
+a01674377f1f2a0fed467035fddc25e90e74d75a, skill
+.agents/skills/reverse-engineer-anything/SKILL.md. Its routing says to use normal
+source tools for complete source-repository analysis. Our current PCIe questions
+have Samsung source; no MCP install/configuration, provider setup, target binary
+execution or credential changes were made. Shipped cbd/RIL analysis can use the
+native-artifact workflow if a source gap requires it; current firmware inventory
+did not locate those vendor executables/libraries.
+
+### Live ROOT access proven; SIM removed — Nov12 11:55
+
+User gave full phone turn after camera work and said SIM is absent. Normal
+latest camera kernel remained running. Status helper read16 prerequisite words
+successfully; then `live-run.py --root-id` passed: ROOT identitya5a5144d at
+13800000, command/status00100000, ELBI link0064d400, access_pass1 and
+cleanup_verified1. No reboot/flash. This is host/root-port identity, NOT the
+modem endpoint at a configured PCIe window. Live revised access now proven.
+Evidence logs/cellular/live-probe-20261112-115526-042043 (result/transcript).
+
+Merged current local x1slte through62d4ace into cellular (merge79aab91), preserving
+latest rear/front camera, Finder and userland changes. SHIPPING conflict kept
+both areas, updated cellular evidence. Fresh double-read current backup
+out/cellular/live-baseline-20261112-1158 passes AVB and BOOT/recovery pairing.
+Any later island/other flash makes this backup historical; re-capture before
+future flash.
+
+Live PHY extension prepared:124 ordered operations (110 EVT1 calibration plus
+reset/powerdown/PCS),105 unique saved registers, CP off, no LTSSM/ATU/DMA writes.
+`--phy-test` snapshots, applies then restores register values, restores root
+clock/isolation/PERST. Host model passes726 before/after-effect fault injections
+for PHY plus58 for ROOT, including ownership refusal/permanent cleanup failure;
+ARM64 build/signature pass. Samsung source attribution/license preserved.
+
+Hardware PHY run did NOT start: at12:02 the user handed phone to A for island=1
+reboot. Wrapper refused before upload/control writes on lock mismatch. No
+PHY execution/PLL lock or endpoint link claim. Resume live status/PHY after
+that phone slot releases; no reboot needed for this diagnostic.
+
+### Live PHY hardware pass and next combined base — Nov12 13:19 onward
+
+After user handed phone back, status passed and `--phy-test` completed all124
+operations, restored105 unique register snapshots, returned PHY sequence_pass1
+restore_verified1 and final access_pass1 cleanup_verified1. CP off throughout,
+no reboot. Evidence path is recorded in
+out/cellular/live/phy-test-hardware.txt and its live-probe result directory.
+ELBI status00fb8800 is not an L0/endpoint claim.
+
+Current live sysctl exposes only32-bit register access; tested SPI BOOT sender
+needs byte FIFO writes/reads. Added GICv2-only root debug commands spi8.tx HEX
+and spi8.rx COUNT: fixed SPI16 FIFOs, max64 bytes, full hex validation before
+I/O, byte/no-DMA mode and clock/USI/FIFO/channel guards. No default actions.
+AP kernel built in isolated clone, donor unfinished camera caller reverted to
+latest committed camera source; main source untouched. Kernel-only build passes
+and new hook strings are present. Fixed wrapper rejecting failed build/link
+results instead of copying a stale kernel.
+
+prepare-m0.py --kernel now replaces only AP kernel16MiB at recovery+0x2000000,
+preserves root/logs/arguments/firmware, produces bounded kernel and rollback
+segments. Mach-O type/size and known layout required.42 Python tests and all
+C sanitizer models pass including the new kernel-segment and SPI8 bounds tests.
+Latest local x1slte island changes merged (aba70ff); reserved-memory loader
+retains3 CP regions and preserves subtype/home-button metadata.
+
+Fresh baseline live-batch-20261112 and reserved-spi8-candidate AVB verified.
+Exact original payload args/root image comparison passed. One combined restart
+was notified to user, but installer exited at its FIRST phone-lock check before
+any phone reads, menu, write or reboot: A had taken phone for user-requested
+Dynamic Island/Live Activities restart. **The combined update is NOT installed.**
+A subsequently fixed a SpringBoard cold-boot tweak crash, unrelated to cellular.
+Before resuming, recheck current kernel/BOOT against baseline; refresh if changed.
+Notify user again before the actual pending restart. No auto-reboot job active.
+
+### Live SPI adapter prepared while phone held elsewhere
+
+New live-spi.c uses the tested8-bit PIO core with batched64-byte FIFO commands.
+It supports generated INTERNAL loopback only: CP off, external pins stay inputs,
+no firmware/GPIO/DMA writes. Saves/restores SPI controller, USI and its own clock
+settings; reports elapsed time/bytes and verified cleanup. live-spi-run.py
+checks lock/battery/SPI8 API, signs/uploads one helper, records transcript/result
+and never reboots/flashes. Missing kernel hooks are detected before upload.
+
+Host model validates exact generated byte order for1,63,64,65,64496 bytes,142
+before/after-effect I/O failures, malformed RX and existing owner refusal.
+Build/signature pass. These are host tests; hardware loopback awaits the combined
+base installation. Do not claim modem endpoint/ONLINE/LTE from these results.
+
+### Combined base installed and LIVE BOOT proven — Nov12 14:31–14:52
+
+Actual installer cellular-install-live-base-island completed exit0. Fresh final
+Dynamic Island baseline/candidate under out/cellular/live-batch-island-20261112
+preserves current root/args/firmware. SSH returned67s; SPI8 API and independently
+read BOOT match; saved latest loader reports CP reservations3/3 and prekernel
+NormalNC3/3. This supersedes earlier “not installed” entries. XNU shared-memory
+cache policy remains a separate future requirement; PIO does not use CP RAM.
+
+Live internal SPI loopback16B then64496B passed, no mismatches, cleanup1.
+Full pattern671635us. Evidence logs/cellular/live-spi-20261112-143251-588434
+and live-spi-20261112-143304-457355.
+
+New live-modem.c shares the hardware-proven SPI adapter and tested lifecycle.
+Wrapper requires current installed certificate, exact running BOOT/kernel
+segment and saved loader evidence, charge, phone lock, signed helper and BOOT
+metadata/CRC. Extracts only BOOT from private RADIO backup. No MAIN/NV/EFS/DMA,
+no reboot/flash. GPIO updates preserve other bank fields with kernel masked
+writes. Critical reset/power remain output-low; other ownership restored.
+
+First attempt stopped before power/bytes because DAT input readback reports a
+pulled-up pad rather than the preloaded output latch. Corrected to preload DAT,
+select output, then verify DAT. Added this hardware behavior to the host model.
+1486 before/after-effect I/O failure cases pass, including CP shutdown, pad/BT
+preservation, owner refusal and subsequent held-low controls. This supersedes
+initial1464-case model. Failed attempt had no power request; independent read
+confirmed critical controls held low before corrected run.
+
+**Corrected LIVE real BOOT PASSED**, no phone restart:
+logs/cellular/live-modem-20261112-145112-114993. PIO error0/io_error0,
+completed64496, received64496,1008 packets,691328us. External SPI routing, no
+loopback; received bytes drained, not interpreted as a BOOT acknowledgment.
+Four-second observation first2,last6,changed6,rising6 (bits PHONE_ACTIVE,WAKE,
+PS_HOLD); this reproduces UEFI behavior and is not firmware acceptance proof.
+Result error0,attempted1,power_requested1,phase6,cleanup_verified1. CP now OFF,
+reset/power held low; phone remains running. Uploaded firmware/helper removed
+only after confirmed cleanup. Initial failed attempt artifacts may remain private
+on phone pending explicit cleanup after independent state review.
+
+Next: one bounded Gen1 PCIe link/endpoint attempt while BOOT is running, with
+PERST/PHY/root configuration and full cleanup. No SIM needed at this stage.
+Do not count host/root identity as CP endpoint or interpret pulled-up signals
+as registration. No LTE/voice/IMS claim.
+
+### Bounded live PCIe endpoint extension — Nov12 15:00 (hardware pending)
+
+live-modem-run.py --link extends the same guarded BOOT lifecycle. After input
+observation, raises AP_WAKE and waits5ms, asserts PERST, applies PCIe2 active
+pinctrl (GPF3-0 function2/pull3/drive3; GPF3-1 output/drive3; 4-bit PUD/DRV
+fields from bank_type_6), bypasses PMU isolation and selects inputclock28.
+Applies124 EVT1 PHY operations and38 exact IA CDR writes from pinned Samsung
+source. IA initially disabled required. Sets source soft reset/PCS/PHY release,
+EQ off, Gen1 target/x2 lanes, bus0->1, auxiliary26MHz/L1 timing, PERSThigh20ms,
+manual L1/QCH/NAK then50ms and LTSSM. One200x1ms L0 poll, no native10 retries.
+
+If L0 only, configures outbound iATU0 CFG0 for bus1/device0/function0 through
+CPU14ffe000; reads actual endpoint ID/command. No endpoint writes, root or EP
+busmaster enable, inboundATU, interrupt enable, DMA, broad HSI2/UFS changes,
+MAIN/NV or shared RAM. Refuses invalid endpoint IDs or EP busmaster already set.
+This deliberately limited diagnostic omits full PCI enumeration/BAR/service;
+link/config failure does not prove a failed modem.
+
+Cleanup disables LTSSM, PERSTlow and IA engine before CP reset/poweroff; then
+restores reverse snapshots while CP off, PHY powerdown before isolation, original
+pins last. Snapshots both PERST CON/DAT before any writes: injected failure
+exposed that otherwise cleanup itself could change a register lacking a snapshot.
+Host combined-lifecycle model2602 before/after-effect I/O faults passes with
+CP-off verification, all saved PCIe/PHY/IA/pinctrl restored, L0timeout, EP BME
+refusal and GPIO/BT preservation. Hardware is not yet proven for this extension.
+Source-derived table/code GPL2 attribution supplied. Phase/address emitted before
+new MMIO reads; timeout is unknown state and must not be blindly retried.
+
+### LIVE PCIe modem endpoint confirmed — Nov12 15:08
+
+Successful evidence: logs/cellular/live-modem-20261112-150813-567721,
+visible build/cellular-live-link-v4.log/.exit0. No phone restart/flash.
+
+- BOOT64496B transferred again; all GPIO/pad guards pass.
+- L0 link0343d911 (low6bits11), one bounded training attempt, Gen1 target/x2.
+- ROOT command00100000, header00010000: Type1 bridge, BME off.
+- Bus1 endpoint IDa5a5144d, header00000000: Type0 endpoint, distinct from root.
+  Class/revision00000001 is a boot-stage value, not a network driver class.
+- Endpoint initial command00100106 had BME already set; diagnostic now clears
+  ONLY BME using a low16 command write with high16 status0 (no W1C echo), verifies
+  command00100102. Never enables BME. Does not restore BME before CP shutdown.
+- Result error0,phase6,completed64496,cleanup_verified1. CP OFF/reset+powerLOW,
+  original controller/clocks/PHY/IA/pinctrl ownership restored, iOS running.
+  Endpoint discovery proves this link stage; full modem firmware/ONLINE pending.
+
+Two earlier setup attempts stopped before LTSSM on strict readback of exitL1
+13d203bc. Source writes11; hardware reads01. Keep exact Samsung write and verify
+modebit0; bit4 does not read back set. Host model now reproduces it. First L0 run
+v3 stopped after observing EP BME; cleanup1. v4 adds root Type1/BMEoff guard,
+endpoint Type0 validation and BME-clear-only handling. Combined model2612 I/O
+faults plus explicit BME-clear before/after failures, root BME refusal, endpoint
+alias refusal, stuckBME and L0timeout pass. Full42 Python+all C sanitizer suite
+passes. No MAIN, NV, DMA queue initialization or internet/call test performed.
+
+Next source-traced download path: see cellular-download-plan.md. Avoid additional
+power/reboot loops until the queue/firmware handshake has a concrete backend.

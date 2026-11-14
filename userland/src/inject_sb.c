@@ -790,6 +790,22 @@ lock_long_press(id self, SEL selector, id recognizer)
 static BOOL
 unlock(void)
 {
+	/* The bring-up/remote helper must never dismiss a passcode-protected UI.
+	 * Native authentication handles those unlocks. Unknown state fails closed. */
+	static int (*keybag_state)(CFDictionaryRef);
+	static bool keybag_looked_up;
+	if (!keybag_looked_up) {
+		keybag_state = dlsym(RTLD_DEFAULT, "MKBGetDeviceLockState");
+		if (!keybag_state) {
+			void *mkb = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_LAZY);
+			if (mkb) keybag_state = dlsym(mkb, "MKBGetDeviceLockState");
+		}
+		keybag_looked_up = true;
+	}
+	if (!keybag_state || keybag_state(NULL) != 3) {
+		say("redwood: unlock helper: passcode set or keybag state unavailable; native authentication required\n");
+		return YES;
+	}
 	Class cls = objc_getClass("SBLockScreenManager");
 	SEL shared = sel_registerName("sharedInstance"), locked = sel_registerName("isUILocked");
 	SEL unlock_ui = sel_registerName("unlockUIFromSource:withOptions:");
@@ -1182,6 +1198,63 @@ web_views(id view, int depth)
 	}
 }
 
+
+/*
+ * The front camera's flash (2026-11-12): the iPhone's camera driver lights the screen itself for a front
+ * photograph with the flash on (H10ISPDisplayStrobe); ours (libredwood-media's camera_device.c) asks for it
+ * here. com.redwood.screenflash.on: a white window over everything and the backlight at its most;
+ * com.redwood.screenflash.off (or 3 s later at the latest): both as they were.
+ */
+typedef struct { double x, y, w, h; } sb_rect;
+static id flash_window;
+static double flash_brightness = -1;
+static unsigned flash_serial;
+
+static void
+screen_flash(bool on)
+{
+	id screen = SEND(id, objc_getClass("UIScreen"), "mainScreen");
+
+	if (on) {
+		if (flash_window == nil) {
+			id application = SEND(id, objc_getClass("UIApplication"), "sharedApplication");
+			id key = application ? SEND(id, application, "keyWindow") : nil;
+			id scene = key && class_respondsToSelector(object_getClass(key), sel_registerName("windowScene")) ? SEND(id, key, "windowScene") : nil;
+			id w = SEND(id, objc_getClass("UIWindow"), "alloc");
+			sb_rect bounds = ((sb_rect (*)(id, SEL))objc_msgSend)(screen, sel_registerName("bounds"));
+
+			w = scene ? SEND1(id, w, "initWithWindowScene:", id, scene) : SEND(id, w, "init");
+			((void (*)(id, SEL, sb_rect))objc_msgSend)(w, sel_registerName("setFrame:"), bounds);
+			SEND1(void, w, "setBackgroundColor:", id, SEND(id, objc_getClass("UIColor"), "whiteColor"));
+			((void (*)(id, SEL, double))objc_msgSend)(w, sel_registerName("setWindowLevel:"), 1e7);
+			SEND1(void, w, "setUserInteractionEnabled:", BOOL, NO);
+			flash_window = w;
+		}
+		if (flash_brightness < 0) {
+			flash_brightness = ((double (*)(id, SEL))objc_msgSend)(screen, sel_registerName("brightness"));
+		}
+		((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), 1.0);
+		SEND1(void, flash_window, "setHidden:", BOOL, NO);
+		unsigned serial = ++flash_serial;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			if (serial == flash_serial) {
+				screen_flash(false);
+			}
+		});
+		say("redwood: screen flash on\n");
+	} else {
+		if (flash_window != nil) {
+			SEND1(void, flash_window, "setHidden:", BOOL, YES);
+		}
+		if (flash_brightness >= 0) {
+			((void (*)(id, SEL, double))objc_msgSend)(screen, sel_registerName("setBrightness:"), flash_brightness);
+			flash_brightness = -1;
+		}
+		flash_serial++;
+		say("redwood: screen flash off\n");
+	}
+}
+
 static void
 layers(void)
 {
@@ -1399,6 +1472,14 @@ control_center_fades(const char *arguments)
 	method_setImplementation(add, (IMP)add_animation_cc);
 }
 
+/* The Dynamic Island's pill over the S20's camera hole (island=1): src/island_sb.h */
+#include "island_sb.h"
+#include "wallpaper_motion.h"
+/* The status bar's cellular icon from the S20's modem (src/cell_sb.h) */
+#include "cell_sb.h"
+#include "statusbar_shift.h"
+#include "phone_dial.h"
+
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
  * it: without a prefix (or without ElleKit in it) the file is not there and this does nothing.
@@ -1454,6 +1535,14 @@ redwood_springboard_init(void)
 	if (name == NULL) {
 		return;
 	}
+	/* Wallpaper/UI motion uses CoreMotion in this process too. SpringBoard
+	 * loads this library instead of libredwood.dylib, so the app fix must
+	 * run here before UIKit caches the iPhone X's SPU capabilities. */
+	extern void redwood_coremotion_fixes(void);
+	redwood_coremotion_fixes();
+	if (strcmp(name, "SpringBoard") == 0) {
+		phone_system_hook();        /* RedwoodPhone's calls get the full call screen (phone_dial.h) */
+	}
 	if (strcmp(name, "SpringBoard") != 0) {
 		static char who[64];
 
@@ -1476,6 +1565,10 @@ redwood_springboard_init(void)
 	 * this one opens it, the way a jailbreak's own hook does.
 	 */
 	mps_unsupported_returns_nil();
+	island_start();
+	wallpaper_motion_start();
+	cell_start();
+	statusbar_shift_start();
 	load_tweaks();
 	/*
 	 * Everything the Metal driver says, it says with printf, and SpringBoard's standard output
@@ -1596,6 +1689,12 @@ redwood_springboard_init(void)
 	});
 	notify_register_dispatch("com.redwood.open", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		open_page();
+	});
+	notify_register_dispatch("com.redwood.screenflash.on", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(true);
+	});
+	notify_register_dispatch("com.redwood.screenflash.off", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		screen_flash(false);
 	});
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that

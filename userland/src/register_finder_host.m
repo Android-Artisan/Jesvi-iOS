@@ -3,6 +3,7 @@
  * Copy the immutable system bundle once; never replace user documents. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
 #include <unistd.h>
 @interface MCMAppContainer : NSObject
 + (id)containerWithIdentifier:(NSString *)identifier createIfNecessary:(BOOL)create
@@ -13,6 +14,106 @@
 + (id)defaultWorkspace;
 - (BOOL)registerApplication:(NSURL *)url;
 @end
+@interface MCMContainer : NSObject
++ (id)containerWithIdentifier:(NSString *)identifier createIfNecessary:(BOOL)create
+    existed:(BOOL *)existed error:(NSError **)error;
+- (NSURL *)url;
+@end
+@interface LSApplicationWorkspace (Record)
+- (BOOL)registerApplicationDictionary:(NSDictionary *)record;
+@end
+extern int SecStaticCodeCreateWithPathAndAttributes(CFURLRef, uint32_t, CFDictionaryRef, void **);
+extern int SecCodeCopySigningInformation(void *, uint32_t, CFDictionaryRef *);
+
+static NSString *mcm_path(NSString *cls, NSString *identifier) {
+    NSError *error = nil; BOOL existed = NO;
+    return [[[NSClassFromString(cls) containerWithIdentifier:identifier createIfNecessary:YES
+        existed:&existed error:&error] url] path];
+}
+
+static NSDictionary *entitlements(NSString *executable) {
+    void *code = NULL; CFDictionaryRef info = NULL; NSDictionary *found = nil;
+    if (SecStaticCodeCreateWithPathAndAttributes((__bridge CFURLRef)[NSURL fileURLWithPath:executable], 0, NULL, &code) == 0 && code) {
+        if (SecCodeCopySigningInformation(code, 1u << 2, &info) == 0 && info) {
+            found = [(__bridge NSDictionary *)info objectForKey:@"entitlements-dict"];
+            CFRelease(info);
+        }
+        CFRelease(code);
+    }
+    return found ?: @{};
+}
+
+/* The record of a bundle for LaunchServices: an app (owner nil) or one of its extensions. */
+static NSDictionary *record(NSString *path, NSString *owner) {
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]];
+    NSString *identifier = info[@"CFBundleIdentifier"], *executable = info[@"CFBundleExecutable"];
+    if (!identifier || !executable) return nil;
+    NSDictionary *rights = entitlements([path stringByAppendingPathComponent:executable]);
+    NSMutableDictionary *r = [@{
+        @"ApplicationType": owner ? @"PluginKitPlugin" : @"User",
+        @"CFBundleIdentifier": identifier, @"CodeInfoIdentifier": identifier, @"CompatibilityState": @0,
+        @"Path": path, @"Entitlements": rights, @"IsDeletable": @NO,
+        @"SignerOrganization": @"Apple Inc.", @"SignatureVersion": @132352,
+        @"SignerIdentity": @"Apple iPhone OS Application Signing", @"IsAdHocSigned": @YES,
+        @"LSInstallType": @1, @"HasMIDBasedSINF": @0, @"MissingSINF": @0, @"FamilyID": @0,
+        @"IsOnDemandInstallCapable": @0 } mutableCopy];
+    NSString *home = mcm_path(owner ? @"MCMPluginKitPluginDataContainer" : @"MCMAppDataContainer", identifier);
+    if (home) {
+        r[@"Container"] = home; r[@"IsContainerized"] = @YES;
+        r[@"EnvironmentVariables"] = @{ @"CFFIXED_USER_HOME": home, @"HOME": home,
+            @"TMPDIR": [home stringByAppendingPathComponent:@"tmp"] };
+    }
+    NSMutableDictionary *groups = [NSMutableDictionary dictionary];
+    id names = rights[@"com.apple.security.application-groups"];
+    if ([names isKindOfClass:NSArray.class]) for (NSString *name in names) {
+        NSString *shared = mcm_path(@"MCMSharedDataContainer", name);
+        if (shared) groups[name] = shared;
+    }
+    r[@"GroupContainers"] = groups;
+    /* (SpringBoard takes the tags from the record, not from Info.plist: without them the hidden
+     * host gets an icon on the home screen) */
+    if (info[@"SBAppTags"]) r[@"SBAppTags"] = info[@"SBAppTags"];
+    if (owner) { r[@"PluginOwnerBundleID"] = owner; return r; }
+    NSMutableDictionary *plugins = [NSMutableDictionary dictionary];
+    NSString *dir = [path stringByAppendingPathComponent:@"PlugIns"];
+    for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil] ?: @[]) {
+        if (![name.pathExtension isEqual:@"appex"]) continue;
+        NSDictionary *plugin = record([dir stringByAppendingPathComponent:name], identifier);
+        if (plugin) plugins[plugin[@"CFBundleIdentifier"]] = plugin;
+    }
+    r[@"_LSBundlePlugins"] = plugins;
+    return r;
+}
+
+/* Finder's file sharing shows one folder: the app's Documents. Make that folder the phone's own
+ * storage, "On My iPhone" (the local provider's File Provider Storage), so a Mac sees Downloads and
+ * the rest and not an empty folder of this hidden app. afcd follows the link (checked 2026-11-13).
+ * What was in a real Documents folder is moved into the storage first; nothing is deleted. */
+static void share_storage(NSString *home) {
+    NSString *group = mcm_path(@"MCMSharedDataContainer", @"group.com.apple.FileProvider.LocalStorage");
+    if (!home || !group) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *storage = [group stringByAppendingPathComponent:@"File Provider Storage"];
+    NSString *documents = [home stringByAppendingPathComponent:@"Documents"];
+    if (![fm fileExistsAtPath:storage]) {       /* (the provider makes it at its first start) */
+        if (mkdir(storage.fileSystemRepresentation, 0755)) return;
+        chown(storage.fileSystemRepresentation, 501, 501);
+    }
+    NSDictionary *is = [fm attributesOfItemAtPath:documents error:nil];
+    if ([is.fileType isEqual:NSFileTypeSymbolicLink]) {
+        if ([[fm destinationOfSymbolicLinkAtPath:documents error:nil] isEqual:storage]) return;
+        unlink(documents.fileSystemRepresentation);
+    } else if (is) {
+        for (NSString *name in [fm contentsOfDirectoryAtPath:documents error:nil] ?: @[])
+            [fm moveItemAtPath:[documents stringByAppendingPathComponent:name]
+                        toPath:[storage stringByAppendingPathComponent:name] error:nil];
+        if (rmdir(documents.fileSystemRepresentation)) return;      /* a name was taken: left as it is */
+    }
+    if (symlink(storage.fileSystemRepresentation, documents.fileSystemRepresentation) == 0)
+        lchown(documents.fileSystemRepresentation, 501, 501);
+    NSLog(@"Jesvi Files: Finder shares %@", storage);
+}
+
 int main(void) {
     alarm(30);
     @autoreleasepool {
@@ -46,7 +147,18 @@ int main(void) {
         NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[destination stringByAppendingPathComponent:@"Info.plist"]];
         if (![info[@"CFBundleIdentifier"] isEqual:identifier] || ![info[@"UIFileSharingEnabled"] boolValue]) return 1;
         BOOL ok = [[workspace defaultWorkspace] registerApplication:[NSURL fileURLWithPath:destination]];
+        /* From a clean LaunchServices database registerApplication: refuses an identifier it has never
+         * seen (-9499 at _LSRegisterBundleNode), and the host with its three extensions stays unknown:
+         * no pickers, no On My iPhone, no Finder sharing. Then give LaunchServices the whole record, as
+         * installd would: the app, its data container and each extension with its own. (2026-11-13) */
+        if (!ok) {
+            NSDictionary *whole = record(destination, nil);
+            ok = whole && [[workspace defaultWorkspace] registerApplicationDictionary:whole];
+            NSLog(@"Jesvi Files record: data %@, %lu extensions", whole[@"Container"],
+                (unsigned long)[whole[@"_LSBundlePlugins"] count]);
+        }
         NSLog(@"Jesvi Files user registration: %@", ok ? @"complete" : @"retry needed");
+        if (ok) share_storage(mcm_path(@"MCMAppDataContainer", identifier));
         return ok ? 0 : 1;
     }
 }

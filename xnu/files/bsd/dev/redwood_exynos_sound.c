@@ -601,21 +601,46 @@ amp_prepare(struct amp *a)
 	return true;
 }
 
-static uint32_t amps_volume_reg = L41_VOL_MUTE;        /* as amp_prepare() leaves them */
+static uint32_t amps_volume_reg[2] = { L41_VOL_MUTE, L41_VOL_MUTE };   /* as amp_prepare() leaves them */
+
+/*
+ * Calls (A, 2026-11-14): kern.redwood.snd_route 0 = the speakers (both amplifiers, as always), 1 = the earpiece: the
+ * top amplifier alone (it drives the earpiece/top speaker), kern.redwood.snd_ear_below eighths of a dB further down
+ * (default 18 dB), the bottom one muted. redwood-ims sets 1 when a call's voice starts and 0 when it ends; the call
+ * screen's speaker button switches (RedwoodPhone).
+ */
+static int snd_route;
+static int snd_ear_below = 18 * 8;
+static int snd_call;                    /* a VoLTE call's voice is playing (redwood-ims): the audio plug-in writes nothing */
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_call, CTLFLAG_RW | CTLFLAG_LOCKED, &snd_call, 0,
+    "a VoLTE call in progress: iOS's audio plug-in leaves /dev/redwood-audio to redwood-ims");
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_route, CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, &snd_route, 0,
+    "speaker route: 0 speakers, 1 earpiece (top amplifier only, quieter)");
+SYSCTL_INT(_kern_redwood, OID_AUTO, snd_ear_below, CTLFLAG_RW | CTLFLAG_LOCKED, &snd_ear_below, 0,
+    "earpiece level: eighths of a dB below the speakers' level");
 
 static void
 amps_volume(uint32_t below, bool muted)
 {
-	uint32_t reg = (muted || below >= 816) ? L41_VOL_MUTE : (uint32_t)(-(int32_t)below) & 0x7ff;
-
-	if (reg == amps_volume_reg) {
-		return;
-	}
-	amps_volume_reg = reg;
 	for (unsigned i = 0; i < 2; i++) {
-		if (amps[i].present) {
-			amp_update(&amps[i], L41_AMP_DIG_VOL_CTRL, 0x7ff << 3, reg << 3);
+		uint32_t b = below;
+		bool m = muted;
+
+		if (snd_route == 1) {
+			if (i == 1) {
+				m = true;               /* the bottom speaker: off in the earpiece route */
+			} else {
+				b += (uint32_t)(snd_ear_below > 0 ? snd_ear_below : 0);
+			}
 		}
+		uint32_t reg = (m || b >= 816) ? L41_VOL_MUTE : (uint32_t)(-(int32_t)b) & 0x7ff;
+
+		if (reg == amps_volume_reg[i] || !amps[i].present) {
+			continue;
+		}
+		amps_volume_reg[i] = reg;
+		amp_update(&amps[i], L41_AMP_DIG_VOL_CTRL, 0x7ff << 3, reg << 3);
 	}
 }
 
@@ -753,7 +778,7 @@ amps_bring_up(void)
 	bool any = false;
 
 	/* A reset invalidates cached volume and previous presence results. */
-	amps_volume_reg = L41_VOL_MUTE;
+	amps_volume_reg[0] = amps_volume_reg[1] = L41_VOL_MUTE;
 	for (unsigned i = 0; i < 2; i++) {
 		amps[i].present = false;
 	}
@@ -1570,17 +1595,33 @@ calliope_boot(void)
 	 * the log at 0xF2200000 (1 MB aligned, cleared), the dump buffer from 0xFAA00000 to the 4 GB line, right after
 	 * abox_rmem -- the same hole Samsung's sizes fill exactly.
 	 */
+	/*
+	 * cpcall=1 (A, 2026-11-13, VoLTE voice): the S20's modem is external (S5123 on PCIe), so call audio does not use a
+	 * VSS region in the modem's memory (the S20's cp_shmem has only IPC, MSI, PKTPROC) but ABOX's PCI path:
+	 * abox-pci-rmem 0xF4200000 + 8 MB (dtb reserved-memory; abox_pci.c maps it at IOVA_VSS_PCI and grants the modem's
+	 * HSI2 S2MPU access) and the modem's PCIe doorbell, s51xx_pcie dbaddr (pci_db_addr 0x14d60000) + 0x10000, 16 KB at
+	 * IOVA_VSS_PCI_DOORBELL 0xA3000000 (abox_pci_doorbell_paddr_set). The silent log gives up 8 MB so the PCI region
+	 * can sit where the modem's firmware expects it.
+	 */
+	uint32_t cpcall = 0, snd_arg = 0;
+	PE_parse_boot_argn("cpcall", &cpcall, sizeof(cpcall));
+	/* snd=3 (bit 1) is the same: the boot line has no room left for another argument */
+	if (PE_parse_boot_argn("snd", &snd_arg, sizeof(snd_arg)) && (snd_arg & 2)) {
+		cpcall = 1;
+	}
+	uint32_t slog_size = cpcall ? 0x2000000U : CAL_SLOG_SIZE;
+	uint64_t pci_phys = cpcall ? 0xF4200000ULL : CAL_PCI_PHYS;
 	{
-		volatile uint8_t *slog = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_SLOG_PHYS, CAL_SLOG_SIZE,
+		volatile uint8_t *slog = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_SLOG_PHYS, slog_size,
 		    VM_WIMG_WCOMB);
 
 		if (slog != NULL) {
-			for (uint32_t i = 0; i < CAL_SLOG_SIZE; i += 4) {
+			for (uint32_t i = 0; i < slog_size; i += 4) {
 				*(volatile uint32_t *)(slog + i) = 0;
 			}
 			cal_slog = slog;
 		}
-		for (uint32_t mb = 0; mb < CAL_SLOG_SIZE >> 20; mb++) {
+		for (uint32_t mb = 0; mb < slog_size >> 20; mb++) {
 			*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_SLOG >> 20) + mb)) = (uint32_t)((CAL_SLOG_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
 		}
 		for (uint32_t mb = 0; mb < CAL_DUMP_SIZE >> 20; mb++) {
@@ -1592,7 +1633,7 @@ calliope_boot(void)
 		 * no modem behind them here: their 64 MB of IOVA all point at one cleared spare MB, the PCI 8 MB at its own.
 		 */
 		{
-			volatile uint8_t *pci = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)CAL_PCI_PHYS,
+			volatile uint8_t *pci = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)pci_phys,
 			    CAL_PCI_SIZE + (1U << 20), VM_WIMG_WCOMB);
 
 			if (pci != NULL) {
@@ -1604,7 +1645,29 @@ calliope_boot(void)
 				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_VSS >> 20) + mb)) = (uint32_t)(CAL_VSS_SPARE_PHYS >> 4) | 2;
 			}
 			for (uint32_t mb = 0; mb < CAL_PCI_SIZE >> 20; mb++) {
-				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((CAL_PCI_PHYS + ((uint64_t)mb << 20)) >> 4) | 2;
+				*(volatile uint32_t *)(pt + 4 * ((CAL_IOVA_PCI >> 20) + mb)) = (uint32_t)((pci_phys + ((uint64_t)mb << 20)) >> 4) | 2;
+			}
+			if (cpcall) {
+				/* our own playback ring (RDMA3 is given its physical address, snd_dma 0xFEFF0000): once Calliope turns
+				 * the SysMMU on, RDMA3's reads go through it too and fault (FAULT_VA 0xfeff0b40 seen): map that MB 1:1 */
+				*(volatile uint32_t *)(pt + 4 * (0xFEF00000U >> 20)) = (uint32_t)(0xFEF00000ULL >> 4) | 2;
+				/* the doorbell: a 1 KB second-level table right after the first-level one (exynos-iommu.h:
+				 * mk_lv1ent_page(pa) = pa >> 4 | 1, lv2 small page pa >> 4 | 2, 256 entries, 1 KB aligned) */
+				uint64_t l2_phys = pt_phys + 0x4000;
+				volatile uint8_t *l2 = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)l2_phys, 0x1000,
+				    VM_WIMG_WCOMB);
+
+				if (l2 != NULL) {
+					for (uint32_t i = 0; i < 256; i++) {
+						*(volatile uint32_t *)(l2 + 4 * i) = 0;
+					}
+					for (uint32_t i = 0; i < 4; i++) {
+						*(volatile uint32_t *)(l2 + 4 * i) = (uint32_t)((0x14d70000ULL + 0x1000ULL * i) >> 4) | 2;
+					}
+					*(volatile uint32_t *)(pt + 4 * (0xA3000000U >> 20)) = (uint32_t)(l2_phys >> 4) | 1;
+				}
+				snd_log("snd: calliope: cpcall: PCI region %#llx at IOVA %#x, modem doorbell 0x14d70000 at IOVA 0xA3000000%s\n",
+				    pci_phys, CAL_IOVA_PCI, l2 ? "" : " (NOT mapped)");
 			}
 		}
 	}
@@ -1902,8 +1965,10 @@ calliope_settle(const char *what, unsigned ms)
 		    v[12], v[13], v[14], v[15]);
 	}
 	if (rd(mmu, 0x060) != 0) {
-		snd_log("snd: calliope: %s: SysMMU fault: INT %#x FAULT_VA %#x %#x (INFO %#x)\n", what, rd(mmu, 0x060), rd(mmu, 0x1000),
-		    rd(mmu, 0x0070), rd(mmu, 0x1004));
+		/* only INT and FAULT_VA (0x1000), as the boot-time line reads them: 0x0070 is no register on this SysMMU and its
+		 * read is a synchronous external abort (A, 2026-11-13: kernel data abort ESR 0x96000210 far ...0070, twice,
+		 * the first time Calliope faulted after START_VSS) */
+		snd_log("snd: calliope: %s: SysMMU fault: INT %#x FAULT_VA %#x\n", what, rd(mmu, 0x060), rd(mmu, 0x1000));
 	}
 }
 

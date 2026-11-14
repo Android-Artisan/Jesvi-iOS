@@ -65,7 +65,12 @@ cmd_kernel() {
 		trap '"$HOME/ios-port-research/tools/team.sh" unlock "'"$who"'" build >/dev/null' EXIT
 	fi
 	touch out/.kernel-start
-	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k > out/kernel-build.log 2>&1 || true
+	local build_rc=0
+	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k build > out/kernel-build.log 2>&1 || build_rc=$?
+	if [ "$build_rc" -ne 0 ]; then
+		tail -n 35 out/kernel-build.log >&2
+		die "kernel build failed (exit $build_rc); refusing stale kernel artifact"
+	fi
 	if grep -E '^[^ ]*\.(c|cpp|s|h):[0-9]+:[0-9]+: (fatal error|error|warning):' out/kernel-build.log; then
 		die "compiler errors/warnings above (full log: out/kernel-build.log)"
 	fi
@@ -97,7 +102,9 @@ cmd_payload() {
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_LEN")
 	# the loader: super's real tail always; super+0..ROOT_SUPER_LEN when the conf has it (iOS only, 2026-11-06: the
 	# system volume where Android's system/vendor were); userdata only in system.img's extent while that is in use
-	env GIC_V2=1 SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
+	# CELLULAR_RESERVE_CP=1 by default (2026-11-13: two flashes built without it left cellular with "IPC map refused":
+	# no LTE, no VoLTE). CELLULAR_RESERVE_CP= (empty) builds the loader without the CP reservation.
+	env GIC_V2=1 CELLULAR_RESERVE_CP="${CELLULAR_RESERVE_CP-1}" SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
 		${ROOT_UD_LEN:+USERDATA_WIN_OFF="$(printf '0x%x' "$ROOT_UD_OFF")" USERDATA_WIN_LEN="$(printf '0x%x' "$ROOT_UD_LEN")"} \
 		xnuloader/build.sh > /dev/null
 	# the placeholders of x1slte.cmdline: the root window (read only) and /private/var's write window

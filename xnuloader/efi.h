@@ -50,7 +50,8 @@ typedef struct {
 
 typedef struct {
 	efi_table_header hdr;
-	void *raise_tpl, *restore_tpl;
+	uint64_t (EFIAPI *raise_tpl)(uint64_t new_tpl);
+	void (EFIAPI *restore_tpl)(uint64_t old_tpl);
 	efi_status (EFIAPI *allocate_pages)(int type, int mem_type, uint64_t pages, uint64_t *addr);
 	efi_status (EFIAPI *free_pages)(uint64_t addr, uint64_t pages);
 	efi_status (EFIAPI *get_memory_map)(uint64_t *size, void *map, uint64_t *key, uint64_t *desc_size, uint32_t *desc_ver);
@@ -120,7 +121,8 @@ typedef struct {
 } efi_gcd_memory_descriptor;
 typedef struct {
 	efi_table_header hdr;
-	void *add_memory_space, *allocate_memory_space, *free_memory_space, *remove_memory_space;
+	efi_status (EFIAPI *add_memory_space)(uint32_t type, uint64_t base, uint64_t size, uint64_t capabilities);
+	void *allocate_memory_space, *free_memory_space, *remove_memory_space;
 	efi_status (EFIAPI *get_memory_space_descriptor)(uint64_t address, efi_gcd_memory_descriptor *descriptor);
 	efi_status (EFIAPI *set_memory_space_attributes)(uint64_t address, uint64_t size, uint64_t attributes);
 } efi_dxe_services;

@@ -60,7 +60,8 @@ def stage(root, executable, manifest, output):
             'UIRequiredDeviceCapabilities': ['arm64'],
             'SBAppTags': ['hidden'],
             'UIFileSharingEnabled': True,
-            'LSSupportsOpeningDocumentsInPlace': True,
+            # (not LSSupportsOpeningDocumentsInPlace: its Documents IS On My iPhone, by a link that
+            # register_finder_host makes, and the key would list that storage inside itself)
         }, stream)
     # Preserve the extension's owners, links and empty localization directories
     # at the new path; otherwise mkapfs would recreate its old framework path.

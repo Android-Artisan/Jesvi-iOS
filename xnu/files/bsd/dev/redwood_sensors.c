@@ -11,6 +11,7 @@
 #include <miscfs/devfs/devfs.h>
 #include <sys/conf.h>
 #include <sys/errno.h>
+#include <sys/file.h>
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/redwood_sensors.h>
@@ -26,6 +27,22 @@ static struct redwood_sensor_sample queue[QUEUE];
 static uint32_t q_head, q_tail, q_lost;
 static bool q_waiting, made;
 static int q_readers;
+static uint32_t proximity_mode;
+
+uint32_t
+redwood_sensors_proximity_mode(void)
+{
+	return __atomic_load_n(&proximity_mode, __ATOMIC_RELAXED);
+}
+
+static int
+sensors_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, int flags, __unused proc_t p)
+{
+	if (cmd != REDWOOD_SENSORS_PROXIMITY) return ENOTTY;
+	if (!(flags & FWRITE)) return EBADF;
+	__atomic_store_n(&proximity_mode, *(uint32_t *)data, __ATOMIC_RELAXED);
+	return 0;
+}
 
 void
 redwood_sensors_post(const struct redwood_sensor_sample *s)
@@ -68,6 +85,7 @@ sensors_close(__unused dev_t dev, __unused int flags, __unused int devtype, __un
 	if (q_readers > 0) {
 		q_readers--;
 	}
+	if (!q_readers) __atomic_store_n(&proximity_mode, 0, __ATOMIC_RELAXED);
 	lck_mtx_unlock(&sensors_lock);
 	return 0;
 }
@@ -102,7 +120,7 @@ sensors_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 
 static const struct cdevsw sensors_cdevsw = {
 	.d_open = sensors_open, .d_close = sensors_close, .d_read = sensors_read, .d_write = eno_rdwrt,
-	.d_ioctl = eno_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
+	.d_ioctl = sensors_ioctl, .d_stop = eno_stop, .d_reset = eno_reset, .d_select = eno_select,
 	.d_mmap = eno_mmap, .d_strategy = eno_strat, .d_type = 0,
 };
 

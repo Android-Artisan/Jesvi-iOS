@@ -58,11 +58,14 @@ $DYN -o obj/m2m_mark src/m2m_mark.c
 $DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 ${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
 cp obj/prefset ../prebuilt/userland/prefset
+$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
+${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond
+cp obj/redwood-motiond ../prebuilt/userland/redwood-motiond
 cp obj/m2m_mark ../prebuilt/userland/m2m_mark
 $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood.dylib.new src/inject.c src/inject_sensors.c src/inject_location.c   # (sensors; locationd/CoreMotion compass)
 $DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
-	-o obj/libredwood-sb.dylib.new src/inject_sb.c
+	-o obj/libredwood-sb.dylib.new src/inject_sb.c src/inject_location.c
 for lib in libredwood libredwood-sb; do
 	[ -f ../prebuilt/userland/$lib.dylib.orig ] || [ ! -f ../prebuilt/userland/$lib.dylib ] || cp ../prebuilt/userland/$lib.dylib ../prebuilt/userland/$lib.dylib.orig
 	mv obj/$lib.dylib.new ../prebuilt/userland/$lib.dylib

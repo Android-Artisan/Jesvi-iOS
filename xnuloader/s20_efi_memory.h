@@ -14,6 +14,13 @@ s20_par_normal_nc(uint64_t par, uint64_t address)
 }
 
 static inline int
+s20_par_device(uint64_t par, uint64_t address)
+{
+    const uint64_t pa_mask = 0x0000fffffffff000ULL;
+    return !(par & 1) && (par >> 56) == 0 && (par & pa_mask) == (address & pa_mask);
+}
+
+static inline int
 s20_efi_map_covers(const void *map, uint64_t bytes, uint64_t stride,
     uint64_t base, uint64_t size, uint32_t type, uint64_t cache_attribute)
 {

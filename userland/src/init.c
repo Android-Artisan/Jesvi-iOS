@@ -1061,6 +1061,74 @@ mount_data_volume(void)
 	return 1;
 }
 
+/*
+ * island=1 (xnuloader/loader.c) changes what the device tree says about the screen and the home button, and
+ * MobileGestalt keeps its answers in a cache it does not rebuild when the tree changes: switched one way or
+ * the other, iOS would go on with the old answers (a 14 Pro with a home button, or no island). So when the
+ * flag differs from the last boot's, the cache goes, and MobileGestalt makes a new one from the tree.
+ */
+#define MG_CACHE "/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist"
+#define ISLAND_MARK "/private/var/db/redwood-island"
+
+static void
+island_cache_sync(void)
+{
+	const char *arg = boot_arg("island");
+	/* Version the hardware capability cache too: old builds cached ALS=false
+	 * because their light sensor existed only in virtual HID, not IORegistry.
+	 * Invalidate once before launchd (and when the ALS boot configuration changes),
+	 * so Settings and CoreBrightness both obtain the real kernel capability. */
+	char now[3] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2' }, last[4];
+	int fd;
+	arg = boot_arg("shub");
+	if (arg != NULL && strcmp(arg, "6") == 0) now[1] = '1';
+	arg = boot_arg("sens_als");
+	if (arg != NULL && strcmp(arg, "0") == 0) now[1] = '0';
+
+	if (read_whole(ISLAND_MARK, last, sizeof(last)) == sizeof(now) && !memcmp(last, now, sizeof(now))) {
+		return;
+	}
+	if (unlink(MG_CACHE) == 0) {
+		printf("  hardware capabilities changed (island=%c ALS=%c): rebuilding MobileGestalt cache\n", now[0], now[1]);
+	}
+	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		write(fd, now, sizeof(now));
+		close(fd);
+	}
+}
+
+/*
+ * The clock. The S20 starts every boot at 1970 (no RTC is read) until the network sets it, and iOS's daemons
+ * write what happens in between with 1970 dates. powerlog's daily archiver (inside aggregated) then made one
+ * archive per day since 1970: 12,691 files, 596 MB, a core at 92 % for good (2026-11-13: "it feels laggy").
+ * rwlogd saves the time every minute once it is real; here, before launchd starts iOS, a clock still in 1970
+ * is set to that saved time (minutes old at worst; the network corrects it).
+ */
+#define TIME_MARK "/private/var/db/redwood-time"
+static void
+clock_restore(void)
+{
+	char b[24];
+	long saved = 0;
+	int n = read_whole(TIME_MARK, b, sizeof(b) - 1);
+	struct timeval tv;
+
+	if (n <= 0 || gettimeofday(&tv, NULL) != 0 || tv.tv_sec > 1700000000) {
+		return;
+	}
+	b[n] = 0;
+	for (int i = 0; b[i] >= '0' && b[i] <= '9'; i++) {
+		saved = saved * 10 + (b[i] - '0');
+	}
+	if (saved < 1700000000) {
+		return;
+	}
+	tv.tv_sec = saved;
+	tv.tv_usec = 0;
+	printf("  clock: %s from the saved time %ld\n", settimeofday(&tv, NULL) == 0 ? "set" : "NOT set", saved);
+}
+
 static void
 mount_writable(void)
 {
@@ -1079,6 +1147,10 @@ mount_writable(void)
 			printf("  mount: %s\n", strerror(errno));
 		}
 		check(ok, "mount a memory filesystem on /private/var");
+	}
+	if (ok) {
+		island_cache_sync();
+		clock_restore();
 	}
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
@@ -1135,6 +1207,16 @@ mount_writable(void)
 	}
 	printf("  %d directories, %d files\n", made, files);
 	check(ok && made > 50, "create the directories of the data volume");
+
+	/*
+	 * Compiled GPU shaders kept across launches and boots (on unless metal_cache=0; tools/mesa/panfrost-disk-cache-darwin.patch
+	 * redwood_shader_cache_dir): one directory per user under this one, which every user may make its own in
+	 * -- the window server and SpringBoard are mobile, not root, and could not create it in /private/var/db.
+	 * On the flash it stays from boot to boot; in a memory /var it is made again (and starts empty).
+	 */
+	if (ok && (mkdir("/private/var/db/redwood-metal-cache", 01777) == 0 || errno == EEXIST)) {
+		chmod("/private/var/db/redwood-metal-cache", 01777);
+	}
 
 	/*
 	 * and the package manager's prefix, when the image was built with one (tools/mk-jb.sh): /jb of

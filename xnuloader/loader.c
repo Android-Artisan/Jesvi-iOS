@@ -12,6 +12,12 @@
 #include "efi.h"
 #include "s20_memory.h"
 #include "s20_efi_memory.h"
+#ifdef CELLULAR_SPI_LOOPBACK
+#include "../tools/cellular/s5123-spi.h"
+#endif
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+#include "../tools/cellular/s5123-gpio-fields.h"
+#endif
 #include "identity.h"         /* who iOS shall think we are: from the iPhone's own device tree (mkidentity.py) */
 
 /* ------------------------------------------------------------------------ */
@@ -569,6 +575,13 @@ dt_prop_padded(struct dt_writer *w, const char *name, const char *value, uint32_
  * what the framebuffer is: sRGB.
  */
 static int gamut_p3;    /* boot-arg gamut=p3 (a test): the iPhone's own "P3" left in place */
+/*
+ * boot-arg island=1: the iPhone 14 Pro's "artwork-device-subtype" (2556) in place of the iPhone X's
+ * (2436). MobileGestalt's ArtworkDeviceSubType comes from it, and by it SpringBoard switches on its own
+ * Dynamic Island (SystemAperture, the "Pill" status bar, the sensor-region layout), all of which is in
+ * the iPhone X's iOS 16.5 already; the S20's camera hole sits top centre, under the pill.
+ */
+static int island;
 
 static void
 dt_identity(struct dt_writer *w, const struct identity_prop *props, uint32_t count, const unsigned char *data)
@@ -576,6 +589,11 @@ dt_identity(struct dt_writer *w, const struct identity_prop *props, uint32_t cou
 	for (uint32_t i = 0; i < count; i++) {
 		if (str_eq(props[i].name, "artwork-display-gamut") && !gamut_p3) {
 			dt_prop(w, props[i].name, "sRGB", 5);
+			continue;
+		}
+		if (str_eq(props[i].name, "artwork-device-subtype") && island) {
+			static const uint32_t island_subtype = 2556;
+			dt_prop(w, props[i].name, &island_subtype, sizeof(island_subtype));
 			continue;
 		}
 		dt_prop(w, props[i].name, data + props[i].offset, props[i].length);
@@ -3025,6 +3043,11 @@ print_memory_map(void)
  */
 #define WIFI_DMA_SIZE   (32ULL << 20)
 static uint64_t wifi_dma_base, wifi_dma_size;
+static int cellular_memory_ready;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+static int cellular_cp_boot_can_reset(void);
+static int cellular_cp_retry_stop(void);
+#endif
 
 /* Allocate exactly the usable span, aligned and excluding the S20 CP map.
  * Works with old UEFI too, but only a rebuilt UEFI reserves CP memory from ALL
@@ -3116,6 +3139,7 @@ report_cellular_memory(void)
 	static uint8_t map_buf[65536];
 	uint64_t map_size = sizeof(map_buf), key, stride;
 	uint32_t version, reserved = 0, normal_nc = 0;
+	cellular_memory_ready = 0;
 	if (PLAT != &platform_y2s) return;
 	if (EFI_ERROR(BS->get_memory_map(&map_size, map_buf, &key, &stride, &version)) ||
 	    stride < sizeof(efi_memory_descriptor) || map_size > sizeof(map_buf)) {
@@ -3128,8 +3152,9 @@ report_cellular_memory(void)
 		reserved += owned;
 		if (owned) normal_nc += cellular_normal_nc(s20_cp_regions[i].base, s20_cp_regions[i].size);
 	}
-	print("cellular memory: reserved %d/3 (UEFI; no modem start requested)\n", (uint64_t)reserved);
+	print("cellular memory: reserved %d/3 (UEFI ownership only)\n", (uint64_t)reserved);
 	print("cellular memory: normal-nc %d/3 (DXE and live EL1 translation; every CP page)\n", (uint64_t)normal_nc);
+	cellular_memory_ready = reserved == 3 && normal_nc == 3;
 }
 
 static void
@@ -3475,6 +3500,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	int camera_requested = 0;
 	/* (the loader stays for run after run: what the last run's arguments said must not hold for this one) */
 	gamut_p3 = 0;
+	island = 0;
 	/* a run that does not ask for writes does not get them, whatever an earlier run of this
 	 * loader asked for (the loader stays resident across runs) */
 	block_write_requested = 0;
@@ -3489,6 +3515,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
+		island |= starts_with(c, "island=1") && (c == pi.cmdline || c[-1] == ' ') && (c[8] == 0 || c[8] == ' ');
 		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
 		    (c[5] == 0 || c[5] == ' ')) {
 			ufs_requested = c[4] - '0';
@@ -3676,6 +3703,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", phys_base);
 	dt_prop_u64(&w, "dram-size", win_size);
+	/* A machine-readable handoff for the opt-in IPC backend. Recheck actual
+	 * firmware ownership/cache state after all preceding allocations. */
+	report_cellular_memory();
+	if (cellular_memory_ready) {
+		dt_prop_u64(&w, "cellular-memory-version", 1);
+		dt_prop_u64(&w, "cellular-ipc-base", 0xf0000000ULL);
+		dt_prop_u64(&w, "cellular-ipc-size", 0x800000ULL);
+	}
+
 	reserve_wifi_dma();
 	if (wifi_dma_size != 0) {
 		dt_prop_u64(&w, "wifi-dma-base", wifi_dma_base);
@@ -3797,6 +3833,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		dt_end(&w);
 	}
 	dt_end(&w);
+
+	/*
+	 * With island=1 (the 14 Pro's subtype, see dt_identity), what a 14 Pro's tree says and the iPhone X's does
+	 * not: no home button. MobileGestalt's HomeButtonType is /buttons "home-button-type" (2 = none), and
+	 * BaseBoard's -[BSPlatform homeButtonType] calls a phone with no answer buttonless only when its subtype
+	 * is 2436; at 2556 iOS would take the S20 for a home-button iPhone (no home-bar swipe, "press home").
+	 */
+	if (island) {
+		dt_begin(&w, "buttons");
+		dt_prop_u32(&w, "home-button-type", 2);
+		dt_end(&w);
+	}
 
 	/* IOKit publishes its NVRAM object on this node; without it IOKit asserts. */
 	dt_begin(&w, "options");
@@ -4508,10 +4556,21 @@ fb_command(char *cmd)
 			} else {
 				fb_reply("FAIL", why);
 			}
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+		} else if (starts_with(cmd, "oem cp-stop")) {
+			int safe=cellular_cp_retry_stop();
+			fb_reply(safe?"OKAY":"FAIL",safe?"CP reset/power held low":"CP cleanup not confirmed; memory remains reserved");
+#endif
 		} else if (starts_with(cmd, "oem boot")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
 			fb_reply("OKAY", "booting iOS");
 			usb_boot_asked = 1;
 		} else if (starts_with(cmd, "oem download-mode")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
 			fb_reply("OKAY", "");
 			BS->stall(200000);
 			reboot_download();
@@ -4523,6 +4582,9 @@ fb_command(char *cmd)
 			}
 			fb_reply("OKAY", "");
 		} else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
 			fb_reply("OKAY", "");
 			BS->stall(200000);
 			ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
@@ -5538,9 +5600,380 @@ release_cellular_memory(void)
 }
 #endif
 #ifdef CELLULAR_PREFLIGHT_ONLY
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+/* Ownership/readback test only. All five AP-owned signals are held LOW;
+ * POWER_ON is never asserted, no firmware is sent, CP2AP inputs are untouched.
+ * Restore only each target's CON/DAT fields; protect RMW at TPL_HIGH_LEVEL,
+ * preserving neighboring Bluetooth GPG1-1 and every unrelated GPIO field.
+ */
+static int
+cellular_cp_gpio_preflight(void)
+{
+	static const struct {uint64_t base; unsigned pin;} pins[] = {
+		{0x15c30120,0}, /* RESET_N */
+		{0x15c30280,0}, /* POWER_ON */
+		{0x15c30320,0}, /* AP_STATUS */
+		{0x107300c0,3}, /* AP2CP_WAKE; NOT CP2AP_WAKE GPM30 */
+		{0x10730060,6}, /* DUMP_NOTI, later shared with SPI */
+	};
+	uint32_t saved_con[5], saved_dat[5];
+	int changed = 0, passed = 1;
+	report_cellular_memory();
+	uint64_t saved_par = READ_SYSREG(PAR_EL1), pmu = 0x15860720;
+	__asm__ volatile ("at s1e1r, %0; isb" :: "r"(pmu) : "memory");
+	int pmu_mapped = s20_par_device(READ_SYSREG(PAR_EL1), pmu);
+	__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved_par) : "memory");
+	if (!cellular_memory_ready || !pmu_mapped || (*(volatile uint32_t *)(uintptr_t)pmu & 1) ||
+	    (*(volatile uint32_t *)(uintptr_t)0x15c30284 & 1) ||
+	    (*(volatile uint32_t *)(uintptr_t)0x15c30384 & 1)) return 0;
+	for (unsigned i=0;i<5;i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		saved_con[i]=bank[0]; saved_dat[i]=bank[1];
+		if ((saved_con[i]>>(4*pins[i].pin)) & 15) {
+			print("cellular GPIO: refused existing owner at %x pin %d\n", pins[i].base, (uint64_t)pins[i].pin);
+			return 0;
+		}
+	}
+	for (unsigned i=0;i<5;i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		uint32_t con,dat;
+		uint64_t tpl=BS->raise_tpl(31 /* TPL_HIGH_LEVEL */);
+		int valid=s5123_gpio_output_values(bank[0],bank[1],pins[i].pin,0,&con,&dat);
+		if (valid) {bank[1]=dat; __asm__ volatile ("dsb sy" ::: "memory"); bank[0]=con; __asm__ volatile ("dsb sy" ::: "memory");}
+		BS->restore_tpl(tpl);
+		changed=(int)i+1;
+		uint32_t got_con=bank[0],got_dat=bank[1];
+		int okay=valid && ((got_con>>(4*pins[i].pin)) & 15)==1 && !((got_dat>>pins[i].pin)&1);
+		print("cellular GPIO: output-low %x pin %d verified %d\n",pins[i].base,(uint64_t)pins[i].pin,(uint64_t)okay);
+		if (!okay) {passed=0;break;}
+	}
+	if (passed) BS->stall(50000);
+	for (int i=changed-1;i>=0;i--) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)pins[i].base;
+		uint32_t con_mask=15u<<(4*pins[i].pin),dat_mask=1u<<pins[i].pin;
+		uint64_t tpl=BS->raise_tpl(31);
+		bank[0]=(bank[0]&~con_mask)|(saved_con[i]&con_mask);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		bank[1]=(bank[1]&~dat_mask)|(saved_dat[i]&dat_mask);
+		__asm__ volatile ("dsb sy" ::: "memory");
+		BS->restore_tpl(tpl);
+		int restored=(bank[0]&con_mask)==(saved_con[i]&con_mask);
+		int neighbors=(bank[0]&~con_mask)==(saved_con[i]&~con_mask);
+		print("cellular GPIO: restore %x pin %d verified %d neighbors preserved %d\n",
+		    pins[i].base,(uint64_t)pins[i].pin,(uint64_t)restored,(uint64_t)neighbors);
+		if (!restored || !neighbors) passed=0;
+	}
+	print("cellular GPIO: no power-on or firmware; result %d\n",(uint64_t)passed);
+	return passed;
+}
+#endif
+#ifdef CELLULAR_SPI_LOOPBACK
+struct cellular_loopback_state {
+	uint64_t base;
+	const uint8_t *expected;
+	uint32_t received, mismatches;
+	int active;
+};
+static uint32_t
+cellular_reg_read(uint64_t address)
+{
+	return *(volatile uint32_t *)(uintptr_t)address;
+}
+static void
+cellular_reg_write(uint64_t address, uint32_t value)
+{
+	*(volatile uint32_t *)(uintptr_t)address = value;
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+static int
+cellular_clock_wait(uint64_t address, uint32_t mask, uint32_t value)
+{
+	for (unsigned i = 0; i < 1000; i++) {
+		if ((cellular_reg_read(address) & mask) == value) return 1;
+		BS->stall(10);
+	}
+	return 0;
+}
+static uint32_t
+cellular_spi_read32(void *context, uint32_t offset)
+{
+	struct cellular_loopback_state *state = context;
+	return cellular_reg_read(state->base + offset);
+}
+static uint8_t
+cellular_spi_read8(void *context, uint32_t offset)
+{
+	struct cellular_loopback_state *state = context;
+	uint8_t value = *(volatile uint8_t *)(uintptr_t)(state->base + offset);
+	if (state->active) {
+		if (state->received >= 16 || value != state->expected[state->received]) state->mismatches++;
+		state->received++;
+	}
+	return value;
+}
+static void
+cellular_spi_write32(void *context, uint32_t offset, uint32_t value)
+{
+	struct cellular_loopback_state *state = context;
+	if (offset == S5123_MODE) value |= 1u << 3; /* INTERNAL loopback only. */
+	if (offset == S5123_CH) state->active = value == 3;
+	cellular_reg_write(state->base + offset, value);
+}
+static void
+cellular_spi_write8(void *context, uint32_t offset, uint8_t value)
+{
+	struct cellular_loopback_state *state = context;
+	*(volatile uint8_t *)(uintptr_t)(state->base + offset) = value;
+}
+static uint64_t
+cellular_spi_now(void *context)
+{
+	(void)context;
+	uint64_t ticks = READ_SYSREG(CNTVCT_EL0), frequency = timer_freq();
+	return (ticks / frequency) * 1000000 + (ticks % frequency) * 1000000 / frequency;
+}
+
+/* One generated 16-byte internal-loopback packet, never firmware. External
+ * SPI pins MUST stay GPIO inputs. No CP power/reset/pinmux write is allowed.
+ * Only USI mode and SPI clock divider/mux are changed, then restored along
+ * with the controller configuration. Refuse an already-configured owner.
+ */
+static int
+cellular_spi_loopback(void)
+{
+	static const uint32_t spi_offsets[] = {S5123_CH,S5123_MODE,S5123_CS,S5123_IRQ,S5123_PACKET,S5123_SWAP,S5123_FEEDBACK,S5123_USI_CON};
+	uint32_t saved_spi[sizeof(spi_offsets)/sizeof(spi_offsets[0])] = {0};
+	uint32_t mux = cellular_reg_read(0x10700690), divider = cellular_reg_read(0x10701820);
+	uint32_t mode = cellular_reg_read(0x10721048), pins = cellular_reg_read(0x10730060);
+	uint32_t gate0 = cellular_reg_read(0x107020fc), gate1 = cellular_reg_read(0x1070208c);
+	int changed_clock = 0, changed_mode = 0, saved_controller = 0, passed = 0;
+	report_cellular_memory();
+	if (!cellular_memory_ready || !timer_freq() || mode != 0 || (pins & 0xffff0000u) ||
+	    (mux & (1u<<16)) || (divider & (1u<<16)) ||
+	    !(gate0 & (1u<<21)) || !(gate1 & (1u<<21)) ||
+	    (cellular_reg_read(0x15c30284) & 1) || (cellular_reg_read(0x15c30384) & 1)) {
+		print("cellular SPI loopback: refused (memory, clock, existing owner, external pins or CP levels)\n");
+		return 0;
+	}
+	print("cellular SPI loopback: generated 16-byte packet; external pins remain inputs; no CP writes\n");
+	changed_clock = 1;
+	cellular_reg_write(0x10701820, (divider & ~15u) | 3); /* 26MHz /4 IP /4 = 1.625MHz. */
+	if (!cellular_clock_wait(0x10701820, (1u<<16)|15, 3)) goto restore;
+	cellular_reg_write(0x10700690, mux & ~(1u<<4));
+	if (!cellular_clock_wait(0x10700690, (1u<<16)|(1u<<4), 0)) goto restore;
+	changed_mode = 1;
+	cellular_reg_write(0x10721048, 2); /* SPI, while all four external pads remain inputs. */
+	if (cellular_reg_read(0x10721048) != 2) goto restore;
+	for (unsigned i = 0; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+		saved_spi[i] = cellular_reg_read(0x10960000 + spi_offsets[i]);
+	saved_controller = 1;
+	if ((saved_spi[0] & 3) || saved_spi[3] || saved_spi[4]) {
+		print("cellular SPI loopback: controller unexpectedly active; no transfer\n");
+		goto restore;
+	}
+	uint8_t pattern[16];
+	for (unsigned i = 0; i < sizeof(pattern); i++) pattern[i] = (uint8_t)(0x35 + 17*i);
+	struct cellular_loopback_state state = {.base=0x10960000, .expected=pattern};
+	struct s5123_spi_ops ops = {&state,cellular_spi_read32,cellular_spi_read8,
+	    cellular_spi_write32,cellular_spi_write8,cellular_spi_now};
+	struct s5123_spi_result result = {0};
+	int error = s5123_spi_send_boot(&ops, &result, pattern, sizeof(pattern), 1625000, 20000, 1);
+	passed = !error && result.completed_bytes == sizeof(pattern) && state.received == sizeof(pattern) && !state.mismatches;
+	print("cellular SPI loopback: error %s%d completed %d received %d mismatches %d status %x\n",
+	    error < 0 ? "-" : "", (uint64_t)(error < 0 ? -error : error), (uint64_t)result.completed_bytes, (uint64_t)state.received,
+	    (uint64_t)state.mismatches, (uint64_t)result.last_status);
+restore:
+	if (saved_controller) {
+		cellular_reg_write(0x10960000 + S5123_CH, 0);
+		/* Restore channel enable last, while pads still remain inputs. */
+		for (unsigned i = 1; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+			cellular_reg_write(0x10960000 + spi_offsets[i], saved_spi[i]);
+		cellular_reg_write(0x10960000 + S5123_CH, saved_spi[0]);
+		int controller_restored = 1;
+		for (unsigned i = 0; i < sizeof(spi_offsets)/sizeof(spi_offsets[0]); i++)
+			if (cellular_reg_read(0x10960000 + spi_offsets[i]) != saved_spi[i]) controller_restored = 0;
+		print("cellular SPI loopback: controller restored %d\n", (uint64_t)controller_restored);
+		if (!controller_restored) passed = 0;
+	}
+	if (changed_mode) cellular_reg_write(0x10721048, mode);
+	if (changed_clock) {
+		cellular_reg_write(0x10701820, divider);
+		if (!cellular_clock_wait(0x10701820, (1u<<16)|15, divider & 15)) passed = 0;
+		cellular_reg_write(0x10700690, mux);
+		if (!cellular_clock_wait(0x10700690, (1u<<16)|(1u<<4), mux & (1u<<4))) passed = 0;
+	}
+	int restored = cellular_reg_read(0x10721048) == mode && cellular_reg_read(0x10730060) == pins &&
+	    (cellular_reg_read(0x10701820) & 15) == (divider & 15) &&
+	    (cellular_reg_read(0x10700690) & (1u<<4)) == (mux & (1u<<4));
+	print("cellular SPI loopback: controls restored %d; result %d\n", (uint64_t)restored, (uint64_t)(passed && restored));
+	return passed && restored;
+}
+#endif
+#ifdef CELLULAR_MMIO_PREFLIGHT
+/* Add only known peripheral MMIO holes through DXE, then verify live Device
+ * identity mappings before any register read. Added maps remain until reboot;
+ * the host restores original BOOT/cold-resets after collecting the RAM report.
+ * SPI is mapped/translated only: its controller is deliberately NOT read while
+ * USI/clocks/pins remain unconfigured. CP power/reset are never written here.
+ */
+static int
+cellular_mmio_preflight(void)
+{
+	static const struct { uint64_t base, size; } regions[] = {
+		{0x10700000, 0x4000}, /* CMU PERIC1 */
+		{0x10720000, 0x10000}, /* Existing SYSREG PERIC1 */
+		{0x10730000, 0x1000}, /* GPIO PERIC1 */
+		{0x15c30000, 0x1000}, /* GPIO CMGP */
+		{0x10960000, 0x1000}, /* SPI16: mapping only, no controller access */
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+		{0x13c00000, 0x4000}, /* HSI2 clock controls; never write shared UFS clocks */
+		{0x13c30000, 0x1000}, /* GPF3 CLKREQ/PERST inputs */
+		{0x13c20000, 0x2000}, /* PCIe1 SYSREG: mapping only */
+		{0x13d20000, 0x2000}, /* ELBI: mapping only; PHY remains isolated */
+		{0x13d50000, 0x2000}, /* PHY: mapping only */
+		{0x13800000, 0x301000}, /* DBI: mapping only */
+		{0x13d40000, 0x1000}, /* PCS: mapping only */
+		{0x14ffe000, 0x2000}, /* configuration window: mapping only */
+		{0x13d00000, 0x1000}, /* IA: mapping only */
+#endif
+	};
+	static const uint64_t clock_pin_regs[] = {
+		0x10700690,0x10701820,0x107020fc,0x1070208c,0x10703070,
+		0x10721048,0x10730060,0x10730064,0x10730068
+	};
+	static const uint64_t gpio_banks[] = {0x15c30120,0x15c30280,0x15c30320,0x15c30380,0x15c303c0,0x15c303e0};
+	efi_dxe_services *dxe = cellular_dxe_services();
+	if (!dxe || (READ_SYSREG(CurrentEL) >> 2) != 1) return 0;
+	for (unsigned i = 0; i < sizeof(regions)/sizeof(regions[0]); i++) {
+		uint64_t base = regions[i].base, size = regions[i].size;
+		efi_gcd_memory_descriptor d;
+		efi_status status = dxe->get_memory_space_descriptor(base, &d);
+		if (EFI_ERROR(status) || d.base > base || d.length > ~0ULL-d.base || d.base+d.length < base+size) return 0;
+		print("cellular MMIO: GCD %x size %x type %d attributes %x\n", base, size, (uint64_t)d.type, d.attributes);
+		if (d.type == 0) {
+			status = dxe->add_memory_space(3 /* EfiGcdMemoryTypeMemoryMappedIo */, base, size, 1 /* UC */);
+			print("cellular MMIO: add %x status %x\n", base, status);
+			if (EFI_ERROR(status)) return 0;
+		} else if (d.type != 3 || !(d.capabilities & 1)) return 0;
+		status = dxe->set_memory_space_attributes(base, size, (d.attributes & ~0x1fULL) | 1);
+		print("cellular MMIO: Device %x status %x\n", base, status);
+		if (EFI_ERROR(status)) return 0;
+		uint64_t saved = READ_SYSREG(PAR_EL1);
+		int okay = 1;
+		for (uint64_t address = base; address < base+size; address += 4096) {
+			__asm__ volatile ("at s1e1r, %0; isb" :: "r"(address) : "memory");
+			if (!s20_par_device(READ_SYSREG(PAR_EL1), address)) { okay = 0; break; }
+		}
+		__asm__ volatile ("msr par_el1, %0; isb" :: "r"(saved) : "memory");
+		print("cellular MMIO: live Device identity %x verified %d\n", base, (uint64_t)okay);
+		if (!okay) return 0;
+	}
+	for (unsigned i = 0; i < sizeof(clock_pin_regs)/sizeof(clock_pin_regs[0]); i++) {
+		uint64_t address = clock_pin_regs[i];
+		print("cellular MMIO: read %x value %x\n", address, (uint64_t)*(volatile uint32_t *)(uintptr_t)address);
+	}
+	for (unsigned i = 0; i < sizeof(gpio_banks)/sizeof(gpio_banks[0]); i++) {
+		volatile uint32_t *bank = (volatile uint32_t *)(uintptr_t)gpio_banks[i];
+		print("cellular MMIO: GPIO %x CON %x DAT %x PUD %x\n", gpio_banks[i],
+		    (uint64_t)bank[0], (uint64_t)bank[1], (uint64_t)bank[2]);
+	}
+	print("cellular MMIO: complete; SPI controller not read; CP unchanged\n");
+#ifdef CELLULAR_PCIE_MAP_PREFLIGHT
+	static const uint64_t pcie_controls[]={0x13c00600,0x13c00610,0x13c02018,0x13c0201c,
+	    0x13c02020,0x13c02024,0x13c02028,0x13c0202c,0x13c02030,0x13c02034,
+	    0x13c30000,0x13c30004,0x13c30008};
+	for (unsigned i=0;i<sizeof(pcie_controls)/sizeof(pcie_controls[0]);i++)
+		print("cellular PCIe map: control %x value %x\n",pcie_controls[i],
+		    (uint64_t)*(volatile uint32_t *)(uintptr_t)pcie_controls[i]);
+	print("cellular PCIe map: complete; translation only, no controller read or link/power request\n");
+#ifdef CELLULAR_PCIE_ACCESS_PREFLIGHT
+	/* Cold root-port access is not equivalent to Linux's already-initialized
+	 * link-down path. Keep CP off and PERST asserted, temporarily bypass PHY
+	 * isolation, then restore isolation/pin ownership before fallback. No
+	 * shared HSI2/UFS clock, LTSSM, ATU, endpoint or DMA writes.
+	 */
+	volatile uint32_t *pmu=(volatile uint32_t *)0x15860720;
+	volatile uint32_t *con=(volatile uint32_t *)0x13c30000;
+	volatile uint32_t *dat=(volatile uint32_t *)0x13c30004;
+	volatile uint32_t *input_clock=(volatile uint32_t *)0x13d500d8;
+	uint32_t saved_pmu=*pmu,saved_con=*con,saved_dat=*dat,old_clock=0;
+	uint32_t identity=0,command=0,link=0,ltssm=0;
+	int clock_changed=0,clock_ok=0,restored=1;
+	if ((saved_pmu&1) || (*(volatile uint32_t *)0x15c30284&1) ||
+	    (*(volatile uint32_t *)0x15c30384&1) || (saved_con&0xff)) {
+		print("cellular PCIe access: owner/power guard refused\n");return 0;
+	}
+	for (uint64_t a=0x13c02018;a<=0x13c02034;a+=4) {
+		if (!(*(volatile uint32_t *)(uintptr_t)a & (1u<<21))) {
+			print("cellular PCIe access: clock guard refused %x\n",a);return 0;
+		}
+	}
+#define PCIE_CHECKPOINT(message) do { \
+	print("cellular PCIe access: checkpoint " message "\n"); \
+	compose_logs(NULL,0); \
+	if (!store_logs(find_log_partition(),NULL,0)) goto pcie_access_restore; \
+} while (0)
+	PCIE_CHECKPOINT("before PERST ownership and isolation bypass");
+	uint64_t tpl=BS->raise_tpl(31);
+	*dat &= ~2u;__asm__ volatile ("dsb sy" ::: "memory");
+	*con=(*con&~0xf0u)|0x10u;__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if ((*con&0xf0u)!=0x10u || (*dat&2)) goto pcie_access_restore;
+	*pmu |= 1;__asm__ volatile ("dsb sy" ::: "memory");
+	if (!(*pmu&1) || EFI_ERROR(BS->stall(1000))) goto pcie_access_restore;
+	PCIE_CHECKPOINT("isolation bypass verified; before ELBI LTSSM read 13d20054");
+	ltssm=*(volatile uint32_t *)0x13d20054;
+	print("cellular PCIe access: LTSSM enable %x\n",(uint64_t)ltssm);
+	if (ltssm) goto pcie_access_restore;
+	PCIE_CHECKPOINT("before PHY clock read 13d500d8");
+	old_clock=*input_clock;
+	print("cellular PCIe access: input clock before %x\n",(uint64_t)old_clock);
+	PCIE_CHECKPOINT("before PHY clock write28");
+	clock_changed=1;
+	*input_clock=0x28;__asm__ volatile ("dsb sy" ::: "memory");
+	clock_ok=*input_clock==0x28;
+	if (clock_ok) {
+		PCIE_CHECKPOINT("before ROOT identity read13800000");
+		identity=*(volatile uint32_t *)0x13800000;
+		print("cellular PCIe access: ROOT identity read %x\n",(uint64_t)identity);
+		PCIE_CHECKPOINT("before ROOT command read13800004");
+		command=*(volatile uint32_t *)0x13800004;
+		PCIE_CHECKPOINT("before ELBI state read13d202c8");
+		link=*(volatile uint32_t *)0x13d202c8;
+		print("cellular PCIe access: ROOT id %x command/status %x link %x (not endpoint)\n",
+		    (uint64_t)identity,(uint64_t)command,(uint64_t)link);
+	}
+pcie_access_restore:
+	print("cellular PCIe access: restoring clock/isolation/PERST ownership\n");flush_log();
+	if (clock_changed) {
+		*input_clock=old_clock;__asm__ volatile ("dsb sy" ::: "memory");
+		if (*input_clock!=old_clock) restored=0;
+	}
+	*pmu=(*pmu&~1u)|(saved_pmu&1);__asm__ volatile ("dsb sy" ::: "memory");
+	if ((*pmu&1)!=(saved_pmu&1)) restored=0;
+	/* CP stayed off throughout; restore only our PERST pin, no CLKREQ writes. */
+	tpl=BS->raise_tpl(31);
+	*con=(*con&~0xf0u)|(saved_con&0xf0u);__asm__ volatile ("dsb sy" ::: "memory");
+	*dat=(*dat&~2u)|(saved_dat&2);__asm__ volatile ("dsb sy" ::: "memory");
+	BS->restore_tpl(tpl);
+	if (*con!=saved_con || (*dat&2)!=(saved_dat&2)) restored=0;
+	int valid=clock_ok && identity && identity!=0xffffffffu && restored;
+	print("cellular PCIe access: restored %d result %d; CP off, no link/DMA request\n",(uint64_t)restored,(uint64_t)valid);
+	flush_log();
+#undef PCIE_CHECKPOINT
+	if (!valid) return 0;
+#endif
+#endif
+	return 1;
+}
+#endif
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+#include "../tools/cellular/s5123-uefi-boot.h"
+#endif
 /* Exercise the real allocation path without booting a kernel with new pools.
  * The original installed loader is loaded first and started after all probe
- * allocations have been released. No CP register/firmware access occurs here.
+ * allocations have been released. Additional opt-in probes may exercise CP
+ * controls/BOOT; those must confirm shutdown before releasing reservations.
  * A dedicated payload entry retains the report in FD RAM while the original
  * loader runs iOS; the host reads it through the existing read-only debug port.
  */
@@ -5551,6 +5984,10 @@ cellular_memory_preflight(void)
 	efi_handle fallback = NULL;
 	uint8_t *report = NULL;
 	uint64_t report_size = 0;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	const uint8_t *cp_image=NULL,*cp_info=NULL;
+	uint64_t cp_length=0,cp_info_length=0;
+#endif
 	efi_status status;
 	if (ph->magic != PAYLOAD_MAGIC || ph->size > PAYLOAD_MAX_SIZE - sizeof(*ph)) return EFI_ERROR_BIT | 2;
 	const uint8_t *p = (const uint8_t *)(ph + 1), *end = p + ph->size;
@@ -5566,13 +6003,46 @@ cellular_memory_preflight(void)
 		} else if (memcmp(entry->name, "probe.report\0\0\0\0", 16) == 0) {
 			report = (uint8_t *)(p + sizeof(*entry));
 			report_size = entry->size;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+		} else if (memcmp(entry->name,"cp.boot\0\0\0\0\0\0\0\0\0",16)==0) {
+			cp_image=p+sizeof(*entry);cp_length=entry->size;
+		} else if (memcmp(entry->name,"cp.boot.info\0\0\0\0",16)==0) {
+			cp_info=p+sizeof(*entry);cp_info_length=entry->size;
+#endif
 		}
 		p += sizeof(*entry) + padded;
 	}
 	if (!fallback || !report || report_size < 8192) return EFI_ERROR_BIT | 14;
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	print("== CELLULAR CP BOOT PREFLIGHT (one guarded power/BOOT attempt) ==\n");
+#else
 	print("== CELLULAR MEMORY PREFLIGHT (no modem start) ==\n");
+#endif
 #ifdef CELLULAR_RESERVE_CP
 	print("cellular reservation: probe result %d\n", (uint64_t)reserve_cellular_memory());
+#endif
+#ifdef CELLULAR_MMIO_PREFLIGHT
+	int mmio_ready = cellular_mmio_preflight();
+	print("cellular MMIO: preflight result %d\n", (uint64_t)mmio_ready);
+#ifdef CELLULAR_SPI_LOOPBACK
+	int spi_ready=mmio_ready && cellular_spi_loopback();
+	print("cellular SPI loopback: preflight result %d\n", (uint64_t)spi_ready);
+#endif
+#ifdef CELLULAR_CP_GPIO_PREFLIGHT
+	int gpio_ready=mmio_ready && cellular_cp_gpio_preflight();
+	print("cellular GPIO: preflight result %d\n", (uint64_t)gpio_ready);
+#endif
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+	if (mmio_ready && spi_ready && gpio_ready) {
+		int safe=cellular_cp_boot_preflight(cp_image,cp_length,cp_info,cp_info_length);
+		while (!safe) {
+			print("cellular CP BOOT: HOLD; cleanup unconfirmed; CP RAM retained. USB oem cp-stop then oem boot\n");
+			flush_log();
+			(void)log_access();
+			safe=cellular_cp_retry_stop();
+		}
+	} else print("cellular CP BOOT: prerequisite failed; no power-on or BOOT attempt\n");
+#endif
 #endif
 	print_memory_map();
 	report_cellular_memory();
@@ -5601,7 +6071,8 @@ cellular_memory_preflight(void)
 	uint32_t report_len = log_len < report_size - 8 ? log_len : (uint32_t)(report_size - 8);
 	memset(report, 0, (size_t)report_size);
 	memcpy(report + 8, log_buf, report_len);
-	((uint32_t *)report)[1] = report_len;
+	/* Refuse to present a silently truncated probe as complete evidence. */
+	((uint32_t *)report)[1] = report_len | (log_len > report_size - 8 ? 0x80000000u : 0);
 	((uint32_t *)report)[0] = 0x304d5043; /* CPM0 */
 	__asm__ volatile ("dsb sy" ::: "memory");
 	return BS->start_image(fallback, NULL, NULL);

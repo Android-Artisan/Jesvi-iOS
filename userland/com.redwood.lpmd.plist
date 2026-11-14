@@ -4,7 +4,6 @@
 <dict>
 	<key>Label</key>
 	<string>com.redwood.lpmd</string>
-	<!-- iOS Low Power Mode -> kern.redwood.lowpower (src/lpmd.c): the kernel caps clocks while it is on -->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/redwood/bin/lpmd</string>
@@ -15,5 +14,7 @@
 	<string>/dev/console</string>
 	<key>StandardErrorPath</key>
 	<string>/dev/console</string>
+	<key>KeepAlive</key>
+	<true/>
 </dict>
 </plist>

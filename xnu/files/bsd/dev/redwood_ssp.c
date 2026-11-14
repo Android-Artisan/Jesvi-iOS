@@ -22,7 +22,9 @@
  *   shub=6   ... the sensors on (shub_sensors=), their samples into /dev/redwood-sensors for as long as the phone runs
  *   shub_sensors=<mask>  Samsung's sensor numbers (sensor_list.h: 0 accel, 1 gyro, 4 magnetometer, 5 pressure,
  *            7 proximity, 9 light; default 0x2b3 = those six), only those the hub found
- *   shub_ms=<n>          their period in ms (default 20; light, proximity and pressure 200)
+ *   shub_ms=<n>          their period in ms (default 60; pressure 1000; light shub_light_ms=250 while the display is on;
+ *            proximity on native HID demand at shub_prox_ms=200; both off
+ *            while the display is off)
  *   shub_div=<n>         USI14's divider, 0-15 (default 15: 400 MHz / 16 = 25 MHz IP clock, SCLK a quarter: 6.25 MHz;
  *            Samsung's spi-max-frequency is 25 MHz); 255 leaves it as found
  *   shub_ap_rev=<n>      the AP revision told to the hub (default 21: the dtbo's dtbo-hw_rev 0x15; Samsung sends the
@@ -71,6 +73,8 @@
 #include <sys/redwood_sensors.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>          /* IO_NDELAY */
+#include <miscfs/devfs/devfs.h>
 #include "redwood_bcm_shub.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -167,7 +171,12 @@ static struct redwood_exynos_spi bus = {
 static vm_offset_t cmu_top, cmu_peric0;
 static volatile uint8_t *gpp3, *gpp6, *gpb0, *gpm19, *gpa0, *gpa1, *gpa4;
 static uint32_t steps, keep = 1, log_frames, div_ratio = 15, ap_rev = 21;
-static uint32_t want_sensors = 0x2b3, period_ms = 20, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
+/* 2026-11-13 (user: the sensor by the camera flashes every second, the phone laggy): the motion sensors at 60 ms
+ * (~16 Hz, plenty for rotation) instead of 20; shub_ms=20 gives that back. */
+static uint32_t want_sensors = 0x2b3, period_ms = 60, req_rpc = SHUB_RPC_SENSOR_REQ, req_len = 1;
+/* Light stays continuous while awake. The visible IR emitter needs explicit
+ * native proximity demand; periodic unsolicited bursts are never necessary. */
+static uint32_t prox_ms = 200, light_ms = 250;     /* light 4x a second: auto-brightness reacts in ~1.5 s (A, 2026-11-13) */
 static volatile bool powered;
 static const char *state = "off";
 
@@ -645,6 +654,10 @@ pay_ack(void)
 }
 
 static void deliver_rpcs(const uint8_t *p, size_t n);
+static void gnss_post(uint8_t kind, uint8_t flags, uint16_t id, const uint8_t *d, uint16_t len);
+#define GNSS_REC_RPC            'R'     /* an RPC from the hub that is not SSP: [id][data] */
+#define GNSS_REC_SSP            'S'     /* the answer to a raw SSP request: id = the command, flags 1 = answered */
+#define GNSS_REC_SENT           'A'     /* a raw RPC sent: id = the RPC, flags 1 = acknowledged (or sent, if plain) */
 
 static void
 handle_internal(const struct shub_pkt *p)
@@ -812,6 +825,9 @@ deliver_rpcs(const uint8_t *p, size_t n)
 
 	while ((r = shub_rpc_next(p, n, &at, &id, &d, &len)) == 1) {
 		tl.rpcs++;
+		if (id != SHUB_RPC_SENSOR_RSP) {
+			gnss_post(GNSS_REC_RPC, 0, id, d, len);  /* everything but SSP, for /dev/redwood-gnss's readers */
+		}
 		switch (id) {
 		case SHUB_RPC_VERSION:
 			if (len >= 12) {
@@ -950,7 +966,7 @@ static struct {
 	uint32_t init_done, frames, frame_errors, unexpected;
 	bool answered;
 	uint16_t answer_opts;
-	uint8_t answer[16];
+	uint8_t answer[2048];           /* large for /dev/redwood-gnss's raw SSP reads */
 	uint16_t answer_len;
 	uint64_t found;                 /* SENSOR_SCANNING's bitmap */
 	uint32_t fw_rev;
@@ -983,11 +999,17 @@ on_sample(void *ctx, const struct shub_sample *s)
 	post_sample(s);
 }
 
+/* The hub's own debug text (print_mcu_debug): ~8 lines a second in normal use (482 a minute on 2026-11-13, most
+ * of the kernel log). Only with shub_text=1; counted either way (c->debug). */
+static uint32_t shub_text;
+
 static void
 on_text(void *ctx, const uint8_t *p, size_t n)
 {
 	(void)ctx;
-	text_rpc("says", p, (uint16_t)(n > 150 ? 150 : n));
+	if (shub_text) {
+		text_rpc("says", p, (uint16_t)(n > 150 ? 150 : n));
+	}
 }
 
 static void
@@ -1200,6 +1222,8 @@ proximity_setup(void)
 /* Queue diagnostic transactions to the SPI owner; never race an SSP command
  * from the sysctl thread. Raw proximity is off unless explicitly requested. */
 static int prox_request = -1;
+static bool prox_raw_wanted;
+static uint32_t sensor_power_state;
 static uint16_t prox_thresholds[4];
 static bool prox_thresholds_valid;
 static uint8_t prox_info[18];
@@ -1213,7 +1237,10 @@ dbg_shub_prox(const uint64_t *v, unsigned n, char *out, size_t cap)
 	}
 	if (n) __atomic_store_n(&prox_request, (int)v[0], __ATOMIC_RELAXED);
 	lck_mtx_lock(&shub_lock);
-	snprintf(out, cap, "proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u; chip %s %#x drive %#x persist %#x pulse %#x gain %#x time %#x pulse_len %#x offset %02x%02x%s\n",
+	uint32_t power = __atomic_load_n(&sensor_power_state, __ATOMIC_RELAXED);
+	snprintf(out, cap, "display %d light %u prox %u raw %u demand %#x; proximity samples %llu, state %u adc %u; raw samples %llu adc %u; thresholds %s %u %u %u %u; chip %s %#x drive %#x persist %#x pulse %#x gain %#x time %#x pulse_len %#x offset %02x%02x%s\n",
+	    redwood_display_is_on, !!(power & (1u << SSP_LIGHT)), !!(power & (1u << SSP_PROXIMITY)),
+	    !!(power & (1u << SSP_PROXIMITY_RAW)), redwood_sensors_proximity_mode(),
 	    last[SSP_PROXIMITY].count, last[SSP_PROXIMITY].data[0], shub_le16(last[SSP_PROXIMITY].data + 1),
 	    last[SSP_PROXIMITY_RAW].count, shub_le16(last[SSP_PROXIMITY_RAW].data),
 	    prox_thresholds_valid ? "read" : "unavailable", prox_thresholds[0], prox_thresholds[1],
@@ -1229,6 +1256,7 @@ proximity_diagnostic(void)
 	int request = __atomic_exchange_n(&prox_request, -1, __ATOMIC_RELAXED);
 	uint8_t b[8] = {0};
 	if (request < 0) return;
+	prox_raw_wanted = request != 0;
 	if (request) {
 		if (request == 2) {
 			/* Samsung set_prox_cal_to_ssp(): two zero s32s when the
@@ -1250,10 +1278,6 @@ proximity_diagnostic(void)
 		prox_info_valid = ok;
 		if (ok) memcpy(prox_info, info, sizeof(info));
 		lck_mtx_unlock(&shub_lock);
-		if (!(ssp.enabled & (1ull << SSP_PROXIMITY_RAW))) (void)sensor_on(SSP_PROXIMITY_RAW, 200);
-	} else if (ssp.enabled & (1ull << SSP_PROXIMITY_RAW)) {
-		b[0] = SSP_PROXIMITY_RAW; shub_put32(b + 1, 200);
-		if (ssp_cmd(SSP_SENSOR_REMOVE, SSP_AP2HUB_WRITE, 0, b, 5)) ssp.enabled &= ~(1ull << SSP_PROXIMITY_RAW);
 	}
 }
 
@@ -1369,33 +1393,273 @@ report(void)
 	lck_mtx_unlock(&shub_lock);
 }
 
+/*
+ * /dev/redwood-gnss: the hub's link for user space, for the GNSS bring-up (A, 2026-11-13; ported from Scion's
+ * /dev/hakios-gnss, 9b886e99, their docs/gnss.md; their gnsstool speaks the same records). Root only. Made at shub=6; requests are carried out by the hub thread between its reads.
+ *
+ * write(): one request per call, little-endian:
+ *   'R' [u16 id][data]       an RPC to the hub in a reliable packet (data up to 1000 bytes); answered by an 'A' record
+ *   'P' [u16 id][data]       the same in a plain packet
+ *   'S' [u8 cmd][u16 options][u32 arg][u16 len][data]   one SSP transaction (ssp_cmd): options 0 READs len bytes
+ *                            (up to 2000) and answers with an 'S' record of them; 1 WRITEs data (up to 64 bytes)
+ *   A write while a request is outstanding fails with EBUSY.
+ * read(): a stream of records [u8 kind][u8 flags][u16 id][u16 len][len bytes]: 'R' every RPC from the hub except SSP's
+ * (0x21) as it arrives, 'A' and 'S' the outcome of requests. Records that do not fit the 64 KB ring are dropped.
+ */
+#define GNSS_DEV_NAME           "redwood-gnss"
+#define GNSS_RING               (64 * 1024)
+#define GNSS_REQ_MAX            (1 + 2 + 1000)
+static uint8_t gnss_ring[GNSS_RING];
+static uint32_t gnss_head, gnss_tail, gnss_lost;
+static int gnss_readers;
+static bool gnss_waiting;
+static uint8_t gnss_req[GNSS_REQ_MAX];
+static uint16_t gnss_req_len;
+static volatile bool gnss_req_pending;  /* written, for the hub thread */
+static volatile bool gnss_req_busy;     /* from a write's start to the hub thread's end of it */
+static volatile bool gnss_live;         /* the hub thread is in run(), where requests are taken */
+
+static void
+gnss_post(uint8_t kind, uint8_t flags, uint16_t id, const uint8_t *d, uint16_t len)
+{
+	uint8_t h[6] = { kind, flags, (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)len, (uint8_t)(len >> 8) };
+
+	lck_mtx_lock(&shub_lock);
+	if (gnss_readers > 0) {
+		if (GNSS_RING - (gnss_head - gnss_tail) < sizeof(h) + len) {
+			gnss_lost++;
+		} else {
+			for (unsigned i = 0; i < sizeof(h); i++) {
+				gnss_ring[gnss_head++ % GNSS_RING] = h[i];
+			}
+			for (uint16_t i = 0; i < len; i++) {
+				gnss_ring[gnss_head++ % GNSS_RING] = d[i];
+			}
+			if (gnss_waiting) {
+				gnss_waiting = false;
+				wakeup(&gnss_head);
+			}
+		}
+	}
+	lck_mtx_unlock(&shub_lock);
+}
+
+static bool
+gnss_pending(void)
+{
+	return gnss_req_pending;
+}
+
+/* On the hub thread: carry out the request user space wrote */
+static void
+gnss_do(void)
+{
+	static uint8_t pay[SHUB_TL_MAX];
+	const uint8_t *r = gnss_req;
+	uint16_t n = gnss_req_len;
+
+	if (n >= 3 && (r[0] == 'R' || r[0] == 'P')) {
+		uint16_t id = (uint16_t)(r[1] | r[2] << 8);
+		size_t k = shub_rpc_put(pay, id, r + 3, (uint16_t)(n - 3));
+		bool ok = r[0] == 'R' ? send_reliable(pay, (uint16_t)k) : send_packet(0, pay, (uint16_t)k, false);
+
+		gnss_post(GNSS_REC_SENT, ok, id, NULL, 0);
+	} else if (n >= 10 && r[0] == 'S') {
+		uint8_t cmd = r[1];
+		uint16_t opts = (uint16_t)(r[2] | r[3] << 8), len = (uint16_t)(r[8] | r[9] << 8);
+		uint32_t arg = shub_le32(r + 4);
+		static uint8_t buf[2048];
+		bool ok;
+
+		if (SSP_TYPE(opts) == SSP_AP2HUB_READ) {
+			len = len > 2000 ? 2000 : len;
+			memset(buf, 0, len);
+			ok = ssp_cmd(cmd, opts, arg, buf, len);
+			gnss_post(GNSS_REC_SSP, ok, cmd, buf, ok ? len : 0);
+		} else {
+			len = len > 64 ? 64 : len;
+			len = len > n - 10 ? (uint16_t)(n - 10) : len;
+			memcpy(buf, r + 10, len);
+			ok = ssp_cmd(cmd, opts, arg, buf, len);
+			gnss_post(GNSS_REC_SSP, ok, cmd, NULL, 0);
+		}
+	} else {
+		gnss_post(GNSS_REC_SENT, 0, 0xffff, NULL, 0);
+	}
+	gnss_req_pending = false;
+	gnss_req_busy = false;
+}
+
+static int
+gnss_open(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	lck_mtx_lock(&shub_lock);
+	gnss_readers++;
+	lck_mtx_unlock(&shub_lock);
+	return 0;
+}
+
+static int
+gnss_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused proc_t p)
+{
+	lck_mtx_lock(&shub_lock);
+	if (gnss_readers > 0 && --gnss_readers == 0) {
+		gnss_tail = gnss_head;
+	}
+	lck_mtx_unlock(&shub_lock);
+	return 0;
+}
+
+static int
+gnss_read(__unused dev_t dev, struct uio *uio, int ioflag)
+{
+	uint8_t chunk[512];
+	int error = 0;
+
+	lck_mtx_lock(&shub_lock);
+	while (gnss_head == gnss_tail) {
+		if (ioflag & IO_NDELAY) {
+			lck_mtx_unlock(&shub_lock);
+			return EWOULDBLOCK;
+		}
+		gnss_waiting = true;
+		error = msleep(&gnss_head, &shub_lock, PZERO | PCATCH, GNSS_DEV_NAME, NULL);
+		if (error != 0) {
+			lck_mtx_unlock(&shub_lock);
+			return error;
+		}
+	}
+	while (gnss_head != gnss_tail && uio_resid(uio) > 0) {
+		uint32_t k = 0;
+
+		while (k < sizeof(chunk) && gnss_head != gnss_tail && (user_ssize_t)k < uio_resid(uio)) {
+			chunk[k++] = gnss_ring[gnss_tail++ % GNSS_RING];
+		}
+		lck_mtx_unlock(&shub_lock);
+		error = uiomove((caddr_t)chunk, (int)k, uio);
+		lck_mtx_lock(&shub_lock);
+		if (error != 0) {
+			break;
+		}
+	}
+	lck_mtx_unlock(&shub_lock);
+	return error;
+}
+
+static int
+gnss_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	user_ssize_t n = uio_resid(uio);
+	int error;
+
+	if (n < 1 || n > GNSS_REQ_MAX) {
+		return EINVAL;
+	}
+	lck_mtx_lock(&shub_lock);
+	if (gnss_req_busy || !gnss_live) {
+		lck_mtx_unlock(&shub_lock);
+		return EBUSY;
+	}
+	gnss_req_busy = true;
+	lck_mtx_unlock(&shub_lock);
+	error = uiomove((caddr_t)gnss_req, (int)n, uio);
+	if (error == 0) {
+		gnss_req_len = (uint16_t)n;
+		gnss_req_pending = true;
+	} else {
+		gnss_req_busy = false;
+	}
+	return error;
+}
+
+static const struct cdevsw gnss_cdevsw = {
+	.d_open = gnss_open,
+	.d_close = gnss_close,
+	.d_read = gnss_read,
+	.d_write = gnss_write,
+	.d_ioctl = eno_ioctl,
+	.d_stop = eno_stop,
+	.d_reset = eno_reset,
+	.d_select = eno_select,
+	.d_mmap = eno_mmap,
+	.d_strategy = eno_strat,
+	.d_type = 0,
+};
+
+static void
+make_gnss_device(void)
+{
+	int major = cdevsw_add(-1, &gnss_cdevsw);
+
+	if (major < 0 || devfs_make_node(makedev(major, 0), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0600, GNSS_DEV_NAME) == NULL) {
+		say("shub: /dev/%s could not be made\n", GNSS_DEV_NAME);
+		return;
+	}
+	say("shub: /dev/%s made\n", GNSS_DEV_NAME);
+}
+
 static void
 run(void)
 {
-	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 200 }, { SSP_PROXIMITY, 200 },
-		                                                   { SSP_PRESSURE, 200 } };
+	/* light and pressure once a second (auto-brightness needs no more); proximity, when asked for, 200 ms */
+	static const struct { uint8_t id; uint32_t ms; } slow[] = { { SSP_LIGHT, 1000 }, { SSP_PROXIMITY, 0 /* prox_ms */ },
+		                                                   { SSP_PRESSURE, 1000 } };
 	uint32_t frames_at_time = 0;
 	uint64_t report_at = now_ns();
 
 	proximity_setup();
+	if ((want_sensors & (1u << SSP_LIGHT)) && (ssp.found & (1ull << SSP_LIGHT))) redwood_als_publish();
 	for (uint8_t id = 0; id < SSP_SENSORS && id < 32; id++) {
 		uint32_t ms = period_ms;
+		/* These are exclusively controlled below; no boot-time IR flash. */
+		if (id == SSP_LIGHT || id == SSP_PROXIMITY || id == SSP_PROXIMITY_RAW) continue;
 
 		if (!(want_sensors & (1u << id)) || !(ssp.found & (1ull << id))) {
 			continue;
 		}
 		for (unsigned i = 0; i < sizeof(slow) / sizeof(slow[0]); i++) {
 			if (slow[i].id == id) {
-				ms = slow[i].ms;
+				ms = slow[i].ms ? slow[i].ms : prox_ms;
 			}
 		}
 		say("shub: 6: sensor %u on, every %u ms: %s\n", id, ms, sensor_on(id, ms) ? "taken" : "NOT taken");
 	}
+	gnss_live = true;
 	state = "running";
 	idle_us = 4000;
 	while (powered) {
 		proximity_diagnostic();
-		pump(100, NULL);
+		{       /* All emitter/power changes stay on the SPI owner thread. */
+			static const uint8_t ids[] = { SSP_LIGHT, SSP_PROXIMITY, SSP_PROXIMITY_RAW };
+			for (unsigned i = 0; i < sizeof(ids); i++) {
+				uint8_t id = ids[i];
+				bool allowed = id == SSP_PROXIMITY_RAW ? (ssp.found & (1ull << SSP_PROXIMITY)) != 0 :
+				    (want_sensors & (1u << id)) && (ssp.found & (1ull << id));
+				bool demand = id == SSP_LIGHT || (id == SSP_PROXIMITY_RAW ? prox_raw_wanted :
+				    redwood_sensors_proximity_mode() != 0);
+				bool want = allowed && redwood_display_is_on && demand;
+				uint32_t ms = id == SSP_LIGHT ? light_ms : id == SSP_PROXIMITY_RAW ? 200 : prox_ms;
+				bool on = (ssp.enabled & (1ull << id)) != 0;
+				if (on == want) {
+					continue;
+				}
+				if (want) {
+					(void)sensor_on(id, ms);
+				} else {
+					uint8_t b[5];
+					b[0] = id;
+					shub_put32(b + 1, ms);
+					if (ssp_cmd(SSP_SENSOR_REMOVE, SSP_AP2HUB_WRITE, 0, b, 5)) {
+						ssp.enabled &= ~(1ull << id);
+					}
+				}
+			}
+			__atomic_store_n(&sensor_power_state, (uint32_t)ssp.enabled, __ATOMIC_RELAXED);
+		}
+		if (gnss_req_pending) {
+			gnss_do();
+		}
+		pump(100, gnss_pending);
 		if (ssp.frames - frames_at_time >= 3000) {
 			frames_at_time = ssp.frames;
 			send_time();
@@ -1491,6 +1755,12 @@ redwood_ssp_init(void)
 	n = n > 6 ? 6 : n;
 	PE_parse_boot_argn("shub_keep", &keep, sizeof(keep));
 	PE_parse_boot_argn("shub_log", &log_frames, sizeof(log_frames));
+	PE_parse_boot_argn("shub_text", &shub_text, sizeof(shub_text));
+	PE_parse_boot_argn("shub_prox_ms", &prox_ms, sizeof(prox_ms));
+	prox_ms = prox_ms < 100 ? 100 : prox_ms;
+	PE_parse_boot_argn("shub_light_ms", &light_ms, sizeof(light_ms));
+	/* Keep samples inside the automatic controller's three-second freshness window. */
+	light_ms = light_ms < 100 ? 100 : light_ms > 1000 ? 1000 : light_ms;
 	PE_parse_boot_argn("shub_div", &div_ratio, sizeof(div_ratio));
 	PE_parse_boot_argn("shub_ap_rev", &ap_rev, sizeof(ap_rev));
 	PE_parse_boot_argn("shub_sensors", &want_sensors, sizeof(want_sensors));
@@ -1504,6 +1774,7 @@ redwood_ssp_init(void)
 	period_ms = period_ms < 5 ? 5 : period_ms;
 	if (n >= 6) {
 		redwood_sensors_device();       /* now, so that backboardd finds it when it starts */
+		make_gnss_device();             /* /dev/redwood-gnss: raw RPCs and SSP for user space (GNSS bring-up) */
 		redwood_dbgport_add("shub.prox", "[0|1]: cached proximity readings; optional raw diagnostic sampling", dbg_shub_prox);
 	}
 	if (kernel_thread_start(shub_thread, (void *)(uintptr_t)n, &thread) == KERN_SUCCESS) {

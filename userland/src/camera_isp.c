@@ -23,14 +23,27 @@ isp_init(struct isp *isp)
 	memset(isp, 0, sizeof(*isp));
 	isp->wb[0] = isp->wb[1] = isp->wb[2] = 1;
 	isp->digital = 1;
+	isp->digital_next = 1;
 	isp->zoom = 1;
 	for (int i = 0; i < 3; i++) {
 		isp->ccm[i][i] = 1;
 	}
+	isp_set_tone(isp, 0);
+}
+
+/*
+ * The tone curve: sRGB's, then an S of `contrast' (0 none, 1 smoothstep) -- the iPhone's and Samsung's pictures have
+ * more contrast than the plain sRGB curve, which looked flat and washed out (user, 2026-11-12: "gamma messed up").
+ */
+void
+isp_set_tone(struct isp *isp, float contrast)
+{
 	for (int i = 0; i < 4096; i++) {
 		double v = i >= LUT_WHITE ? 1 : (double)i / LUT_WHITE;
 
 		v = v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1 / 2.4) - 0.055;
+		v = v + contrast * (v * v * (3 - 2 * v) - v);
+		v = v < 0 ? 0 : v > 1 ? 1 : v;
 		isp->gamma[i] = (uint8_t)(v * 255 + 0.5);
 	}
 }
@@ -45,17 +58,31 @@ cell_places(uint32_t bayer, int *r, int *b)
 	*b = blue[bayer & 3];
 }
 
+/* the sensor's black level (the camera's pedestal): 64 for the front SAK3J1, lower for the rear S5K2LD (camera_device.c) */
+int isp_black = 64;
+int isp_black4[4] = { 64, 64, 64, 64 };     /* per site of the 2x2 cell (row 0 x0, x1, row 1 x0, x1) */
+/*
+ * A second black for the lower band of the frame (the rear S5K2LD's 12 MP mode: rows from ~1914 down have a lower
+ * black than the rows above, a hard line in every dark picture, 2026-11-12). isp_band[k] is the lower band of the
+ * frame buffer k as a byte range of the raw data; isp_band_row the first row of it (0: no band).
+ */
+int isp_black4_low[4] = { 64, 64, 64, 64 };
+const uint8_t *isp_band[2][2];
+int isp_band_row;
+
 /* the four values of the cell at cx of the pair of lines from `top' (above black, 0 and up) */
 static inline void
 cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
 {
 	const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + stride;
 	unsigned o = (cx & 1) * 2;
+	const int *bl = isp_band_row > 0 && ((top >= isp_band[0][0] && top < isp_band[0][1]) ||
+	    (top >= isp_band[1][0] && top < isp_band[1][1])) ? isp_black4_low : isp_black4;
 
-	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - 64;
-	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - 64;
-	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - 64;
-	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - 64;
+	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - bl[0];
+	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - bl[1];
+	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - bl[2];
+	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - bl[3];
 	for (int i = 0; i < 4; i++) {
 		v[i] = v[i] < 0 ? 0 : v[i];
 	}
@@ -217,9 +244,7 @@ isp_measure(const struct isp *isp, const struct redwood_camera_frame *f, const u
 bool
 isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_stats *s, struct redwood_camera_command *c)
 {
-	double now = (double)f->exposure_lines * f->gain / f->gain_unity * isp->digital, ratio, want;
-	double target = 0.15 * WHITE, mean = s->mean[1] * isp->digital > 0.5 ? s->mean[1] * isp->digital : 0.5;
-	double bright = s->bright * isp->digital;
+	double now, ratio, want, target, mean, bright, limit;
 	uint32_t fast = f->frame_lines_min - f->margin, longest = isp->max_frame_lines ? isp->max_frame_lines : 2 * f->frame_lines_min;
 	uint32_t lines, gain, frame_lines = 0;
 	double digital = 1;
@@ -227,6 +252,15 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 	if (isp->asked && (f->exposure_lines != isp->asked_lines || f->gain != isp->asked_gain)) {
 		return false;                   /* (the last change not in the frames yet) */
 	}
+	/*
+	 * The digital gain changes with the frame that has the sensor's new exposure, not when it is asked for (two
+	 * frames earlier): the picture stepped twice for every change (2026-11-12, "exposure goes in steps").
+	 */
+	isp->digital = isp->digital_next;
+	now = (double)f->exposure_lines * f->gain / f->gain_unity * isp->digital;
+	target = 0.15 * WHITE;
+	mean = s->mean[1] * isp->digital > 0.5 ? s->mean[1] * isp->digital : 0.5;
+	bright = s->bright * isp->digital;
 	/* (the measured levels are the sensor's: digital gain is applied to the picture only) */
 	ratio = target / mean;
 	if (bright * ratio > 0.9 * WHITE && bright > 0) {
@@ -236,7 +270,11 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 	if (ratio > 0.94 && ratio < 1.06) {
 		return false;
 	}
-	want = now * pow(ratio, 0.7);
+	/* small steps, a little larger when far off: up to 2.6 times at once showed as jumps */
+	want = pow(ratio, 0.7);
+	limit = ratio > 2 || ratio < 0.5 ? 1.5 : 1.15;     /* (the user: "auto exposure is perfect" with these) */
+	want = want > limit ? limit : want < 1 / limit ? 1 / limit : want;
+	want *= now;
 	if (want <= fast) {
 		lines = want < 4 ? 4 : (uint32_t)want;
 		gain = f->gain_unity;
@@ -251,12 +289,42 @@ isp_ae(struct isp *isp, const struct redwood_camera_frame *f, const struct isp_s
 
 		if (g > (double)f->gain_max / f->gain_unity) {
 			digital = g / ((double)f->gain_max / f->gain_unity);
-			digital = digital > 4 ? 4 : digital;
+			digital = digital > 2 ? 2 : digital;   /* (2x at the most: beyond it a dark room was only coloured noise, 2026-11-12) */
 			g = (double)f->gain_max / f->gain_unity;
 		}
 		gain = (uint32_t)(g * f->gain_unity);
 	}
-	isp->digital = (float)digital;
+	/*
+	 * Anti-flicker (50 Hz mains: lights pulse every 10 ms): an exposure of whole 10 ms periods sees every row of
+	 * the rolling shutter get the same light; anything else shows bands rolling through the picture. So the
+	 * lines go down to a whole number of periods and the gain makes up the rest; only a scene too bright for one
+	 * period at 1x gets a shorter exposure. (On the S20, 2026-11-11: banding in dim light and AE hunting.)
+	 */
+	if (f->line_ns > 0) {
+		uint32_t band = (uint32_t)(10000000.0 / f->line_ns + 0.5);
+
+		if (band > 4 && lines >= band) {
+			uint32_t q = lines / band * band;
+			double g = (double)gain * lines / q;
+			double gmax = f->gain_max;
+
+			if (g > gmax) {
+				digital *= g / gmax;
+				digital = digital > 2 ? 2 : digital;   /* (2x at the most: beyond it a dark room was only coloured noise, 2026-11-12) */
+				g = gmax;
+			}
+			gain = (uint32_t)g;
+			lines = q;
+			if (frame_lines != 0 && frame_lines < lines + f->margin) {
+				frame_lines = lines + f->margin;
+			}
+		} else if (band > 4 && want >= band) {
+			/* (bright enough for a whole period only with a little more than 1x: still one period) */
+			lines = band;
+			gain = f->gain_unity;
+		}
+	}
+	isp->digital_next = (float)digital;
 	isp->asked_lines = lines;
 	isp->asked_gain = gain;
 	isp->asked_frame_lines = frame_lines;
@@ -349,8 +417,16 @@ isp_awb(struct isp *isp, const struct isp_stats *s)
 	}
 	r = r < 0.5f ? 0.5f : r > 4 ? 4 : r;
 	b = b < 0.5f ? 0.5f : b > 4 ? 4 : b;
-	isp->wb[0] = isp->wb[0] * 0.9f + r * 0.1f;
-	isp->wb[2] = isp->wb[2] * 0.9f + b * 0.1f;
+	{
+		/* quickly for a stream's first frames (from a guess), then slowly */
+		float k = isp->awb_fast > 0 ? 0.45f : 0.1f;
+
+		if (isp->awb_fast > 0) {
+			isp->awb_fast--;
+		}
+		isp->wb[0] = isp->wb[0] * (1 - k) + r * k;
+		isp->wb[2] = isp->wb[2] * (1 - k) + b * k;
+	}
 }
 
 /* the part of the sensor's cells the picture shows: its middle, in the picture's proportions, 1/zoom of it each way */
@@ -387,17 +463,32 @@ isp_set_ccm(struct isp *isp, const float m[9])
  * (per 10-bit step above black): out[c] = sum over j of m[c][j] * value[j] (each value lens-shaded).
  */
 struct pipe {
-	float           m[3][3];
+	float           wb[3];          /* white balance, digital gain and the curve's scale, per channel */
+	float           sat;            /* where the sensor clipped, after those: no channel above it */
+	float           m[3][3];        /* the colour matrix */
 	bool            identity;
 };
 
 static void
 pipe_init(const struct isp *isp, struct pipe *p)
 {
+	float lo = 1e9f;
+
 	p->identity = true;
+	for (int j = 0; j < 3; j++) {
+		p->wb[j] = isp->wb[j] * (isp->trim[j] > 0 ? isp->trim[j] : 1) * isp->digital * (isp->bias > 0 ? isp->bias : 1) *
+		    (LUT_WHITE / (float)WHITE);
+		lo = p->wb[j] < lo ? p->wb[j] : lo;
+	}
+	/*
+	 * Highlights white, not purple (2026-11-12): where the sensor clipped, green stops first and the white
+	 * balance's larger red and blue gains carry those past it -- magenta. Every channel stops where the
+	 * channel with the smallest gain clipped, so a clipped pixel stays neutral.
+	 */
+	p->sat = (WHITE - 8) * lo;
 	for (int c = 0; c < 3; c++) {
 		for (int j = 0; j < 3; j++) {
-			p->m[c][j] = isp->ccm[c][j] * isp->wb[j] * isp->digital * (LUT_WHITE / (float)WHITE);
+			p->m[c][j] = isp->ccm[c][j];
 			p->identity = p->identity && (c == j ? isp->ccm[c][j] == 1 : isp->ccm[c][j] == 0);
 		}
 	}
@@ -414,10 +505,16 @@ curve(const struct isp *isp, float v)
 static inline void
 pixel(const struct isp *isp, const struct pipe *p, float r, float g, float b, uint8_t *rgb)
 {
+	r *= p->wb[0];
+	g *= p->wb[1];
+	b *= p->wb[2];
+	r = r > p->sat ? p->sat : r;
+	g = g > p->sat ? p->sat : g;
+	b = b > p->sat ? p->sat : b;
 	if (p->identity) {
-		rgb[0] = curve(isp, r * p->m[0][0]);
-		rgb[1] = curve(isp, g * p->m[1][1]);
-		rgb[2] = curve(isp, b * p->m[2][2]);
+		rgb[0] = curve(isp, r);
+		rgb[1] = curve(isp, g);
+		rgb[2] = curve(isp, b);
 		return;
 	}
 	rgb[0] = curve(isp, p->m[0][0] * r + p->m[0][1] * g + p->m[0][2] * b);
@@ -473,6 +570,62 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		v_at = cells_h > 1 ? (float)cy0 / (cells_h - 1) : 0;
 		const uint8_t *t0 = raw + (size_t)cy0 * 2 * f->stride, *t1 = raw + (size_t)cy1 * 2 * f->stride;
 		float gains[3] = { 1, 1, 1 };
+		/*
+		 * The two rows of cells this line is between, decoded once into R, G (the two greens' mean), B (2026-11-12:
+		 * decoding four cells for every pixel made the rear main's 2016x1512 frames 50-65 ms to draw). Kept from the
+		 * line before when it was between the same rows.
+		 */
+		static __thread float *rows_rgb[2];
+		static __thread uint32_t rows_cap, rows_cy[2] = { ~0u, ~0u };
+		static __thread const uint8_t *rows_raw;
+		static __thread uint64_t rows_seq;
+
+		if (cells_w > rows_cap) {
+			for (int k = 0; k < 2; k++) {
+				free(rows_rgb[k]);
+				rows_rgb[k] = malloc(sizeof(float) * 3 * cells_w);
+			}
+			rows_cap = cells_w;
+			rows_cy[0] = rows_cy[1] = ~0u;
+		}
+		if (rows_raw != raw || rows_seq != f->sequence) {
+			rows_raw = raw;
+			rows_seq = f->sequence;
+			rows_cy[0] = rows_cy[1] = ~0u;
+		}
+		for (int k = 0; k < 2 && rows_rgb[1] != NULL; k++) {
+			uint32_t want = k ? cy1 : cy0;
+
+			if (rows_cy[k] == want) {
+				continue;
+			}
+			if (rows_cy[!k] == want) {          /* (the other buffer has it: swap) */
+				float *t = rows_rgb[k];
+
+				rows_rgb[k] = rows_rgb[!k];
+				rows_rgb[!k] = t;
+				rows_cy[!k] = rows_cy[k];
+				rows_cy[k] = want;
+				continue;
+			}
+			const uint8_t *top = raw + (size_t)want * 2 * f->stride;
+			float *o = rows_rgb[k];
+
+			for (uint32_t cx = 0; cx < cells_w; cx++, o += 3) {
+				int v[4], g = 0;
+
+				cell(top, f->stride, cx, v);
+				for (int j = 0; j < 4; j++) {
+					g += j != r && j != b ? v[j] : 0;
+				}
+				o[0] = (float)v[r];
+				o[1] = g * 0.5f;
+				o[2] = (float)v[b];
+			}
+			rows_cy[k] = want;
+		}
+		(void)t0;
+		(void)t1;
 
 		for (uint32_t x = 0; x < width; x++) {
 			float fx = x0 + (x + 0.5f) * cw / width - 0.5f, tx, c[3] = { 0, 0, 0 };
@@ -481,7 +634,15 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			cx0 = cx0 > cells_w - 1 ? cells_w - 1 : cx0;
 			cx1 = cx0 + 1 > cells_w - 1 ? cells_w - 1 : cx0 + 1;
 			tx = fx < (float)cx0 ? 0 : fx - cx0;
-			for (int k = 0; k < 4; k++) {
+			if (rows_rgb[1] != NULL) {
+				const float *a0 = rows_rgb[0] + 3 * cx0, *a1 = rows_rgb[0] + 3 * cx1;
+				const float *b0 = rows_rgb[1] + 3 * cx0, *b1 = rows_rgb[1] + 3 * cx1;
+				float w00 = (1 - tx) * (1 - ty), w01 = tx * (1 - ty), w10 = (1 - tx) * ty, w11 = tx * ty;
+
+				for (int ch = 0; ch < 3; ch++) {
+					c[ch] = w00 * a0[ch] + w01 * a1[ch] + w10 * b0[ch] + w11 * b1[ch];
+				}
+			} else for (int k = 0; k < 4; k++) {
 				int v[4];
 				float w = (k & 1 ? tx : 1 - tx) * (k & 2 ? ty : 1 - ty);
 
@@ -495,7 +656,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			if (isp->lsc.on) {
 				lsc_at(isp, cells_w > 1 ? (float)cx0 / (cells_w - 1) : 0, v_at, gains);
 			}
-			pixel(isp, &p, c[0] * gains[0], c[1] * gains[1], c[2] * gains[2], rgb + 3 * (isp->turned ? width - 1 - x : x));
+			pixel(isp, &p, c[0] * gains[0], c[1] * gains[1], c[2] * gains[2], rgb + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x));
 		}
 		return;
 	}
@@ -515,7 +676,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		if (isp->lsc.on) {
 			lsc_at(isp, cells_w > 1 ? (float)cx / (cells_w - 1) : 0, v_pos, gains);
 		}
-		pixel(isp, &p, v[r] * gains[0], g * 0.5f * gains[1], v[b] * gains[2], rgb + 3 * (isp->turned ? width - 1 - x : x));
+		pixel(isp, &p, v[r] * gains[0], g * 0.5f * gains[1], v[b] * gains[2], rgb + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x));
 	}
 }
 
@@ -621,12 +782,13 @@ unpack_line(const struct redwood_camera_frame *f, const uint8_t *raw, int y, int
 {
 	y = y < 0 ? 0 : y >= (int)f->height ? (int)f->height - 1 : y;
 	const uint8_t *line = raw + (size_t)y * f->stride;
+	const int *bl = isp_band_row > 0 && y >= isp_band_row && f->width == 4032 ? isp_black4_low : isp_black4;
 
 	for (uint32_t x = 0; x + 3 < f->width + 3 && x < f->width; x += 4) {
 		const uint8_t *g = line + (x >> 2) * 5;
 
 		for (int i = 0; i < 4 && x + i < f->width; i++) {
-			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - (int)f->black;
+			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - bl[(y & 1) * 2 + ((x + i) & 1)];
 
 			out[x + i] = v < 0 ? 0 : v;
 		}
@@ -792,7 +954,7 @@ isp_render_still_nv12(const struct isp *isp, const struct redwood_camera_frame *
 				sx0 = sx0 > fw - 1 ? fw - 1 : sx0;
 				sx1 = sx0 + 1 > fw - 1 ? fw - 1 : sx0 + 1;
 				tx = sx < (float)sx0 ? 0 : sx - sx0;
-				uint8_t *px = o + 3 * (isp->turned ? width - 1 - x : x);
+				uint8_t *px = o + 3 * ((isp->turned != isp->mirror) ? width - 1 - x : x);
 
 				for (int c = 0; c < 3; c++) {
 					float top = a[3 * sx0 + c] + tx * (a[3 * sx1 + c] - a[3 * sx0 + c]);

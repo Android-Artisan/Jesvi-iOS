@@ -782,6 +782,14 @@ rwa_device_open(char *why, size_t why_size)
       compute_cap(device->screen, PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK, &v) ? v : 0;
    device->thread_execution_width =
       compute_cap(device->screen, PIPE_COMPUTE_CAP_SUBGROUP_SIZES, &v) ? v : 1;
+   /* Never below Apple's 32: Apple's own kernels size their threadgroups and their
+    * threadgroup reductions from it (MPS's statistics kernels read slots 16..31 of a
+    * buffer filled by one thread per slot), and the Mali's 16 made CoreImage launch 16
+    * threads there. A simdgroup_barrier at the top of a kernel is a threadgroup barrier
+    * (air_intrinsics.c barrier_op), which is what makes the wider group correct.
+    */
+   if (device->thread_execution_width < 32)
+      device->thread_execution_width = 32;
 
    /* And what a bound buffer's offset has to be a multiple of, which an argument
     * buffer's member is the only thing here to have one. Taken from the screen and not
@@ -1079,6 +1087,36 @@ struct rwa_pixel_format {
 };
 
 static const struct rwa_pixel_format rwa_pixel_formats[] = {
+   /* ASTC, which the Mali decodes itself (asset-catalog images: PosterBoard's wallpaper
+    * snapshots came out without them). Uploads are in blocks: caller_stride. */
+   { 204, "MTLPixelFormatASTC_4x4_LDR", PIPE_FORMAT_ASTC_4x4 },
+   { 186, "MTLPixelFormatASTC_4x4_sRGB", PIPE_FORMAT_ASTC_4x4_SRGB },
+   { 205, "MTLPixelFormatASTC_5x4_LDR", PIPE_FORMAT_ASTC_5x4 },
+   { 187, "MTLPixelFormatASTC_5x4_sRGB", PIPE_FORMAT_ASTC_5x4_SRGB },
+   { 206, "MTLPixelFormatASTC_5x5_LDR", PIPE_FORMAT_ASTC_5x5 },
+   { 188, "MTLPixelFormatASTC_5x5_sRGB", PIPE_FORMAT_ASTC_5x5_SRGB },
+   { 207, "MTLPixelFormatASTC_6x5_LDR", PIPE_FORMAT_ASTC_6x5 },
+   { 189, "MTLPixelFormatASTC_6x5_sRGB", PIPE_FORMAT_ASTC_6x5_SRGB },
+   { 208, "MTLPixelFormatASTC_6x6_LDR", PIPE_FORMAT_ASTC_6x6 },
+   { 190, "MTLPixelFormatASTC_6x6_sRGB", PIPE_FORMAT_ASTC_6x6_SRGB },
+   { 210, "MTLPixelFormatASTC_8x5_LDR", PIPE_FORMAT_ASTC_8x5 },
+   { 192, "MTLPixelFormatASTC_8x5_sRGB", PIPE_FORMAT_ASTC_8x5_SRGB },
+   { 211, "MTLPixelFormatASTC_8x6_LDR", PIPE_FORMAT_ASTC_8x6 },
+   { 193, "MTLPixelFormatASTC_8x6_sRGB", PIPE_FORMAT_ASTC_8x6_SRGB },
+   { 212, "MTLPixelFormatASTC_8x8_LDR", PIPE_FORMAT_ASTC_8x8 },
+   { 194, "MTLPixelFormatASTC_8x8_sRGB", PIPE_FORMAT_ASTC_8x8_SRGB },
+   { 213, "MTLPixelFormatASTC_10x5_LDR", PIPE_FORMAT_ASTC_10x5 },
+   { 195, "MTLPixelFormatASTC_10x5_sRGB", PIPE_FORMAT_ASTC_10x5_SRGB },
+   { 214, "MTLPixelFormatASTC_10x6_LDR", PIPE_FORMAT_ASTC_10x6 },
+   { 196, "MTLPixelFormatASTC_10x6_sRGB", PIPE_FORMAT_ASTC_10x6_SRGB },
+   { 215, "MTLPixelFormatASTC_10x8_LDR", PIPE_FORMAT_ASTC_10x8 },
+   { 197, "MTLPixelFormatASTC_10x8_sRGB", PIPE_FORMAT_ASTC_10x8_SRGB },
+   { 216, "MTLPixelFormatASTC_10x10_LDR", PIPE_FORMAT_ASTC_10x10 },
+   { 198, "MTLPixelFormatASTC_10x10_sRGB", PIPE_FORMAT_ASTC_10x10_SRGB },
+   { 217, "MTLPixelFormatASTC_12x10_LDR", PIPE_FORMAT_ASTC_12x10 },
+   { 199, "MTLPixelFormatASTC_12x10_sRGB", PIPE_FORMAT_ASTC_12x10_SRGB },
+   { 218, "MTLPixelFormatASTC_12x12_LDR", PIPE_FORMAT_ASTC_12x12 },
+   { 200, "MTLPixelFormatASTC_12x12_sRGB", PIPE_FORMAT_ASTC_12x12_SRGB },
    {   1, "MTLPixelFormatA8Unorm",         PIPE_FORMAT_A8_UNORM },
    {  10, "MTLPixelFormatR8Unorm",         PIPE_FORMAT_R8_UNORM },
    {  11, "MTLPixelFormatR8Unorm_sRGB",    PIPE_FORMAT_R8_SRGB },
@@ -2158,8 +2196,9 @@ static bool
 caller_stride(const struct rwa_texture *texture, const struct pipe_box *box, size_t stride,
               size_t *out, char *why, size_t why_size)
 {
+   /* in blocks: a compressed format's row is a row of blocks, nblocksx of them */
    unsigned texel = util_format_get_blocksize(texture->res->format);
-   size_t least = (size_t)box->width * texel;
+   size_t least = (size_t)util_format_get_nblocksx(texture->res->format, box->width) * texel;
    if (stride == 0) {
       *out = least;
       return true;
@@ -2242,7 +2281,8 @@ rwa_texture_write(struct rwa_texture *texture, unsigned level, unsigned layer,
    texture->device->pipe->texture_subdata(texture->device->pipe, texture->res,
                                           texture->base_level + level,
                                           PIPE_MAP_WRITE, &box, bytes, row,
-                                          row * box.height);
+                                          row * util_format_get_nblocksy(texture->res->format,
+                                                                         box.height));
    return 0;
 }
 
@@ -3627,6 +3667,9 @@ compute_state_for(struct rwa_compute *compute, const unsigned block[3],
 
    finalize_for_gallium(cs, device->screen);
    ubo_read_extents(cs, compute->ubo_extent);
+   /* RWA_PRINT_NIR=1: a kernel too, as it is handed to the driver, on stderr */
+   if (getenv("RWA_PRINT_NIR"))
+      nir_print_shader(cs, stderr);
 
    void *cso = device->pipe->create_compute_state(device->pipe,
       &(struct pipe_compute_state){
@@ -4068,10 +4111,19 @@ check_bindings(const struct air_shader_info *info, const struct rwa_slot *slots,
             /* is_null_texture asks about this slot: empty is an answer, not an error */
             if (info->null_query_textures & (1u << r->index))
                break;
-            say(why, why_size, "%s %s texture %u and %u texture%s bound", name,
-                stored ? "writes" : "reads", r->index, bindings->texture_count,
-                bindings->texture_count == 1 ? " was" : "s were");
-            return -1;
+            /* Metal itself does not refuse this: CoreImage declares texture arguments a
+             * given dispatch never touches and leaves them empty. A slot left empty gets
+             * the zero placeholder (bind_stage), noted once per process.
+             */
+            static bool told_texture;
+            if (!told_texture) {
+               told_texture = true;
+               fprintf(stderr, "rwa: %s %s texture %u and %u texture%s bound; a zero "
+                       "placeholder stands in (noted once)\n", name,
+                       stored ? "writes" : "reads", r->index, bindings->texture_count,
+                       bindings->texture_count == 1 ? " was" : "s were");
+            }
+            break;
          }
          const struct rwa_texture *t = member ? mtexture : bindings->textures[r->index];
          /* MTLTextureUsage, honoured rather than noted: Metal refuses to bind a
@@ -4085,9 +4137,14 @@ check_bindings(const struct air_shader_info *info, const struct rwa_slot *slots,
             return -1;
          }
          if (!stored && !t->shader_read) {
-            say(why, why_size, "%s samples texture %u and that texture was made without "
-                               "MTLTextureUsageShaderRead", name, r->index);
-            return -1;
+            /* Apple's GPUs sample such a texture anyway and CoreImage relies on it
+             * (PhotoImaging's tiles): noted once, served. */
+            static bool told_read;
+            if (!told_read) {
+               told_read = true;
+               fprintf(stderr, "rwa: %s samples texture %u made without "
+                       "MTLTextureUsageShaderRead; served (noted once)\n", name, r->index);
+            }
          }
          if (!texture_fits(t, &slots[r->index], name, r->index, why, why_size))
             return -1;
@@ -4112,10 +4169,17 @@ check_bindings(const struct air_shader_info *info, const struct rwa_slot *slots,
          if (member)
             break;
          if (r->index >= bindings->sampler_count || !bindings->samplers[r->index]) {
-            say(why, why_size, "%s takes sampler %u from the API and %u sampler%s bound",
-                name, r->index, bindings->sampler_count,
-                bindings->sampler_count == 1 ? " was" : "s were");
-            return -1;
+            /* As for a texture: Metal leaves this undefined rather than refusing it, and
+             * CoreImage does it. The default sampler stands in (bind_stage).
+             */
+            static bool told_sampler;
+            if (!told_sampler) {
+               told_sampler = true;
+               fprintf(stderr, "rwa: %s takes sampler %u from the API and %u sampler%s "
+                       "bound; the default sampler stands in (noted once)\n",
+                       name, r->index, bindings->sampler_count,
+                       bindings->sampler_count == 1 ? " was" : "s were");
+            }
          }
          break;
 
@@ -4301,10 +4365,10 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
             break;
          case AIR_RESOURCE_TEXTURE:
          case AIR_RESOURCE_IMAGE:
-            t = bindings->textures[r->index];
+            t = r->index < bindings->texture_count ? bindings->textures[r->index] : NULL;
             break;
          case AIR_RESOURCE_SAMPLER:
-            if (!r->inline_sampler)
+            if (!r->inline_sampler && r->index < bindings->sampler_count)
                sm = bindings->samplers[r->index];
             break;
          default:
@@ -4566,6 +4630,15 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
             /* Metal's sampler, and the instruction's choice of which of its two state
              * objects: struct rwa_sampler.
              */
+            if (!sm) {
+               /* left empty by the caller (check_bindings lets that through) */
+               samplers[r->index] = default_sampler(device);
+               if (!samplers[r->index]) {
+                  say(why, why_size, "%s would not make a sampler at all",
+                      rwa_device_name(device));
+                  return -1;
+               }
+            } else
             samplers[r->index] = (compare_sampler && compare_sampler[r->index])
                                     ? sm->cso_compare : sm->cso;
          }
@@ -4581,6 +4654,20 @@ bind_stage(struct rwa_device *device, enum pipe_shader_type stage,
     * for it or not: see default_sampler() -- softpipe dereferences the state of every
     * unit the shader touches, so a slot left empty is a crash rather than a default.
     */
+   /* And always one at sampler 0 when anything is sampled: Panfrost compiles a texel
+    * fetch (Metal's read()) against sampler 0 whatever its texture's slot
+    * (pan_nir_lower_res_indices.c, "by ABI ... a valid sampler bound at index 0 for
+    * txf"), so a kernel whose only texture is at [[texture(1)]] read zeros
+    * (MPS's compute_intermediate_mean_float_statistics: CIAreaAverage gave 0,0,0,0).
+    */
+   if (num_views > 0 && !samplers[0]) {
+      samplers[0] = default_sampler(device);
+      if (!samplers[0]) {
+         say(why, why_size, "%s would not make a sampler at all", rwa_device_name(device));
+         return -1;
+      }
+      num_samplers = MAX2(num_samplers, 1);
+   }
    for (unsigned i = 0; i < num_views; i++) {
       if (!views[i] || samplers[i])
          continue;
@@ -4631,7 +4718,11 @@ unbind_stage(struct rwa_device *device, enum pipe_shader_type stage,
    if (bound->num_views)
       pipe->set_sampler_views(pipe, stage, 0, 0, bound->num_views, false, NULL);
    if (bound->num_images)
-      pipe->set_shader_images(pipe, stage, 0, 0, bound->num_images, NULL);
+      /* as `count` and not as trailing slots: Panfrost's unbind with NULL views clears
+       * its image mask only over `count`, so trailing slots kept their bits with no
+       * resource and the next dispatch with fewer images read one (far 0x4c in
+       * util_image_to_sampler_view: CoreImage's compute_final_mean_float_statistics) */
+      pipe->set_shader_images(pipe, stage, 0, bound->num_images, 0, NULL);
    if (bound->num_samplers) {
       void *none[RWA_MAX_TEXTURES] = { 0 };
       pipe->bind_sampler_states(pipe, stage, 0, bound->num_samplers, none);
@@ -4657,6 +4748,16 @@ rwa_dispatch_buffers(struct rwa_compute *compute, const struct rwa_bindings *bin
                      const struct rwa_buffer_bind *table, unsigned table_count,
                      const unsigned groups[3], const unsigned group_size[3],
                      char *why, size_t why_size)
+{
+   return rwa_dispatch_tg(compute, bindings, table, table_count, groups, group_size, 0,
+                          why, why_size);
+}
+
+int
+rwa_dispatch_tg(struct rwa_compute *compute, const struct rwa_bindings *bindings,
+                const struct rwa_buffer_bind *table, unsigned table_count,
+                const unsigned groups[3], const unsigned group_size[3],
+                unsigned threadgroup_length, char *why, size_t why_size)
 {
    RWA_GUARD();
    struct rwa_device *device = compute->device;
@@ -4694,10 +4795,10 @@ rwa_dispatch_buffers(struct rwa_compute *compute, const struct rwa_bindings *bin
       return -1;
    }
 
-   if (compute->dynamic_threadgroup) {
+   if (compute->dynamic_threadgroup && threadgroup_length == 0) {
       say(why, why_size, "%s takes a threadgroup buffer whose size only the dispatch can "
-                         "give (Metal's -setThreadgroupMemoryLength:atIndex:), and this "
-                         "call has no argument for it", name);
+                         "give (Metal's -setThreadgroupMemoryLength:atIndex:), and none "
+                         "was given", name);
       return -1;
    }
 
@@ -4729,6 +4830,9 @@ rwa_dispatch_buffers(struct rwa_compute *compute, const struct rwa_bindings *bin
       .work_dim = 3,
       .block = { group_size[0], group_size[1], group_size[2] },
       .grid = { groups[0], groups[1], groups[2] },
+      /* the threadgroup argument, placed after the static arrays (air_to_nir.c) */
+      .variable_shared_mem = compute->dynamic_threadgroup
+                                ? ALIGN_POT(threadgroup_length, 16) : 0,
    };
    pipe->launch_grid(pipe, &grid);
 

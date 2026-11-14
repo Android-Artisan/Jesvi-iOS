@@ -13,6 +13,10 @@ static void map_coverage_tests(void)
     assert(!s20_par_normal_nc(0xff000000f0000800ULL, 0xf0000000));
     assert(!s20_par_normal_nc(0x00000000f0000800ULL, 0xf0000000));
     assert(!s20_par_normal_nc(0x44000000f0001800ULL, 0xf0000000));
+    assert(s20_par_device(0x0000000010730800ULL, 0x10730000));
+    assert(!s20_par_device(0x4400000010730800ULL, 0x10730000));
+    assert(!s20_par_device(0x0000000010730801ULL, 0x10730000));
+    assert(!s20_par_device(0x0000000010731800ULL, 0x10730000));
     struct padded { efi_memory_descriptor d; uint64_t extra; } map[] = {
         {{.type=0, .phys_start=0x3000, .pages=1, .attribute=1}, 0},
         {{.type=0, .phys_start=0x1000, .pages=2, .attribute=1}, 0},
@@ -37,7 +41,7 @@ static void map_coverage_tests(void)
     uint8_t unaligned[sizeof(map)+1];
     memcpy(unaligned+1, map, sizeof(map));
     assert(s20_efi_map_covers(unaligned+1, sizeof(map), sizeof(map[0]), 0x1000, 4096, 0, 1));
-    puts("UEFI ownership/cache coverage: 19 cases passed");
+    puts("UEFI ownership/cache coverage: 23 cases passed");
 }
 
 static int valid(uint64_t lo, uint64_t hi, uint64_t at, uint64_t size, uint64_t align)

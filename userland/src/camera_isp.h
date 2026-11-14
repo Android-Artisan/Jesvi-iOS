@@ -14,6 +14,14 @@
 #include <stdint.h>
 #include "redwood_camera.h"
 
+struct isp;
+void isp_set_tone(struct isp *isp, float contrast);
+extern int isp_black;   /* the raw frames' black level, subtracted from every value */
+extern int isp_black4[4];       /* ... per site of the 2x2 cell: the rear's differ, and move with the gain */
+extern int isp_black4_low[4];  /* ... below isp_band_row (the rear 12 MP mode's lower band) */
+extern const uint8_t *isp_band[2][2];
+extern int isp_band_row;
+
 struct isp_stats {
 	double          mean[3];        /* R, G, B above black, in 10-bit steps */
 	double          bright;         /* the level of green that 1 % of the cells are above */
@@ -70,9 +78,14 @@ struct isp_tuning {
 
 struct isp {
 	float           wb[3];          /* the white balance's gains, green 1 */
+	float           trim[3];        /* a fixed correction of the white balance (0: none), per channel */
+	int             awb_fast;       /* frames left of a quick white balance (a stream's start) */
 	float           digital;        /* more gain, for what AE cannot reach with the sensor's */
+	float           digital_next;   /* the digital gain that goes with the exposure asked for, from its first frame */
+	float           bias;           /* the exposure slider's, on the picture at once (0: none); AE does not see it */
 	float           zoom;           /* the picture is the middle 1/zoom of the sensor each way (1: the whole of it) */
 	bool            turned;         /* the picture turned half round (a sensor mounted the other way up) */
+	bool            mirror;         /* ... and/or mirrored left to right (each line from its end) */
 	float           ccm[3][3];      /* the colour matrix, camera RGB (white balanced) to linear sRGB; rows sum to 1 */
 	struct isp_lsc  lsc;
 	uint8_t         gamma[4096];    /* linear (959 above black is 3836) to 8 bits, sRGB's curve */

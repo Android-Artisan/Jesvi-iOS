@@ -514,6 +514,9 @@ static struct {
 	int (*dispatch_buffers)(struct rwa_compute *, const struct rwa_bindings *,
 				const struct rwa_buffer_bind *, unsigned, const unsigned[3],
 				const unsigned[3], char *, size_t);
+	int (*dispatch_tg)(struct rwa_compute *, const struct rwa_bindings *,
+			   const struct rwa_buffer_bind *, unsigned, const unsigned[3],
+			   const unsigned[3], unsigned, char *, size_t);
 	int (*module_argbufs)(struct rwa_device *, const void *, size_t, const char *,
 			      struct rwa_argbuf_layout *, unsigned, unsigned *, char *,
 			      size_t);
@@ -558,7 +561,25 @@ mesa_available(void)
 		return mesa.handle != NULL;
 	}
 	tried = true;
-	mesa.handle = dlopen("/redwood/lib/libredwoodair.dylib", RTLD_NOW);
+	/* A copy of the library beside this driver's own executable wins: that is how a newer
+	 * driver is tried in one process from a writable place (libredwood-metalon) while
+	 * /redwood and /System stay as they are. The system bundle has no such copy. */
+	Dl_info self;
+	if (dladdr((const void *)mesa_available, &self) != 0 && self.dli_fname != NULL &&
+	    strncmp(self.dli_fname, "/System/", 8) != 0) {
+		char beside[1024];
+		const char *slash = strrchr(self.dli_fname, '/');
+		if (slash != NULL && (size_t)(slash - self.dli_fname) + 24 < sizeof(beside)) {
+			snprintf(beside, sizeof(beside), "%.*s/libredwoodair.dylib",
+				 (int)(slash - self.dli_fname), self.dli_fname);
+			mesa.handle = dlopen(beside, RTLD_NOW);
+			if (mesa.handle != NULL) {
+				m2m_log('I', "DEV", "compiler library from %s\n", beside);
+			}
+		}
+	}
+	if (mesa.handle == NULL)
+		mesa.handle = dlopen("/redwood/lib/libredwoodair.dylib", RTLD_NOW);
 	if (mesa.handle == NULL) {
 		m2m_log('E', "DEV", "no compiler library: %s\n", dlerror());
 		return false;
@@ -590,6 +611,7 @@ mesa_available(void)
 	 * to load. What must not happen is answering an encoder and then binding nothing,
 	 * so -newArgumentEncoder... checks for these before it makes one. */
 	*(void **)&mesa.dispatch_buffers = dlsym(mesa.handle, "rwa_dispatch_buffers");
+	*(void **)&mesa.dispatch_tg = dlsym(mesa.handle, "rwa_dispatch_tg");
 	*(void **)&mesa.module_argbufs = dlsym(mesa.handle, "rwa_module_argbufs");
 	*(void **)&mesa.argbuf_encode_buffer = dlsym(mesa.handle, "rwa_argbuf_encode_buffer");
 	*(void **)&mesa.argbuf_encode_texture = dlsym(mesa.handle, "rwa_argbuf_encode_texture");
@@ -1372,6 +1394,57 @@ rw_prof_toggle(void)
 		pthread_join(thread, NULL);
 		rw_prof_report();
 	}
+}
+
+#include <execinfo.h>
+#include <objc/objc-exception.h>
+
+/*
+ * Every Objective-C exception thrown in a Metal client, said where it is thrown: its name, its
+ * reason and the frames of the throw. A game that catches nothing dies of it in std::terminate with
+ * the reason lost (12 November: Leo's Fortune and Angry Birds Space, through Apple's OpenGL ES on
+ * this driver, aborted inside CADisplayLink's callout and printed nothing). The preprocessor only
+ * looks: the exception goes on as it came, to whatever was there before.
+ */
+static objc_exception_preprocessor rw_exception_previous;
+
+static id
+rw_exception_seen(id exception)
+{
+	static volatile int said;
+
+	if (said < 24) {
+		void *frames[16];
+		int n = backtrace(frames, 16);
+		char where[1100] = "";
+		size_t at = 0;
+
+		said++;
+		for (int i = 1; i < n && at < sizeof(where) - 80; i++) {
+			Dl_info d;
+			const char *image = "?";
+			uintptr_t off = (uintptr_t)frames[i];
+
+			if (dladdr(frames[i], &d) != 0 && d.dli_fname != NULL) {
+				image = strrchr(d.dli_fname, '/') ? strrchr(d.dli_fname, '/') + 1 : d.dli_fname;
+				off = (uintptr_t)frames[i] - (uintptr_t)d.dli_fbase;
+			}
+			at += (size_t)snprintf(where + at, sizeof(where) - at, " %s+%#lx", image, (unsigned long)off);
+		}
+		@try {
+			m2m_log('E', "EXC", "%s: %s; thrown at%s\n",
+			    [[exception name] UTF8String] ?: "?", [[exception reason] UTF8String] ?: "(no reason)", where);
+		} @catch (id ignored) {
+			m2m_log('E', "EXC", "an exception of class %s; thrown at%s\n", object_getClassName(exception), where);
+		}
+	}
+	return rw_exception_previous != NULL ? rw_exception_previous(exception) : exception;
+}
+
+__attribute__((constructor)) static void
+rw_exception_install(void)
+{
+	rw_exception_previous = objc_setExceptionPreprocessor(rw_exception_seen);
 }
 
 __attribute__((constructor)) static void
@@ -2615,6 +2688,7 @@ rw_fc_collect(id function, struct rwa_function_constant *out, unsigned max, NSMu
 	id samplers[RW_MAX_BUFFERS];
 	unsigned count, textureCount, samplerCount;
 	unsigned groups[3], size[3];
+	unsigned threadgroupLength;   /* -setThreadgroupMemoryLength:atIndex:0 */
 }
 - (void)redwoodRetainReferences;
 @end
@@ -2789,7 +2863,13 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	uint64_t _countedAt;            /* made by -newTextureWithDescriptor: and counted (rw_perf) */
 	id _buffer;                     /* a texture over a buffer's memory: that buffer (retained) */
 	NSUInteger _bufferOffset, _bufferBytesPerRow;
+	const void *_userBytes;         /* -newTextureWithBytesNoCopy:: the caller's pixels, copied in at each use */
+	NSUInteger _userRowBytes;
+	void (^_userDeallocator)(void *, NSUInteger);
+	NSUInteger _userLength;
 }
+- (void)redwoodMirrorUserBytes:(const void *)bytes length:(NSUInteger)length rowBytes:(NSUInteger)row
+		   deallocator:(void (^)(void *, NSUInteger))deallocator;
 @property (readonly) struct rwa_texture *mesaTexture;
 /* counted in rw_perf's allocations, made at `t` (its free is counted with its lifetime) */
 - (void)redwoodCountedAt:(uint64_t)t;
@@ -2804,6 +2884,9 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 - (void)redwoodSetIOSurface:(void *)surface plane:(NSUInteger)plane;
 /* serve _iosurface by copying it in (a row length the GPU cannot import in place) */
 - (void)redwoodCopySurface;
+/* a copy whose GPU writes have to go back out to its surface after the command buffer */
+- (BOOL)redwoodIsCopy;
+- (void)redwoodWriteBackCopy;
 /* Not part of MTLTexture: the depth or stencil aspect of this texture, one float and one
  * byte per texel. Metal's own -getBytes: has no aspect to name and the compiler library
  * refuses a depth texture through it by name, so a caller that wants to know what a depth
@@ -2858,8 +2941,15 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	NSUInteger _length;
 	struct rwa_buffer *_mesa; /* set instead when the memory came from Mesa */
 	int _responsibleProcess;  /* what <MTLResourceSPI> calls the owner, for accounting */
+	void *_userBytes;         /* -newBufferWithBytesNoCopy:: the caller's pages, mirrored (below) */
+	void *_gpuContents;       /* and then the GPU's own copy */
+	void (^_userDeallocator)(void *, NSUInteger);
 }
 @property (readonly) struct rwa_buffer *mesaBuffer;
+/* serve the caller's own memory: -contents is `bytes`, copied to the GPU's buffer whenever a
+ * command uses it and back after a kernel ran (the kernel cannot map a process's pages yet) */
+- (void)redwoodMirrorUserBytes:(void *)bytes deallocator:(void (^)(void *, NSUInteger))deallocator;
+- (void)redwoodCopyBackToUser;
 - (instancetype)initWithDevice:(RedwoodMetalDevice *)device
 			   gpu:(io_connect_t)gpu
 			length:(NSUInteger)length;
@@ -3000,7 +3090,12 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		size_t size = sizeof(args) - 1;
 		const char *at;
 
-		profile = 0;
+		/* 1 unless metal_profile= says otherwise: 0 claims Apple1 alone, and MPS -- which Apple's
+		 * own OpenGL ES (AppleMetalGLRenderer) and games reach -- then aborts the process with
+		 * "Failed to get MPSDevice" (12 November: Leo's Fortune and Angry Birds Space, under 1 s).
+		 * The phone's boot line is at its 550-character limit, which is how metal_profile=1 fell
+		 * off it; the default does not depend on the line. */
+		profile = 1;
 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 &&
 		    (at = strstr(args, "metal_profile=")) != NULL && (at == args || at[-1] == ' ')) {
 			profile = (NSUInteger)strtoul(at + strlen("metal_profile="), NULL, 10);
@@ -3318,6 +3413,40 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		 * specification was declined 80 times over 42 lives of backboardd before the
 		 * vertex layout existed, and that number had to be counted by hand. */
 		RW_AGAIN('E', "PSO", "this render pipeline is refused: %s\n", why);
+		{
+			/* what the AIR that was refused starts with (2026-11-12: Apple's OpenGL ES on Metal hands functions whose
+			 * bitcode is "not LLVM bitcode" -- a wrapper or another container?) */
+			static int said_bytes;
+
+			if (said_bytes++ < 6) {
+				for (int w = 0; w < 2; w++) {
+					NSData *a = w ? fragment_air : vertex_air;
+					const uint8_t *p = a != nil ? [a bytes] : NULL;
+					char hex[100] = "";
+
+					for (NSUInteger k = 0; p != NULL && k < 24 && k < [a length]; k++) {
+						snprintf(hex + strlen(hex), sizeof(hex) - strlen(hex), "%02x", p[k]);
+					}
+					if (a != nil) {
+						/* the whole of it, for reading on the Mac */
+						NSString *path = [NSString stringWithFormat:@"%@redwood-glir-%d-%s.bin", NSTemporaryDirectory(), getpid(),
+						    w ? "fragment" : "vertex"];
+
+						if (![a writeToFile:path atomically:NO]) {
+							path = [NSString stringWithFormat:@"/var/tmp/redwood-glir-%d-%s.bin", getpid(), w ? "fragment" : "vertex"];
+							[a writeToFile:path atomically:NO];
+						}
+						m2m_log('I', "PSO", "refused %s AIR written to %s\n", w ? "fragment" : "vertex", [path UTF8String]);
+					}
+					id fn = w ? fragment : vertex;
+					id lib = fn != nil && [fn respondsToSelector:@selector(library)] ? [fn performSelector:@selector(library)] : nil;
+					m2m_log('E', "PSO", "refused %s AIR: %lu bytes, starts %s; function %s, library %s, type %ld\n",
+					    w ? "fragment" : "vertex", (unsigned long)[a length], hex,
+					    fn != nil ? object_getClassName(fn) : "-", lib != nil ? object_getClassName(lib) : "-",
+					    fn != nil && [fn respondsToSelector:@selector(functionType)] ? (long)[fn functionType] : -1L);
+				}
+			}
+		}
 		return [self fail:error with:[NSString stringWithUTF8String:why]];
 	}
 	/* and what the library made of it, in GALLIUM's bits: for any mask but All, None,
@@ -3507,15 +3636,23 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		     descriptor:(MTLTextureDescriptor *)descriptor
 		    deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	(void)bytes;
-	(void)length;
-	(void)descriptor;
-	(void)deallocator;
-	RW_ONCE('W', "RES", "a texture over the caller's own memory was asked for, and the "
-		"contract has no import for a bare pointer -- only for an IOSurface. Copying "
-		"instead would be worse than nil: the caller writes to its pages and expects the "
-		"texture to follow\n");
-	return nil;
+	/* A mirror rather than an import (the kernel cannot map the caller's pages yet): a
+	 * texture of our own, refreshed from `bytes` every time a command uses it
+	 * (-mesaTexture), so the caller's later writes are followed. nil here made Core
+	 * Animation draw text from an empty glyph cache: scrambled titles in PosterBoard. */
+	NSUInteger height = [descriptor height] ? [descriptor height] : 1;
+	NSUInteger row = length / height;
+	if (bytes == NULL || row == 0) {
+		return nil;
+	}
+	RedwoodMetalTexture *t = [self newTextureWithDescriptor:descriptor];
+	if (t == nil) {
+		return nil;
+	}
+	RW_ONCE('I', "RES", "a texture over the caller's own memory: served as a mirror, copied in "
+		"at each use (%lu bytes a row)\n", (unsigned long)row);
+	[t redwoodMirrorUserBytes:bytes length:length rowBytes:row deallocator:deallocator];
+	return t;
 }
 
 - (id)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
@@ -4219,7 +4356,28 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 			took.rowBytes = (unsigned)rowp(s, p);
 		}
 	}
-	if (texture == NULL && took.surface != 0 && took.rowBytes % 64 != 0 &&
+	/* a surface over the process's own memory (IOSurface made with an address): the kernel cannot
+	 * hand those pages to the GPU, so it is served as a copy like an unaligned one (PhotoImaging's
+	 * tiles in "Use as Wallpaper"); written back after the GPU when it is a target */
+	BOOL force_copy = NO;
+	if (texture == NULL && took.surface == 0 && s != NULL && strstr(why, "memory of the process's own") != NULL) {
+		static size_t (*row1)(void *), (*w1)(void *), (*h1)(void *);
+		static uint32_t (*sid1)(void *);
+		if (row1 == NULL) {
+			*(void **)&row1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRow");
+			*(void **)&w1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetWidth");
+			*(void **)&h1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetHeight");
+			*(void **)&sid1 = dlsym(RTLD_DEFAULT, "IOSurfaceGetID");
+		}
+		if (row1 && w1 && h1 && sid1 && w1(s) >= shape.width && h1(s) >= shape.height) {
+			took.surface = sid1(s);
+			took.width = (unsigned)w1(s);
+			took.height = (unsigned)h1(s);
+			took.rowBytes = (unsigned)row1(s);
+			force_copy = YES;
+		}
+	}
+	if (texture == NULL && took.surface != 0 && (took.rowBytes % 64 != 0 || force_copy) &&
 	    mesa.texture_create != NULL && mesa.texture_write != NULL) {
 		char why2[256];
 		struct rwa_texture *own = mesa.texture_create(_mesa, &shape, why2, sizeof(why2));
@@ -4255,8 +4413,19 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 		       options:(NSUInteger)options
 		   deallocator:(void (^)(void *, NSUInteger))deallocator
 {
-	(void)bytes; (void)length; (void)options; (void)deallocator;
-	return nil;   /* wrapping the caller's own pages needs the kernel to map them: not yet */
+	/* The kernel cannot map the caller's pages for the GPU yet, so the buffer is a mirror:
+	 * a GPU buffer of our own, -contents answering the caller's pointer, copied in whenever
+	 * a command uses it and back after a kernel ran (RedwoodMetalBuffer). Games and Core
+	 * Animation use this; nil made them draw from nothing. */
+	if (bytes == NULL || length == 0) {
+		return nil;
+	}
+	RedwoodMetalBuffer *b = [self newBufferWithLength:length options:options];
+	if (b == nil) {
+		return nil;
+	}
+	[b redwoodMirrorUserBytes:bytes deallocator:deallocator];
+	return b;
 }
 - (id)newIndirectCommandBufferWithDescriptor:(id)d
 			      maxCommandCount:(NSUInteger)count
@@ -4562,11 +4731,37 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 - (struct rwa_buffer *)mesaBuffer
 {
+	if (_userBytes != NULL && _gpuContents != NULL) {
+		memcpy(_gpuContents, _userBytes, _length);   /* what the caller wrote, before the GPU reads it */
+	}
 	return _mesa;
+}
+
+- (void)redwoodMirrorUserBytes:(void *)bytes deallocator:(void (^)(void *, NSUInteger))deallocator
+{
+	_gpuContents = _contents;
+	_userBytes = bytes;
+	_contents = bytes;
+	if (_gpuContents != NULL) {
+		memcpy(_gpuContents, bytes, _length);
+	}
+	_userDeallocator = deallocator ? Block_copy(deallocator) : NULL;
+}
+
+- (void)redwoodCopyBackToUser
+{
+	if (_userBytes != NULL && _gpuContents != NULL) {
+		memcpy(_userBytes, _gpuContents, _length);
+	}
 }
 
 - (void)dealloc
 {
+	if (_userDeallocator != NULL) {
+		_userDeallocator(_userBytes, _length);
+		Block_release(_userDeallocator);
+		_userDeallocator = NULL;
+	}
 	if (_mesa != NULL) {
 		mesa.buffer_destroy(_mesa);
 		rw_note_free(false, 0);
@@ -4752,6 +4947,11 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 - (void)dealloc
 {
+	if (_userDeallocator != NULL) {
+		_userDeallocator((void *)_userBytes, _userLength);
+		Block_release(_userDeallocator);
+		_userDeallocator = NULL;
+	}
 	if (_texture != NULL) {
 		mesa.texture_destroy(_texture);
 		if (_countedAt != 0) {
@@ -4776,8 +4976,24 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	_bufferBytesPerRow = bytesPerRow;
 }
 
+- (void)redwoodMirrorUserBytes:(const void *)bytes length:(NSUInteger)length rowBytes:(NSUInteger)row
+		   deallocator:(void (^)(void *, NSUInteger))deallocator
+{
+	_userBytes = bytes;
+	_userLength = length;
+	_userRowBytes = row;
+	_userDeallocator = deallocator ? Block_copy(deallocator) : NULL;
+}
+
 - (struct rwa_texture *)mesaTexture
 {
+	if (_userBytes != NULL && _texture != NULL && mesa.texture_write != NULL) {
+		/* the caller's pixels as they are now: Core Animation's glyph cache writes there */
+		char why[128];
+		const unsigned origin[3] = { 0, 0, 0 };
+		const unsigned size[3] = { _shape.width, _shape.height, 1 };
+		(void)mesa.texture_write(_texture, 0, 0, origin, size, _userBytes, _userRowBytes, why, sizeof(why));
+	}
 	if (_copied) {
 		[self redwoodRefreshCopy];
 	}
@@ -4861,6 +5077,60 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	rw_perf.copy_bytes += (uint64_t)row * _shape.height;
 	rw_perf.copy_ns += rw_now_ns() - t_copy;
 	pthread_mutex_unlock(&rw_stats_lock);
+}
+
+- (BOOL)redwoodIsCopy { return _copied && _iosurface != NULL; }
+
+/*
+ * The other direction of -redwoodRefreshCopy: what the GPU wrote into the copy, read back into
+ * the surface once the command buffer is done. Without it a copied surface that is a TARGET
+ * (CoreImage's 1x1 and 2x1 statistics results, at 32 bytes a row) kept the CPU's bytes and the
+ * GPU's answer was lost: CIAreaAverage read 0,0,0,0. The seed after the write is taken as the
+ * copy's own, so the next use does not copy the same pixels back in.
+ */
+- (void)redwoodWriteBackCopy
+{
+	static uint32_t (*get_seed)(void *);
+	static int (*lock)(void *, uint32_t, uint32_t *), (*unlock)(void *, uint32_t, uint32_t *);
+	static void *(*base_of)(void *), *(*base_of_plane)(void *, size_t);
+	static size_t (*row_of)(void *), (*row_of_plane)(void *, size_t), (*plane_count)(void *);
+	static int looked;
+	char why[256];
+
+	if (!looked) {
+		*(void **)&get_seed = dlsym(RTLD_DEFAULT, "IOSurfaceGetSeed");
+		*(void **)&lock = dlsym(RTLD_DEFAULT, "IOSurfaceLock");
+		*(void **)&unlock = dlsym(RTLD_DEFAULT, "IOSurfaceUnlock");
+		*(void **)&base_of = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddress");
+		*(void **)&row_of = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRow");
+		*(void **)&plane_count = dlsym(RTLD_DEFAULT, "IOSurfaceGetPlaneCount");
+		*(void **)&base_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddressOfPlane");
+		*(void **)&row_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
+		looked = 1;
+	}
+	if (!_copied || _iosurface == NULL || _texture == NULL || lock == NULL || unlock == NULL ||
+	    base_of == NULL || row_of == NULL || mesa.texture_read == NULL) {
+		return;
+	}
+	if (lock(_iosurface, 0, NULL) != 0) {
+		RW_AGAIN('E', "SURF", "a copied surface could not be locked to write the GPU's result back\n");
+		return;
+	}
+	int planar = plane_count != NULL && base_of_plane != NULL && row_of_plane != NULL &&
+		     plane_count(_iosurface) > 0;
+	void *base = planar ? base_of_plane(_iosurface, _iosurfacePlane) : base_of(_iosurface);
+	size_t row = planar ? row_of_plane(_iosurface, _iosurfacePlane) : row_of(_iosurface);
+	const unsigned origin[3] = { 0, 0, 0 };
+	const unsigned size[3] = { _shape.width, _shape.height, 1 };
+
+	if (base != NULL && mesa.texture_read(_texture, 0, 0, origin, size, base, row, why,
+	    sizeof(why)) != 0) {
+		RW_AGAIN('E', "SURF", "a copied surface's GPU result could not be read back: %s\n", why);
+	}
+	unlock(_iosurface, 0, NULL);
+	if (get_seed != NULL) {
+		_copySeed = get_seed(_iosurface);
+	}
 }
 
 - (void)redwoodSetIOSurface:(void *)surface plane:(NSUInteger)plane
@@ -6339,6 +6609,33 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		}
 	}
 	_status = RW_CB_COMMITTED;
+	/* copied surfaces this command buffer writes (a dispatch's ShaderWrite textures, a pass's
+	 * colour attachments): written back after the GPU is done, so such a buffer is waited for
+	 * here rather than completed on the fence thread (-redwoodWriteBackCopy) */
+	NSMutableArray *writeBacks = nil;
+	for (RedwoodMetalWork *w in _work) {
+		if (w->blit != nil) {
+			continue;
+		}
+		if (w->render != nil || w->clearOnly) {
+			for (unsigned i = 0; i < w->colorCount && i < 8; i++) {
+				id t = w->color[i];
+				if ([t isKindOfClass:[RedwoodMetalTexture class]] && [t redwoodIsCopy]) {
+					if (writeBacks == nil) writeBacks = [NSMutableArray array];
+					if (![writeBacks containsObject:t]) [writeBacks addObject:t];
+				}
+			}
+		} else if (w->pipeline != nil) {
+			for (unsigned i = 0; i < w->textureCount && i < RW_MAX_BUFFERS; i++) {
+				id t = w->textures[i];
+				if ([t isKindOfClass:[RedwoodMetalTexture class]] && [t redwoodIsCopy] &&
+				    ([(RedwoodMetalTexture *)t usage] & MTLTextureUsageShaderWrite)) {
+					if (writeBacks == nil) writeBacks = [NSMutableArray array];
+					if (![writeBacks containsObject:t]) [writeBacks addObject:t];
+				}
+			}
+		}
+	}
 	for (RedwoodMetalWork *work in _work) {
 		uint8_t before[16], after[16];
 		unsigned px = 0, py = 0;
@@ -6427,7 +6724,11 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		 * through rwa_dispatch, and then a kernel with a set is refused by name
 		 * there and every offset is read as zero -- which is what an older library
 		 * did with one in any case, out loud. */
-		int rc = mesa.dispatch_buffers != NULL
+		int rc = mesa.dispatch_tg != NULL
+			    ? mesa.dispatch_tg([work->pipeline compute], &bindings, table,
+					       work->count, work->groups, work->size,
+					       work->threadgroupLength, why, sizeof(why))
+			    : mesa.dispatch_buffers != NULL
 			    ? mesa.dispatch_buffers([work->pipeline compute], &bindings,
 						    table, work->count, work->groups,
 						    work->size, why, sizeof(why))
@@ -6442,6 +6743,37 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 			_status = RW_CB_ERROR;
 			goto done;
 		}
+		/* a kernel may have written a mirrored buffer: the caller reads its own pages */
+		for (unsigned i = 0; i < work->count; i++) {
+			if ([work->buffers[i] isKindOfClass:[RedwoodMetalBuffer class]]) {
+				[(RedwoodMetalBuffer *)work->buffers[i] redwoodCopyBackToUser];
+			}
+		}
+		/* RWM_PROBE_DISPATCH=1: every texture a kernel can write, its first texel after the
+		 * dispatch (the dispatch has waited for the GPU), in hex -- which kernel of a chain
+		 * produced the wrong number */
+		static int probe_dispatch = -1;
+		if (probe_dispatch < 0) {
+			probe_dispatch = getenv("RWM_PROBE_DISPATCH") != NULL;
+		}
+		if (probe_dispatch && mesa.texture_read != NULL) {
+			for (unsigned i = 0; i < work->textureCount; i++) {
+				RedwoodMetalTexture *t = work->textures[i];
+				uint8_t px[16] = { 0 };
+				char pwhy[128];
+				const unsigned o[3] = { 0, 0, 0 }, sz[3] = { 1, 1, 1 };
+				if (![t isKindOfClass:[RedwoodMetalTexture class]]) {
+					continue;
+				}
+				int r = mesa.texture_read(textures[i], 0, 0, o, sz, px, sizeof(px), pwhy, sizeof(pwhy));
+				m2m_log('I', "PROBE", "%s tex %u %lux%lu fmt %lu usage %lu copy %d: %s "
+				         "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+				         rw_work_label(work), i, (unsigned long)[t width], (unsigned long)[t height],
+				         (unsigned long)[t pixelFormat], (unsigned long)[t usage], [t redwoodIsCopy],
+				         r == 0 ? "" : pwhy, px[0], px[1], px[2], px[3], px[4], px[5], px[6], px[7],
+				         px[8], px[9], px[10], px[11], px[12], px[13], px[14], px[15]);
+			}
+		}
 	}
 	/*
 	 * ASYNCHRONOUS: submitted here, and the fence paid on the queue's fence thread, which then
@@ -6449,7 +6781,8 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 	 * while the GPU draws this one (until 25 October -commit waited for the GPU every time: 3-9 ms
 	 * of each commit, the processor and the GPU taking turns). RWM_SYNC=1: the old way.
 	 */
-	if (queued && mesa.submit != NULL && mesa.fence_wait != NULL && !_tracing && !rw_sync_commits()) {
+	if (queued && writeBacks == nil && mesa.submit != NULL && mesa.fence_wait != NULL && !_tracing &&
+	    !rw_sync_commits()) {
 		void *fence = mesa.submit([[_queue device] mesaDevice]);
 		uint64_t t_end = rw_now_ns();
 
@@ -6474,6 +6807,9 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		rw_commit_report(draws, t_end - t_start, t_end - t_wait, top, topn, ntop);
 	}
 	if (_status != RW_CB_ERROR) {
+		for (RedwoodMetalTexture *t in writeBacks) {
+			[t redwoodWriteBackCopy];
+		}
 		_status = RW_CB_SCHEDULED;   /* submitted; the fence below is what makes it completed */
 		[self redwoodMaybeSnap];
 	}
@@ -7588,6 +7924,40 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 - (void)setCullMode:(NSUInteger)mode                  { (void)mode; }
 - (void)setFrontFacingWinding:(NSUInteger)winding     { (void)winding; }
 - (void)setTriangleFillMode:(NSUInteger)mode          { (void)mode; }
+/* MTLRenderCommandEncoderSPI, sent by Apple's OpenGL ES on Metal (AppleMetalGLRenderer) at every
+ * pass for GL's "flat shading takes the LAST vertex" rule; unanswered, it killed every GL game in
+ * its first frame (12 November). Accepted like the three above: flat-shaded varyings are rare in
+ * games, and the wrong vertex of a flat triangle is a shade, not a failure. */
+- (void)setProvokingVertexMode:(NSUInteger)mode       { (void)mode; }
+
+/*
+ * Any other one-argument setter of the encoder SPI (set...:) that this class does not have is
+ * said once by name and dropped, instead of NSInvalidArgumentException in the app's frame: Apple's
+ * OpenGL ES sends several (setProvokingVertexMode:, setViewportTransformEnabled:, ...) and each
+ * one alone killed every GL game. Only setters: a method that answers something still fails loudly.
+ */
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector
+{
+	NSMethodSignature *signature = [super methodSignatureForSelector:selector];
+	const char *name = sel_getName(selector);
+	const char *colon = strchr(name, ':');
+
+	if (signature == nil && strncmp(name, "set", 3) == 0 && colon != NULL && colon[1] == '\0') {
+		signature = [NSMethodSignature signatureWithObjCTypes:"v@:Q"];
+	}
+	return signature;
+}
+
+- (void)forwardInvocation:(NSInvocation *)invocation
+{
+	unsigned long long value = 0;
+
+	if ([[invocation methodSignature] numberOfArguments] == 3) {
+		[invocation getArgument:&value atIndex:2];
+	}
+	RW_ONCE('W', "ENC", "render encoder: %s %llu dropped (not implemented by this driver)\n",
+	    sel_getName([invocation selector]), value);
+}
 
 /* The depth/stencil state, recorded like the pipeline state: nothing runs at encode time,
  * so what a draw tests against is whatever was bound when that draw was encoded. A state
@@ -9014,6 +9384,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 	id _textures[RW_MAX_BUFFERS];
 	id _samplers[RW_MAX_BUFFERS];
 	unsigned _highest, _highestTexture, _highestSampler;
+	unsigned _threadgroupLength;
 	BOOL _complained;
 }
 
@@ -9153,6 +9524,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 	work->size[0] = (unsigned)size.width;
 	work->size[1] = (unsigned)size.height;
 	work->size[2] = (unsigned)size.depth;
+	work->threadgroupLength = _threadgroupLength;
 	[_commandBuffer recordWork:work];
 	[work release];
 }
@@ -9189,7 +9561,13 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 - (void)memoryBarrierWithScope:(NSUInteger)scope { (void)scope; }
 - (void)setThreadgroupMemoryLength:(NSUInteger)length atIndex:(NSUInteger)index
 {
-	(void)length; (void)index;   /* only what the shader declares is given, for now */
+	/* index 0 is the one threadgroup argument the frontend takes (air_to_nir.c) */
+	if (index == 0) {
+		_threadgroupLength = (unsigned)length;
+	} else {
+		m2m_log('W', "ENC", "threadgroup memory at index %lu (%lu bytes) is not taken: "
+		         "only index 0 is\n", (unsigned long)index, (unsigned long)length);
+	}
 }
 
 /*

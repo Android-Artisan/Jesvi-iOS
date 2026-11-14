@@ -550,6 +550,21 @@ math_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n, 
       r = nir_unpack_unorm_4x8(&c->b, a[0]);
       if (air_nir_bit_size(c, in->base.type) == 16)
          r = nir_f2f16(&c->b, r);
+   } else if (!strcmp(op, "pack") && n->num >= 2 &&
+              (!strcmp(n->part[1], "unorm4x8") || !strcmp(n->part[1], "snorm4x8") ||
+               !strcmp(n->part[1], "unorm2x16") || !strcmp(n->part[1], "snorm2x16"))) {
+      /* air.pack.<unorm|snorm><4x8|2x16>.<v4f16|v4f32|v2f..>: Metal's pack_float_to_*,
+       * GLSL's packUnorm4x8 and friends, component 0 in the low bits. NIR's opcodes
+       * take 32-bit floats, so a half vector is widened first (exact).
+       */
+      nir_def *x = a[0];
+      if (x->bit_size != 32)
+         x = nir_f2f32(&c->b, x);
+      const char *k = n->part[1];
+      r = !strcmp(k, "unorm4x8") ? nir_pack_unorm_4x8(&c->b, x)
+        : !strcmp(k, "snorm4x8") ? nir_pack_snorm_4x8(&c->b, x)
+        : !strcmp(k, "unorm2x16") ? nir_pack_unorm_2x16(&c->b, x)
+                                  : nir_pack_snorm_2x16(&c->b, x);
    } else if (!strcmp(op, "convert")) {
       /* air.convert.<dst sign>.<dst type>.<src sign>.<src type> */
       if (n->num < 5) {
@@ -756,7 +771,7 @@ atomic_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n
 /* -- barriers ----------------------------------------------------------- */
 
 static bool
-barrier_op(struct air_ctx *c, const struct air_inst *in)
+barrier_op(struct air_ctx *c, const struct air_inst *in, mesa_scope exec_scope)
 {
    /* air.wg.barrier(i32 flags, i32 scope): the flags say which memory is
     * ordered. 2 is threadgroup memory, 1 device, 4 texture; the corpus only
@@ -776,7 +791,25 @@ barrier_op(struct air_ctx *c, const struct air_inst *in)
    if (!modes)
       modes = nir_var_mem_shared;
 
-   nir_barrier(&c->b, .execution_scope = SCOPE_WORKGROUP,
+   /* air.simdgroup.barrier takes the same two words and orders the same memory, but
+    * only the lanes of one SIMD group wait for each other: Panfrost turns a subgroup
+    * execution scope into a scheduling fence alone, which is all a lock-step warp needs.
+    */
+   /* Apple's SIMD group is 32 lanes and Apple's kernels are written for that: MPS's
+    * compute_final_mean_float_statistics adds slots 16..31 of its threadgroup buffer to
+    * 0..15 across a simdgroup_barrier, which on the Mali's 16-lane warps is two warps
+    * that do not wait for each other. The driver reports a threadExecutionWidth of 32 so
+    * such a kernel is given 32 threads; in a kernel, a barrier at the top level of the
+    * function (reached by every thread of the group, so it cannot hang) is then made a
+    * threadgroup barrier, which is what "the 32 lanes wait" means on this GPU. One inside
+    * an if or a loop keeps the subgroup scope: lanes elsewhere may never reach it.
+    */
+   if (exec_scope == SCOPE_SUBGROUP && c->nir->info.stage == MESA_SHADER_COMPUTE) {
+      nir_block *here = nir_cursor_current_block(c->b.cursor);
+      if (here && here->cf_node.parent == &c->b.impl->cf_node)
+         exec_scope = SCOPE_WORKGROUP;
+   }
+   nir_barrier(&c->b, .execution_scope = exec_scope,
                .memory_scope = SCOPE_WORKGROUP, .memory_semantics = NIR_MEMORY_ACQ_REL,
                .memory_modes = modes);
    return true;
@@ -1971,7 +2004,9 @@ air_translate_call(struct air_ctx *c, const struct air_inst *in, const char *nam
    if (!strcmp(n.part[0], "is_function_constant_defined"))
       return fc_defined_op(c, in);
    if (n.num >= 2 && !strcmp(n.part[0], "wg") && !strcmp(n.part[1], "barrier"))
-      return barrier_op(c, in);
+      return barrier_op(c, in, SCOPE_WORKGROUP);
+   if (n.num >= 2 && !strcmp(n.part[0], "simdgroup") && !strcmp(n.part[1], "barrier"))
+      return barrier_op(c, in, SCOPE_SUBGROUP);
    if (!strcmp(n.part[0], "atomic"))
       return atomic_op(c, in, &n);
    if (!strcmp(n.part[0], "discard_fragment"))

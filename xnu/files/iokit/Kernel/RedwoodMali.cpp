@@ -820,7 +820,23 @@ RedwoodMaliUserClient::syncobjWait(struct drm_syncobj_wait * request)
 		absolutetime_to_nanoseconds(mach_absolute_time() - began, &now);
 		if (now / NSEC_PER_MSEC >= patience) {
 			static uint32_t told;
+			static int pollLog = -1;
 
+			/*
+			 * A wait with no patience is a question ("is it done yet?"), and "not yet" is its ordinary
+			 * answer: the window server asks it about every 8 ms (12 November: ~1400 such lines in one
+			 * read of /m2m), and a line for each cost a formatted record per poll and pushed everything
+			 * else out of the channel. Only real waits that ran out are said; mali_poll_log=1 says the
+			 * polls too, as before.
+			 */
+			if (pollLog < 0) {
+				uint32_t arg = 0;
+
+				pollLog = PE_parse_boot_argn("mali_poll_log", &arg, sizeof(arg)) && arg != 0;
+			}
+			if (patience == 0 && !pollLog) {
+				return kIOReturnTimeout;
+			}
 			m2m_klog_self('W', "GPU", "fence wait gave up after %llu ms (patience %llu): %u fence(s), first %llu, last submitted %llu, "
 			    "first done %d", now / NSEC_PER_MSEC, patience, count, fences[0], redwood_mali_last(),
 			    (int) redwood_mali_done(fences[0]));

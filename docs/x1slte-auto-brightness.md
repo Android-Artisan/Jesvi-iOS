@@ -43,6 +43,20 @@ implementation. The kernel now accepts/applies/publishes `brightness-nits`
 (16.16 nits), while legacy manual-slider writes remain active. A previous cached-
 nits ownership experiment blocked the slider; that rule was removed.
 
+## Faster policy, perceptual slider (2026-11-13, A)
+
+Light every 250 ms; brighten after 1.5 s, dim after 3 s, 4x changes after 0.5 / 1.5 s, wake hold 1 s, ramps
+0.5 / 1.2 s. The slider's legacy backlight value maps to 2 + 418 s^2.2 nits in the kernel (`fb_bl_curve`, 
+`legacyToNits16`) and in `rb_slider_nits` for the manual anchor; backboardd writes the slider as 0.025 + 0.95 s.
+The figures below (3/5 s, 1000 ms) are the earlier state.
+
+## Light sensor timing (2026-11-13)
+
+The sensor hub (kernel, `redwood_ssp.c`) reads the light sensor every 1 s while the display is on and stops it
+while the display is off (`shub_light_ms=`). Do not put the light sensor on a burst schedule: this controller
+needs 5-8 s of steady, fresh readings before it moves the brightness, and with 2 s bursts every 30 s it never did.
+Only proximity (an IR LED) runs in bursts (`shub_burst_on=2000`, `shub_burst_every=30000`).
+
 ## CPU, GPU and sleep
 
 Brightness interpolation runs at up to 20 updates/s only while ramping. When
