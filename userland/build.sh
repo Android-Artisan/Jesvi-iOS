@@ -643,7 +643,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
-	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	# (A, 2026-11-14: no job's os_log on the console by default -- with OS_ACTIVITY_DT_MODE backboardd, the window server,
+	# wrote every touch's log lines out on its own threads; stream them with /var/jb/usr/bin/oslog instead, or build
+	# with OSLOG=com.apple.backboardd for the console copy)
+	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
 	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
 		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist

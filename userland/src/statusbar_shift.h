@@ -274,11 +274,56 @@ sbs_hook(void *unused)
 	}
 }
 
+/*
+ * The notch layout at 2x (A, 2026-11-14). At 720 x 1600 the kernel has iOS draw at 2 pixels a point (750 x 1624,
+ * MiniIOMobileFramebuffer); UIKit picks the status bar's layout by the screen's pixels and has none for an iPhone X
+ * at 750, so it fell back to its debug bar (red, "rdar:45025538"). Whatever it picks that is not a notch layout
+ * ("Split") becomes the one the 3x screen had, _UIStatusBarVisualProvider_Split1125 (same 375 x 812 points).
+ */
+static Class (*sbs_orig_vps)(id, SEL, id, id);
+
+static Class
+sbs_vps(id self, SEL cmd, id screen, id info)
+{
+	Class c = sbs_orig_vps(self, cmd, screen, info);
+	Class split = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+	static int told;
+
+	if (split != NULL && (c == NULL || strstr(class_getName(c), "Split") == NULL)) {
+		if (!told) {
+			told = 1;
+			FILE *f = fopen("/var/mobile/Library/Logs/redwood-statusbar.log", "a");
+			if (f != NULL) {
+				fprintf(f, "statusbar: pid %d provider %s -> Split1125\n", getpid(), c ? class_getName(c) : "nil");
+				fclose(f);
+			}
+		}
+		return split;
+	}
+	return c;
+}
+
+static void
+sbs_provider_hook(void *unused)
+{
+	Class ic = objc_getClass("_UIStatusBarVisualProvider_iOS");
+	SEL sel = sel_registerName("visualProviderSubclassForScreen:visualProviderInfo:");
+	Method m = ic ? class_getClassMethod(ic, sel) : NULL;
+
+	(void)unused;
+	if (m != NULL && sbs_orig_vps == NULL) {
+		sbs_orig_vps = (Class (*)(id, SEL, id, id))method_setImplementation(m, (IMP)sbs_vps);
+	}
+}
+
 static void
 statusbar_shift_start(void)
 {
 	FILE *f = fopen("/var/jb/etc/redwood-statusbar.conf", "r");
 	char b[128];
+
+	sbs_provider_hook(NULL);                /* always (cheap: one class method, only acts off the notch layouts) */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_provider_hook);
 
 	if (f != NULL) {
 		size_t n = fread(b, 1, sizeof(b) - 1, f);

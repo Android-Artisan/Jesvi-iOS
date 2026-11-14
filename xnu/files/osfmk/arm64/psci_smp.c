@@ -772,10 +772,17 @@ extern char *proc_name_address(void *p);
 extern int proc_pid(void *p);
 extern void bsd_getthreadname(void *uth, char *buffer);
 
+/* off by default (A, 2026-11-14): this runs at every timer callout and interrupt of every core; for a wake-up hunt,
+ * sysctl -w kern.redwood.wake_stats=1 and read the "wakes core" lines (every 10 s, /m2m) */
+uint32_t redwood_wake_stats = 0;
+
 void redwood_wake_irq(int cpu, uint32_t intid);
 void
 redwood_wake_irq(int cpu, uint32_t intid)
 {
+	if (!redwood_wake_stats) {
+		return;
+	}
 	if (!os_atomic_load(&redwood_cpuidle_on, relaxed) || cpu >= 8) {
 		return;
 	}
@@ -805,6 +812,9 @@ redwood_wake_timer(void *func, void *param0)
 	bool thread_timer = func == (void *)thread_timer_expire;
 	uintptr_t key = thread_timer ? (uintptr_t)param0 : (uintptr_t)func;
 	struct wake_slot *free_slot = NULL;
+	if (!redwood_wake_stats) {
+		return;
+	}
 
 	if (!os_atomic_load(&redwood_cpuidle_on, relaxed) || cpu >= 8) {
 		return;
@@ -861,7 +871,7 @@ redwood_wake_report(void)
 {
 	extern void m2m_klog(char sev, const char *cat, const char *fmt, ...);
 
-	if (!os_atomic_load(&redwood_cpuidle_on, relaxed)) {
+	if (!os_atomic_load(&redwood_cpuidle_on, relaxed) || !redwood_wake_stats) {
 		return;
 	}
 	for (int cpu = 0; cpu < 8; cpu++) {

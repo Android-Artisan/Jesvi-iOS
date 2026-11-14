@@ -1099,6 +1099,44 @@ island_cache_sync(void)
 }
 
 /*
+ * The draw scale (A, 2026-11-14). The kernel draws 375 x 812 points at 2 pixels a point when the panel runs at
+ * 720 x 1600 (fb_scaler=1, fb_mode=3/4: MiniIOMobileFramebuffer, 750 x 1624), at 3 otherwise; fbscale= wins.
+ * MobileGestalt takes main-screen-scale and -pitch from its iPhone X table (3, 458) and caches them: with the
+ * 750 x 1624 display that is a 250-point-wide screen. Its cache keeps both as raw bytes (pitch as 8, scale as a
+ * float, 4 of padding) in CacheData; patched in place, same length, every app reads the kernel's scale. A cache
+ * iOS rebuilds (missing, new build) comes back at 3 and is put right on the next boot.
+ */
+static void
+mg_scale_sync(void)
+{
+	static char buf[65536];
+	const char *a = boot_arg("fbscale"), *sc = boot_arg("fb_scaler"), *mode = boot_arg("fb_mode");
+	unsigned want = a != NULL ? (unsigned)(a[0] - '0') : (sc != NULL && sc[0] != '0' && mode != NULL &&
+	    (mode[0] == '3' || mode[0] == '4') && mode[1] == 0) ? 2 : 3;
+	static const unsigned char s3[16] = { 0xca, 0x01, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x40, 0x40, 0, 0, 0, 0 };
+	static const unsigned char s2[16] = { 0x31, 0x01, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x40, 0, 0, 0, 0 };
+	const unsigned char *from = want == 2 ? s3 : s2, *to = want == 2 ? s2 : s3;
+	ssize_t n = read_whole(MG_CACHE, buf, sizeof(buf));
+	int fd;
+
+	if (n < 16 || (want != 2 && want != 3)) {
+		return;
+	}
+	for (ssize_t i = 0; i + 16 <= n; i++) {
+		if (memcmp(buf + i, from, 16) == 0) {
+			fd = open(MG_CACHE, O_WRONLY, 0);
+			if (fd >= 0) {
+				lseek(fd, i, SEEK_SET);
+				write(fd, to, 16);
+				close(fd);
+				printf("  MobileGestalt: screen scale %u (as the kernel draws)\n", want);
+			}
+			return;
+		}
+	}
+}
+
+/*
  * The clock. The S20 starts every boot at 1970 (no RTC is read) until the network sets it, and iOS's daemons
  * write what happens in between with 1970 dates. powerlog's daily archiver (inside aggregated) then made one
  * archive per day since 1970: 12,691 files, 596 MB, a core at 92 % for good (2026-11-13: "it feels laggy").
@@ -1150,6 +1188,7 @@ mount_writable(void)
 	}
 	if (ok) {
 		island_cache_sync();
+		mg_scale_sync();
 		clock_restore();
 	}
 

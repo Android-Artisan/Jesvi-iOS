@@ -1,3 +1,14 @@
+## 2026-11-14 (10:40) — Real 120 Hz: scrolling "a lot better" (user-verified)
+- iOS ran its frame clock at 60 while the panel scanned 120 (CADisplay.refreshRate 16.7 ms): backboardd now gets
+  CA_HEARTBEAT_RATE=120 in fb_mode 1/3 (8.3 ms). Apps get the ProMotion opt-in (QuartzCore capped apps at 60): `app_fps=0` off.
+- Touch scans at 120 Hz (sec_ts 0x94; was ~60 reports a second): `touch_scan=`. SpringBoard's own 20-30 fps animations
+  raised to 60 (`sb_fps=0` off).
+- Display preset FHD+ 1080x2400 @ 120 (`fb_mode=1`, 3x). At 720x1600 iOS draws at 2x (750x1624) with MobileGestalt's scale
+  and the status bar fixed to match (`fbscale=` overrides). All presets: docs/x1slte-display.md.
+- Idle heat: USB mux and haptics threads no longer poll every 1/4 ms (big-core wake-ups ~8x fewer).
+- Tools: `kern.redwood.ksample` thread sampler, tools/perf/objcmap (method names). Open: per-page icon building
+  hitches (`sb_keepicons=1` experimental, broke the home screen), touch-to-screen latency trace switch.
+
 ## 2026-11-14 (05:10) — Native calls: iOS call screen, Phone app dialling, earpiece (user-verified)
 - Incoming VoLTE calls ring on iOS's own call screen (lock screen included): answer / decline / end / mute; the caller's
   hang-up ends it here. Outgoing calls from the Phone app (keypad, Recents, Contacts) go out over VoLTE. Voice on the earpiece.
