@@ -625,7 +625,10 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	if (rwd_surface_describe(connection, id, &surface, why, why_size) != 0) {
 		return NULL;
 	}
-	if (surface.width != want->width || surface.height != want->height) {
+	/* Metal takes a texture smaller than its surface (the top-left corner, at the
+	 * surface's own row length), and CoreImage asks for that: an 837x629 view of an
+	 * 896x640 tile. Only a texture larger than the surface is refused. */
+	if (want->width > surface.width || want->height > surface.height) {
 		rwd_say(why, why_size, "surface %u is %ux%u and the descriptor asks for %ux%u",
 		    id, surface.width, surface.height, want->width, want->height);
 		return NULL;

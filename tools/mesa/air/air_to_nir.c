@@ -3980,6 +3980,24 @@ air_to_nir(void *mem_ctx, const void *bitcode, size_t size, const char *entry_po
 
    if (!c.error[0])
       plan_globals(&c);
+   /* A threadgroup ARGUMENT is sized by the dispatch (-setThreadgroupMemoryLength:
+    * atIndex:) and placed after the shader's own threadgroup arrays: its base is the
+    * static size, rounded to 16, and the runtime asks the GPU for that much more
+    * (pipe_grid_info.variable_shared_mem).
+    */
+   if (!c.error[0]) {
+      bool dynamic_tg = false;
+      for (unsigned i = 0; i < c.num_params; i++)
+         dynamic_tg |= c.params[i] && c.params[i]->kind == AIR_VAL_PTR &&
+                       c.params[i]->ptr.class == AIR_PTR_SHARED;
+      if (dynamic_tg) {
+         c.shared_size = ALIGN_POT(c.shared_size, 16);
+         for (unsigned i = 0; i < c.num_params; i++)
+            if (c.params[i] && c.params[i]->kind == AIR_VAL_PTR &&
+                c.params[i]->ptr.class == AIR_PTR_SHARED)
+               c.params[i]->ptr.offset = nir_imm_int(&c.b, (int)c.shared_size);
+      }
+   }
    if (!c.error[0])
       materialise_globals(&c);
    if (!c.error[0])

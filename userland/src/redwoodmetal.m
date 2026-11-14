@@ -514,6 +514,9 @@ static struct {
 	int (*dispatch_buffers)(struct rwa_compute *, const struct rwa_bindings *,
 				const struct rwa_buffer_bind *, unsigned, const unsigned[3],
 				const unsigned[3], char *, size_t);
+	int (*dispatch_tg)(struct rwa_compute *, const struct rwa_bindings *,
+			   const struct rwa_buffer_bind *, unsigned, const unsigned[3],
+			   const unsigned[3], unsigned, char *, size_t);
 	int (*module_argbufs)(struct rwa_device *, const void *, size_t, const char *,
 			      struct rwa_argbuf_layout *, unsigned, unsigned *, char *,
 			      size_t);
@@ -558,7 +561,25 @@ mesa_available(void)
 		return mesa.handle != NULL;
 	}
 	tried = true;
-	mesa.handle = dlopen("/redwood/lib/libredwoodair.dylib", RTLD_NOW);
+	/* A copy of the library beside this driver's own executable wins: that is how a newer
+	 * driver is tried in one process from a writable place (libredwood-metalon) while
+	 * /redwood and /System stay as they are. The system bundle has no such copy. */
+	Dl_info self;
+	if (dladdr((const void *)mesa_available, &self) != 0 && self.dli_fname != NULL &&
+	    strncmp(self.dli_fname, "/System/", 8) != 0) {
+		char beside[1024];
+		const char *slash = strrchr(self.dli_fname, '/');
+		if (slash != NULL && (size_t)(slash - self.dli_fname) + 24 < sizeof(beside)) {
+			snprintf(beside, sizeof(beside), "%.*s/libredwoodair.dylib",
+				 (int)(slash - self.dli_fname), self.dli_fname);
+			mesa.handle = dlopen(beside, RTLD_NOW);
+			if (mesa.handle != NULL) {
+				m2m_log('I', "DEV", "compiler library from %s\n", beside);
+			}
+		}
+	}
+	if (mesa.handle == NULL)
+		mesa.handle = dlopen("/redwood/lib/libredwoodair.dylib", RTLD_NOW);
 	if (mesa.handle == NULL) {
 		m2m_log('E', "DEV", "no compiler library: %s\n", dlerror());
 		return false;
@@ -590,6 +611,7 @@ mesa_available(void)
 	 * to load. What must not happen is answering an encoder and then binding nothing,
 	 * so -newArgumentEncoder... checks for these before it makes one. */
 	*(void **)&mesa.dispatch_buffers = dlsym(mesa.handle, "rwa_dispatch_buffers");
+	*(void **)&mesa.dispatch_tg = dlsym(mesa.handle, "rwa_dispatch_tg");
 	*(void **)&mesa.module_argbufs = dlsym(mesa.handle, "rwa_module_argbufs");
 	*(void **)&mesa.argbuf_encode_buffer = dlsym(mesa.handle, "rwa_argbuf_encode_buffer");
 	*(void **)&mesa.argbuf_encode_texture = dlsym(mesa.handle, "rwa_argbuf_encode_texture");
@@ -2666,6 +2688,7 @@ rw_fc_collect(id function, struct rwa_function_constant *out, unsigned max, NSMu
 	id samplers[RW_MAX_BUFFERS];
 	unsigned count, textureCount, samplerCount;
 	unsigned groups[3], size[3];
+	unsigned threadgroupLength;   /* -setThreadgroupMemoryLength:atIndex:0 */
 }
 - (void)redwoodRetainReferences;
 @end
@@ -2855,6 +2878,9 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 - (void)redwoodSetIOSurface:(void *)surface plane:(NSUInteger)plane;
 /* serve _iosurface by copying it in (a row length the GPU cannot import in place) */
 - (void)redwoodCopySurface;
+/* a copy whose GPU writes have to go back out to its surface after the command buffer */
+- (BOOL)redwoodIsCopy;
+- (void)redwoodWriteBackCopy;
 /* Not part of MTLTexture: the depth or stencil aspect of this texture, one float and one
  * byte per texel. Metal's own -getBytes: has no aspect to name and the compiler library
  * refuses a depth texture through it by name, so a caller that wants to know what a depth
@@ -4953,6 +4979,60 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	pthread_mutex_unlock(&rw_stats_lock);
 }
 
+- (BOOL)redwoodIsCopy { return _copied && _iosurface != NULL; }
+
+/*
+ * The other direction of -redwoodRefreshCopy: what the GPU wrote into the copy, read back into
+ * the surface once the command buffer is done. Without it a copied surface that is a TARGET
+ * (CoreImage's 1x1 and 2x1 statistics results, at 32 bytes a row) kept the CPU's bytes and the
+ * GPU's answer was lost: CIAreaAverage read 0,0,0,0. The seed after the write is taken as the
+ * copy's own, so the next use does not copy the same pixels back in.
+ */
+- (void)redwoodWriteBackCopy
+{
+	static uint32_t (*get_seed)(void *);
+	static int (*lock)(void *, uint32_t, uint32_t *), (*unlock)(void *, uint32_t, uint32_t *);
+	static void *(*base_of)(void *), *(*base_of_plane)(void *, size_t);
+	static size_t (*row_of)(void *), (*row_of_plane)(void *, size_t), (*plane_count)(void *);
+	static int looked;
+	char why[256];
+
+	if (!looked) {
+		*(void **)&get_seed = dlsym(RTLD_DEFAULT, "IOSurfaceGetSeed");
+		*(void **)&lock = dlsym(RTLD_DEFAULT, "IOSurfaceLock");
+		*(void **)&unlock = dlsym(RTLD_DEFAULT, "IOSurfaceUnlock");
+		*(void **)&base_of = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddress");
+		*(void **)&row_of = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRow");
+		*(void **)&plane_count = dlsym(RTLD_DEFAULT, "IOSurfaceGetPlaneCount");
+		*(void **)&base_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBaseAddressOfPlane");
+		*(void **)&row_of_plane = dlsym(RTLD_DEFAULT, "IOSurfaceGetBytesPerRowOfPlane");
+		looked = 1;
+	}
+	if (!_copied || _iosurface == NULL || _texture == NULL || lock == NULL || unlock == NULL ||
+	    base_of == NULL || row_of == NULL || mesa.texture_read == NULL) {
+		return;
+	}
+	if (lock(_iosurface, 0, NULL) != 0) {
+		RW_AGAIN('E', "SURF", "a copied surface could not be locked to write the GPU's result back\n");
+		return;
+	}
+	int planar = plane_count != NULL && base_of_plane != NULL && row_of_plane != NULL &&
+		     plane_count(_iosurface) > 0;
+	void *base = planar ? base_of_plane(_iosurface, _iosurfacePlane) : base_of(_iosurface);
+	size_t row = planar ? row_of_plane(_iosurface, _iosurfacePlane) : row_of(_iosurface);
+	const unsigned origin[3] = { 0, 0, 0 };
+	const unsigned size[3] = { _shape.width, _shape.height, 1 };
+
+	if (base != NULL && mesa.texture_read(_texture, 0, 0, origin, size, base, row, why,
+	    sizeof(why)) != 0) {
+		RW_AGAIN('E', "SURF", "a copied surface's GPU result could not be read back: %s\n", why);
+	}
+	unlock(_iosurface, 0, NULL);
+	if (get_seed != NULL) {
+		_copySeed = get_seed(_iosurface);
+	}
+}
+
 - (void)redwoodSetIOSurface:(void *)surface plane:(NSUInteger)plane
 {
 	if (surface != NULL) {
@@ -6429,6 +6509,33 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		}
 	}
 	_status = RW_CB_COMMITTED;
+	/* copied surfaces this command buffer writes (a dispatch's ShaderWrite textures, a pass's
+	 * colour attachments): written back after the GPU is done, so such a buffer is waited for
+	 * here rather than completed on the fence thread (-redwoodWriteBackCopy) */
+	NSMutableArray *writeBacks = nil;
+	for (RedwoodMetalWork *w in _work) {
+		if (w->blit != nil) {
+			continue;
+		}
+		if (w->render != nil || w->clearOnly) {
+			for (unsigned i = 0; i < w->colorCount && i < 8; i++) {
+				id t = w->color[i];
+				if ([t isKindOfClass:[RedwoodMetalTexture class]] && [t redwoodIsCopy]) {
+					if (writeBacks == nil) writeBacks = [NSMutableArray array];
+					if (![writeBacks containsObject:t]) [writeBacks addObject:t];
+				}
+			}
+		} else if (w->pipeline != nil) {
+			for (unsigned i = 0; i < w->textureCount && i < RW_MAX_BUFFERS; i++) {
+				id t = w->textures[i];
+				if ([t isKindOfClass:[RedwoodMetalTexture class]] && [t redwoodIsCopy] &&
+				    ([(RedwoodMetalTexture *)t usage] & MTLTextureUsageShaderWrite)) {
+					if (writeBacks == nil) writeBacks = [NSMutableArray array];
+					if (![writeBacks containsObject:t]) [writeBacks addObject:t];
+				}
+			}
+		}
+	}
 	for (RedwoodMetalWork *work in _work) {
 		uint8_t before[16], after[16];
 		unsigned px = 0, py = 0;
@@ -6517,7 +6624,11 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		 * through rwa_dispatch, and then a kernel with a set is refused by name
 		 * there and every offset is read as zero -- which is what an older library
 		 * did with one in any case, out loud. */
-		int rc = mesa.dispatch_buffers != NULL
+		int rc = mesa.dispatch_tg != NULL
+			    ? mesa.dispatch_tg([work->pipeline compute], &bindings, table,
+					       work->count, work->groups, work->size,
+					       work->threadgroupLength, why, sizeof(why))
+			    : mesa.dispatch_buffers != NULL
 			    ? mesa.dispatch_buffers([work->pipeline compute], &bindings,
 						    table, work->count, work->groups,
 						    work->size, why, sizeof(why))
@@ -6532,6 +6643,31 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 			_status = RW_CB_ERROR;
 			goto done;
 		}
+		/* RWM_PROBE_DISPATCH=1: every texture a kernel can write, its first texel after the
+		 * dispatch (the dispatch has waited for the GPU), in hex -- which kernel of a chain
+		 * produced the wrong number */
+		static int probe_dispatch = -1;
+		if (probe_dispatch < 0) {
+			probe_dispatch = getenv("RWM_PROBE_DISPATCH") != NULL;
+		}
+		if (probe_dispatch && mesa.texture_read != NULL) {
+			for (unsigned i = 0; i < work->textureCount; i++) {
+				RedwoodMetalTexture *t = work->textures[i];
+				uint8_t px[16] = { 0 };
+				char pwhy[128];
+				const unsigned o[3] = { 0, 0, 0 }, sz[3] = { 1, 1, 1 };
+				if (![t isKindOfClass:[RedwoodMetalTexture class]]) {
+					continue;
+				}
+				int r = mesa.texture_read(textures[i], 0, 0, o, sz, px, sizeof(px), pwhy, sizeof(pwhy));
+				m2m_log('I', "PROBE", "%s tex %u %lux%lu fmt %lu usage %lu copy %d: %s "
+				         "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+				         rw_work_label(work), i, (unsigned long)[t width], (unsigned long)[t height],
+				         (unsigned long)[t pixelFormat], (unsigned long)[t usage], [t redwoodIsCopy],
+				         r == 0 ? "" : pwhy, px[0], px[1], px[2], px[3], px[4], px[5], px[6], px[7],
+				         px[8], px[9], px[10], px[11], px[12], px[13], px[14], px[15]);
+			}
+		}
 	}
 	/*
 	 * ASYNCHRONOUS: submitted here, and the fence paid on the queue's fence thread, which then
@@ -6539,7 +6675,8 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 	 * while the GPU draws this one (until 25 October -commit waited for the GPU every time: 3-9 ms
 	 * of each commit, the processor and the GPU taking turns). RWM_SYNC=1: the old way.
 	 */
-	if (queued && mesa.submit != NULL && mesa.fence_wait != NULL && !_tracing && !rw_sync_commits()) {
+	if (queued && writeBacks == nil && mesa.submit != NULL && mesa.fence_wait != NULL && !_tracing &&
+	    !rw_sync_commits()) {
 		void *fence = mesa.submit([[_queue device] mesaDevice]);
 		uint64_t t_end = rw_now_ns();
 
@@ -6564,6 +6701,9 @@ rw_commit_report(uint64_t draws, uint64_t commit_ns, uint64_t wait_ns,
 		rw_commit_report(draws, t_end - t_start, t_end - t_wait, top, topn, ntop);
 	}
 	if (_status != RW_CB_ERROR) {
+		for (RedwoodMetalTexture *t in writeBacks) {
+			[t redwoodWriteBackCopy];
+		}
 		_status = RW_CB_SCHEDULED;   /* submitted; the fence below is what makes it completed */
 		[self redwoodMaybeSnap];
 	}
@@ -9138,6 +9278,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 	id _textures[RW_MAX_BUFFERS];
 	id _samplers[RW_MAX_BUFFERS];
 	unsigned _highest, _highestTexture, _highestSampler;
+	unsigned _threadgroupLength;
 	BOOL _complained;
 }
 
@@ -9277,6 +9418,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 	work->size[0] = (unsigned)size.width;
 	work->size[1] = (unsigned)size.height;
 	work->size[2] = (unsigned)size.depth;
+	work->threadgroupLength = _threadgroupLength;
 	[_commandBuffer recordWork:work];
 	[work release];
 }
@@ -9313,7 +9455,13 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 - (void)memoryBarrierWithScope:(NSUInteger)scope { (void)scope; }
 - (void)setThreadgroupMemoryLength:(NSUInteger)length atIndex:(NSUInteger)index
 {
-	(void)length; (void)index;   /* only what the shader declares is given, for now */
+	/* index 0 is the one threadgroup argument the frontend takes (air_to_nir.c) */
+	if (index == 0) {
+		_threadgroupLength = (unsigned)length;
+	} else {
+		m2m_log('W', "ENC", "threadgroup memory at index %lu (%lu bytes) is not taken: "
+		         "only index 0 is\n", (unsigned long)index, (unsigned long)length);
+	}
 }
 
 /*
