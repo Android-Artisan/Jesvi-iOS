@@ -4,6 +4,14 @@ Follow-up on `camera-improve`, 2026-11-14. This records offline results after
 [the initial camera comparison](x1slte-camera-quality.md). Firmware stays outside
 git. No phone access, service changes, flashing or reboot occurred.
 
+## Latest follow-up
+
+Main positive shading grids are now decoded, CCM9 helper mathematics is verified
+against isolated AArch64 emulation, and control/timing mismatches are audited.
+See [the deeper configuration report](x1slte-camera-config-audit.md). The sections
+below retain the earlier layout-discovery stage; the candidate CCM scale and
+unresolved main-grid statements have since advanced as described there.
+
 ## What is now reproducible
 
 The DDK's 65-key order and size dispatch have been recovered, not guessed from

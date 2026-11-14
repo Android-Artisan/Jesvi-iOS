@@ -102,6 +102,30 @@ class TuningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tuning.decode_gras_lut(bytes(0x67a4))
 
+    def test_main_gras_grids_are_unsigned_planar_and_distinct(self):
+        data = bytearray(0xa3d4)
+        for grid in range(6):
+            at = 0x920 if grid == 0 else 0x22e8 + (grid-1)*6600
+            for plane in range(4):
+                struct.pack_into('<H', data, at + plane*825*2, 1000 + grid*10 + plane)
+                struct.pack_into('<H', data, at + (plane*825+412)*2, 128)
+        result = tuning.decode_gras(data, True)
+        self.assertEqual(result['grid_shape'], [4, 25, 33])
+        self.assertEqual(len(result['grids']), 6)
+        self.assertEqual(result['grids'][0]['planes'][3]['unsigned_values'][0], 1003)
+        self.assertEqual(result['grids'][5]['planes'][2]['centre'], 128)
+        self.assertEqual(result['grids'][5]['planes'][2]['corners'][0], 1052)
+        self.assertEqual(result['grids'][-1]['offset'] + 6600, 0xa3d0)
+
+    def test_main_gras_rejects_incomplete_block(self):
+        with self.assertRaises(ValueError):
+            tuning.decode_gras(bytes(0xa3d3))
+
+    def test_ccm_values_include_reconstructed_helper_only(self):
+        result = tuning.decode_ccm(bytes(0x20f4), True)
+        self.assertEqual(len(result['records'][0]['ccm9_helper_with_PreCCM_q10']), 9)
+        self.assertNotIn('ccm9_helper_with_PreCCM_q10', tuning.decode_ccm(bytes(0x20f4))['records'][0])
+
     def test_blc_signed_values_and_capacity(self):
         data = bytearray(0x180)
         struct.pack_into('<4h', data, 0xc, -100, -200, -300, -400)

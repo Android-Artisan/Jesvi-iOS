@@ -17,6 +17,9 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('container', HERE / 'inspect-samsung-setfile.py')
 container = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(container)
+math_spec = importlib.util.spec_from_file_location('samsung_ccm_math', HERE / 'samsung_ccm_math.py')
+ccm_math = importlib.util.module_from_spec(math_spec)
+math_spec.loader.exec_module(ccm_math)
 
 
 def load_schema(path=HERE / 'samsung-isv8-schema.json'):
@@ -73,12 +76,14 @@ def decode_ccm(data, values=False):
             for key, offset, count in (('VectorsHigh', 0x24, 27), ('VectorsLow', 0x5a, 27),
                                        ('VectorsCcm7', 0x90, 21), ('VectorsCcm9', 0xba, 27)):
                 record[key] = struct.unpack_from(f'<{count}h', data, at + offset)
+            record['ccm9_helper_with_PreCCM_q10'] = ccm_math.ccm9_to_matrices(
+                record['VectorsCcm9'], record['PreCCM']['signed_coefficients'])
         records.append(record)
     return dict(isEnabled=data[0], useGMapCCM=data[1],
                 enableSaturatedInputInterpolation=data[2], useSignedOutput=data[3],
                 awbLowlightCcmCord=struct.unpack_from('<6H', data, 8),
                 awbCcmCord=struct.unpack_from('<6H', data, 0x14),
-                records=records, coefficient_scale='256 unity is inferred; runtime composition still unresolved')
+                records=records, coefficient_scale='helper consumes Q8 and emits Q10; full runtime composition unresolved')
 
 
 def decode_gras_lut(data, values=False):
@@ -100,6 +105,39 @@ def decode_gras_lut(data, values=False):
             out[name]['signed_values'] = v
     for name, offset in (('lutWeight', 0x6724), ('lutTh', 0x6764)):
         out[name] = struct.unpack_from('<16I', data, offset)
+    return out
+
+
+def decode_gras(data, values=False):
+    """Main GRAS block, serializer 0x1ff570; grids are NOT the residual LUTs."""
+    if len(data) != 0xa3d4:
+        raise ValueError('unsupported GRAS configuration size')
+    out = dict(uBypass=struct.unpack_from('<I', data)[0],
+               CGrasDisable=struct.unpack_from('<H', data, 4)[0],
+               aperturesInUse=struct.unpack_from('<I', data, 8)[0],
+               GainIncrement=struct.unpack_from('<H', data, 0x14)[0],
+               bBiQuadraticEstimation=struct.unpack_from('<H', data, 0x16)[0],
+               uSaturationSatx=struct.unpack_from('<H', data, 0x18)[0],
+               grid_shape=[4, 25, 33], plane_order='unresolved; preserve SDK plane order',
+               grid_units='centres near 128 suggest scale; runtime uses calibration/golden ratio',
+               optionBrightnessMeasure=struct.unpack_from('<I', data, 0xa3d0)[0])
+    for name, offset in (('lutGridGainAwbAshCord', 0x8f0), ('lutGridGainIRAwbAshCord', 0x900),
+                         ('lutGridGainIRLowAwbAshCord', 0x910)):
+        out[name] = struct.unpack_from('<8H', data, offset)
+    grids = []
+    for i, (name, offset) in enumerate([('lutGridGainGolden', 0x920)] +
+            [(f'lutGridGain[{i}]', 0x22e8 + i * 6600) for i in range(5)]):
+        raw = struct.unpack_from('<3300H', data, offset)
+        planes = []
+        for plane in range(4):
+            v = raw[plane * 825:(plane + 1) * 825]
+            summary = dict(plane=plane, minimum=min(v), maximum=max(v),
+                           centre=v[12 * 33 + 16], corners=[v[0], v[32], v[24 * 33], v[-1]])
+            if values:
+                summary['unsigned_values'] = v
+            planes.append(summary)
+        grids.append(dict(name=name, offset=offset, planes=planes))
+    out['grids'] = grids
     return out
 
 
@@ -191,6 +229,7 @@ def inspect(data, schema, values=False, scenarios=None):
             scenario_names={str(s): scenarios.get(s, []) for s in entry['scenarios']} if scenarios else {}, blocks=names,
             ccm=decode_ccm(blocks['ccmTuning'], values),
             gras_lut=decode_gras_lut(blocks['grasLutTuning'], values),
+            gras=decode_gras(blocks['grasTuning'], values),
             blc={key: decode_blc(blocks[key], values) for key in ('blcStrp', 'blcDns')}))
     return result
 
