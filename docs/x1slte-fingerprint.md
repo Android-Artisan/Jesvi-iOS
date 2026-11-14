@@ -247,6 +247,23 @@ No event or panic interrupt arrived: with no normal-world scheduler yet, the sec
 would raise one. A later inspect returned the cached result. This is the last step of Samsung's tzdev initialization
 before scheduling; it does not load a trusted application, power the sensor, enroll or match.
 
+## This phone's own trusted applications (captured firmware)
+
+`device/firmware/vendor-tee/` (the phone's stock `/vendor/tee`, not in git) holds the TEEGRIS trusted applications; the
+last six bytes of each UUID are ASCII. Relevant here:
+
+| UUID tail | Name | Size | Role |
+| --- | --- | --- | --- |
+| `46494e474502` | `FINGE\x02` | 3,529,221 | the fingerprint TA (QBT2000 matcher, templates) |
+| `474154454b45` | `GATEKE` | 23,205 | Gatekeeper: passcode-verification auth tokens |
+| `4b45594d5354` | `KEYMST` | 424,833 | Keymaster: keys bound to those tokens |
+| `42494f535542` | `BIOSUB` | 15,717 | biometric support |
+| `5345435f4652` | `SEC_FR` | 8,945,133 | Samsung face recognition (not needed) |
+
+So the device-matched matcher exists locally: the "locate legitimate binaries" item of the plan is answered for the TA
+itself (the normal-world BAuth client protocol still comes from the reference libraries). Loading it needs the
+normal-world half of Samsung's TA loader (tzdaemon over inter-world sockets) and a scheduler first.
+
 ## Vendor-client reference located
 
 A public Exynos990 vendor reference was located at
