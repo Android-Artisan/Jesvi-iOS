@@ -260,9 +260,22 @@ static void wallpaper_motion_start(void)
         }
         if(!pose.ready) return;
         double ease=1-exp(-dt/.12),nx=x+(pose.x-x)*ease,ny=y+(pose.y-y)*ease;
-        /* idle when still: a quarter point is below what the eye follows on a blurred picture,
-         * and the sensor's noise is above .02, which kept the compositor redrawing 20 times a second */
-        if(fabs(nx-x)+fabs(ny-y)<.25 && objc_getAssociatedObject(current,wallpaper_effect_key())) return;
+        /* Rest unless the tilt really moved the picture. Every update is an animation that makes the
+         * render server redraw the whole layered poster at display rate, and a hand's tremor kept that
+         * going for ever (1 000+ GPU jobs a second on Apple's posters against ~65 at rest, and the phone
+         * at 96-99 C). Start moving past 2.5 pt from where the picture is, settle within 0.5 pt. */
+        static bool moving;
+        static double tx,ty;   /* the target, low-passed (0.4 s): at 40 pt over 15 deg one degree is ~3 pt,
+                                * and a hand's tremor and the sensor's noise are a degree or two */
+        double lp=1-exp(-dt/.4);
+        tx+=(pose.x-tx)*lp; ty+=(pose.y-ty)*lp;
+        nx=x+(tx-x)*ease; ny=y+(ty-y)*ease;
+        double gap=fabs(tx-x)+fabs(ty-y);
+        if(objc_getAssociatedObject(current,wallpaper_effect_key())) {
+            if(!moving && gap<2.5) return;
+            moving=gap>=.5;
+            if(!moving) return;
+        }
         x=nx;y=ny;
         wallpaper_motion_apply(current,true);wallpaper_motion_translate(current,x,y);
     });
