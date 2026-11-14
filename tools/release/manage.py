@@ -127,7 +127,7 @@ def main():
         from images import hfs_kit
         verify()
         hfs_kit(ROOT / 'userland/hfs-kit.bin', profile(a.device)['partitions']['userdata'])
-        env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage')
+        env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1')
         env['HACKIOS_IMAGE_CACHE'] = str(Path(env.get('HACKIOS_IMAGE_CACHE', ROOT / '.cache/private-images')).resolve())
         # Build locally, never export xnu-src over the source under review.
         run('bash', 'ci/build-kernel.sh', '4')

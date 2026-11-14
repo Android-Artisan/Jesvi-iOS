@@ -80,7 +80,7 @@ def main():
         match_report(d, json.loads(a.device_report.read_text()))
         print(json.dumps({'device': d['id'], 'executable': False,
                           'intended_order': ['super (system)', 'recovery (runtime replaces TWRP)', 'boot (last)'],
-                          'first_boot': 'may format ALL userdata as HFS+; Android/data will be lost',
+                          'first_boot': 'requires previously initialized HFSX; boot halts on missing or damaged data',
                           'protected': json.loads((ROOT / 'devices/exynos990/platform.json').read_text())['protected_partitions'],
                           'blocked_by': ['first install / rollback / power-loss tests',
                                          'boot head AVB behavior qualification',

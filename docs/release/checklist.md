@@ -47,8 +47,8 @@ that the remote workflows or complete private image path have been executed.
 - [ ] Input authenticity and tool/archive checksum pins completed, beyond local hashes.
 - [ ] Release debug service exposure, SSH provisioning and identity generation reviewed;
       no developer keys/passwords/calibration identities embedded.
-- [ ] HFS first-install authorization separated from failed-mount/corruption handling.
-      Updates must never format merely because mounting failed.
+- [x] Boot-time formatting removed; failed reads/headers/mounts halt persistent-data boot.
+- [ ] Explicit offline first-install initializer implemented and qualified on hardware.
 - [ ] Exact TWRP build/model properties, bootloader/unlock prerequisites and AVB behavior
       recorded; full image/manifest authentication implemented.
 - [ ] First-install writer implemented with preflight, streaming, readback, no protected

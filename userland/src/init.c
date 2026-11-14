@@ -14,6 +14,7 @@
  * commands.
  */
 #include "mini.h"
+#include "data_volume_policy.h"
 
 #define PATTERN_SIZE    300000
 #define RB_HALT         0x08
@@ -825,10 +826,9 @@ read_whole(const char *path, char *buf, size_t size)
  *
  * /private/var on the flash, as a phone has it: Apple's HFS+ in the kernel (bsd/hfs), a case-sensitive
  * journaled one filling the userdata partition (/dev/ufs_userdata, the only partition the kernel lets be
- * written). The first boot finds no HFS+ there -- Android's data -- and makes one from the format kit in
- * this image (tools/hfs-kit.py: the blocks macOS's newfs_hfs wrote, data and zeros); every later boot
- * mounts what the boots before it left. Anything wrong: the memory filesystem, as before, so the phone
- * still starts.
+ * written). Installation must initialize this volume explicitly before boot. Normal boot never
+ * formats userdata, including after a read error, damaged header or failed mount. A requested
+ * persistent volume that cannot mount stops startup instead of hiding the failure behind RAM data.
  */
 #ifndef EEXIST
 #define EEXIST 17
@@ -853,25 +853,6 @@ hfs_pick_device(void)
 	}
 }
 
-/* the device's size in bytes (DKIOCGETBLOCKSIZE x DKIOCGETBLOCKCOUNT), 0 if it does not say */
-static unsigned long long
-hfs_device_bytes(void)
-{
-	unsigned int bsize = 0;
-	unsigned long long count = 0;
-	int fd = open(HFS_RAW, O_RDONLY, 0);
-
-	if (fd < 0) {
-		return 0;
-	}
-	if (mini_syscall(SYS_ioctl, fd, 0x40046418L /* DKIOCGETBLOCKSIZE */, (long)&bsize, 0, 0, 0) != 0 ||
-	    mini_syscall(SYS_ioctl, fd, 0x40086419L /* DKIOCGETBLOCKCOUNT */, (long)&count, 0, 0, 0) != 0) {
-		bsize = 0;
-	}
-	close(fd);
-	return (unsigned long long)bsize * count;
-}
-
 struct hfs_args {                       /* struct hfs_mount_args (bsd/hfs/hfs_mount.h), as mount_hfs passes it */
 	const char *fspec;
 	unsigned hfs_uid, hfs_gid;
@@ -888,100 +869,19 @@ hfs_is_there(void)
 {
 	static unsigned char block[4096] __attribute__((aligned(4096)));
 	int fd = open(HFS_RAW, O_RDONLY, 0), ok;
+	ssize_t got;
 
 	if (fd < 0) {
 		return -1;
 	}
-	ok = pread(fd, block, sizeof(block), 0) == (ssize_t)sizeof(block) && block[1024] == 'H' && block[1025] == 'X' &&
+	got = pread(fd, block, sizeof(block), 0);
+	if (got != (ssize_t)sizeof(block)) {
+		close(fd);
+		return -1;
+	}
+	ok = block[1024] == 'H' && block[1025] == 'X' &&
 	    block[1026] == 0 && block[1027] == 5;
 	close(fd);
-	return ok;
-}
-
-static unsigned
-kit_u32(const unsigned char *p)
-{
-	return (unsigned)p[0] | (unsigned)p[1] << 8 | (unsigned)p[2] << 16 | (unsigned)p[3] << 24;
-}
-
-static unsigned long long
-kit_u64(const unsigned char *p)
-{
-	return (unsigned long long)kit_u32(p) | (unsigned long long)kit_u32(p + 4) << 32;
-}
-
-static unsigned
-kit_crc(const unsigned char *p, size_t n)
-{
-	unsigned c = 0xffffffffu;
-
-	for (size_t i = 0; i < n; i++) {
-		c ^= p[i];
-		for (int k = 0; k < 8; k++) {
-			c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
-		}
-	}
-	return ~c;
-}
-
-/* The format kit into userdata: each run of blocks, data or zeros (the kernel reads every write back) */
-static int
-hfs_format(void)
-{
-	static unsigned char kit[256 << 10];
-	const unsigned char *e, *data;
-	unsigned char *zeros;
-	unsigned block, entries;
-	ssize_t got = read_whole(in_image("/share/hfs-kit.bin"), (char *)kit, sizeof(kit));
-	int fd, ok = 1;
-	unsigned long long written = 0;
-
-	if (got < 32 || memcmp(kit, "HFSKIT01", 8) != 0) {
-		printf("  no format kit in the image (/share/hfs-kit.bin)\n");
-		return 0;
-	}
-	block = kit_u32(kit + 8);
-	entries = kit_u32(kit + 12);
-	if (block != 4096 || kit_u64(kit + 16) != hfs_device_bytes() || 32 + (size_t)entries * 16 > (size_t)got ||
-	    kit_crc(kit + 32, (size_t)got - 32) != kit_u32(kit + 24)) {
-		printf("  the format kit (%llu bytes) is not one for %s (%llu bytes), or is damaged\n", kit_u64(kit + 16),
-		    HFS_RAW, hfs_device_bytes());
-		return 0;
-	}
-	zeros = mmap(NULL, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-	fd = open(HFS_RAW, O_RDWR, 0);
-	if (fd < 0 || zeros == MAP_FAILED) {
-		printf("  %s: %s\n", HFS_RAW, strerror(errno));
-		return 0;
-	}
-	e = kit + 32;
-	data = e + (size_t)entries * 16;
-	for (unsigned i = 0; ok && i < entries; i++, e += 16) {
-		unsigned long long first = kit_u64(e), count = kit_u32(e + 8), kind = kit_u32(e + 12);
-		unsigned long long at = first * block, left = count * block;
-
-		while (ok && left > 0) {
-			size_t n = left > (1 << 20) ? (1 << 20) : (size_t)left;
-			const void *from = kind ? (const void *)data : (const void *)zeros;
-
-			if (kind && data + n > kit + got) {
-				ok = 0;
-				break;
-			}
-			ok = pwrite(fd, from, n, (off_t)at) == (ssize_t)n;
-			if (kind) {
-				data += n;
-			}
-			at += n;
-			left -= n;
-			written += n;
-		}
-	}
-	if (!ok) {
-		printf("  writing the format kit: %s\n", strerror(errno));
-	}
-	close(fd);                      /* (the last close: the unit's cache into the flash) */
-	printf("  the format kit written: %llu MB in %u runs\n", written >> 20, entries);
 	return ok;
 }
 
@@ -1022,41 +922,36 @@ empty_dir(const char *path)
 	}
 }
 
-/* 1: HFS+ on /private/var, kept; 0: not asked for, or it did not work (the caller mounts the memory filesystem) */
+/* Only mount an existing filesystem. Formatting belongs to the offline installer. */
+static int
+hfs_mount_existing(void)
+{
+	struct hfs_args args = {
+		.fspec = HFS_DEVICE, .hfs_uid = ~0u, .hfs_gid = ~0u, .hfs_mask = 0xffff, .hfs_encoding = ~0u,
+	};
+	return mount("hfs", "/private/var", 0, &args);
+}
+
+/* 1: mounted existing data; 0: explicitly volatile mode; -1: persistent-data failure. */
 static int
 mount_data_volume(void)
 {
 	const char *wanted = boot_arg("var_hfs");
-
-	hfs_pick_device();
-	struct hfs_args args = {
-		.fspec = HFS_DEVICE, .hfs_uid = ~0u, .hfs_gid = ~0u, .hfs_mask = 0xffff, .hfs_encoding = ~0u,
-	};
-	int there;
+	int status;
 
 	if (wanted == NULL || strcmp(wanted, "1") != 0) {
 		return 0;
 	}
-	there = hfs_is_there();
-	if (there < 0) {
-		printf("  %s: %s (ufs_write=1 with the S20+'s storage?)\n", HFS_RAW, strerror(errno));
-		return 0;
+	hfs_pick_device();
+	status = redwood_mount_persistent_data(1, hfs_is_there, hfs_mount_existing);
+	if (status != REDWOOD_DATA_MOUNTED) {
+		const char *reason = status == REDWOOD_DATA_UNREADABLE ? "device read failed" :
+		    status == REDWOOD_DATA_UNINITIALIZED ? "HFSX header absent or damaged" : "HFS mount failed";
+		printf("  persistent userdata unavailable: %s; no formatting attempted\n", reason);
+		check(0, "mount existing iOS data volume; recover or explicitly initialize it offline");
+		return -1;
 	}
-	if (!there) {
-		printf("  userdata holds no HFS+ yet: making iOS's data volume there\n");
-		if (!hfs_format() || hfs_is_there() != 1) {
-			check(0, "make iOS's data volume (HFS+) on userdata");
-			return 0;
-		}
-		check(1, "make iOS's data volume (HFS+) on userdata");
-	}
-	if (mount("hfs", "/private/var", 0, &args) != 0) {
-		printf("  mount hfs %s on /private/var: %s\n", HFS_DEVICE, strerror(errno));
-		check(0, "mount iOS's data volume (HFS+ on userdata) on /private/var");
-		return 0;
-	}
-	check(1, there ? "mount iOS's data volume (HFS+ on userdata, kept from before) on /private/var" :
-	    "mount iOS's new data volume (HFS+ on userdata) on /private/var");
+	check(1, "mount iOS data volume (existing HFS+, retained)");
 	empty_dir("/private/var/run");
 	return 1;
 }
@@ -1179,6 +1074,13 @@ mount_writable(void)
 
 	printf("\n-- writable filesystem --\n");
 	ok = mount_data_volume();
+	if (ok < 0) {
+		printf("  STOP: persistent data was requested; refusing a RAM-only replacement. Use recovery.\n");
+		reboot(RB_HALT);
+		for (;;) {
+			usleep(1000000); /* If halt returns, never continue into launchd or data initialization. */
+		}
+	}
 	if (!ok) {
 		ok = mount("ramfs", "/private/var", 0, NULL) == 0;
 		if (!ok) {

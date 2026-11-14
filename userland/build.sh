@@ -91,8 +91,8 @@ CACHE=$IOS/20F66__iPhone10,3_6
 for d in rootfs cryptex cryptex-app; do
 	[ -L $IOS/$d ] || continue
 	echo "build.sh: ios165/$d is a symlink to $(readlink $IOS/$d)" >&2
-	echo "build.sh: it has to be a directory of this copy's own: rm it and cp -al the original over," >&2
-	echo "build.sh: as tools/new-workspace.sh does. Building against a link damages the shared tree." >&2
+	echo "build.sh: use an independent input snapshot (tools/release/copy_tree.py)." >&2
+	echo "build.sh: building against a directory link damages the shared tree." >&2
 	exit 1
 done
 # The stock iOS jobs given to launchd, roughly in the order they were brought up.
@@ -157,6 +157,10 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 mkdir -p obj
 
 if [ -z "$PREBUILT" ] && ! command -v ld64 >/dev/null; then PREBUILT=1; fi
+if [ "${REQUIRE_SOURCE:-0}" = 1 ] && [ -n "$PREBUILT" ]; then
+	echo "build.sh: release candidate requires source compilation; prebuilt fallback is disabled" >&2
+	exit 1
+fi
 if [ -n "$PREBUILT" ]; then
 	echo "build.sh: not compiling, using the programs in prebuilt/userland"
 	for f in ../prebuilt/userland/*; do
@@ -185,10 +189,8 @@ cp obj/child root/bin/child
 # copies are editing at once.
 [ -f obj/var_store ] && cp obj/var_store root/bin/
 cp com.redwood.varstore.plist root/LaunchDaemons/
-# The S20+'s data volume (var_hfs=1, src/init.c): the format kit init writes into userdata at the first boot --
-# the blocks of a case-sensitive journaled HFS+ the size of userdata, made by macOS's newfs_hfs
-# (tools/mk-userdata-hfs.sh, then tools/hfs-kit.py)
-[ -f hfs-kit.bin ] && cp hfs-kit.bin root/share/hfs-kit.bin
+# Normal boot only mounts existing HFS data. The offline installer owns initialization;
+# do not put a format kit beside init or make a missing filesystem authorize formatting.
 echo "Darwin on redwood: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
@@ -299,6 +301,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -fobjc-arc -framework Foundation -framework SystemConfiguration -o obj/net_test src/net_test.m
 		# (the kernel's log over the network while iOS runs: PLANS/09-standalone.md, P4)
 		$DYN -o obj/rwlogd src/rwlogd.c
+		$DYN -o obj/m2m_mark src/m2m_mark.c
+		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
+		${LDID:-ldid} -Cadhoc -S obj/prefset
+		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
 		$DYN -fblocks -o obj/bluetool_stub src/bluetool_stub.c
 		# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc
 		# signature is what makes one (bsd/kern/kern_minimac.c): sign the stub, or com.apple.BlueTool
@@ -424,7 +430,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
-	[ -f ../prebuilt/userland/redwood-cellulard ] && cp ../prebuilt/userland/redwood-cellulard root/bin/
+	if [ -n "$PREBUILT" ]; then
+		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
+	else
+		cp obj/redwood-cellulard root/bin/
+	fi
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
 	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
@@ -807,7 +817,7 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 	# built and thrown away unused. The guard ends with the cache: everything after it goes
 	# into the boot volume, which every recipe carries, flash cryptexes included
 	if [ "$CRYPTEXES" != flash ]; then
-		if [ -d $IOS/cryptex ]; then cp -al $IOS/cryptex flashboot.os; else mkdir -p flashboot.os; fi
+		if [ -d $IOS/cryptex ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex" flashboot.os; else mkdir -p flashboot.os; fi
 		D=flashboot.os/System/Library/Caches/com.apple.dyld
 		mkdir -p $D
 		for f in $CACHE/dyld_shared_cache_arm64*; do
@@ -883,7 +893,7 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		exit 1
 	fi
 	rm -rf sysroot
-	cp -al $IOS/rootfs sysroot                      # hard links: no copies of the 0.5 GB
+	python3 ../tools/release/copy_tree.py "$IOS/rootfs" sysroot
 	# launchd must load our choice of jobs, not all 500 that iOS has
 	rm -rf sysroot/System/Library/LaunchDaemons sysroot/System/Library/NanoLaunchDaemons \
 		sysroot/System/Library/LaunchAngels sysroot/System/Library/xpc/launchd.plist
@@ -983,10 +993,10 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# the OS cryptex: on a device a separate volume grafted at /System/Cryptexes/OS. It holds the dyld
 	# shared cache (dyld looks there first) and a few libraries and resources outside the cache.
 	mkdir -p sysroot/System/Cryptexes
-	if [ -d $IOS/cryptex ]; then cp -al $IOS/cryptex sysroot/System/Cryptexes/OS; fi
+	if [ -d $IOS/cryptex ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex" sysroot/System/Cryptexes/OS; fi
 	# the App cryptex, the same way: Safari's daemons (eight launchd jobs run them from there), its settings and
 	# the bundles around it, which the root's links reach (System/Library/PreferenceBundles/MobileSafariSettings.bundle...)
-	if [ -d $IOS/cryptex-app ]; then cp -al $IOS/cryptex-app sysroot/System/Cryptexes/App; fi
+	if [ -d $IOS/cryptex-app ]; then python3 ../tools/release/copy_tree.py "$IOS/cryptex-app" sysroot/System/Cryptexes/App; fi
 	D=sysroot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld
 	mkdir -p $D
 	for f in $CACHE/dyld_shared_cache_arm64*; do

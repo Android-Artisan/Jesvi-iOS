@@ -21,6 +21,7 @@ def key(root, ios):
         'recipe': root / 'userland/build.sh',
         'cache-recipe': Path(__file__),
         'cache-engine': Path(__file__).with_name('cache.py'),
+        'copy-tree': Path(__file__).with_name('copy_tree.py'),
         'provider': root / 'tools/storage/stage-provider.py',
         'stage0': root / 'userland/obj/stage0',
         'LocalFilesHost': root / 'userland/obj/LocalFilesHost',

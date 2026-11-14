@@ -80,10 +80,10 @@ metadata; these are different checks.
    Writing BOOT last reduces premature entry into an incomplete port but is not
    atomic rollback. Verify complete intended ranges and exact byte counts. Do
    not zero the rest of super: its tail is reserved for loader logs.
-8. **Initialize data only on an explicit fresh install.** Current init can format
-   absent/unrecognized HFS. Before release, separate first-install authorization
-   from mount failure; an update must never interpret corruption as permission
-   to reformat. This is a release blocker, not fixed by host-side checks alone.
+8. **Initialize data only on an explicit fresh install.** Normal init now only mounts an existing HFSX volume. An absent/damaged header,
+   read failure or failed mount halts persistent-data boot without formatting.
+   The offline initializer and its explicit fresh-install authorization still need
+   implementation and hardware qualification. Updates must preserve userdata.
 9. **Only after successful readback:** record the installed version/layout marker,
    save the log on the host, then reboot. Do not reboot on failure or falsely claim
    success. Recovery has already been overwritten, so rescue must remain possible

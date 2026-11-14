@@ -61,7 +61,15 @@ cd "$B"
 PATCHES=$(cat "$ROOT"/tools/mesa/*.patch | sha256sum | cut -d' ' -f1)
 if [ ! -d mesa-$VERSION ] || [ "$(cat mesa-$VERSION/.redwood-patches 2>/dev/null)" != "$PATCHES" ]; then
 	[ -f mesa-$VERSION.tar.xz ] || curl -sL --fail -o mesa-$VERSION.tar.xz https://archive.mesa3d.org/mesa-$VERSION.tar.xz
-	echo "$SHA256  mesa-$VERSION.tar.xz" | sha256sum -c --quiet
+	python3 - "mesa-$VERSION.tar.xz" "$SHA256" <<'PY'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], 'rb') as f:
+    for block in iter(lambda: f.read(8 * 1024 * 1024), b''):
+        h.update(block)
+if h.hexdigest() != sys.argv[2]:
+    sys.exit('Mesa source archive checksum mismatch')
+PY
 	rm -rf mesa-$VERSION build-*
 	tar xJf mesa-$VERSION.tar.xz
 	for p in "$ROOT"/tools/mesa/*.patch; do patch -s --no-backup-if-mismatch -d mesa-$VERSION -p1 < "$p"; done
@@ -114,7 +122,7 @@ BUILD=build-${DRIVERS//,/-}
 	-Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-vdpau=disabled -Dgallium-va=disabled \
 	-Dgallium-xa=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log
 [ -z "${CONFIGURE_ONLY:-}" ] || exit 0
-ninja -C $BUILD > ninja.log
+ninja -j "${JOBS:-4}" -C $BUILD > ninja.log
 # air_run draws with a translated Metal shader and reads the pixels back; it is
 # the only way to find out whether the Adreno takes work that did not come from
 # the window server. Built only when asked, since it is a test program.
@@ -123,7 +131,7 @@ if [ "${AIR:-}" = 1 ]; then
 	# Exynos phone's Mali -- tools/mesa/air-panfrost.patch)
 	AIRDIR=src/gallium/drivers/freedreno
 	case ",$DRIVERS," in *,panfrost,*) AIRDIR=src/gallium/drivers/panfrost ;; esac
-	ninja -C $BUILD $AIRDIR/air_run >> ninja.log
+	ninja -j "${JOBS:-4}" -C $BUILD $AIRDIR/air_run >> ninja.log
 	cp $BUILD/$AIRDIR/air_run out/air_run
 	echo "mk-mesa.sh: $B/out/air_run ($(wc -c < out/air_run) bytes)"
 	# and the same path as a library, which is not a test program: the Metal driver links
@@ -131,7 +139,7 @@ if [ "${AIR:-}" = 1 ]; then
 	# libOSMesa is below -- -x keeps the global symbols, which here are the rwa_* of
 	# tools/mesa/air/air_metal.h, and the install name has to be the path on the device
 	# because meson's own is @rpath.
-	ninja -C $BUILD $AIRDIR/libredwoodair.dylib >> ninja.log
+	ninja -j "${JOBS:-4}" -C $BUILD $AIRDIR/libredwoodair.dylib >> ninja.log
 	llvm-strip -x -o out/libredwoodair.dylib $BUILD/$AIRDIR/libredwoodair.dylib
 	install_name_tool -id /redwood/lib/libredwoodair.dylib out/libredwoodair.dylib
 	echo "mk-mesa.sh: $B/out/libredwoodair.dylib ($(wc -c < out/libredwoodair.dylib) bytes," \

@@ -26,6 +26,14 @@ mkdir -p obj ../prebuilt/userland
 DYN="xnu-clang -arch arm64 -isysroot $SDK -O1"
 M=$ROOT/xnu-deps/build/mesa/out
 
+# Release builds compile the complete userland recipe. The older macOS shortcut
+# below is retained for developer checkouts, but must not overwrite tracked prebuilts.
+if [ "${REQUIRE_SOURCE:-0}" = 1 ]; then
+	AIR=1 DRIVERS=softpipe,panfrost ../tools/mk-mesa.sh
+	export REST=${REST:-1} GL=1
+	exec ./build.sh
+fi
+
 if [ "$(cat $M/built-from 2>/dev/null)" != "$(cat ../tools/mesa/*.patch ../tools/mesa/redwood-drm/* | sha256sum)" ] ||
     ! grep -q panfrost $M/drivers 2>/dev/null; then
 	DRIVERS=softpipe,panfrost ../tools/mk-mesa.sh
