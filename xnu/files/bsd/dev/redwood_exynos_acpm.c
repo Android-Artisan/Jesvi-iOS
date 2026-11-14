@@ -23,6 +23,7 @@
  *   dvfs=2       ... and set the clocks below (kHz; 0 leaves a domain as it is):
  *                dvfs_cl0 (A55, default 1742000), dvfs_cl1 (A76, 2210000), dvfs_cl2 (M5, 2002000),
  *                dvfs_g3d (GPU, 702000), dvfs_mif (memory, 0)
+ *   dvfs_efficiency=1  cap CPU/GPU/memory clocks; runtime: kern.redwood.efficiency=0|1
  *   dvfs_wait=S  seconds after boot before anything is asked (default 10)
  *   dvfs_hot=C   the first step of each domain's throttling, in degrees of its own zone (default:
  *                Samsung's: A55 86 / 96 by the LITTLE zone, A76 86 / 96 by MID, GPU 88 / 100 by G3D,
@@ -35,6 +36,8 @@
  * Every line goes to the loader's log with a `dvfs:` prefix.
  */
 
+#include <os/atomic_private.h>
+#include <sys/errno.h>
 #include <kern/clock.h>
 #include <kern/sched_prim.h>
 #include <kern/thread.h>
@@ -379,11 +382,14 @@ report(const char *why)
 	dlog("%s: %s", why, line);
 }
 
+static int power_profile(void);
+static uint32_t profile_cap(unsigned d, uint32_t cap, int prof);
+
 static void
 apply(int hot, bool skip_g3d)
 {
 	for (unsigned i = 0; i < NDOMAINS; i++) {
-		uint32_t khz = hot ? domains[i].safe : targets[i];
+		uint32_t khz = targets[i] ? profile_cap(i, hot ? domains[i].safe : targets[i], power_profile()) : 0;
 
 		/* (cluster 2 is asked on its own, last: acpm_thread) */
 		if (khz == 0 || (skip_g3d && domains[i].domain == D_G3D) || domains[i].domain == D_CL2) {
@@ -450,6 +456,21 @@ static volatile int redwood_screen_on = 1;
 volatile int redwood_display_is_on = 1;      /* the same, for other drivers (redwood_ssp.c: its polling) */
 int redwood_lowpower;                   /* kern.redwood.lowpower (redwood_battery.c's node) */
 static uint32_t prof_sleep = 1, prof_lpm = 1;
+static int efficiency;                 /* dvfs_efficiency=1 or kern.redwood.efficiency */
+
+/* Existing Samsung clock levels, kHz; a ceiling, never a request to raise a clock. */
+static uint32_t
+efficiency_cap(unsigned domain)
+{
+	switch (domain) {
+	case D_CL0: return 1248000;
+	case D_CL1: return 1794000;
+	case D_CL2: return 1898000;
+	case D_G3D: return 455000;
+	case D_MIF: return 1352000;
+	default: return 0;
+	}
+}
 enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
 
 void redwood_dvfs_display(int on);
@@ -473,6 +494,24 @@ power_profile(void)
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_INT(_kern_redwood, OID_AUTO, lowpower, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_lowpower, 0,
     "Low Power Mode: 1 caps the clocks (redwood_exynos_acpm.c)");
+static int
+sysctl_efficiency SYSCTL_HANDLER_ARGS
+{
+	int value = os_atomic_load(&efficiency, relaxed);
+	int error = sysctl_handle_int(oidp, &value, 0, req);
+
+	if (error || req->newptr == USER_ADDR_NULL) {
+		return error;
+	}
+	if (value != 0 && value != 1) {
+		return EINVAL;
+	}
+	os_atomic_store(&efficiency, value, relaxed);
+	thread_wakeup((event_t)&redwood_gov_wake);
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    0, 0, sysctl_efficiency, "I", "Efficiency clock caps: 0 normal, 1 underclocked (requires dvfs=2)");
 /*
  * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
  * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
@@ -612,10 +651,17 @@ profile_cap(unsigned d, uint32_t cap, int prof)
 {
 	uint32_t p = prof == PROF_OFF ? domains[d].safe : prof == PROF_LPM ? domains[d].mid : 0;
 
-	if (p == 0) {
-		return cap;
+	if (domains[d].domain == D_MIF) {
+		p = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : 0;
 	}
-	return cap == 0 || p < cap ? p : cap;
+	if (os_atomic_load(&efficiency, relaxed)) {
+		uint32_t e = efficiency_cap(domains[d].domain);
+
+		if (e && (!p || e < p)) {
+			p = e;
+		}
+	}
+	return p && (!cap || p < cap) ? p : cap;
 }
 
 static void
@@ -643,6 +689,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_ffl_g3d", &gov_frame_khz[3], sizeof(gov_frame_khz[3]));
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
 	PE_parse_boot_argn("dvfs_lpm", &prof_lpm, sizeof(prof_lpm));
+	PE_parse_boot_argn("dvfs_efficiency", &efficiency, sizeof(efficiency));
+	efficiency = efficiency != 0;
 	for (unsigned g = 0; g < NGOV; g++) {
 		gov_rung[g] = GOV_RUNGS - 1;
 		while (gov_rung[g] > 0 && gov[g].rung[gov_rung[g]] == 0) {
@@ -703,7 +751,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 
 		for (unsigned i = 0; i < NDOMAINS; i++) {
 			if (domains[i].domain == D_G3D) {
-				g3d = targets[i];
+				g3d = targets[i] ? profile_cap(i, targets[i], power_profile()) : 0;
 			}
 		}
 		set_rate(D_G3D, g3d);
@@ -742,10 +790,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			    real_ncpus);
 			break;
 		}
-		if (set_rate(D_CL2, targets[i]) != 0) {
-			dlog("cl2 (M5): %u kHz was not taken", targets[i]);
+		uint32_t khz = profile_cap(i, targets[i], power_profile());
+		if (set_rate(D_CL2, khz) != 0) {
+			dlog("cl2 (M5): %u kHz was not taken", khz);
 		} else {
-			dlog("cl2 (M5): asked for %u MHz", targets[i] / 1000);
+			dlog("cl2 (M5): asked for %u MHz", khz / 1000);
 		}
 		delay(5000);
 		if (ch_tmu.len != 0 && hottest() < 0) {
@@ -808,27 +857,46 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 		/* memory per power profile (on change only) */
 		if (mode >= 2) {
-			static int mif_prof = -1;
-			int prof = power_profile();
+			static int mif_prof = -1, mif_efficiency = -1;
+			int prof = power_profile(), eff = os_atomic_load(&efficiency, relaxed);
 
-			if (prof != mif_prof) {
+			if (prof != mif_prof || eff != mif_efficiency) {
 				unsigned m = 0;
 				uint32_t khz;
 
 				while (m < NDOMAINS && domains[m].domain != D_MIF) {
 					m++;
 				}
-				khz = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : (m < NDOMAINS ? targets[m] : 0);
+				khz = m < NDOMAINS && targets[m] ? profile_cap(m, targets[m], prof) : 0;
 				if (khz != 0 && set_rate(D_MIF, khz) == 0) {
 					dlog("power: %s: memory %u MHz%s", prof == PROF_OFF ? "screen off" : prof == PROF_LPM ?
 					    "Low Power Mode" : "normal", khz / 1000, prof == PROF_NORMAL ? "" : ", clusters and GPU capped");
 					mif_prof = prof;
+					mif_efficiency = eff;
+					dlog("efficiency: %s", eff ? "on" : "off");
 				} else if (khz != 0) {
 					static uint32_t told;
 
 					if (told++ < 5) {
 						dlog("power: memory %u MHz NOT taken (profile %d): tried again next tick", khz / 1000, prof);
 					}
+				}
+			}
+		}
+		/* Fixed-clock boot overrides must honor the same runtime caps as the governor. */
+		for (unsigned g = 0; mode >= 2 && g < NGOV; g++) {
+			if (govern && (gov[g].ncpus || govern_gpu)) {
+				continue;
+			}
+			for (unsigned d = 0; d < NDOMAINS; d++) {
+				if (domains[d].domain != gov[g].domain || !targets[d]) {
+					continue;
+				}
+				uint32_t cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
+				uint32_t khz = profile_cap(d, cap < targets[d] ? cap : targets[d], power_profile());
+
+				if (khz != gov_sent[g] && set_rate(domains[d].domain, khz) == 0) {
+					gov_sent[g] = khz;
 				}
 			}
 		}
@@ -865,7 +933,9 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				gov_low[g] = 0;
 			} else {
 				/* the lowest rung that would leave it at most `aim` % busy */
-				uint64_t need = (uint64_t)gov[g].rung[gov_rung[g]] * (uint64_t)busy / gov[g].aim;
+				uint32_t current = os_atomic_load(&efficiency, relaxed) && gov_sent[g] ?
+				    gov_sent[g] : gov[g].rung[gov_rung[g]];
+				uint64_t need = (uint64_t)current * (uint64_t)busy / gov[g].aim;
 				unsigned fit = 0;
 
 				while (fit < top && gov[g].rung[fit] < need) {
@@ -958,7 +1028,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				/* (a governed cluster gets its clock from the governor, capped by this step, next tick) */
 				bool governed = govern && (domains[i].domain == D_CL0 || domains[i].domain == D_CL1 ||
 				    domains[i].domain == D_CL2 || (domains[i].domain == D_G3D && govern_gpu));
-				if (khz != 0 && !governed && set_rate(domains[i].domain, khz) != 0) {
+				if (khz != 0 && !governed && set_rate(domains[i].domain,
+				    profile_cap(i, khz < targets[i] ? khz : targets[i], power_profile())) != 0) {
 					dlog("%s: %u kHz was not taken", domains[i].name, khz);
 				}
 				dlog("%s zone %s %d C: step %d, %u MHz", domains[i].name, zones[z], t, want, khz / 1000);
