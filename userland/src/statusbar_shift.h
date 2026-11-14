@@ -329,18 +329,36 @@ sbs_provider_hook(void *unused)
  * (Hooked on the entry's own class only; if that class has no isEnabled, the data's backgroundActivityEntry getter
  * answers nil instead. Log: which one, in redwood-statusbar.log.)
  */
+/* (2026-11-15) MobileGestalt answers ArtworkDeviceSubType to entitled processes only (nil in apps and SpringBoard's
+ * libraries here), so the device tree's /product artwork-device-subtype is read first -- the very property island=1
+ * sets (xnuloader/loader.c), readable by any process. MobileGestalt stays as a second opinion. */
+extern unsigned int IORegistryEntryFromPath(unsigned int, const char *);
+extern CFTypeRef IORegistryEntryCreateCFProperty(unsigned int, CFStringRef, CFAllocatorRef, unsigned int);
+extern int IOObjectRelease(unsigned int);
 static bool
 sbs_island_present(void)
 {
 	static int cached = -1;
 
 	if (cached < 0) {
-		void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
-		CFTypeRef (*copy)(CFStringRef, CFDictionaryRef) = mg ? (CFTypeRef (*)(CFStringRef, CFDictionaryRef))dlsym(mg, "MGCopyAnswer") : NULL;
 		int subtype = 0;
+		unsigned int e = IORegistryEntryFromPath(0, "IODeviceTree:/product");
 
-		if (copy != NULL) {
-			CFTypeRef v = copy(CFSTR("ArtworkDeviceSubType"), NULL);
+		if (e != 0) {
+			CFTypeRef v = IORegistryEntryCreateCFProperty(e, CFSTR("artwork-device-subtype"), NULL, 0);
+			if (v != NULL) {
+				if (CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) >= 4) {
+					const unsigned char *p = CFDataGetBytePtr((CFDataRef)v);
+					subtype = p[0] | p[1] << 8 | p[2] << 16 | p[3] << 24;
+				}
+				CFRelease(v);
+			}
+			IOObjectRelease(e);
+		}
+		if (subtype == 0) {
+			void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+			CFTypeRef (*copy)(CFStringRef, CFDictionaryRef) = mg ? (CFTypeRef (*)(CFStringRef, CFDictionaryRef))dlsym(mg, "MGCopyAnswer") : NULL;
+			CFTypeRef v = copy ? copy(CFSTR("ArtworkDeviceSubType"), NULL) : NULL;
 			if (v != NULL) {
 				if (CFGetTypeID(v) == CFNumberGetTypeID()) {
 					CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &subtype);
@@ -349,6 +367,7 @@ sbs_island_present(void)
 			}
 		}
 		cached = subtype == 2556 || subtype == 2796;
+		sbs_log("island: artwork subtype %.0f (island %.0f)", subtype, cached);
 	}
 	return cached == 1;
 }
