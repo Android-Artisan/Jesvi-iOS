@@ -1,128 +1,133 @@
-# Automatic cooling and efficiency
+# Independent automatic cooling
 
-`lpmd` now enables cooling automatically: no boot flag or reboot is required to
-run the new daemon on the existing kernel. The live service uses the existing
-Low Power Mode caps. The new kernel's stronger efficiency profile and revised
-thermal thresholds require that kernel to be installed at an approved reboot.
-No device reboot or flash was performed for this change.
+The new kernel automatically limits each CPU cluster and the GPU from its own
+thermal zone. No boot flag is needed (`dvfs=2` remains required). A hot M5 alone
+does not cap the A76, A55, GPU, or memory.
 
-## Automatic policy
+This implementation is built locally, not flashed. Installing the kernel needs
+an approved reboot. No flash or reboot was performed during this work.
 
-| Zone | Engage | Recover at or below |
-| --- | ---: | ---: |
-| M5 super cores | 76 C | 68 C |
-| A76 | 80 C | 72 C |
-| A55 efficiency cores | 82 C | 74 C |
-| GPU | 80 C | 72 C |
+## Native automatic policy
 
-Engage when any zone reaches its own mark. Release only after all zones stay at
-or below their own recovery marks for **30 seconds**. M5 intervenes first; an
-A55 at 78 C alone no longer forces the same cap.
-- Check every **5 seconds**, using the kernel's existing **10-second** reports.
-  This is comfort/power control; the kernel's faster thermal protection remains.
-- Missing, invalid, or unchanged telemetry for 30 seconds holds/enables cooling;
-  fresh, cool reports and a full recovery dwell are required to release it.
-- Preserve a cap across daemon restarts. The service has launchd KeepAlive.
-- Preserve the user's Settings Low Power Mode choice. Automatic cooling does
-  not change the notification or show a false Settings switch state.
+| Domain | Normal maximum | Automatic ceiling | Engage | Recover at or below |
+| --- | ---: | ---: | ---: | ---: |
+| M5 super cores | 2730 MHz | 1794 MHz | 76 C | 68 C |
+| A76 | 2504 MHz | 2106 MHz | 80 C | 72 C |
+| A55 efficiency cores | 2002 MHz | 1456 MHz | 82 C | 74 C |
+| GPU | 800 MHz | 572 MHz | 80 C | 72 C |
+| Memory | 2028 MHz | No automatic cap | No dedicated telemetry | — |
 
-On the running old kernel, `kern.redwood.lowpower` is Settings LPM OR automatic
-cooling. On a kernel with `kern.redwood.efficiency`, automatic cooling instead
-controls that node, and Settings continues to control `kern.redwood.lowpower`.
-The daemon owns the efficiency node while automatic control is running; manual
-writes can be replaced at the next poll. `lpmd --settings-only` runs only the
-original Settings mirroring behavior, if manual control is wanted.
+Each domain releases its own cap after 30 seconds below its own recovery mark.
+A warmer zone cannot prevent another domain's recovery. An invalid sensor caps
+only that zone until it recovers; it does not infer a memory cap. All CPU cores
+remain available. Lower explicit targets, stricter thermal steps, Settings Low
+Power Mode and screen-off limits take precedence. Zero targets remain unmanaged.
 
-These are provisional die-temperature policy values, not battery/case limits or
-measured optimums. Battery savings, sustained temperatures and UI/call latency
-still need real-use comparison. CPU utilization alone does not trigger a cap.
+Memory has no exposed dedicated temperature or bandwidth measurement here. Its
+clock is not automatically inferred from CPU/GPU heat. Explicit manual efficiency
+mode, Settings LPM and screen-off retain their existing memory policy (1352 MHz,
+1352 MHz and 421 MHz respectively). Normal memory remains at 2028 MHz.
 
-## Clock ceilings
+These are provisional die-temperature settings, not battery/case limits or a
+measured optimum. Battery savings, sustained temperatures and UI/call latency
+still need an on-device comparison. CPU utilization alone does not trigger caps.
 
-| Domain | Normal maximum | Automatic on existing kernel (LPM) | New kernel efficiency |
-| --- | ---: | ---: | ---: |
-| A55 (4 cores) | 2002 MHz | 1456 MHz | 1456 MHz |
-| A76 (2 cores) | 2504 MHz | 1794 MHz | 2106 MHz |
-| M5 (2 cores) | 2730 MHz | 1794 MHz | 1794 MHz |
-| GPU | 800 MHz | 572 MHz | 572 MHz |
-| Memory | 2028 MHz | 1352 MHz | 1352 MHz |
+## Monitoring cost and request handling
 
-All cores remain available. The load governor still scales down. Touch, frame,
-wake and slow GPU-job boosts cannot exceed the selected profile's caps. In the
-new efficiency profile, demand estimation uses the capped clock instead of an
-unreachable boost rung. Normal-mode estimation is unchanged. Thermal, screen-off,
-user LPM and lower explicit targets take precedence whenever stricter. The new
-profile cuts M5 peak clocks by 34%, A76 by 16%, A55 by 27%, and GPU by 29%: the
-strongest CPU cut is on the M5s. The existing kernel only exposes whole-device
-LPM control; cluster-specific clock changes and earlier hard thermal steps need
-the new kernel.
-Explicit zero targets remain unmanaged; `dvfs=1` is monitoring only.
+The native policy reuses the four temperature samples the ACPM thermal thread
+already reads every 250 ms. It adds four small state machines: no extra sensor
+reads, threads, timers, allocations, log scans or polling daemon. Logs are written
+only when the active cap mask changes. Clocks still follow the existing 50 ms
+governor; an automatic decision normally applies on the following tick plus ACPM
+request time. This is small additional work, not a measured zero-cost claim.
 
-The new profile also caps initial ACPM requests, once ACPM starts (default 10 s
-into boot), and fixed-clock configurations. It does not control S-Boot clocks.
-The developer override `acpm.rate` bypasses profile policy until a later governor
-update and should not be used to validate sustained ceilings.
+`lpmd` uses only event-driven Settings notifications. The temporary log-polling
+implementation has been removed entirely, including on older kernels. It never
+writes the manual efficiency switch or overrides native automatic control.
 
-## Revised kernel thermal steps (staged, not live)
+Unchanged requested clocks do not send another ACPM request. Failed requests are
+not cached as applied and are retried. Missing utilization data preserves the
+requested rung but still applies ceilings. Touch/frame/wake/slow-GPU boosts and
+fixed-clock boot configurations honor the same per-domain caps. Capped demand
+estimation uses the requested capped clock, rather than an unreachable boost rung.
+
+The policy starts with the existing ACPM thermal loop, after initialization and
+its default 10-second wait; it does not control S-Boot clocks. `dvfs=1` only
+monitors. The developer command `acpm.rate` can bypass policy until a later
+update and should not be used as a sustained clock test.
+
+## Control and status (new kernel)
+
+Root can inspect or disable native automatic control:
+
+```sh
+sysctl kern.redwood.efficiency_auto kern.redwood.efficiency_mask
+sysctl -w kern.redwood.efficiency_auto=0
+sysctl -w kern.redwood.efficiency_auto=1
+```
+
+Automatic is on by default. Mask bits: A55=1, A76=2, M5=4, GPU=8; no memory bit.
+For example, mask 4 means only M5's automatic ceiling is active. Disabling clears
+state at the next thermal check; re-enabling reevaluates current temperatures.
+
+Manual whole-device efficiency remains separate:
+
+```sh
+sysctl -w kern.redwood.efficiency=1
+sysctl -w kern.redwood.efficiency=0
+```
+
+The manual switch caps all listed domains, including memory at 1352 MHz. Turning
+it off does not disable independent automatic protection. `dvfs_efficiency=1`
+is an optional initial manual setting, not a requirement for native automatic
+control. The existing per-zone thermal steps stay enabled regardless.
+
+## Harder per-zone thermal steps
 
 | Policy | Existing kernel | New kernel |
 | --- | --- | --- |
-| M5 zone steps | 85 / 95 C | 78 / 86 C |
-| A55/A76 zone steps | 85 / 95 C | 82 / 90 C |
-| GPU zone steps | 87 / 97 C | 82 / 90 C |
-| Step release hysteresis | 10 C | 8 C |
-| Brightness reduction starts | 90 C | 82 C |
-| Stronger brightness reduction | 96 C | 88 C |
+| M5 steps | 85 / 95 C | 78 / 86 C |
+| A55/A76 steps | 85 / 95 C | 82 / 90 C |
+| GPU steps | 87 / 97 C | 82 / 90 C |
+| Release hysteresis | 10 C | 8 C |
+| Brightness reductions | 90 / 96 C | 82 / 88 C |
 
-Per-zone clock steps remain checked every 250 ms. M5 step 1 caps at 1586 MHz
-and step 2 at 1196 MHz, releasing below 70/78 C respectively. Other domains
-release their steps below 74/82 C. Automatic cooling acts earlier and affects memory
-as well. `dvfs_hot=C` overrides thermal step 1, with step 2 now C+8. Brightness
-retains its separate 4 C release hysteresis and `fb_hot` override.
+M5 step 1 caps at 1586 MHz and step 2 at 1196 MHz. A76 uses 1794/1066 MHz,
+A55 1456/1053 MHz, GPU 572/377 MHz. These use each domain's own sensor and remain
+checked every 250 ms. `dvfs_hot=C` overrides the first step with second step C+8;
+brightness keeps its separate `fb_hot` override and 4 C release hysteresis.
 
-## Live deployment and rollback (2026-11-14)
+## Current live phone and legacy fallback
 
-The original service was replaced in its existing `user/501` launchd domain:
+The earlier live experiment used log polling and the old whole-device LPM
+switch. It successfully engaged and recovered, but that switch also capped
+memory. It has now been stopped to avoid that coupling and monitoring overhead.
+The original `/redwood/bin/lpmd` was restored in `user/501/com.redwood.lpmd`;
+Settings LPM works, and no temporary automatic controller is active.
 
-- Binary: `/var/root/lpmd-auto`
-- Job: `/var/root/com.redwood.lpmd-auto.plist` (label `com.redwood.lpmd`)
-- Transition/error log: `/var/tmp/redwood-power.log`
-- Probe: `ssh s20 /var/root/lpmd-auto probe`
-- Original binary backup: `/var/root/lpmd-before-auto-20261114`
-- Original job backup: `/var/root/lpmd-job-before-auto-20261114.plist`
+Saved experiment artifacts remain inert in `/var/root/lpmd-auto` and
+`/var/root/com.redwood.lpmd-auto.plist`. Original backups are
+`/var/root/lpmd-before-auto-20261114` and
+`/var/root/lpmd-job-before-auto-20261114.plist`. Historical transitions remain in
+`/var/tmp/redwood-power.log`. The new `prebuilt/userland/lpmd` mirrors Settings
+without polling. The current phone's original helper is already purely
+event-driven and can coexist with the new kernel.
 
-The live override is loaded for this boot; files in `/var/root` survive reboot,
-but the old boot image still starts its original service. Updated source and
-`prebuilt/userland/lpmd` make automatic control the default in future rebuilt
-userland images. Merely rebooting the current old image does not install it.
-
-Rollback the live service (the original daemon restores Settings' kernel value):
-
-```sh
-ssh s20 'launchctl bootout user/501/com.redwood.lpmd && launchctl bootstrap user/501 /var/root/lpmd-job-before-auto-20261114.plist'
-```
-
-For standalone testing of the new kernel without the automatic daemon owning the
-node: `sysctl -w kern.redwood.efficiency=1` enables its profile; `=0` disables it.
-`dvfs_efficiency=1` remains an optional initial boot setting, not a requirement
-for automatic cooling. These sysctl commands require root and `dvfs=2`.
+There is no whole-device automatic fallback in the new helper. On an old kernel,
+it only mirrors Settings; independent automatic control requires the new kernel.
 
 ## Validation
 
 ```sh
 python3 tools/power/test_efficiency.py
-cc -std=c11 -Wall -Wextra -Werror tools/power/test_auto.c -o /tmp/test-redwood-auto
-/tmp/test-redwood-auto
+cc -std=c11 -Wall -Wextra -Werror tools/power/test_clusters.c -o /tmp/test-redwood-clusters
+/tmp/test-redwood-clusters
 ```
 
-Tests cover cap combinations, normal restoration, hysteresis, cool dwell,
-interrupted recovery, missing telemetry, embedded NULs, incomplete records,
-invalid zones and freshness despite unrelated log writes. lpmd cross-compiles
-with warnings treated as errors. The Exynos GICv2 DEVELOPMENT kernel builds.
-Live service/probe/telemetry and natural threshold transitions are checked without
-synthetic heating; the new kernel's thermal steps are not yet tested on-device.
-
-Further optimization candidates: retry failed governor clock requests instead
-of caching failed requests; replace the temporary log-based telemetry with a
-small, timestamped temperature sysctl to avoid copying the log; measure screen-off
-wakeups before slowing governor polling or changing scheduler capacity policy.
+Tests compile actual cap/request code and exercise independent masks, unchanged
+unselected domains, memory isolation, manual/LPM/screen-off precedence, lower
+targets, failed clock retry, unchanged-clock suppression, independent recovery,
+interrupted cool dwell and sensor failure. The legacy parser and polling tests
+were removed together with that implementation.
+lpmd cross-compiles with warnings as errors. Exynos GICv2 DEVELOPMENT builds.
+Native clock transitions and overhead have not yet been measured on-device.

@@ -51,6 +51,7 @@
 #include <mach/processor_info.h>
 #include <mach/machine.h>
 #include <sys/redwood_dbgport.h>
+#include <sys/redwood_power_policy.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -384,6 +385,21 @@ report(const char *why)
 	dlog("%s: %s", why, line);
 }
 
+/* Cache only accepted requests. A failed cap must be retried, not remembered
+ * as applied. Return 1 changed, 0 already requested, -1 failed. */
+static int
+governor_set_rate(unsigned domain, uint32_t khz, uint32_t *sent)
+{
+	if (*sent == khz) {
+		return 0;
+	}
+	if (set_rate(domain, khz) != 0) {
+		return -1;
+	}
+	*sent = khz;
+	return 1;
+}
+
 static int power_profile(void);
 static uint32_t profile_cap(unsigned d, uint32_t cap, int prof);
 
@@ -458,7 +474,9 @@ static volatile int redwood_screen_on = 1;
 volatile int redwood_display_is_on = 1;      /* the same, for other drivers (redwood_ssp.c: its polling) */
 int redwood_lowpower;                   /* kern.redwood.lowpower (redwood_battery.c's node) */
 static uint32_t prof_sleep = 1, prof_lpm = 1;
-static int efficiency;                 /* dvfs_efficiency=1 or kern.redwood.efficiency */
+static int efficiency;                 /* manual whole-device profile */
+static int efficiency_auto = 1;        /* independent automatic caps, on by default */
+static unsigned efficiency_mask;       /* updated by the existing ACPM thermal loop */
 
 /* Existing Samsung clock levels, kHz; a ceiling, never a request to raise a clock. */
 static uint32_t
@@ -472,6 +490,27 @@ efficiency_cap(unsigned domain)
 	case D_MIF: return 1352000;
 	default: return 0;
 	}
+}
+static int
+efficiency_active(unsigned domain)
+{
+	unsigned bit;
+
+	if (os_atomic_load(&efficiency, relaxed)) {
+		return 1;
+	}
+	if (!os_atomic_load(&efficiency_auto, relaxed)) {
+		return 0;
+	}
+	switch (domain) {
+	case D_CL0: bit = 0; break;
+	case D_CL1: bit = 1; break;
+	case D_CL2: bit = 2; break;
+	case D_G3D: bit = 3; break;
+	case D_MIF: return 0; /* No memory-specific automatic telemetry. */
+	default: return 0;
+	}
+	return (os_atomic_load(&efficiency_mask, relaxed) & (1u << bit)) != 0;
 }
 enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
 
@@ -499,7 +538,8 @@ SYSCTL_INT(_kern_redwood, OID_AUTO, lowpower, CTLFLAG_RW | CTLFLAG_LOCKED, &redw
 static int
 sysctl_efficiency SYSCTL_HANDLER_ARGS
 {
-	int value = os_atomic_load(&efficiency, relaxed);
+	int *setting = (int *)arg1;
+	int value = os_atomic_load(setting, relaxed);
 	int error = sysctl_handle_int(oidp, &value, 0, req);
 
 	if (error || req->newptr == USER_ADDR_NULL) {
@@ -508,12 +548,16 @@ sysctl_efficiency SYSCTL_HANDLER_ARGS
 	if (value != 0 && value != 1) {
 		return EINVAL;
 	}
-	os_atomic_store(&efficiency, value, relaxed);
+	os_atomic_store(setting, value, relaxed);
 	thread_wakeup((event_t)&redwood_gov_wake);
 	return 0;
 }
 SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
-    0, 0, sysctl_efficiency, "I", "Efficiency clock caps: 0 normal, 1 underclocked (requires dvfs=2)");
+    &efficiency, 0, sysctl_efficiency, "I", "Efficiency clock caps: 0 normal, 1 underclocked (requires dvfs=2)");
+SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency_auto, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    &efficiency_auto, 0, sysctl_efficiency, "I", "Independent automatic cooling: on by default, uses existing thermal samples");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, efficiency_mask, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &efficiency_mask, 0, "Automatic cooling bits: A55=1 A76=2 M5=4 GPU=8; memory independent");
 /*
  * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
  * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
@@ -656,7 +700,7 @@ profile_cap(unsigned d, uint32_t cap, int prof)
 	if (domains[d].domain == D_MIF) {
 		p = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : 0;
 	}
-	if (os_atomic_load(&efficiency, relaxed)) {
+	if (efficiency_active(domains[d].domain)) {
 		uint32_t e = efficiency_cap(domains[d].domain);
 
 		if (e && (!p || e < p)) {
@@ -670,6 +714,7 @@ static void
 acpm_thread(void *arg, wait_result_t wr_unused)
 {
 	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 82;
+	struct redwood_cooling_state cooling[4] = {0};
 	int bl_step = 0;
 	int hot = 0, level[NDOMAINS] = { 0 }, temp[4];
 	uint32_t govern = 1, govern_gpu = 1, gov_rung[NGOV], gov_low[NGOV], gov_sent[NGOV], gov_changes = 0, tick = 0;
@@ -850,8 +895,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				khz = gov[g].rung[floor];
 				khz = khz > targets[d] ? targets[d] : khz;
 				khz = cap != 0 && khz > cap ? cap : khz;
-				if (khz != gov_sent[g] && set_rate(domains[d].domain, khz) == 0) {
-					gov_sent[g] = khz;
+				if (governor_set_rate(domains[d].domain, khz, &gov_sent[g]) > 0) {
 					gov_changes++;
 					gov_boosts++;
 				}
@@ -860,7 +904,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		/* memory per power profile (on change only) */
 		if (mode >= 2) {
 			static int mif_prof = -1, mif_efficiency = -1;
-			int prof = power_profile(), eff = os_atomic_load(&efficiency, relaxed);
+			int prof = power_profile(), eff = efficiency_active(D_MIF);
 
 			if (prof != mif_prof || eff != mif_efficiency) {
 				unsigned m = 0;
@@ -897,9 +941,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				uint32_t cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
 				uint32_t khz = profile_cap(d, cap < targets[d] ? cap : targets[d], power_profile());
 
-				if (khz != gov_sent[g] && set_rate(domains[d].domain, khz) == 0) {
-					gov_sent[g] = khz;
-				}
+				(void)governor_set_rate(domains[d].domain, khz, &gov_sent[g]);
 			}
 		}
 		/* the governor: every tick */
@@ -926,16 +968,15 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				continue;
 			}
 			busy = gov_busy(g);
-			if (busy < 0) {
-				continue;
-			}
 			want = gov_rung[g];
+			/* Missing utilization must not skip a thermal/profile cap. Preserve
+			 * the requested rung and still apply ceilings below. */
 			if (busy >= (int)gov[g].jump) {
 				want = top;
 				gov_low[g] = 0;
-			} else {
+			} else if (busy >= 0) {
 				/* the lowest rung that would leave it at most `aim` % busy */
-				uint32_t current = os_atomic_load(&efficiency, relaxed) && gov_sent[g] ?
+				uint32_t current = efficiency_active(domains[d].domain) && gov_sent[g] ?
 				    gov_sent[g] : gov[g].rung[gov_rung[g]];
 				uint64_t need = (uint64_t)current * (uint64_t)busy / gov[g].aim;
 				unsigned fit = 0;
@@ -963,11 +1004,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			khz = cap != 0 && khz > cap ? cap : khz;
 			gov_khz_sum[g] += khz;
 			if (khz != gov_sent[g]) {
-				if (set_rate(domains[d].domain, khz) != 0) {
+				if (governor_set_rate(domains[d].domain, khz, &gov_sent[g]) < 0) {
 					dlog("%s: %u kHz was not taken", domains[d].name, khz);
+				} else {
+					gov_changes++;
 				}
-				gov_sent[g] = khz;
-				gov_changes++;
 			}
 		}
 		if (tick % (250 / GOV_TICK_MS) != 0) {
@@ -977,6 +1018,23 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		hot = 0;
 		for (unsigned z = 0; z < 4; z++) {
 			temp[z] = ch_tmu.len != 0 ? read_temp(z) : -1;
+		}
+		/* Reuse the four samples above: no extra reads, thread, timer or log polling.
+		 * Decisions affect the next governor tick; stricter thermal/profile caps still win. */
+		if (mode >= 2) {
+			uint64_t ns;
+			unsigned previous = os_atomic_load(&efficiency_mask, relaxed), mask = 0;
+
+			if (os_atomic_load(&efficiency_auto, relaxed)) {
+				absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+				mask = redwood_cooling_mask(cooling, temp, ns / NSEC_PER_SEC);
+			} else {
+				memset(cooling, 0, sizeof(cooling));
+			}
+			os_atomic_store(&efficiency_mask, mask, relaxed);
+			if (mask != previous) {
+				dlog("automatic cooling: mask %#x -> %#x (A55=1 A76=2 M5=4 GPU=8)", previous, mask);
+			}
 		}
 		if (fb_hot != 0) {
 			extern void redwood_fb_thermal_cap(uint32_t nits);

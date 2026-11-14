@@ -23,12 +23,27 @@ program = '''
 #include <assert.h>
 #include <stdio.h>
 #define os_atomic_load(p, order) (*(p))
+static unsigned efficiency_mask;
+static int request_result, request_calls;
+static int set_rate(unsigned domain, uint32_t khz) {
+    (void)domain; (void)khz; request_calls++; return request_result;
+}
+static int efficiency_auto = 1;
 static int efficiency, redwood_screen_on = 1, redwood_lowpower;
 static unsigned prof_sleep = 1, prof_lpm = 1;
 enum { PROF_NORMAL, PROF_LPM, PROF_OFF };
 ''' + tables + '\n' + '\n'.join(function(n) for n in (
-    'efficiency_cap', 'power_profile', 'profile_cap')) + r'''
+    'efficiency_cap', 'efficiency_active', 'power_profile', 'profile_cap', 'governor_set_rate')) + r'''
 int main(void) {
+    uint32_t sent = 2730000;
+    request_result = 1;
+    assert(governor_set_rate(4, 1794000, &sent) == -1);
+    assert(sent == 2730000 && request_calls == 1);
+    request_result = 0;
+    assert(governor_set_rate(4, 1794000, &sent) == 1);
+    assert(sent == 1794000 && request_calls == 2);
+    assert(governor_set_rate(4, 1794000, &sent) == 0);
+    assert(request_calls == 2); /* no repeated ACPM request for an unchanged cap */
     assert(domains[0].step1 == 82 && domains[0].step2 == 90);
     assert(domains[1].step1 == 82 && domains[1].step2 == 90);
     assert(domains[2].step1 == 78 && domains[2].step2 == 86);
@@ -54,6 +69,23 @@ int main(void) {
         efficiency = 0;
         assert(profile_cap(d, domains[d].target, PROF_NORMAL) == domains[d].target);
     }
+    /* Each independent bit must cap only its own domain, across all profiles. */
+    efficiency = 0;
+    for (unsigned selected = 0; selected < 5; selected++) {
+        efficiency_mask = 1u << selected;
+        for (unsigned d = 0; d < NDOMAINS; d++) {
+            for (int prof = PROF_NORMAL; prof <= PROF_OFF; prof++) {
+                efficiency_auto = 0;
+                uint32_t base = profile_cap(d, domains[d].target, prof);
+                efficiency_auto = 1;
+                uint32_t actual = profile_cap(d, domains[d].target, prof);
+                uint32_t want = selected < 4 && d == selected && expected[d] && (!base || expected[d] < base) ? expected[d] : base;
+                assert(actual == want);
+                assert(profile_cap(d, 100000, prof) <= 100000);
+            }
+        }
+    }
+    efficiency_mask = 0;
     efficiency = 1;
     redwood_lowpower = 1;
     assert(power_profile() == PROF_LPM);
