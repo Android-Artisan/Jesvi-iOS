@@ -1087,6 +1087,36 @@ struct rwa_pixel_format {
 };
 
 static const struct rwa_pixel_format rwa_pixel_formats[] = {
+   /* ASTC, which the Mali decodes itself (asset-catalog images: PosterBoard's wallpaper
+    * snapshots came out without them). Uploads are in blocks: caller_stride. */
+   { 204, "MTLPixelFormatASTC_4x4_LDR", PIPE_FORMAT_ASTC_4x4 },
+   { 186, "MTLPixelFormatASTC_4x4_sRGB", PIPE_FORMAT_ASTC_4x4_SRGB },
+   { 205, "MTLPixelFormatASTC_5x4_LDR", PIPE_FORMAT_ASTC_5x4 },
+   { 187, "MTLPixelFormatASTC_5x4_sRGB", PIPE_FORMAT_ASTC_5x4_SRGB },
+   { 206, "MTLPixelFormatASTC_5x5_LDR", PIPE_FORMAT_ASTC_5x5 },
+   { 188, "MTLPixelFormatASTC_5x5_sRGB", PIPE_FORMAT_ASTC_5x5_SRGB },
+   { 207, "MTLPixelFormatASTC_6x5_LDR", PIPE_FORMAT_ASTC_6x5 },
+   { 189, "MTLPixelFormatASTC_6x5_sRGB", PIPE_FORMAT_ASTC_6x5_SRGB },
+   { 208, "MTLPixelFormatASTC_6x6_LDR", PIPE_FORMAT_ASTC_6x6 },
+   { 190, "MTLPixelFormatASTC_6x6_sRGB", PIPE_FORMAT_ASTC_6x6_SRGB },
+   { 210, "MTLPixelFormatASTC_8x5_LDR", PIPE_FORMAT_ASTC_8x5 },
+   { 192, "MTLPixelFormatASTC_8x5_sRGB", PIPE_FORMAT_ASTC_8x5_SRGB },
+   { 211, "MTLPixelFormatASTC_8x6_LDR", PIPE_FORMAT_ASTC_8x6 },
+   { 193, "MTLPixelFormatASTC_8x6_sRGB", PIPE_FORMAT_ASTC_8x6_SRGB },
+   { 212, "MTLPixelFormatASTC_8x8_LDR", PIPE_FORMAT_ASTC_8x8 },
+   { 194, "MTLPixelFormatASTC_8x8_sRGB", PIPE_FORMAT_ASTC_8x8_SRGB },
+   { 213, "MTLPixelFormatASTC_10x5_LDR", PIPE_FORMAT_ASTC_10x5 },
+   { 195, "MTLPixelFormatASTC_10x5_sRGB", PIPE_FORMAT_ASTC_10x5_SRGB },
+   { 214, "MTLPixelFormatASTC_10x6_LDR", PIPE_FORMAT_ASTC_10x6 },
+   { 196, "MTLPixelFormatASTC_10x6_sRGB", PIPE_FORMAT_ASTC_10x6_SRGB },
+   { 215, "MTLPixelFormatASTC_10x8_LDR", PIPE_FORMAT_ASTC_10x8 },
+   { 197, "MTLPixelFormatASTC_10x8_sRGB", PIPE_FORMAT_ASTC_10x8_SRGB },
+   { 216, "MTLPixelFormatASTC_10x10_LDR", PIPE_FORMAT_ASTC_10x10 },
+   { 198, "MTLPixelFormatASTC_10x10_sRGB", PIPE_FORMAT_ASTC_10x10_SRGB },
+   { 217, "MTLPixelFormatASTC_12x10_LDR", PIPE_FORMAT_ASTC_12x10 },
+   { 199, "MTLPixelFormatASTC_12x10_sRGB", PIPE_FORMAT_ASTC_12x10_SRGB },
+   { 218, "MTLPixelFormatASTC_12x12_LDR", PIPE_FORMAT_ASTC_12x12 },
+   { 200, "MTLPixelFormatASTC_12x12_sRGB", PIPE_FORMAT_ASTC_12x12_SRGB },
    {   1, "MTLPixelFormatA8Unorm",         PIPE_FORMAT_A8_UNORM },
    {  10, "MTLPixelFormatR8Unorm",         PIPE_FORMAT_R8_UNORM },
    {  11, "MTLPixelFormatR8Unorm_sRGB",    PIPE_FORMAT_R8_SRGB },
@@ -2166,8 +2196,9 @@ static bool
 caller_stride(const struct rwa_texture *texture, const struct pipe_box *box, size_t stride,
               size_t *out, char *why, size_t why_size)
 {
+   /* in blocks: a compressed format's row is a row of blocks, nblocksx of them */
    unsigned texel = util_format_get_blocksize(texture->res->format);
-   size_t least = (size_t)box->width * texel;
+   size_t least = (size_t)util_format_get_nblocksx(texture->res->format, box->width) * texel;
    if (stride == 0) {
       *out = least;
       return true;
@@ -2250,7 +2281,8 @@ rwa_texture_write(struct rwa_texture *texture, unsigned level, unsigned layer,
    texture->device->pipe->texture_subdata(texture->device->pipe, texture->res,
                                           texture->base_level + level,
                                           PIPE_MAP_WRITE, &box, bytes, row,
-                                          row * box.height);
+                                          row * util_format_get_nblocksy(texture->res->format,
+                                                                         box.height));
    return 0;
 }
 

@@ -25,7 +25,7 @@ static int run(id<MTLDevice> dev, MTLPixelFormat pf, unsigned bpp, unsigned W, u
     printf("fmt %lu %ux%u storage %lu: %u of %u bytes wrong\n",(unsigned long)pf,W,H,(unsigned long)sm,bad,tests);
     return bad!=0;
 }
-int main(void){ @autoreleasepool{
+int main(void){ setvbuf(stdout,NULL,_IONBF,0); @autoreleasepool{
     id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); printf("device %s\n",[[dev name] UTF8String]);
     run(dev,MTLPixelFormatR8Unorm,1,512,512,MTLStorageModeShared);
     run(dev,MTLPixelFormatR8Unorm,1,256,128,MTLStorageModeShared);
@@ -33,6 +33,16 @@ int main(void){ @autoreleasepool{
     run(dev,MTLPixelFormatRGBA8Unorm,4,512,512,MTLStorageModeShared);
     run(dev,MTLPixelFormatBGRA8Unorm,4,300,200,MTLStorageModeShared);
     run(dev,MTLPixelFormatR8Unorm,1,512,512,MTLStorageModePrivate);
+    /* ASTC 4x4: 16x16 texels = 4x4 blocks of 16 bytes, uploaded and read back */
+    {
+        MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)204 width:16 height:16 mipmapped:NO];
+        id<MTLTexture> t=[dev newTextureWithDescriptor:d];
+        uint8_t blk[16*16]; for(int i=0;i<256;i++) blk[i]=(uint8_t)(i*13+1);
+        if(t){ [t replaceRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0 withBytes:blk bytesPerRow:64];
+               uint8_t back[256]={0}; [t getBytes:back bytesPerRow:64 fromRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0];
+               printf("ASTC 4x4: made, round trip %s\n", memcmp(blk,back,256)?"DIFFERS":"exact"); }
+        else printf("ASTC 4x4: nil\n");
+    }
     /* no-copy: a buffer and a texture over our own pages */
     void *page=NULL; posix_memalign(&page,16384,65536); memset(page,0x5a,65536);
     id<MTLBuffer> b=[dev newBufferWithBytesNoCopy:page length:65536 options:0 deallocator:nil];
@@ -42,7 +52,7 @@ int main(void){ @autoreleasepool{
         MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:256 height:256 mipmapped:NO];
         id<MTLTexture> t=((id(*)(id,SEL,void*,NSUInteger,id,id))objc_msgSend)(dev,s,page,65536,d,nil);
         ((uint8_t*)page)[257]=0x77;
-        uint8_t o[4]={0}; if(t){ (void)[t gpuResourceID]; }
+        (void)t;
         printf("texture no-copy: %s\n", t?"made":"nil");
     }
 } return 0; }
