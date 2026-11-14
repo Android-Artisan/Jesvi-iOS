@@ -233,6 +233,20 @@ repeat the version/channel sequence, then use:
 /var/tmp/redwood-fingerprint-probe --exchange-sysconf
 ```
 
+## IRQ and SYSCONF: hardware test passed
+
+The user approved a third reboot. A fresh backup of the running channel kernel was taken and verified
+(`out/fingerprint/kernel-before-sysconf-b630a525.bin`); the loader verified the IRQ/SYSCONF slot's write. After boot
+native MKB was protected and locked before first unlock (1 / AKS 0x1). Version and channel prerequisites were repeated
+(`x0=0 x2=0`; `retained AUX=8 service=1 result=0 cpu_mask=0x1 user_mask=0x1`), then the exchange:
+
+`fp.tee-sysconf: result=0 valid=1 os=0x4010000 cpus=8 big_mask=0xc0 flags=0x1 event_irqs=0 panic_irqs=0`
+
+The secure OS reports version 0x4010000 (TEEGRIS 4.1), 8 CPUs and big cores 6-7 (mask 0xc0, the M5 pair), flags 0x1.
+No event or panic interrupt arrived: with no normal-world scheduler yet, the secure world has nothing queued that
+would raise one. A later inspect returned the cached result. This is the last step of Samsung's tzdev initialization
+before scheduling; it does not load a trusted application, power the sensor, enroll or match.
+
 ## Vendor-client reference located
 
 A public Exynos990 vendor reference was located at
@@ -317,8 +331,7 @@ The status probe cross-compiles with the iPhoneOS16.5 SDK, ARC/blocks, and
 Foundation, LocalAuthentication and IOKit frameworks. No special authentication
 entitlement or match permission is requested. Kernel build: Exynos GICv2
 DEVELOPMENT. Tests validate code/policy/guard behavior; they do not validate a
-physical fingerprint match. The channel-handshake kernel is flashed; the newer IRQ/SYSCONF kernel remains
-staged. No physical fingerprint match has been attempted.
+physical fingerprint match. The IRQ/SYSCONF kernel is flashed and its exchange passed (above). No physical fingerprint match has been attempted.
 
 ## Primary references
 
