@@ -107,6 +107,31 @@ Process notes (learnt the hard way):
 - Files copied to /var just before a flash were lost (the flash reboots hard): `sync` after every copy.
 - Each redwood-ims restart re-registers; fixed ports (50060/50062) make it replace the old registration.
 
+## Review of the VoLTE implementation (2026-11-14, 05:50)
+
+Fixed in this review (redwood-ims 30040b9, cellulard 75da9ce):
+- Re-INVITE / UPDATE inside a call (session refresh, media change) was answered as if it were the first INVITE (old
+  CSeq, 100/180 again) or with 200 and no SDP: long calls would have been dropped by the network. Now 200 with SDP and
+  the request's own Via/CSeq (Session-Expires echoed), and the voice follows a moved media address.
+- The ~110-minute re-registration restarted redwood-ims even during a call (call dropped): now deferred.
+- A lost registration connection ended redwood-ims with a call still open at the network ("busy" afterwards): the
+  call is closed first (BYE / CANCEL / 480) and on the call screen.
+- After a long healthy run redwood-ims comes back in 2 s, not 30 (no VoLTE meanwhile).
+Earlier the same day: two SIP messages in one TCP read (the second was dropped), fixed IMS ports, unique call numbers,
+stale dials, cancel while dialling, late answers to ended calls (ACK + BYE), no 100rel (Jio 481'd our PRACK).
+
+Still missing / to do (in order of importance):
+1. **Emergency calls**: 112 etc. go out as ordinary numbers (tel:112 in the IMS domain) -- no emergency
+   registration / urn:service:sos. Do not rely on the S20 for emergencies yet.
+2. **Re-registration** is a full restart every ~110 min (a few seconds without VoLTE); should be a refresh REGISTER on
+   the same connection and SAs.
+3. **DTMF** (keypad tones in a call, RFC 4733 telephone-event, PT 101): not sent; received events are ignored.
+4. **Codec mode requests** (CMR) from the network are ignored (always AMR-NB 12.2); no AMR-WB / EVS.
+5. No RTCP (call quality reports); the network has not minded so far.
+6. One call at a time: a second incoming call gets 486 (no call waiting / hold / conference).
+7. No de-registration on a clean stop (fixed ports make the next registration replace the binding instead).
+8. No echo cancellation (see above).
+
 ## Earpiece and speaker (user-verified 2026-11-14)
 
 - Every call starts on the **earpiece**: the kernel's speaker driver plays the call through the top amplifier only
