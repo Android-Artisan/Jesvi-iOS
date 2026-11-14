@@ -5,7 +5,7 @@
 **Enrollment and saved-template restoration work; matching and iOS fingerprint
 unlock do not.** Read [FINGERPRINT-HANDOVER.md](../FINGERPRINT-HANDOVER.md) first.
 
-The phone runs structured exchange kernel `7e8181fe`, installed with explicit
+The last kernel verified by this session was `7e8181fe`, installed with explicit
 approval and loader read-back verification. After each of the two approved boots,
 the native keybag started locked (`AKS 0x1`), and the user confirmed passcode
 unlock, lock, then a second passcode unlock work.
@@ -720,3 +720,15 @@ Next inspect core matcher `0x258740`, its backend call `0x26d1e8`, the writers o
 `0x5003ac`, and stock capture setup. No new phone test or kernel flash is required
 to complete that analysis. HAT/SID integration remains necessary for legitimate
 native authentication, but is not established as the cause of these no-matches.
+
+## Rejection-only UIKit preview (15 November)
+
+The user deferred matching research to build enrollment and rejection UI first.
+See [the preview implementation](../tools/fingerprint/ui/README.md) and
+[latest handover](../FINGERPRINT-HANDOVER.md). A separate Settings page and opt-in
+lock-screen prompt now have compiled source connecting real sensor results, with
+cooperative cancellation. They have not been installed or device-tested. This
+does not register a native BiometricKit/LocalAuthentication provider or enable
+fingerprint unlock. Only real no-match results show Try Again; errors remain
+unavailable, and unverified candidates require passcode. Existing secure-state
+and software-passcode requirements remain unchanged.

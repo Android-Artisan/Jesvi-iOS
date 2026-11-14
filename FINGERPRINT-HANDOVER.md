@@ -1,5 +1,42 @@
 # Fingerprint handover — 14 November 2026
 
+## 15 November: rejection-only UI preview staged
+
+The user deferred matching research and requested setup plus Touch ID-style
+rejection feedback. Source and developer packaging are in
+[`tools/fingerprint/ui/`](tools/fingerprint/ui/README.md). This adds a separate
+native UIKit Settings preview page and an opt-in lock-screen overlay connected to
+the real enrollment/identify loops. It does not register Apple's native biometric
+provider or enable app authentication. No success is fabricated. Device UI testing
+and system-wide provider integration remain outstanding.
+
+New kernel source supports cooperative `fp stop` and the `reject-v1` capability
+marker. Only a genuine `NO MATCH` renders Try Again; setup completion additionally
+requires a successful template save. Existing template backup, unlocked-keybag
+setup gate, fixed commands, allowed executable peers, expiring UI leases,
+bounded capture windows and screen-off cancellation are implemented. Lock-screen
+preview defaults off. The service requires the existing TEE/driver initialization
+and this phone's private calibration; it does not bootstrap those itself.
+
+Prepared, **not installed or device-tested**:
+
+- `out/fingerprint/mach.x1slte-ui-preview`, 15,195,608 B,
+  SHA256 `a85e082d758258647f0073b58e3570c9fd0aa16446304f1deb6021a502aa860d`.
+- `out/fingerprint/fingerprint-ui-preview.tar.gz`: explicit allowlist of broker,
+  tweak, two configuration plists, installer, README and hash manifest. No
+  private biometric material or firmware. This is not a TWRP package.
+- Host UI-state test passes with ASan/UBSan. Both iOS arm64 binaries compile with
+  warnings as errors and are ad-hoc signed. GICv2 kernel build, source mirror and
+  build freshness checks, eight exchange tests, three view tests and passcode
+  assembly integration pass. These are not device-validation claims.
+
+Next coordinate with the current phone owner; ask before rebooting as AGENTS.md
+requires. Install the compatible kernel only with explicit approval, prepare the
+existing TEE backend, then install the UI bundle and coordinate SpringBoard's
+restart. Validate setup/save/rejection/cancel/lock behavior and native passcode
+unlock/relock/unlock. Read the UI README for exact install/remove steps and
+remaining limitations. Do not call the entire native Touch ID stack complete.
+
 ## Current outcome
 
 - Enrollment works. The latest fresh registration completed with **17 accepted
