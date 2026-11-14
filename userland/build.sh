@@ -628,6 +628,12 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+	else
+		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
+		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
+		# call reached the call screen): the job as it runs on the phone, kept in the tree
+		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
+		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
 	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
