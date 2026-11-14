@@ -401,6 +401,11 @@ static const struct rwd_format rwd_formats[] = {
 	 * kernel keeps 'L565' as it is (MiniIOSurface.cpp substitutes only the ten-bit ones), and
 	 * the compiler library serves 40 as Gallium's R5G6B5_UNORM (air_metal.c rwa_pixel_formats). */
 	{  40, 'L565', 2, 0, "MTLPixelFormatB5G6R5Unorm" },
+	/* CoreVideo's one-component and float buffers, which PhotoImaging and CoreImage make
+	 * textures over (kCVPixelFormatType_OneComponent16Half / 32Float / 128RGBAFloat) */
+	{  25, 'L00h', 2, 0, "MTLPixelFormatR16Float" },
+	{  55, 'L00f', 4, 0, "MTLPixelFormatR32Float" },
+	{ 125, 'RGfA', 16, 0, "MTLPixelFormatRGBA32Float" },
 	{  70, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm" },
 	{  71, 'RGBA', 4, 0, "MTLPixelFormatRGBA8Unorm_sRGB" },
 	{  80, 'BGRA', 4, 0, "MTLPixelFormatBGRA8Unorm" },
@@ -593,10 +598,12 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	 * plane of anything else is an application's own IOSurface and not a drawable's, and it
 	 * would need a per-plane geometry this driver does not read.
 	 */
-	if (plane != 0) {
+	/* A plane other than 0 is served below, once the surface is described: only a plane
+	 * of a two-plane 4:2:0 surface, as R8 (luma) or RG8 (chroma) -- what CoreImage and
+	 * PhotoImaging ask for, a texture per plane, converting to RGB in their own shaders. */
+	if (plane > 1) {
 		rwd_say(why, why_size, "plane %lu of a surface was asked for; this driver "
-		    "imports plane 0 only, and CoreAnimation's drawables never ask for another",
-		    plane);
+		    "imports planes 0 and 1 of a two-plane surface only", plane);
 		return NULL;
 	}
 	id = rwd_surface_id(iosurface);
@@ -623,6 +630,53 @@ rwd_texture_for_surface(struct rwa_device *mesa_device, void *iosurface, unsigne
 	 * driver has seen neither of those steps and must not assume they agreed.
 	 */
 	if (rwd_surface_describe(connection, id, &surface, why, why_size) != 0) {
+		return NULL;
+	}
+	/* One plane of a two-plane 4:2:0 surface as a single-plane texture: the luma plane is
+	 * R8Unorm (or R16 for the 10-bit kinds, not served), the chroma plane RG8Unorm at half
+	 * the size. Imported in place at the plane's own offset and row length. */
+	if (surface.planes == 2 && (surface.pixelFormat == '420f' || surface.pixelFormat == '420v') &&
+	    (want->pixel_format == 10 || want->pixel_format == 30)) {
+		unsigned pw = plane ? (surface.width + 1) / 2 : surface.width;
+		unsigned ph = plane ? (surface.height + 1) / 2 : surface.height;
+		unsigned bpp = plane ? 2 : 1;
+		if ((plane == 0) != (want->pixel_format == 10)) {
+			rwd_say(why, why_size, "plane %lu of surface %u ('420%c') asked for as Metal format "
+			    "%u; plane 0 is R8Unorm (10), plane 1 RG8Unorm (30)", plane, id,
+			    (char)surface.pixelFormat, want->pixel_format);
+			return NULL;
+		}
+		if (surface.planeRowBytes[plane] == 0) {
+			rwd_say(why, why_size, "surface %u has two planes and the kernel did not describe "
+			    "plane %lu's offset and row length", id, plane);
+			return NULL;
+		}
+		if (want->width > pw || want->height > ph) {
+			rwd_say(why, why_size, "plane %lu of surface %u is %ux%u and the descriptor asks "
+			    "for %ux%u", plane, id, pw, ph, want->width, want->height);
+			return NULL;
+		}
+		if (surface.planeRowBytes[plane] % 64 != 0 ||
+		    surface.planeRowBytes[plane] < pw * bpp) {
+			return NULL;   /* the caller's copy path serves an unaligned plane */
+		}
+		import = rwd_import();
+		if (import == NULL) {
+			rwd_say(why, why_size, "the compiler library has no rwa_texture_from_surface");
+			return NULL;
+		}
+		texture = import(mesa_device, want, (int)id, surface.planeOffset[plane],
+		    surface.planeRowBytes[plane], why, why_size);
+		if (texture != NULL && took != NULL) {
+			*took = surface;
+		}
+		return texture;
+	}
+	if (plane != 0) {
+		rwd_say(why, why_size, "plane %lu of a '%c%c%c%c' surface was asked for; only the "
+		    "planes of a two-plane 4:2:0 surface are served", plane,
+		    (char)(surface.pixelFormat >> 24), (char)(surface.pixelFormat >> 16),
+		    (char)(surface.pixelFormat >> 8), (char)surface.pixelFormat);
 		return NULL;
 	}
 	/* Metal takes a texture smaller than its surface (the top-left corner, at the

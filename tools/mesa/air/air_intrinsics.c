@@ -550,6 +550,21 @@ math_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n, 
       r = nir_unpack_unorm_4x8(&c->b, a[0]);
       if (air_nir_bit_size(c, in->base.type) == 16)
          r = nir_f2f16(&c->b, r);
+   } else if (!strcmp(op, "pack") && n->num >= 2 &&
+              (!strcmp(n->part[1], "unorm4x8") || !strcmp(n->part[1], "snorm4x8") ||
+               !strcmp(n->part[1], "unorm2x16") || !strcmp(n->part[1], "snorm2x16"))) {
+      /* air.pack.<unorm|snorm><4x8|2x16>.<v4f16|v4f32|v2f..>: Metal's pack_float_to_*,
+       * GLSL's packUnorm4x8 and friends, component 0 in the low bits. NIR's opcodes
+       * take 32-bit floats, so a half vector is widened first (exact).
+       */
+      nir_def *x = a[0];
+      if (x->bit_size != 32)
+         x = nir_f2f32(&c->b, x);
+      const char *k = n->part[1];
+      r = !strcmp(k, "unorm4x8") ? nir_pack_unorm_4x8(&c->b, x)
+        : !strcmp(k, "snorm4x8") ? nir_pack_snorm_4x8(&c->b, x)
+        : !strcmp(k, "unorm2x16") ? nir_pack_unorm_2x16(&c->b, x)
+                                  : nir_pack_snorm_2x16(&c->b, x);
    } else if (!strcmp(op, "convert")) {
       /* air.convert.<dst sign>.<dst type>.<src sign>.<src type> */
       if (n->num < 5) {
