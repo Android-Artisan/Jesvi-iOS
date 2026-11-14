@@ -102,11 +102,26 @@ static void wallpaper_motion_apply(id view,bool enabled)
 }
 /* Move the layer's sublayers, not the view: a view transform makes PosterBoard's
  * PBUIEffectTrackingReplicaView lay itself out against it and cancel the movement. */
+/* Smooth and cheap: the 20 Hz sensor step is handed to Core Animation as a short linear
+ * animation from where the picture is now (presentation layer) to the new place, so the render
+ * server glides it at the display's own rate and SpringBoard does one small update per sample. */
 static void wallpaper_motion_translate(id view,double x,double y)
 {
     if(!view) return;
     struct rw_wall_t3d t={{wallpaper_scale,0,0,0, 0,wallpaper_scale,0,0, 0,0,1,0, x,y,0,1}};
     id layer=WM_SEND(id,view,"layer");
+    id presentation=WM_SEND(id,layer,"presentationLayer");
+    Class anim=objc_getClass("CABasicAnimation"),value=objc_getClass("NSValue");
+    if(presentation && anim && value) {
+        struct rw_wall_t3d from=WM_SEND(struct rw_wall_t3d,presentation,"sublayerTransform");
+        id a=WM_SEND1(id,anim,"animationWithKeyPath:",id,(id)CFSTR("sublayerTransform"));
+        WM_SEND1(void,a,"setFromValue:",id,WM_SEND1(id,value,"valueWithCATransform3D:",struct rw_wall_t3d,from));
+        WM_SEND1(void,a,"setToValue:",id,WM_SEND1(id,value,"valueWithCATransform3D:",struct rw_wall_t3d,t));
+        WM_SEND1(void,a,"setDuration:",double,.066);
+        WM_SEND1(void,layer,"setSublayerTransform:",struct rw_wall_t3d,t);
+        ((void(*)(id,SEL,id,id))objc_msgSend)(layer,sel_registerName("addAnimation:forKey:"),a,(id)CFSTR("redwoodParallax"));
+        return;
+    }
     WM_SEND1(void,layer,"setSublayerTransform:",struct rw_wall_t3d,t);
 }
 static bool wallpaper_visible(id view)
@@ -185,7 +200,9 @@ static void wallpaper_motion_start(void)
         }
         if(!pose.ready) return;
         double ease=1-exp(-dt/.12),nx=x+(pose.x-x)*ease,ny=y+(pose.y-y)*ease;
-        if(fabs(nx-x)+fabs(ny-y)<.02 && objc_getAssociatedObject(current,wallpaper_effect_key())) return;
+        /* idle when still: a quarter point is below what the eye follows on a blurred picture,
+         * and the sensor's noise is above .02, which kept the compositor redrawing 20 times a second */
+        if(fabs(nx-x)+fabs(ny-y)<.25 && objc_getAssociatedObject(current,wallpaper_effect_key())) return;
         x=nx;y=ny;
         wallpaper_motion_apply(current,true);wallpaper_motion_translate(current,x,y);
     });
