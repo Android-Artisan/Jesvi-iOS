@@ -22,6 +22,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Validate source and native recovery backend
+        run: |
+          bash ci/check.sh
+          bash ci/check-recovery.sh
       - name: Stage private input snapshot
         env:
           PRIVATE_INPUTS_ROOT: ${{ vars.PRIVATE_INPUTS_ROOT }}

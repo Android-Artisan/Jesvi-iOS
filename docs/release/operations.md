@@ -148,3 +148,9 @@ inner `candidate.zip` checksum, and use only **candidate.zip** as the TWRP packa
 Do not select GitHub's outer download ZIP in recovery. The source-only `CI`
 workflow remains kernel/checks only. Remote repository/worker/environment/volumes
 must still be configured; a GitHub run has not been demonstrated in this session.
+
+Apple-framework passcode tests run on macOS, including kernel-cache hits and
+private full builds. The portable Ubuntu checks do not attempt to link Darwin
+frameworks. Full private builds run both source checks and the recovery test suite
+before staging inputs. Workflow lint is local evidence; it is not an actual
+successful GitHub execution.
