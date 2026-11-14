@@ -2566,6 +2566,16 @@ fp_power(void)
 		}
 	}
 #undef CMU
+	{
+		/* the sensor's IPC line, GPA1-3: Samsung's btp-ipc = EINT, pull-up, IRQ on the falling edge (active low) */
+		volatile uint8_t *gpa1 = redwood_gpio_bank(0x15850000, 0x20);
+
+		redwood_gpio_pull(gpa1, 3, 3);
+		redwood_gpio_func(gpa1, 3, 0);
+		delay(1000);
+		tee_say("fp power: IPC line (gpa1-3) pulled up: con %08x dat %02x pud %08x\n", *(volatile uint32_t *)gpa1,
+		    *(volatile uint32_t *)(gpa1 + 4) & 0xff, *(volatile uint32_t *)(gpa1 + 8));
+	}
 	gpp2 = redwood_gpio_bank(0x10430000, 0x40);
 	redwood_gpio_set(gpp2, 3, 1);           /* data 1 first (this makes it an output), then the SPI function */
 	for (uint32_t pin = 0; pin < 4; pin++) {
@@ -2581,6 +2591,31 @@ fp_power(void)
  * answered, until it answers 0, fails, or SECONDS pass. Op 4 (WAIT_INTERRUPT) waits for the sensor's interrupt there;
  * here the sensor is simply asked again every 30 ms. Op 7: sleep the timeout. Each step's response head is logged.
  */
+/* ENROLL_INIT as Samsung's enroll() sends it: user id "0", finger index IDX (1-4), 7, a name */
+static uint32_t
+fp_einit(uint32_t idx)
+{
+	uint32_t e;
+
+		bzero(fp_buf, 0x200);
+	bzero(fp_buf + 0x177000, 0x40);
+	*(uint32_t *)(fp_buf + 0x0) = 2;            /* libbauthtzcommon: the command at +0 and +4 */
+	*(uint32_t *)(fp_buf + 0x4) = 2;
+	*(uint32_t *)(fp_buf + 0xc) = 1;
+	fp_buf[0x10] = '0';
+	*(uint32_t *)(fp_buf + 0x110) = idx;
+	*(uint32_t *)(fp_buf + 0x114) = 7;
+	memcpy(fp_buf + 0x118, "fingerprint", 11);
+	{
+		uint32_t origin = 0;
+
+		lck_mtx_lock(&tee_client_lock);
+		e = tee_invoke_shm(&fp_ses, 2, fp_shm_id, FP_SHM_SIZE, &origin);
+		lck_mtx_unlock(&tee_client_lock);
+	}
+	return e;
+}
+
 /* one bare command (no data) with op code OP; the TA's error, or the invoke's result when that failed */
 static uint32_t
 fp_call(uint32_t n, uint32_t op)
@@ -2589,7 +2624,7 @@ fp_call(uint32_t n, uint32_t op)
 
 	bzero(fp_buf, 0x10);
 	bzero(fp_buf + 0x177000, 0x40);
-	*(uint32_t *)(fp_buf + 0x0) = 1;
+	*(uint32_t *)(fp_buf + 0x0) = n;
 	*(uint32_t *)(fp_buf + 0x4) = n;
 	*(uint32_t *)(fp_buf + 0xc) = op;
 	*(uint32_t *)(fp_buf + 0x181014) = 0;
@@ -2607,11 +2642,95 @@ extern volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
 #define FP_Y_MAX        60000
 #define FP_HOLD_MS      150
 
+static uint32_t fp_cbge_load(void);
+static void fp_cbge(void);
+
+/* wait until no finger is on the sensor's spot for 100 ms (or the deadline) */
+static void
+fp_wait_lift(uint32_t n, uint64_t deadline)
+{
+	uint32_t off = 0;
+
+	while (mach_absolute_time() < deadline && off < 100) {
+		uint32_t x = redwood_touch_x, y = redwood_touch_y;
+		bool on = redwood_touch_mask != 0 && x > FP_X_MIN && x < FP_X_MAX && y > FP_Y_MIN && y < FP_Y_MAX;
+
+		off = on ? 0 : off + 5;
+		delay(5000);
+	}
+	tee_say("fp run %u: finger lifted\n", n);
+}
+
+/* close one touch as Samsung does: ENROLL_FINAL op loop (op 4 there = wait for the finger to leave), then ENROLL_INIT
+ * again (after a 67: cancel first). The TA's error, or 0. */
+static uint32_t
+fp_close_touch(uint32_t n, uint64_t deadline, bool cancel, uint32_t mode)
+{
+	uint32_t *r = (uint32_t *)(fp_buf + 0x177008);
+	uint32_t fop = 1, e = 0, k;
+
+	if (mode == 4) {
+		/*
+		 * The TA (FINGE, decompiled dispatcher case 2/3): ENROLL_INIT continues an active enrollment (QFP_EnrollBegin
+		 * only when none is active) and re-arms ENROLL_DO's per-touch state machine (finger detect -> op 4, capture
+		 * -> op 5, image -> op 6, process -> progress or 39 + quality flags). ENROLL_FINAL, PREPARE and CANCEL all end
+		 * or reset the enrollment, so between touches: only ENROLL_INIT.
+		 */
+		e = fp_einit(1);
+		tee_say("fp run 3: next touch: enroll-init -> error %#x op %u\n", e, r[0]);
+		return e;
+	}
+	if (!cancel && mode == 2) {
+		/* BAuth_Control_OP 84 (libbauthserver check_opcode, around WAIT_INTERRUPT / NOTIFY_REMOVE_FINGER): command 12 */
+		fp_wait_lift(n, deadline);
+		*(uint32_t *)(fp_buf + 0xfa110) = 0;
+		*(uint32_t *)(fp_buf + 0x271014) = 0;
+		e = fp_call(12, 84);
+		tee_say("fp run 3: control 84 -> error %#x op %u | %08x %08x %08x\n", e, r[0], r[1], r[2], r[4]);
+		return 0;
+	}
+	if (cancel) {
+		e = fp_call(10, 1);
+		tee_say("fp run 3: cancel -> error %#x\n", e);
+	} else {
+		for (k = 0; k < 40; k++) {
+			e = fp_call(4, fop);
+			tee_say("fp run 3: enroll-final op %u -> error %#x op %u | %08x %08x %08x\n", fop, e, r[0], r[1], r[2], r[4]);
+			if (e != 0 || r[0] == 0) {
+				break;
+			}
+			if (r[0] == 7 && r[2] != 0 && r[2] < 5000000) {
+				delay(r[2]);
+			}
+			if (r[0] == 4) {
+				fp_wait_lift(n, deadline);
+			}
+			fop = r[0];
+		}
+		if (mode == 1) {
+			return 0;
+		}
+	}
+	e = fp_einit(1);
+	tee_say("fp run 3: enroll-init again -> error %#x op %u\n", e, r[0]);
+	for (k = 0; k < 40 && e == 0 && r[0] != 0; k++) {
+		uint32_t iop = r[0];
+
+		if (iop == 7 && r[2] != 0 && r[2] < 5000000) {
+			delay(r[2]);
+		}
+		e = fp_call(2, iop);
+		tee_say("fp run 3: enroll-init op %u -> error %#x op %u\n", iop, e, r[0]);
+	}
+	return e;
+}
+
 static void
 fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 {
 	uint64_t deadline;
-	uint32_t steps = 0, last = ~0u, same = 0, bad_quality = 0, good = 0, refused = 0;
+	uint32_t steps = 0, last = ~0u, same = 0, bad_quality = 0, good = 0, refused = 0, after_good = 0;
+
 	volatile uint8_t *gpa1 = redwood_gpio_bank(0x15850000, 0x20);
 
 	tee_say("fp run %u: gpa1 con %08x dat %02x pud %08x\n", n, *(volatile uint32_t *)gpa1,
@@ -2623,7 +2742,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 
 		bzero(fp_buf, 0x10);
 		bzero(fp_buf + 0x177000, 0x40);
-		*(uint32_t *)(fp_buf + 0x0) = 1;
+		*(uint32_t *)(fp_buf + 0x0) = n;            /* libbauthtzcommon: the command at +0 and +4 */
 		*(uint32_t *)(fp_buf + 0x4) = n;
 		*(uint32_t *)(fp_buf + 0xc) = op;
 		*(uint32_t *)(fp_buf + 0x181014) = 0;
@@ -2644,38 +2763,51 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 			}
 		}
 		last = r[0];
-		if (result == 0 && error == 0x27 && (n == 3 || n == 6)) {
-			uint32_t e1, e2;
+		/*
+		 * Samsung's enroll() (libbauthserver 0x4e8dc..0x4feac) per touch: ENROLL_INIT (2) -> ENROLL_DO (3) op loop ->
+		 * ENROLL_FINAL (4) op loop -> ENROLL_INIT again, until progress 100. A bad image (0x27/0x29) takes the same
+		 * ENROLL_FINAL path (0x4eb44 -> 0x4ef4c), not a cancel. DO again without that is refused (39); 67 = bad state.
+		 */
+		if (n == 3 && result == 0 && error == 0x44) {
+			/* 68: the TA wants the sensor's calibration (CBGE) loaded first -- load_cbge */
+			uint32_t e = 0;
 
-			bad_quality++;                  /* BAD_QUALITY: go on with op `recover`; 0, or refused at once: reset */
-			if (recover != 0 && !(op == recover && refused++ > 0)) {
-				op = recover;
-				continue;
+			fp_cbge();                      /* the IPC line (CBGE_REQUIRED) fired: calibrate again, as new_cbge_mode does */
+			tee_say("fp run 3: calibration done (%s): press again\n", tee_last);
+			if (e != 0 || ++refused > 3) {
+				break;
 			}
-			refused = 0;
-			if (op == 1 || recover == 0 || true) {
-				e1 = fp_call(10, 1);
-				e2 = fp_call(n - 1, 1);
-				tee_say("fp run %u: bad image: reset (cancel %#x init %#x), progress lost\n", n, e1, e2);
-				if (e1 != 0 || e2 != 0) {
-					break;
-				}
-			}
+			fp_wait_lift(n, deadline);
 			op = 1;
 			continue;
 		}
-		if (result == 0 && error == 0 && r[0] == 0 && n == 3) {
-			uint32_t progress = r[4];
+		if (n == 3 && result == 0 && (error == 0x27 || error == 0x29 || error == 0x43 || (error == 0 && r[0] == 0))) {
+			uint32_t progress = r[4], e;
 
-			good++;
-			refused = 0;
-			tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u | %08x %08x %08x %08x\n", good, progress, r[1], r[3], r[5], r[6]);
-			if (progress >= 100) {
+			if (error == 0) {
+				good++;
+				tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u | %08x %08x %08x %08x\n", good, progress, r[1], r[3], r[5], r[6]);
+				if (progress >= 100) {
+					break;
+				}
+			} else {
+				bad_quality++;
+				tee_say("fp run 3: %s (%#x): lift and press again, quality %08x\n", error == 0x43 ? "capture rejected" : "bad image",
+				    error, r[1]);
+			}
+			if (error == 0x43 && ++refused > 3) {
+				tee_say("fp run 3: 67 keeps coming: stop\n");
 				break;
 			}
-			for (uint32_t w = 0; w < 150 && redwood_touch_mask != 0; w++) {
-				delay(10000);           /* the finger lifted (at most 1.5 s) */
+			if (error != 0x43) {
+				refused = 0;
 			}
+			e = fp_close_touch(n, deadline, error == 0x43, recover);
+			if (e != 0) {
+				tee_say("fp run 3: closing the touch failed (%#x): stop\n", e);
+				break;
+			}
+			fp_wait_lift(n, deadline);
 			op = 1;
 			continue;
 		}
@@ -2683,6 +2815,12 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 			break;
 		}
 		op = r[0];
+		if (op == 4 || op == 5) {
+			if (after_good > 1) {
+				tee_say("fp run %u: next sample ready after %u retries\n", n, after_good - 1);
+			}
+			after_good = 0;
+		}
 		if (op == 5) {
 			refused = 0;                    /* a capture is under way */
 		}
@@ -2696,6 +2834,8 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 
 			while (mach_absolute_time() < deadline && held < FP_HOLD_MS) {
 				uint32_t x = redwood_touch_x, y = redwood_touch_y;
+
+
 				bool down = redwood_touch_mask != 0;
 				bool on = down && x > FP_X_MIN && x < FP_X_MAX && y > FP_Y_MIN && y < FP_Y_MAX;
 
@@ -2707,16 +2847,162 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 				held = on ? held + 5 : 0;
 				delay(5000);
 			}
-			if (held < FP_HOLD_MS) {
+			if (mach_absolute_time() >= deadline) {
 				break;
 			}
-			tee_say("fp run %u: finger held on the sensor: capture\n", n);
+			tee_say("fp run %u: finger held on the sensor: capture (IPC line %s)\n", n,
+			    (*(volatile uint32_t *)(gpa1 + 4) & 0x8) ? "high" : "low: the sensor wants calibration");
 		} else if (op == 7 && timeout != 0 && timeout < 5000000) {
 			delay(timeout);
 		}
 	}
 	fp_handle = last;
 	snprintf(tee_last, sizeof(tee_last), "fp run %u: %u steps, last op %u, %u bad images, %u accepted", n, steps, last, bad_quality, good);
+	tee_say("%s\n", tee_last);
+}
+
+/*
+ * "cbge": the QBT2000 background calibration as libbauthserver runs it (new_cbge_mode 0x5abc0, check_opcode table,
+ * update_cbge 0x4c794): BAuth_Control_OP (command 12) 69, then each op the TA answers (68, 70 with a timeout in ms),
+ * op 67 = update_cbge: per slot 0..15 the slot number as a string at +0x10, no data (+0xfa110 = 0), the slot byte at
+ * +0x177014, the output room 0x96000 at +0x271014; finally 71. The sensor's IPC line (GPA1-3) asks for this.
+ */
+static uint8_t *fp_cbge_slot[16];
+static uint32_t fp_cbge_slot_len[16];
+
+/* load_cbge (0x4b484): BAuth_Control_OP 66 for slot 0: the slot as a string at +0x10, the blob at +0x110, its length at
+ * +0xfa110, the slot number at +0x271014; then follow the ops the TA answers (68, 70 timeout ms) to 0. The TA's error. */
+static uint32_t
+fp_cbge_load(void)
+{
+	uint32_t *r = (uint32_t *)(fp_buf + 0x177008);
+	uint32_t e = 0, k, slot, loaded = 0;
+
+	for (slot = 0; slot < 16; slot++) {
+		uint32_t op = 66;
+
+		for (k = 0; k < 20; k++) {
+			uint32_t origin = 0, result;
+
+			bzero(fp_buf, 0x120);
+			bzero(fp_buf + 0x177000, 0x40);
+			*(uint32_t *)(fp_buf + 0x0) = 12;
+			*(uint32_t *)(fp_buf + 0x4) = 12;
+			*(uint32_t *)(fp_buf + 0xc) = op;
+			snprintf((char *)fp_buf + 0x10, 0x100, "%u", slot);
+			if (op == 66 && fp_cbge_slot[slot] != NULL) {
+				memcpy(fp_buf + 0x110, fp_cbge_slot[slot], fp_cbge_slot_len[slot]);
+				*(uint32_t *)(fp_buf + 0xfa110) = fp_cbge_slot_len[slot];
+			} else {
+				*(uint32_t *)(fp_buf + 0xfa110) = 0;
+			}
+			*(uint32_t *)(fp_buf + 0x271014) = slot;
+			*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+			lck_mtx_lock(&tee_client_lock);
+			result = tee_invoke_shm(&fp_ses, 12, fp_shm_id, FP_SHM_SIZE, &origin);
+			lck_mtx_unlock(&tee_client_lock);
+			e = result != 0 ? result : *(uint32_t *)(fp_buf + 0x2ee008);
+			tee_say("fp cbge-load: slot %u op %u (%u bytes) -> error %#x op %u\n", slot, op,
+			    op == 66 && fp_cbge_slot[slot] ? fp_cbge_slot_len[slot] : 0, e, r[0]);
+			if (e != 0 || r[0] == 0 || r[0] == op) {
+				break;
+			}
+			if (r[0] == 70 && r[2] != 0 && r[2] < 5000) {
+				delay(r[2] * 1000);
+			}
+			op = r[0];
+		}
+		if (e == 0 && fp_cbge_slot[slot] != NULL) {
+			loaded++;
+		}
+	}
+	tee_say("fp cbge-load: %u slots with data\n", loaded);
+	return e;
+}
+
+static void
+fp_cbge(void)
+{
+	uint32_t *r = (uint32_t *)(fp_buf + 0x177008);
+	uint32_t op = 69, e = 0, k, slot, done = 0;
+	volatile uint8_t *gpa1 = redwood_gpio_bank(0x15850000, 0x20);
+
+	tee_say("fp cbge: start, IPC line %s\n", (*(volatile uint32_t *)(gpa1 + 4) & 0x8) ? "high" : "low");
+	for (k = 0; k < 200 && op != 0; k++) {
+		if (op == 67) {
+			for (slot = 0; slot < 16; slot++) {
+				uint32_t sop = 67, j;
+
+				for (j = 0; j < 20; j++) {
+					uint32_t origin = 0, result;
+
+					bzero(fp_buf, 0x120);
+					bzero(fp_buf + 0x177000, 0x40);
+					*(uint32_t *)(fp_buf + 0x0) = 12;
+					*(uint32_t *)(fp_buf + 0x4) = 12;
+					*(uint32_t *)(fp_buf + 0xc) = sop;
+					snprintf((char *)fp_buf + 0x10, 0x100, "%u", slot);
+					*(uint32_t *)(fp_buf + 0xfa110) = 0;
+					fp_buf[0x177014] = (uint8_t)slot;
+					*(uint32_t *)(fp_buf + 0x271014) = 0x96000;
+					*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+					lck_mtx_lock(&tee_client_lock);
+					result = tee_invoke_shm(&fp_ses, 12, fp_shm_id, FP_SHM_SIZE, &origin);
+					lck_mtx_unlock(&tee_client_lock);
+					e = result != 0 ? result : *(uint32_t *)(fp_buf + 0x2ee008);
+					tee_say("fp cbge: slot %u op %u -> error %#x op %u out %u | %08x %08x\n", slot, sop, e, r[0],
+					    *(uint32_t *)(fp_buf + 0x271014), r[1], r[2]);
+					if (e == 0) {
+						uint32_t out = *(uint32_t *)(fp_buf + 0x271014);
+
+						if (out != 0 && out <= 0x96000) {
+							if (fp_cbge_slot[slot] != NULL && fp_cbge_slot_len[slot] < out) {
+								kfree_data(fp_cbge_slot[slot], 0x96000);
+								fp_cbge_slot[slot] = NULL;
+							}
+							if (fp_cbge_slot[slot] == NULL) {
+								fp_cbge_slot[slot] = kalloc_data(0x96000, Z_WAITOK | Z_ZERO);
+							}
+							if (fp_cbge_slot[slot] != NULL) {
+								memcpy(fp_cbge_slot[slot], fp_buf + 0x177014, out);
+								fp_cbge_slot_len[slot] = out;
+							}
+						}
+					}
+					if (e != 0 || r[0] == 0 || r[0] == 67) {
+						break;
+					}
+					if (r[0] == 70 && r[2] != 0 && r[2] < 5000) {
+						delay(r[2] * 1000);
+					}
+					sop = r[0];
+				}
+				if (e == 0) {
+					done++;
+				}
+
+			}
+			op = r[0] == 67 ? 0 : r[0];
+			continue;
+		}
+		*(uint32_t *)(fp_buf + 0xfa110) = 0;
+		*(uint32_t *)(fp_buf + 0x271014) = 0;
+		e = fp_call(12, op);
+		tee_say("fp cbge: op %u -> error %#x op %u timeout %u\n", op, e, r[0], r[2]);
+		if (e != 0) {
+			break;
+		}
+		if (r[0] == 70 && r[2] != 0 && r[2] < 5000) {
+			delay(r[2] * 1000);
+		}
+		op = r[0];
+	}
+	*(uint32_t *)(fp_buf + 0xfa110) = 0;
+	*(uint32_t *)(fp_buf + 0x271014) = 0;
+	k = fp_call(12, 71);
+	delay(50000);
+	snprintf(tee_last, sizeof(tee_last), "fp cbge: last error %#x, %u slots, finish %#x, IPC line %s", e, done, k,
+	    (*(volatile uint32_t *)(gpa1 + 4) & 0x8) ? "high" : "low");
 	tee_say("%s\n", tee_last);
 }
 
@@ -2737,6 +3023,37 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 	if (strncmp(p, "power", 5) == 0) {
 		fp_power();
+		return;
+	}
+	if (strncmp(p, "cbgeload", 8) == 0) {
+		snprintf(tee_last, sizeof(tee_last), "fp cbgeload: error %#x", fp_cbge_load());
+		return;
+	}
+	if (strncmp(p, "cbge", 4) == 0) {
+		fp_cbge();
+		return;
+	}
+	if (strncmp(p, "einit", 5) == 0) {
+		/*
+		 * ENROLL_INIT as Samsung's enroll() sends it (libbauthtzcommon BAuth_Enroll_Init): +0x10 the user id (a
+		 * string, <= 0x100), +0x110 the finger's index (1-4, BAuthUserInfo get_req_bioindex), +0x114 7, +0x118 a
+		 * name (<= 100). "einit [INDEX]".
+		 */
+		uint32_t idx = 0, e;
+
+		for (p += 5; *p == ' '; p++) {
+		}
+		while (*p >= '0' && *p <= '9') {
+			idx = idx * 10 + (uint32_t)(*p++ - '0');
+		}
+		if (idx < 1 || idx > 4) {
+			idx = 1;
+		}
+		e = fp_einit(idx);
+		snprintf(tee_last, sizeof(tee_last), "fp einit %u: result %#x error %#x op %u | %08x %08x %08x", idx, e,
+		    *(uint32_t *)(fp_buf + 0x2ee008), *(uint32_t *)(fp_buf + 0x177008), *(uint32_t *)(fp_buf + 0x17700c),
+		    *(uint32_t *)(fp_buf + 0x177010), *(uint32_t *)(fp_buf + 0x177014));
+		tee_say("%s\n", tee_last);
 		return;
 	}
 	if (strncmp(p, "run ", 4) == 0) {
@@ -2765,7 +3082,7 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 	bzero(fp_buf, 0x10);
 	bzero(fp_buf + 0x177000, 0x20);
-	*(uint32_t *)(fp_buf + 0x0) = 1;
+	*(uint32_t *)(fp_buf + 0x0) = n;
 	*(uint32_t *)(fp_buf + 0x4) = n;
 	*(uint32_t *)(fp_buf + 0xc) = fp_handle;
 	while (*p == ' ') {

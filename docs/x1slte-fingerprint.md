@@ -1,6 +1,10 @@
 # S20 ultrasonic fingerprint research
 
-## Status: no fingerprint unlock yet
+## Status (2026-11-14 18:23): enrollment works; no unlock yet
+
+Enrollment through the phone's own FINGE TA reached 100 % (16 accepted touches, 10 retries) under XNU.
+The template exists only in TA memory until a reboot. Identify, template persistence and the iOS Touch ID
+bridge are not done. See "Enrollment protocol (working)" below for every value.
 
 Branch `feat/s20-fingerprint` starts at local main/master `8d584cc` (14 November
 2026), including the newer A76/GPU thermal steps, Wi-Fi scan coalescing and quieter
@@ -282,6 +286,102 @@ uses a registered partial in/out shared-memory parameter. The TEEC client expect
 clues, not a ready-to-use matching implementation; no guessed packets were sent.
 Different TA/loading modes and shared-memory layouts must be resolved before
 invoking enrollment or identification on actual firmware.
+
+## Enrollment protocol (working, 2026-11-14)
+
+Sources: Ghidra decompiles of the FINGE TA (`device/firmware/vendor-tee/...46494e474502`, ELF after the 8-byte
+`SEC3` header, Ghidra image base +0x100000, dispatcher `FUN_001210f0`) and of `libbauthserver.so` /
+`libbauthtzcommon.so` (`out/fingerprint/vendor-reference`). Tools: `tools/re` (Ghidra 12.2, JDK 25, decompiler
+built for arm64, `scripts/Decomp.java`).
+
+### Shared buffer layout (one TEEC shared memory, `FP_SHM_SIZE` 0x2ee00c)
+
+| Offset | Meaning |
+|---|---|
+| +0x0, +0x4 | command number (both words; Samsung writes the command, not 1) |
+| +0xc | op code sent to the TA |
+| +0x10 | string argument (user id / CBGE slot number as text, <= 0x100) |
+| +0x110 | data in (ENROLL_INIT: finger index; CONTROL: payload) |
+| +0x114, +0x118 | ENROLL_INIT: 7, name ("fingerprint") |
+| +0xa010 | generic data length (non-control commands) |
+| +0xfa110 | CONTROL_OP data length |
+| +0x177004 | response status (echoes the command) |
+| +0x177008 | response op code (r[0]); +0x177010 timeout (r[2]); +0x177018 progress (r[4]) |
+| +0x177014 | response data / CONTROL_OP output; CONTROL op 67 slot byte goes here on input |
+| +0x177024 | ENROLL_DO template out (length at +0x1db024) |
+| +0x271014 | CONTROL_OP output length (in: room, e.g. 0x96000; op 66: slot number) |
+| +0x2ee008 | TA error (BAuth result) |
+
+### TA commands (dispatcher case = command number)
+
+| Cmd | Name | Notes |
+|---|---|---|
+| 0 / 1 (client 1) | PREPARE | op 2 = first call. **Resets any active enrollment** (`DAT_0045cdd4 = 0`). Takes/returns encrypted matcher metadata (<= 0xa000) on later calls (op != 2, data > 0). |
+| 2 | ENROLL_INIT | op must be 1 (else 51). Starts a new enrollment (QFP_EnrollBegin) only if none is active or the restart flag is set; otherwise **continues** and re-arms ENROLL_DO. |
+| 3 | ENROLL_DO | per-touch state machine: op 1 -> answers 4 (wait finger, timeout -1); op 4 -> 5 (capture); op 5 -> 6 (image taken); op 6 -> result: error 0 + progress, or 39 + quality flags. At progress 100 the TA commits (QFP_EnrollCommit) and copies the template out. Calling DO again after a result re-processes the old image (refused 39). |
+| 4 | ENROLL_FINAL | first call after INIT runs a delete/cleanup path; **ends the enrollment**. Not used between touches. |
+| 10 | CANCEL | resets the enrollment. |
+| 12 | CONTROL_OP | sub-op at +0xc (below). |
+
+Working loop (kernel `fp run 3 1 SECONDS 4`): PREPARE once (`tee-up.sh 1:2`), `fp einit 1`, then per touch
+DO 1 -> 4 (wait for the finger held 150 ms on the spot) -> 5 -> 6 -> result -> ENROLL_INIT -> next touch, until
+progress 100.
+
+### TA errors seen
+
+| Error | Meaning |
+|---|---|
+| 39 (0x27) | sample rejected; quality flags in the response (not an image-quality failure by itself) |
+| 29 (0x1d) | contamination check failed (only runs when CBGE basis exists) |
+| 51 (0x33) | bad state / wrong op (e.g. INIT with op != 1, DO without INIT) |
+| 67 (0x43) | capture failed (TA sg_malloc failure after CBGE without psf calibration) |
+| 68 (0x44) | QFP -180 (capture/scan failure: zero-size image, missing psf config) |
+
+QFP-to-BAuth map (`map_qfp_error_to_buath_result`, TA 0x25450): -180 -> 68, -140 -> 51, -190 -> 36, -200 -> 1001,
+-192 -> 73, -303 -> 33, -216 -> 32, -130/-120 -> 49, unknown -> 29.
+
+### Quality flags (libbauthserver `finger_image_quality_map`)
+
+| Flag | Android acquired code | Meaning |
+|---|---|---|
+| 0x08000000 | 1 PARTIAL | only part of the finger |
+| 0x04000000 | 1003 LIGHT_TOUCH | press harder |
+| 0x01000000 | 1001 WET_FINGER | wet |
+| 0x00002000 | 3 IMAGER_DIRTY | dirty |
+| 0x00000100 | 4 TOO_SLOW | |
+| 0x00000008 | 1002 DUPLICATED_IMAGE | same as last touch |
+| 0x00000002 | 5 TOO_FAST | |
+| 0x80000000 | 2 INSUFFICIENT | combined with one of the above |
+
+TA reasons -17/-14 -> 0x80000008, -16 -> 0x80000100, -15 -> 0x80000002, -24 -> error 70.
+
+### CONTROL_OP sub-ops (command 12)
+
+| Op | Use |
+|---|---|
+| 69 | CBGE start; then follow the answered ops: 68, 70 (timeout = ms), 67 |
+| 67 | CBGE data update, per slot 0..15: slot as string at +0x10, slot byte at +0x177014, out room 0x96000 at +0x271014. Slots 0 and 8 return ~368 KB each. |
+| 66 | CBGE data load: slot string, blob at +0x110, length at +0xfa110, slot number at +0x271014 |
+| 71 | CBGE finish |
+| 84, 83, 65 | used by Samsung around wait-interrupt / finger removal (not needed for enroll) |
+| 22 (0x16) | SET_ENROLL_SESSION: client-side flag only in libbauthtzcommon, never sent to the TA |
+
+CBGE (background calibration) works and clears the IPC request, but with CBGE data loaded the capture path needs
+`/data/vendor/misc/qti_fp/psf/psf_calibration.dat` (in the TA's own VFS; produced only by factory PSF tests) and
+otherwise fails (29/67/68). Enrollment runs without CBGE.
+
+### Hardware signals
+
+- GPA1-3 = sensor firmware IPC, active low, pull-up (Samsung `qbt2000_common.c`: every IPC = CBGE_REQUIRED, msg 29).
+- Finger down/up on stock comes from the touch panel: HAL `request(SEM_REQUEST_TOUCH_EVENT=22, 2 down / 1 up)`
+  (LineageOS hardware/samsung `aidl/fingerprint/Session.cpp`). Here the kernel watches the touch panel itself:
+  sensor spot x 22000-43500, y 44000-60000 (0-65535 units), held 150 ms.
+
+### Still to do
+
+1. Identify (TA cases 5/6/7) against the enrolled template.
+2. Persist the template (+0x177024 out at progress 100) and PREPARE metadata; feed back after boot.
+3. iOS bridge (BiometricKit / Touch ID) with passcode fallback.
 
 ## Remaining implementation and traps
 
