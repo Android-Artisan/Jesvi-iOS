@@ -1,3 +1,10 @@
+> Push status (2026-11-15): local commits complete, remote push blocked.
+> Both feature-branch pushes to configured upstream
+> https://github.com/oosexgang/hakios-xnu-kernel.git returned HTTP403:
+> authenticated user jesvi-eulah lacks write access. No existing fork found at
+> jesvi-eulah/hakios-xnu-kernel. No branches were published. Retry after access
+> is granted or a writable remote is provided. Do not claim a successful push.
+
 # User acceptance and next-agent handover — 2026-11-15
 
 User reports “all good” after the Camera-only brightness installation and asks
