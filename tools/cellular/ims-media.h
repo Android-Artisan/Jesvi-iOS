@@ -8,6 +8,7 @@
  * opencore-amr 0.1.6 (Apache-2.0), built static for iOS: work/third_party/amr-build/out (see tools/cellular/build-ims.sh).
  */
 #include <math.h>
+#include <sys/sysctl.h>
 #include <pthread.h>
 #include <net/if_dl.h>
 #include <opencore-amrnb/interf_dec.h>
@@ -29,6 +30,7 @@ static struct {
     unsigned underruns, concealed;
     float mic_gain;
     volatile int muted;
+    volatile int route;                 /* 1 earpiece (default), 0 speakers: kept on the kernel every 0.5 s */
     int sock, spk, mic;
     struct sockaddr_in6 peer;
     pthread_t rx, tx;
@@ -173,6 +175,10 @@ static void *media_play(void *arg)
         }
         if (med.spk >= 0) (void)!write(med.spk, out, sizeof(out));
         played += 80;
+        if (played % 4000 == 0) {                           /* every 0.5 s: our route, whatever iOS's own sounds set */
+            int r = med.route;
+            sysctlbyname("kern.redwood.snd_route", NULL, NULL, &r, sizeof(r));
+        }
         if (played % 40000 == 0)                            /* every 5 s */
             {printf("call: media (AP): in %u pkts, out %u pkts (%u failed: %s), mic %u bytes, %u underruns, %u concealed, mic gain %.1f, buffered %u ms\n",
                 med.rx_pkts, med.tx_pkts, med.tx_err, med.tx_err ? strerror(med.tx_errno) : "-", med.mic_bytes, med.underruns,
@@ -193,7 +199,14 @@ static void *media_tx(void *arg)
     uint16_t seq = (uint16_t)arc4random();
     uint32_t ts = arc4random(), ssrc = arc4random();
     int first = 1;
+    unsigned long mic_try = 0;
     while (med.run) {
+        /* the mic may be held by iOS's own audio for a moment (the call's audio session opens its input: "mic NOT open",
+         * 2026-11-14 04:46): ask again every 200 ms; meanwhile silence goes out at 20 ms, so the stream never stops */
+        if (med.mic < 0 && (mic_try++ % 10) == 0) {
+            med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
+            if (med.mic >= 0) printf("%s call: media (AP): mic open\n", ts_now());
+        }
         ssize_t n = med.mic >= 0 ? read(med.mic, (uint8_t *)in + have, sizeof(in) - have) : -1;
         if (n > 0) { have += (size_t)n; med.mic_bytes += (unsigned)n; }
         if (med.mic < 0) {                                  /* no mic: send silence at 20 ms */
@@ -275,7 +288,13 @@ static int media_start(int sock, const char *remote, unsigned rport)
     med.spk = open("/dev/redwood-audio", O_WRONLY | O_NONBLOCK);
     med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
     med.rx_pkts = med.rx_frames = med.tx_pkts = med.rx_bad = med.tx_err = med.mic_bytes = 0; med.tx_errno = 0;
-    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0;
+    {   /* the earpiece (top amplifier only) unless the call screen says speaker; iOS's own audio leaves the device to us */
+        int one = 1;
+        sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
+        sysctlbyname("kern.redwood.snd_route", NULL, NULL, &one, sizeof(one));
+    }
+    notify_post("com.redwood.call.started");               /* the call screen's Speaker button back to off */
+    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0; med.route = 1;
     fir_init();
     med.run = 1;
     pthread_create(&med.play, NULL, media_play, NULL);
@@ -297,4 +316,6 @@ static void media_stop(void)
     if (med.mic >= 0) close(med.mic);
     if (med.sock >= 0) close(med.sock);
     med.spk = med.mic = med.sock = -1;
+    {int zero = 0; sysctlbyname("kern.redwood.snd_call", NULL, NULL, &zero, sizeof(zero));
+     sysctlbyname("kern.redwood.snd_route", NULL, NULL, &zero, sizeof(zero));}
 }

@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +30,14 @@
 #include <signal.h>
 #include <dirent.h>
 #include "sms-pdu.h"
+
+/* every log line about calls carries the time (A, 2026-11-14: late rings could not be measured without it) */
+static const char *ts_now(void)
+{
+    static char b[24];struct timeval tv;gettimeofday(&tv,NULL);struct tm tm;localtime_r(&tv.tv_sec,&tm);
+    snprintf(b,sizeof(b),"%02d:%02d:%02d.%03d",tm.tm_hour,tm.tm_min,tm.tm_sec,(int)(tv.tv_usec/1000));return b;
+}
+
 #ifndef IPV6_BOUND_IF
 #define IPV6_BOUND_IF 125
 #endif
@@ -258,16 +267,39 @@ static int param_u(const char *v,const char *k,uint32_t *out)
     }
     return -1;
 }
+/* (A, 2026-11-14) bytes after a complete message, per connection: one TCP read can carry two messages (Jio sent 180 and
+ * 200 together; the 200 was lost and the call screen stayed on "calling"), so the rest is kept for the next call */
+static struct {int fd;size_t n;char b[16384];} recv_left[16];
+static int recv_pending(int s)
+{
+    for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 && recv_left[i].n) return 1;
+    return 0;
+}
 static int recv_msg(int s,char *b,size_t cap,int secs)
 {   /* one SIP message from a stream (headers + Content-Length), or a datagram */
     size_t n=0;b[0]=0;
+    for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 && recv_left[i].n) {
+        n=recv_left[i].n<cap-1?recv_left[i].n:cap-1;memcpy(b,recv_left[i].b,n);b[n]=0;recv_left[i].n=0;break;
+    }
     for (;;) {
+        char *e=n?strstr(b,"\r\n\r\n"):NULL;
+        if (e) {
+            /* (keep-alive CRLFs in front of a message are skipped) */
+            size_t skip=0;while (skip+1<n && b[skip]=='\r' && b[skip+1]=='\n') skip+=2;
+            if (skip) {memmove(b,b+skip,n-skip+1);n-=skip;continue;}
+            char cl[32];int body=hdr(b,"Content-Length",cl,sizeof(cl))?atoi(cl):hdr(b,"l",cl,sizeof(cl))?atoi(cl):0;
+            size_t len=(size_t)(e+4-b)+(size_t)(body>0?body:0);
+            if (n>=len) {
+                if (n>len) {   /* the next message(s): kept */
+                    int k=-1;for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 || (k<0 && !recv_left[i].n)) {k=i;if (recv_left[i].fd==s+1) break;}
+                    if (k>=0) {size_t m=n-len<sizeof(recv_left[k].b)?n-len:sizeof(recv_left[k].b);memcpy(recv_left[k].b,b+len,m);recv_left[k].n=m;recv_left[k].fd=s+1;}
+                }
+                b[len]=0;return (int)len;
+            }
+        }
         struct pollfd p={s,POLLIN,0};if (poll(&p,1,secs*1000)<=0) return n?(int)n:-1;
         ssize_t r=recv(s,b+n,cap-1-n,0);if (r<=0) return n?(int)n:-1;
         n+=(size_t)r;b[n]=0;
-        char *e=strstr(b,"\r\n\r\n");if (!e) continue;
-        char cl[32];int body=hdr(b,"Content-Length",cl,sizeof(cl))?atoi(cl):hdr(b,"l",cl,sizeof(cl))?atoi(cl):0;
-        if (n>=(size_t)(e+4-b)+(size_t)body) return (int)n;
     }
 }
 
@@ -553,6 +585,7 @@ static void sms_outbox(int sock,int portc)
 #define CALL_ANSWER_S 3
 #define CALL_MAX_S 3600
 #define CALL_RTP_PORT 50010
+#define IMS_PORT_C 50060              /* port-s is port-c + 2 */
 static struct {
     int state;                          /* 0 none, 1 ringing, 2 answered (200 sent), 3 confirmed (ACK) */
     int fd;                             /* the connection the INVITE came on */
@@ -563,13 +596,17 @@ static struct {
     unsigned id;                        /* this call's number, for the call screen */
     int out;                            /* we called (state 10 dialling, then 2 alerting/answered, 3 up) */
     char branch[40];unsigned rseq_acked;
+    char tag[80];                       /* the call screen's tag of an outgoing call (for an early cancel) */
 } call;
+/* call numbers unique across restarts (the call screen remembers ended numbers: after a restart "call 1" was taken
+ * for an old one and an incoming call never rang, 2026-11-14 05:00) */
 static unsigned call_seq;
 static char call_ip6[64];
 static void call_media(int start);
 static void call_bye(void);
 static void call_ui_poll(void);
 static void call_cancel(int sock);
+static void call_sdp_from(const char *r);
 static int call_ports, call_sock = -1, call_portc;
 static const char *call_user;
 
@@ -599,6 +636,13 @@ call_enabled(void)
 {
     return call_auto() || call_ui_alive();
 }
+/* the other party's number, for RedwoodPhone's own call screen (local only) */
+static void
+call_ui_number(const char *num)
+{
+    FILE *f=fopen(CALL_UI_DIR "/number","w");if (!f) return;
+    fprintf(f,"%s",num);fclose(f);chmod(CALL_UI_DIR "/number",0644);
+}
 static void
 call_ui_state(const char *fmt,...)
 {
@@ -606,7 +650,7 @@ call_ui_state(const char *fmt,...)
     mkdir(CALL_UI_DIR,0755);chown(CALL_UI_DIR,501,501);
     FILE *f=fopen(CALL_UI_DIR "/state.tmp","w");if (!f) return;
     fprintf(f,"%s\n",line);fclose(f);chmod(CALL_UI_DIR "/state.tmp",0644);rename(CALL_UI_DIR "/state.tmp",CALL_UI_DIR "/state");
-    printf("call: screen <- %s\n",line);
+    printf("%s call: screen <- %s\n",ts_now(),line);
 }
 /* the caller's number from From (sip:+91...@ or tel:+91...) */
 static void
@@ -654,14 +698,18 @@ call_respond(const char *status,const char *body)
     }
     if (body) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(body),body);
     else o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-    if (send(call.fd,m,(size_t)o,0)<0) printf("call: send %s failed: %s\n",status,strerror(errno));
-    else printf("call: --> %s\n",status);
+    if (send(call.fd,m,(size_t)o,0)<0) {
+        /* the P-CSCF's connection died under the call (2026-11-14 04:40: "Broken pipe", the caller kept ringing): the
+         * response goes to the same P-CSCF over our registration connection (port-c -> its port-s, which its Via names) */
+        printf("%s call: send %s failed (%s): sent on the registration connection instead\n",ts_now(),status,strerror(errno));
+        if (call_sock>=0 && send(call_sock,m,(size_t)o,0)>0) call.fd=call_sock;
+    } else printf("%s call: --> %s\n",ts_now(),status);
 }
 
 static void
 call_end(const char *why)
 {
-    printf("call: ended (%s) after %lds\n",why,(long)(time(NULL)-call.at));
+    printf("%s call: ended (%s) after %lds\n",ts_now(),why,(long)(time(NULL)-call.at));
     if (call.ui) call_ui_state("ended %u %s",call.id,why);
     call_media(0);
     call.state=0;
@@ -683,8 +731,8 @@ call_cmd(const char *grp_idx_type,const uint8_t *p,size_t n)
     for (size_t i=0;i<n && o+3<sizeof(line);i++) o+=(size_t)snprintf(line+o,sizeof(line)-o,"%02x",p[i]);
     line[o++]='\n';
     int f=open("/var/tmp/redwood-cell/cmd",O_WRONLY|O_NONBLOCK);
-    if (f<0) {printf("call: media: the cellular command pipe: %s\n",strerror(errno));return;}
-    if (write(f,line,o)!=(ssize_t)o) printf("call: media: write: %s\n",strerror(errno));
+    if (f<0) {printf("%s call: media: the cellular command pipe: %s\n",ts_now(),strerror(errno));return;}
+    if (write(f,line,o)!=(ssize_t)o) printf("%s call: media: write: %s\n",ts_now(),strerror(errno));
     close(f);
     usleep(300000);                     /* (redwood-cellulard takes one line per poll) */
 }
@@ -696,7 +744,7 @@ static int
 call_channel(int op,const char *remote,unsigned rport)
 {
     uint8_t c[47]={0},loc[16],rem[16];
-    if (inet_pton(AF_INET6,call_ip6,loc)!=1 || inet_pton(AF_INET6,remote,rem)!=1) {printf("call: media: bad address\n");return -1;}
+    if (inet_pton(AF_INET6,call_ip6,loc)!=1 || inet_pton(AF_INET6,remote,rem)!=1) {printf("%s call: media: bad address\n",ts_now());return -1;}
     c[0]=0;c[1]=(uint8_t)op;
     call_put16(c+2,CALL_RTP_PORT+1);call_put16(c+4,rport+1);call_put16(c+6,CALL_RTP_PORT);call_put16(c+8,rport);
     c[10]=2;memcpy(c+11,rem,16);c[27]=2;memcpy(c+28,loc,16);
@@ -720,15 +768,15 @@ call_media(int start)
     unsigned rport=(unsigned)atoi(call.sdp_m);
     if (!call_cpvoice()) {
         if (start) {
-            if (!call.sdp_c[0] || !rport) {printf("call: media: no remote address in the SDP\n");return;}
+            if (!call.sdp_c[0] || !rport) {printf("%s call: media: no remote address in the SDP\n",ts_now());return;}
             int s=bound(SOCK_DGRAM,CALL_RTP_PORT);
-            if (s<0) {printf("call: media: RTP socket: %s\n",strerror(errno));return;}
+            if (s<0) {printf("%s call: media: RTP socket: %s\n",ts_now(),strerror(errno));return;}
             media_start(s,call.sdp_c,rport);
         } else media_stop();
         return;
     }
     if (start) {
-        if (!call.sdp_c[0] || !rport) {printf("call: media: no remote address in the SDP\n");return;}
+        if (!call.sdp_c[0] || !rport) {printf("%s call: media: no remote address in the SDP\n",ts_now());return;}
         uint8_t pdn[38]={0},ip[16];
         if (inet_pton(AF_INET6,call_ip6,ip)!=1) return;
         pdn[0]=2;memcpy(pdn+1,ip,16);pdn[17]=6;memcpy(pdn+21,"rmnet1",6);
@@ -746,15 +794,57 @@ call_media(int start)
         uint8_t m[4]={1,0,0,0};         /* SAE_StartFDSR: 1 start */
         call_cmd("16 03 03",m,sizeof(m));
         open=1;
-        printf("call: media: CP voice channel 0 up to [%s]:%u, AMR-NB 12.2\n",call.sdp_c,rport);
+        printf("%s call: media: CP voice channel 0 up to [%s]:%u, AMR-NB 12.2\n",ts_now(),call.sdp_c,rport);
     } else if (open) {
         uint8_t m[4]={2,0,0,0};         /* SAE_StopFDSR: 2 stop */
         call_cmd("16 03 03",m,sizeof(m));
         call_channel(2,call.sdp_c[0]?call.sdp_c:"::1",rport?rport:9);
         {uint8_t zero=0;call_cmd("09 09 01",&zero,1);}     /* voice clock off */
         open=0;
-        printf("call: media: CP voice channel 0 closed\n");
+        printf("%s call: media: CP voice channel 0 closed\n",ts_now());
     }
+}
+
+
+/*
+ * A request in the call's dialog that may carry an SDP offer -- a re-INVITE or an UPDATE: the network refreshes the
+ * session (session timers) or moves the media. Answered 200 with its own Via/From/To/CSeq and our SDP, the media
+ * following a new remote address/port. (Before 2026-11-14 a re-INVITE was taken for the first INVITE again and
+ * answered with the first INVITE's CSeq, an UPDATE got 200 without SDP: long calls would be dropped.)
+ */
+static void call_sdp_answer(char *sdp,size_t cap)
+{
+    unsigned sid=arc4random();
+    snprintf(sdp,cap,
+        "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
+        "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
+        "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
+        "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
+        sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
+}
+static void call_reinvite(int fd,const char *r)
+{
+    char via[1200],fr[400],to[400],cq[80],ci[200],m[4096],sdp[700];
+    call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));hdr(r,"Call-ID",ci,sizeof(ci));
+    int offer=strstr(r,"\r\n\r\nv=0")!=NULL;
+    if (offer) {
+        char oc[96]="",om[96]="";snprintf(oc,sizeof(oc),"%s",call.sdp_c);snprintf(om,sizeof(om),"%s",call.sdp_m);
+        call_sdp_from(r);
+        if ((strcmp(oc,call.sdp_c) || strcmp(om,call.sdp_m)) && med.run) {   /* the media moved: follow it */
+            printf("%s call: media moves to [%s]:%s\n",ts_now(),call.sdp_c,call.sdp_m);
+            call_media(0);call_media(1);
+        }
+    }
+    call_sdp_answer(sdp,sizeof(sdp));
+    int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
+        "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
+        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces,timer\r\n",
+        via,fr,to,ci,cq,call_user,call_ip6,call_ports);
+    char se[80];
+    if (hdr(r,"Session-Expires",se,sizeof(se))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Session-Expires: %s\r\nRequire: timer\r\n",se);
+    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(sdp),sdp);
+    if (send(fd,m,(size_t)o,0)<0 && call_sock>=0) send(call_sock,m,(size_t)o,0);
+    printf("%s call: in-dialog %.*s answered 200 (with SDP)\n",ts_now(),(int)(strchr(r,' ')-r),r);
 }
 
 /* an INVITE; returns 1 when handled here (answer mode), 0 for the old busy path */
@@ -765,9 +855,12 @@ call_invite(int fd,const char *r)
     if (call.state) {
         /* the P-CSCF drops and reopens its connection and resends the INVITE (2026-11-13 23:10: our 100/180 went
          * into the closed one, "Broken pipe"): the same Call-ID moves the call to the new connection */
-        char ci[200];
+        char ci[200],tt[300];
+        if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid) && call.state>=2 && hdr(r,"To",tt,sizeof(tt)) && strstr(tt,"tag=")) {
+            call_reinvite(fd,r);return 1;   /* a re-INVITE in the dialog (session refresh, media change) */
+        }
         if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid)) {
-            call.fd=fd;printf("call: INVITE again on a new connection: carried on there\n");
+            call.fd=fd;printf("%s call: INVITE again on a new connection: carried on there\n",ts_now());
             if (call.state==1) {call_respond("100 Trying",NULL);call_respond("180 Ringing",NULL);}
             else call.state=1;          /* (answered already: answer again from call_tick) */
             return 1;
@@ -794,9 +887,10 @@ call_invite(int fd,const char *r)
     call.ui=!call_auto();call.id=++call_seq;
     if (call.ui) {
         char num[64];call_number(call.from,num,sizeof(num));
-        printf("call: INCOMING: remote media port %s; ringing on the call screen\n",call.sdp_m);
+        printf("%s call: INCOMING: remote media port %s; ringing on the call screen\n",ts_now(),call.sdp_m);
+        call_ui_number(num[0]?num:"Unknown");
         call_ui_state("ringing %u %s",call.id,num[0]?num:"unknown");
-    } else printf("call: INCOMING (answer mode): remote media port %s; answering in %ds\n",call.sdp_m,CALL_ANSWER_S);
+    } else printf("%s call: INCOMING (answer mode): remote media port %s; answering in %ds\n",ts_now(),call.sdp_m,CALL_ANSWER_S);
     call_respond("100 Trying",NULL);
     call_respond("180 Ringing",NULL);
     return 1;
@@ -809,23 +903,24 @@ call_request(int fd,const char *r)
     char ci[200];
     if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
     if (!strncmp(r,"ACK ",4)) {
-        if (call.state==2) {call.state=3;printf("call: ACK -- the call is up\n");fflush(stdout);if (!med.run) call_media(1);
+        if (call.state==2) {call.state=3;printf("%s call: ACK -- the call is up\n",ts_now());fflush(stdout);if (!med.run) call_media(1);
             if (call.ui) call_ui_state("up %u",call.id);fflush(stdout);}
         return 1;
     }
+    if (!strncmp(r,"UPDATE ",7)) {call_reinvite(fd,r);return 1;}
     char m[2048],via[1200],fr[400],to[400],cq[80];int o;
     call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));
     o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
         via,fr,to,ci,cq);
     send(fd,m,(size_t)o,0);
     if (!strncmp(r,"CANCEL ",7)) {
-        printf("call: the caller cancelled\n");
+        printf("%s call: the caller cancelled\n",ts_now());
         if (call.state==1) call_respond("487 Request Terminated",NULL);
         call_end("cancelled");
     } else if (!strncmp(r,"BYE ",4)) {
         call_end("the caller hung up");
     } else {
-        printf("call: in-dialog request answered 200\n");
+        printf("%s call: in-dialog request answered 200\n",ts_now());
     }
     return 1;
 }
@@ -880,8 +975,8 @@ call_bye(void)
         o=snprintf(m,sizeof(m),"BYE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
             "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u BYE\r\nContent-Length: 0\r\n\r\n",
             uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
-        if (send(call_sock,m,(size_t)o,0)<0) printf("call: BYE send failed: %s\n",strerror(errno));
-        else printf("call: --> BYE (on the registration connection)\n");
+        if (send(call_sock,m,(size_t)o,0)<0) printf("%s call: BYE send failed: %s\n",ts_now(),strerror(errno));
+        else printf("%s call: --> BYE (on the registration connection)\n",ts_now());
     }
 }
 
@@ -899,17 +994,38 @@ static void call_sdp_from(const char *r)
     if (c) sscanf(c+10,"%95s",call.sdp_c);
     if (mm) sscanf(mm+9,"%95s",call.sdp_m);
 }
+
+/* E.164 country code from the IMSI's MCC (its first three digits); NULL when unknown (then numbers go out as dialled) */
+static const char *mcc_country_code(const char *imsi)
+{
+    static const struct {int mcc;const char *cc;} t[]={
+        {404,"91"},{405,"91"},{406,"91"},{310,"1"},{311,"1"},{312,"1"},{313,"1"},{314,"1"},{315,"1"},{316,"1"},{302,"1"},
+        {234,"44"},{235,"44"},{262,"49"},{208,"33"},{222,"39"},{214,"34"},{505,"61"},{530,"64"},{440,"81"},{441,"81"},
+        {450,"82"},{460,"86"},{454,"852"},{525,"65"},{502,"60"},{510,"62"},{515,"63"},{520,"66"},{452,"84"},{470,"880"},
+        {410,"92"},{413,"94"},{429,"977"},{424,"971"},{420,"966"},{427,"974"},{419,"965"},{422,"968"},{426,"973"},
+        {602,"20"},{655,"27"},{621,"234"},{639,"254"},{724,"55"},{722,"54"},{334,"52"},{730,"56"},{732,"57"},{716,"51"},
+        {250,"7"},{255,"380"},{260,"48"},{286,"90"},{204,"31"},{206,"32"},{228,"41"},{232,"43"},{238,"45"},{240,"46"},
+        {242,"47"},{244,"358"},{268,"351"},{272,"353"},{202,"30"},{425,"972"},{416,"962"},{415,"961"},{418,"964"},{432,"98"}};
+    if (!imsi || strlen(imsi)<3) return NULL;
+    int mcc=(imsi[0]-'0')*100+(imsi[1]-'0')*10+(imsi[2]-'0');
+    for (size_t i=0;i<sizeof(t)/sizeof(t[0]);i++) if (t[i].mcc==mcc) return t[i].cc;
+    return NULL;
+}
 static void call_dial(int sock,const char *tag,const char *number)
 {
     if (call.state) {call_ui_state("ended 0 busy %s",tag);return;}
     char num[40];size_t n=0;
-    for (const char *q=number;*q && n+1<sizeof(num);q++) if ((*q>='0' && *q<='9') || (*q=='+' && !n)) num[n++]=*q;
+    for (const char *q=number;*q && n+1<sizeof(num);q++) if ((*q>='0' && *q<='9') || (*q=='+' && !n) || *q=='*' || *q=='#') num[n++]=*q;
     num[n]=0;
-    char tel[48];
+    /* the number as the network wants it (A, 2026-11-14): no fixed country. The SIM's MCC gives the country code;
+     * 00... and +... are international already, a leading 0 is the national trunk prefix, a national number gets
+     * +CC, and short codes (under 7 digits, or * / #) stay local, in the SIM's own IMS domain (phone-context). */
+    char tel[96];const char *cc=mcc_country_code(cfg.imsi);
     if (num[0]=='+') snprintf(tel,sizeof(tel),"tel:%s",num);
-    else if (n==10) snprintf(tel,sizeof(tel),"tel:+91%s",num);
-    else if (n==11 && num[0]=='0') snprintf(tel,sizeof(tel),"tel:+91%s",num+1);
-    else snprintf(tel,sizeof(tel),"tel:%s;phone-context=ims.mnc%s.mcc405.3gppnetwork.org",num,"854");
+    else if (!strncmp(num,"00",2) && n>4) snprintf(tel,sizeof(tel),"tel:+%s",num+2);
+    else if (n<7 || strchr(num,'*') || strchr(num,'#') || !cc) snprintf(tel,sizeof(tel),"tel:%s;phone-context=%s",num,cfg.realm);
+    else if (num[0]=='0') snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num+1);
+    else snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num);
     memset(&call,0,sizeof(call));
     call.out=1;call.ui=1;call.id=++call_seq;call.state=10;call.at=time(NULL);call.bye_cseq=2;
     snprintf(call.branch,sizeof(call.branch),"z9hG4bK%08x",arc4random());
@@ -917,6 +1033,8 @@ static void call_dial(int sock,const char *tag,const char *number)
     snprintf(call.to,sizeof(call.to),"<%s>;tag=%08x",sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random());
     snprintf(call.from,sizeof(call.from),"<%s>",tel);         /* (the far end: To of our requests, its tag added later) */
     snprintf(call.contact,sizeof(call.contact),"<%s>",tel);
+    snprintf(call.tag,sizeof(call.tag),"%s",tag);
+    call_ui_number(num[0]?num:"Unknown");
     call_ui_state("dialing %u %s",call.id,tag);
     char sdp[700];unsigned sid=arc4random();
     snprintf(sdp,sizeof(sdp),
@@ -934,12 +1052,12 @@ static void call_dial(int sock,const char *tag,const char *number)
         "Accept-Contact: *;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
         "P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel\r\n"
         "P-Preferred-Identity: <%s>\r\n"
-        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: 100rel,replaces\r\n"
+        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces\r\n"
         "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",
         tel,call_ip6,call_portc,call.branch,sms_route,call.to,call.from,call.cid,
         call_user,call_ip6,call_ports,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",strlen(sdp),sdp);
-    if (send(sock,m,(size_t)o,0)<0) {printf("call: INVITE send failed: %s\n",strerror(errno));call_end("could not send");return;}
-    printf("call: --> INVITE (outgoing call %u)\n",call.id);
+    if (send(sock,m,(size_t)o,0)<0) {printf("%s call: INVITE send failed: %s\n",ts_now(),strerror(errno));call_end("could not send");return;}
+    printf("%s call: --> INVITE (outgoing call %u)\n",ts_now(),call.id);
 }
 /* the ACK (and PRACK) of ours, in the dialog: Route = Record-Route reversed (kept in call.rr already reversed) */
 static void call_out_request(int sock,const char *method,unsigned cseq,const char *extra)
@@ -955,17 +1073,46 @@ static void call_out_request(int sock,const char *method,unsigned cseq,const cha
     o=snprintf(m,sizeof(m),"%s %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
         "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u %s\r\n%sContent-Length: 0\r\n\r\n",
         method,uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,cseq,method,extra?extra:"");
-    if (send(sock,m,(size_t)o,0)<0) printf("call: %s send failed: %s\n",method,strerror(errno));
-    else printf("call: --> %s\n",method);
+    if (send(sock,m,(size_t)o,0)<0) printf("%s call: %s send failed: %s\n",ts_now(),method,strerror(errno));
+    else printf("%s call: --> %s\n",ts_now(),method);
 }
 /* a response to our INVITE; returns 1 if it was one */
 static int call_out_response(int sock,const char *r)
 {
     char ci[200],cq[80];
-    if (!call.out || !call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
-    if (!hdr(r,"CSeq",cq,sizeof(cq)) || !strstr(cq,"INVITE")) return 1;   /* (PRACK/BYE answers) */
+    if (!hdr(r,"Call-ID",ci,sizeof(ci))) return 0;
+    if ((!call.out || !call.state || strcmp(ci,call.cid)) && !strncmp(r,"SIP/2.0 2",9) && hdr(r,"CSeq",cq,sizeof(cq)) && strstr(cq,"INVITE")) {
+        /* an answer to an INVITE of ours we have already given up (05:34: the callee picked up after we cancelled and
+         * the call ran in the background): ACK it and hang up at once */
+        char to[400],fr[400],ct[400],rr[600]="",uri[400]="";
+        hdr(r,"To",to,sizeof(to));hdr(r,"From",fr,sizeof(fr));
+        if (hdr(r,"Contact",ct,sizeof(ct))) {const char *a=strchr(ct,'<'),*e=a?strchr(a,'>'):NULL;if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1);}
+        const char *list[8];int nr=0;size_t L=0;
+        for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:")) && nr<8;q+=2) list[nr++]=q+2;
+        for (int k=nr-1;k>=0;k--) {const char *e=strstr(list[k],"\r\n");const char *v=list[k]+13;while (*v==' ') v++;L+=(size_t)snprintf(rr+L,sizeof(rr)-L,"Route: %.*s\r\n",(int)(e-v),v);}
+        if (!uri[0]) return 1;
+        char m[3000];
+        for (int k=0;k<2;k++) {
+            int o=snprintf(m,sizeof(m),"%s %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%sMax-Forwards: 70\r\n"
+                "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
+                k?"BYE":"ACK",uri,call_ip6,call_portc,arc4random(),rr[0]?rr:sms_route,fr,to,ci,k?"2 BYE":"1 ACK");
+            send(sock,m,(size_t)o,0);
+        }
+        printf("%s call: an answer to a call already ended: ACK + BYE\n",ts_now());
+        return 1;
+    }
+    if (!call.out || !call.state || strcmp(ci,call.cid)) return 0;
+    if (!hdr(r,"CSeq",cq,sizeof(cq))) return 1;
+    if (!strstr(cq,"INVITE")) {                             /* PRACK/BYE answers */
+        int c2=atoi(r+8);
+        if (c2==481 && call.state!=3) {                     /* the network lost the call: never stay on "calling" */
+            printf("%s call: <-- 481 to our %s: the call is gone\n",ts_now(),strstr(cq,"PRACK")?"PRACK":"request");
+            call_cancel(sock);call_end("the network lost the call");
+        }
+        return 1;
+    }
     int code=atoi(r+8);
-    printf("call: <-- %d to our INVITE\n",code);
+    printf("%s call: <-- %d to our INVITE\n",ts_now(),code);
     char to[400];
     if (hdr(r,"To",to,sizeof(to)) && strstr(to,"tag=")) snprintf(call.from,sizeof(call.from),"%s",to);
     if (code>=180 && code<300) {
@@ -1015,26 +1162,45 @@ static void call_cancel(int sock)
     int o=snprintf(m,sizeof(m),"CANCEL %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\nMax-Forwards: 70\r\n%s"
         "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n",
         uri,call_ip6,call_portc,call.branch,sms_route,call.to,to,call.cid);
-    send(sock,m,(size_t)o,0);printf("call: --> CANCEL\n");
+    send(sock,m,(size_t)o,0);printf("%s call: --> CANCEL\n",ts_now());
 }
 
 /* the call screen's commands */
 static void
 call_ui_poll(void)
 {
+    /* the call screen's Speaker button (libredwood in InCallService posts these) */
+    static int tsp=-1,tea=-1;
+    if (tsp<0) {notify_register_check("com.redwood.call.speaker",&tsp);notify_register_check("com.redwood.call.earpiece",&tea);}
+    int ch=0;
+    if (tsp>=0 && notify_check(tsp,&ch)==0 && ch && call.state) {med.route=0;printf("%s call: screen -> speaker\n",ts_now());}
+    ch=0;
+    if (tea>=0 && notify_check(tea,&ch)==0 && ch && call.state) {med.route=1;printf("%s call: screen -> earpiece\n",ts_now());}
     DIR *d=opendir(CALL_UI_DIR);if (!d) return;
     struct dirent *e;
     while ((e=readdir(d))) {
         if (strncmp(e->d_name,"cmd.",4)) continue;
-        char fn[300],line[100]="";unsigned id=0;
+        char fn[300],line[100]="";unsigned id=0;struct stat cst;
         snprintf(fn,sizeof(fn),CALL_UI_DIR "/%s",e->d_name);
+        int stale=!stat(fn,&cst) && time(NULL)-cst.st_mtime>10;
         FILE *f=fopen(fn,"r");if (f) {if (!fgets(line,sizeof(line),f)) line[0]=0;fclose(f);}
         unlink(fn);
+        if (stale && !strncmp(line,"dial ",5)) {   /* (a dial from before we could take it: the user has long given up) */
+            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> dial (stale, dropped)\n",ts_now());
+            call_ui_state("ended 0 stale %s",tg);continue;
+        }
+        if (!strncmp(line,"cancel ",7)) {           /* the user ended a call still being dialled */
+            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> cancel\n",ts_now());
+            if (call.out && call.state && call.state!=3 && !strcmp(tg,call.tag)) {call_cancel(call_sock);call_end("cancelled here");}
+            else if (call.out && call.state==3 && !strcmp(tg,call.tag)) {call_bye();call_end("hung up here");}
+            continue;
+        }
         char verb[20]="";if (sscanf(line,"%19s %u",verb,&id)<1) continue;
-        printf("call: screen -> %s\n",verb);
+        printf("%s call: screen -> %s\n",ts_now(),verb);
         if (!strcmp(verb,"dial")) {char tag[80],num[64];if (sscanf(line,"%*s %79s %63s",tag,num)==2) call_dial(call_sock,tag,num);continue;}
         if (!call.state || id!=call.id) continue;           /* (an old call's button) */
         if (!strcmp(verb,"answer") && call.state==1) call.answer_req=1;
+        else if (!strcmp(verb,"route")) {char w[20]="";sscanf(line,"%*s %*u %19s",w);med.route=strcmp(w,"speaker")!=0;}
         else if (!strcmp(verb,"mute")) {unsigned on=0;sscanf(line,"%*s %*u %u",&on);med.muted=(int)on;}
         else if (!strcmp(verb,"end")) {
             if (call.out && call.state!=3) {call_cancel(call_sock);call_end("cancelled here");}
@@ -1045,6 +1211,17 @@ call_ui_poll(void)
     closedir(d);
 }
 
+
+/* leaving with a call up (the registration connection is gone): close it at the network as far as we still can, and
+ * on the call screen, so neither side keeps a call nobody has (afterwards: "busy") */
+static void call_abort(const char *why)
+{
+    if (!call.state) return;
+    if (call.out && call.state!=3) call_cancel(call_sock);
+    else if (call.state==1) call_respond("480 Temporarily Unavailable",NULL);
+    else call_bye();
+    call_end(why);
+}
 static int ims_cmd_fd=-1;
 static void ims_cmd_poll(int sock,int portc)
 {
@@ -1079,6 +1256,7 @@ static void ims_stop(int sig)
 int main(int argc,char **argv)
 {
     setvbuf(stdout,NULL,_IOLBF,0);
+    call_seq=(unsigned)(time(NULL)%1000000)*10;
     signal(SIGTERM,ims_stop);signal(SIGINT,ims_stop);signal(SIGPIPE,SIG_IGN);
     pfk=socket(PF_KEY,SOCK_RAW,PF_KEY_V2);
     if (argc>1 && !strcmp(argv[1],"--pfkey")) {printf("PF_KEY socket: %s\n",pfk>=0?"available":strerror(errno));return pfk<0;}
@@ -1115,9 +1293,16 @@ int main(int argc,char **argv)
     if (isim_open()) {fprintf(stderr,"redwood-ims: the ISIM did not open (is redwood-cellulard running?)\n");return 1;}
 
     /* 1. the first REGISTER, in the clear, from the port that becomes port-c */
-    int s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,0);if (s<0) {perror("bind");return 1;}
+    /* The same ports every time (A, 2026-11-14): our Contact (address + port-s) is then the same after a restart, and
+     * the network replaces our registration instead of keeping the old one beside it. With old ones kept, an incoming
+     * call was offered to the dead contacts first and reached us only after the caller had heard "busy". */
     struct sockaddr_in6 a={.sin6_len=sizeof(a),.sin6_family=AF_INET6,.sin6_port=htons(5060),.sin6_addr=pc6};
-    if (connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect");isim_close();return 1;}
+    int s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,IMS_PORT_C);
+    if (s>=0 && connect(s,(struct sockaddr *)&a,sizeof(a))) {printf("port-c %d: %s; a free port instead\n",IMS_PORT_C,strerror(errno));close(s);s=-1;}
+    if (s<0) {
+        s=bound(tcp?SOCK_STREAM:SOCK_DGRAM,0);if (s<0) {perror("bind");return 1;}
+        if (connect(s,(struct sockaddr *)&a,sizeof(a))) {perror("connect");isim_close();return 1;}
+    }
     struct sockaddr_in6 mine;socklen_t ml=sizeof(mine);getsockname(s,(struct sockaddr *)&mine,&ml);
     int portc=ntohs(mine.sin6_port),ports=portc+2;
     int ls=tcp?bound(SOCK_STREAM,ports):-1,us=bound(SOCK_DGRAM,ports);
@@ -1232,26 +1417,38 @@ int main(int argc,char **argv)
     snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        if (time(NULL)-registered_at>6600) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+        if (time(NULL)-registered_at>6600 && !call.state) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
-        if (poll(p,(nfds_t)k,call.state?200:1000)<0) break;
+        {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
+         if (poll(p,(nfds_t)k,pend?0:call.state?200:1000)<0) break;}
         {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
             static time_t ka;time_t t=time(NULL);
-            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+            /* (2026-11-14) the P-CSCF's own connections to our port-s, too: a dead one is closed at once, so the next
+             * call comes on a fresh connection instead of waiting out a dead one (late rings, lost CANCELs) */
+            static time_t kc;
+            if (t-kc>=20) {kc=t;
+                for (int j=0;j<ncs;j++) if (send(cs[j],"\r\n\r\n",4,0)<0) {
+                    printf("keep-alive: a P-CSCF connection is gone (%s): closed\n",strerror(errno));
+                    if (call.state && call.fd==cs[j]) call.fd=s;
+                    close(cs[j]);cs[j]=cs[--ncs];j--;
+                }
+            }
         }
         ims_cmd_poll(s,portc);
         call_tick();
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
+            if (i!=1 && i!=2 && !(p[i].revents&(POLLIN|POLLHUP)) && recv_pending(p[i].fd)) p[i].revents|=POLLIN;   /* kept messages */
             if (!(p[i].revents&(POLLIN|POLLHUP)) || (ls>=0 && i==2)) continue;
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
-            printf("<-- %zd bytes\n",g);show(r);printf("\n");
+            if (g<=0) {if (i>=base) {if (call.state && call.fd==cs[i-base]) call.fd=s;close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
+            printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) {
                 char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
                 int fd=open(fn,O_WRONLY|O_CREAT|O_TRUNC,0600);if (fd>=0) {(void)write(fd,r,(size_t)g);close(fd);}

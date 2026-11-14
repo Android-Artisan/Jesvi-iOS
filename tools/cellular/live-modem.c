@@ -1075,9 +1075,14 @@ static int online_handshake(unsigned seconds)
         if (online && stay_mode && ims_fd>=0) {
             /* the VoLTE/SMS client (redwood-ims, /var/root): started once IMS is up, started again when it leaves
              * (fresh registration every ~110 min, or a lost connection), at most every 30 s. /var/root/cell-noimsclient: never */
-            static pid_t ims_pid;static uint64_t ims_spawned;struct stat st2;
-            if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {printf("cellular: IMS client left\n");fflush(stdout);ims_pid=0;}
-            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull) {
+            static pid_t ims_pid;static uint64_t ims_spawned,ims_gap=30000000ull;struct stat st2;
+            if (ims_pid>0 && waitpid(ims_pid,NULL,WNOHANG)==ims_pid) {
+                /* (A, 2026-11-14) a long, healthy run that ended (a dropped registration connection, the ~110 min
+                 * refresh): start again after 2 s, not 30 -- no VoLTE meanwhile; quick failures stay 30 s apart */
+                ims_gap=now_us(NULL)-ims_spawned>120000000ull?2000000ull:30000000ull;
+                printf("cellular: IMS client left (again in %llu s)\n",ims_gap/1000000);fflush(stdout);ims_pid=0;ims_spawned=now_us(NULL);
+            }
+            if (!ims_pid && now_us(NULL)-ims_spawned>ims_gap) {
                 /* a client already running (e.g. started before this process was exec'd again by a watchdog): keep it */
                 FILE *q=fopen("/var/tmp/redwood-cell/ims.pid","r");int other=0;
                 if (q) {if (fscanf(q,"%d",&other)!=1) other=0;fclose(q);}
@@ -1090,7 +1095,7 @@ static int online_handshake(unsigned seconds)
                 } else if (other>1) unlink("/var/tmp/redwood-cell/ims.pid");
                 if (other==-1) goto ims_done;
             }
-            if (!ims_pid && now_us(NULL)-ims_spawned>30000000ull && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
+            if (!ims_pid && now_us(NULL)-ims_spawned>ims_gap && !stat("/var/root/redwood-ims",&st2) && stat("/var/root/cell-noimsclient",&st2)) {
                 posix_spawn_file_actions_t fa;posix_spawn_file_actions_init(&fa);
                 posix_spawn_file_actions_addopen(&fa,1,"/var/tmp/redwood-ims.log",O_WRONLY|O_CREAT|O_APPEND,0600);
                 posix_spawn_file_actions_adddup2(&fa,1,2);posix_spawn_file_actions_addopen(&fa,0,"/dev/null",O_RDONLY,0);
@@ -1473,6 +1478,13 @@ int main(int argc,char **argv)
         char args[1024]="";size_t al=sizeof(args)-1;
         if (!sysctlbyname("kern.bootargs",args,&al,NULL,0) && strstr(args,"cellular=0")) {puts("cellular=0: modem left off");return 0;}
         stay_mode=1;{struct stat nd;data_off=!stat("/var/root/cell-nodata",&nd);}argc=7;
+        {   /* (A, 2026-11-14) the call screen's app: LaunchServices forgets /var/jb's apps at every boot, and CallKit
+             * refuses a provider whose app it cannot find ("bundleIdentifier: (null)"): register it again, in the background */
+            struct stat ap;
+            if (!stat("/var/jb/Applications/RedwoodPhone.app",&ap) && fork()==0) {
+                sleep(20);execl("/var/jb/usr/bin/uicache","uicache","-p","/var/jb/Applications/RedwoodPhone.app",(char *)NULL);_exit(1);
+            }
+        }
         /* a newer copy in /var/root (root only) runs instead of the image's: updates without a new image */
         if (strcmp(argv[0],"/var/root/redwood-cellulard") && access("/var/root/redwood-cellulard",X_OK)==0) {
             argv[0]="/var/root/redwood-cellulard";execv(argv[0],argv);
