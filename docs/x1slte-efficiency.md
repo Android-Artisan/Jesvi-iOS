@@ -4,8 +4,10 @@ The new kernel automatically limits each CPU cluster and the GPU from its own
 thermal zone. No boot flag is needed (`dvfs=2` remains required). A hot M5 alone
 does not cap the A76, A55, GPU, or memory.
 
-This implementation is built locally, not flashed. Installing the kernel needs
-an approved reboot. No flash or reboot was performed during this work.
+Installed on 2026-11-14 after the user's instruction to apply it. Only the
+recovery partition's kernel slot at 0x2000000 was updated; installed loader,
+command line and userland were preserved. The phone rebooted into the new kernel.
+USB readback matched the staged 16 MiB slot byte for byte.
 
 ## Native automatic policy
 
@@ -103,7 +105,8 @@ The earlier live experiment used log polling and the old whole-device LPM
 switch. It successfully engaged and recovered, but that switch also capped
 memory. It has now been stopped to avoid that coupling and monitoring overhead.
 The original `/redwood/bin/lpmd` was restored in `user/501/com.redwood.lpmd`;
-Settings LPM works, and no temporary automatic controller is active.
+Settings LPM works, and no temporary userspace automatic controller is active.
+Native independent automatic cooling is now enabled in the installed kernel.
 
 Saved experiment artifacts remain inert in `/var/root/lpmd-auto` and
 `/var/root/com.redwood.lpmd-auto.plist`. Original backups are
@@ -130,4 +133,16 @@ targets, failed clock retry, unchanged-clock suppression, independent recovery,
 interrupted cool dwell and sensor failure. The legacy parser and polling tests
 were removed together with that implementation.
 lpmd cross-compiles with warnings as errors. Exynos GICv2 DEVELOPMENT builds.
-Native clock transitions and overhead have not yet been measured on-device.
+Live verification: `efficiency_auto=1`, manual `efficiency=0`, `lowpower=0`.
+Observed native mask transitions 0 -> 5 -> 7 -> 15 during boot, confirming
+independent activation rather than a global LPM toggle. SpringBoard, backboardd,
+cellulard and redwood-ims were running, and IMS registration was present. Native
+recovery behavior, sustained responsiveness and incremental overhead still need
+real-use testing. Installation files and the previous kernel slot are saved in
+`out/deploy-20261114-efficiency/`; `installed.json` records hashes. The previous
+slot can be restored through fastboot Log access by staging `kernel-before.bin`
+and issuing `fastboot oem write recovery 2000000`, then rebooting.
+
+All source changes are committed on local `main`. Remote push to
+`upstream/x1slte-efficiency` was attempted but failed because GitHub credentials
+were unavailable; the unrelated remote `main` was not overwritten.
