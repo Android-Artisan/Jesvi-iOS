@@ -5,11 +5,11 @@
 	<key>assetManifest</key>
 	<string>assetManifest.caml</string>
 	<key>documentHeight</key>
-	<real>812.0</real>
+	<real>812</real>
 	<key>documentResizesToView</key>
 	<false/>
 	<key>documentWidth</key>
-	<real>375.0</real>
+	<real>375</real>
 	<key>geometryFlipped</key>
 	<false/>
 	<key>loopEnd</key>
