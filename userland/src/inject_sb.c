@@ -790,6 +790,22 @@ lock_long_press(id self, SEL selector, id recognizer)
 static BOOL
 unlock(void)
 {
+	/* The bring-up/remote helper must never dismiss a passcode-protected UI.
+	 * Native authentication handles those unlocks. Unknown state fails closed. */
+	static int (*keybag_state)(CFDictionaryRef);
+	static bool keybag_looked_up;
+	if (!keybag_looked_up) {
+		keybag_state = dlsym(RTLD_DEFAULT, "MKBGetDeviceLockState");
+		if (!keybag_state) {
+			void *mkb = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_LAZY);
+			if (mkb) keybag_state = dlsym(mkb, "MKBGetDeviceLockState");
+		}
+		keybag_looked_up = true;
+	}
+	if (!keybag_state || keybag_state(NULL) != 3) {
+		say("redwood: unlock helper: passcode set or keybag state unavailable; native authentication required\n");
+		return YES;
+	}
 	Class cls = objc_getClass("SBLockScreenManager");
 	SEL shared = sel_registerName("sharedInstance"), locked = sel_registerName("isUILocked");
 	SEL unlock_ui = sel_registerName("unlockUIFromSource:withOptions:");
