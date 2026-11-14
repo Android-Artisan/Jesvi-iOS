@@ -142,7 +142,8 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
-/var/jb/usr/lib/libredwood-duet.dylib duetexpertd"}
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/var/jb/usr/lib/libredwood-metaloff.dylib PosterBoard AegirPoster mediaserverd WeatherPoster"}
 # libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
 # with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
