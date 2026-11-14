@@ -779,6 +779,12 @@ if [ -f root/bin/bluetool_stub ]; then
 fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
+# callservicesd runs from /var/jb/redwood, whatever wrote its job (mkjobs, or a stale one when the job section was
+# skipped on a machine without the extracted iOS root): checked here, right before the boot volume is made (B, 2026-11-14)
+if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
+	plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+	plutil -remove Program root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist 2>/dev/null || true
+fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root
 
