@@ -76,3 +76,11 @@
 - Existing binned rear black correction uses hand-measured gain/exposure tables; this and one fixed CCM can contribute to shadow casts. Do not substitute decoded Samsung GRAS or packed CCM9 coefficients blindly: mapping/calibration/composition remains unresolved.
 - Local evidence: `live-tuning-files.txt`, `rear-live.isp`, `front-live.isp`, `live-tuning-summary.json`, `quality-observation.log` in the private device artifact directory. Front values remain untouched.
 - Next controlled evidence: lit neutral/flat field plus covered-lens frames at identical rear exposure/gain, then separate additive black/row offsets from multiplicative colour shading. No new reboot required.
+
+## Latest photographs inspected (IMG_0205 / IMG_0206)
+
+- Copied the two latest JPEGs (21:35) read-only into the private device artifact directory and visually inspected both. IMG_0206 clearly shows dense coloured speckle plus a broad red-to-blue/green spatial cast; IMG_0205 shows a lit room/ceiling with pronounced coloured grain too. This is not only a completely dark test scene.
+- IMG_0206 is 4032x3024 JPEG output. Do NOT equate output dimensions with sensor readout: active rear capture is 2016x1512, and StillImage uses the software demosaic/rescale path. Enlarging a 3-MP stream to a 12-MP file does not restore sensor detail.
+- JPEG cannot establish whether the speckle is Bayer-phase/readout mismatch, channel-dependent offsets amplified by gain, or demosaic noise. No evidence yet supports calling this a Quad Bayer/four-in-one CFA mismatch. Need the current RAW buffer and header to distinguish them.
+- Armed existing rear-only `redwood-raw-dump` in the active mediaserverd tuning directory. It consumes one upcoming rear frame and overwrites the old private `redwood-raw.bin`; no colour/exposure/tuning values changed, no service restart or reboot. This is a nearby preview RAW, not guaranteed the exact JPEG exposure. Retrieve promptly after rear Camera is opened; record that limitation.
+- Optional JPEG band-stat script did not run because the default host Python lacks Pillow; visual inspections succeeded. No numerical JPEG statistics claimed.
