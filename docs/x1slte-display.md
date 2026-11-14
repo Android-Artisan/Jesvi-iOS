@@ -20,6 +20,55 @@ lists 48 NS, 60 HS, and 96 HS variants; these have not been implemented/tested h
 Do not equate the raw TE counter delta with pulse count: it contains packed bits.
 DECON completed-frame deltas are the refresh verification used above.
 
+## Display presets: what each mode sets (2026-11-14)
+
+Pick a preset with `fb_mode=` in `x1slte.cmdline`, then rebuild the boot image and flash it:
+`./x1slte.sh payload "$(cat x1slte.cmdline)" && ./x1slte.sh pack && CLAUDE_SESSION=NAME tools/x1slte-auto.sh --recovery`.
+One restart; everything below follows the mode automatically, with nothing set by hand.
+
+| `fb_mode` | Panel | iOS draws at | Scale | Touch scan |
+| --- | --- | --- | --- | --- |
+| 0 (none) | 1440x3200 @ 60 | 1125x2436 | 3x | normal 60 |
+| 1 | 1080x2400 @ 120 | 1125x2436 | 3x | HS120 |
+| 2 | 1080x2400 @ 60 | 1125x2436 | 3x | normal 60 |
+| 3 | 720x1600 @ 120 | 750x1624 | 2x | HS120 |
+| 4 | 720x1600 @ 60 | 750x1624 | 2x | normal 60 |
+
+iOS always lays out 375x812 points (the iPhone X); only the pixels per point change. 720x1600 at 3x drew 2.4 times
+the pixels the panel shows; at 2x it is 1.2 Mpx, about the panel's own count. UIKit has no fractional scale (720/375
+would be 1.92), so 2x is the nearest.
+
+What follows the mode, and where it lives:
+
+- **Render size** (kernel, `MiniIOMobileFramebuffer.cpp`): at `fb_mode` 3/4 with `fb_scaler=1`, the framebuffer is
+  750x1624 and `/chosen display-scale` + `/product artwork-scale-factor` are 2. `fbscale=N` overrides (`fbscale=3`
+  restores 3x at 720p). Full-screen surfaces stay contiguous from 1.2 Mpx (`MiniIOSurface.cpp`), so the scaler still
+  reads the frame directly.
+- **MobileGestalt scale** (init, `userland/src/init.c` `mg_scale_sync`): MobileGestalt takes main-screen-scale/pitch
+  from its built-in iPhone X table (3, 458 ppi), not from the device tree, and caches them. With a 750-pixel display
+  that is a 250-point screen (everything cramped). Init patches the cached scale and pitch in place at every boot to
+  match the kernel (2 -> 305 ppi, 3 -> 458). If iOS rebuilds the cache, the first boot after that comes up at 3x and
+  the next boot corrects it.
+- **Status bar** (`userland/src/statusbar_shift.h`, `sbs_vps`): UIKit chooses the status bar layout by pixel width and has
+  none for an iPhone X at 750, so it fell back to its red debug bar ("rdar:45025538"). Anything not "Split" becomes
+  `_UIStatusBarVisualProvider_Split1125`, the notch layout of the 3x screen. Log: `/var/mobile/Library/Logs/redwood-statusbar.log`.
+- **Touch scan rate** (kernel, `redwood_sec_ts.c` `ts_set_scan_rate`): the controller scans at 60 Hz unless told otherwise.
+  At 120 Hz modes the driver sends Samsung's set_scan_rate (0x94 `{1, 2}` = in step with vsync, HS120), like Android
+  does on a mode change. Before: about 60 finger reports a second at 120 Hz. After: several times that, and scrolling
+  went from 56-69 to about 94 frames a second. `touch_scan=N` sets the mode byte; 255 turns it off. The read-back says
+  `0 0` even when the command takes effect.
+- **iOS refresh**: the driver publishes the mode's refresh in `TimingElements` (`SyncRate` 7864320 = 120 in 16.16).
+  At boot that is in place before backboardd starts.
+
+Idle heat (same day, affects every mode): the USB mux worker (`redwood_usbmux.c`) polled every 1 ms and the haptics
+loop (`redwood_cs40l25.c`) every 4 ms, even idle: about 1,100 wake-ups a second of the big cores, which sat at 84-92 C
+and throttled. Both now sleep when quiet and are woken by a packet, link change or haptic sample. Big-core timer
+wake-ups fell about 8x; idle temperature after boot was 72-75 C.
+
+Open (2026-11-14): scrolling at 120 Hz still has about a quarter of frames at 60-Hz spacing and a few 35-57 ms
+hitches. CPU and GPU are not saturated (backboardd ~30 %, GPU 70-95 % idle while scrolling). The M5 cores averaged
+1.6 GHz (the cooling cap is 1794 MHz above 76 C; the frame floor is 1898 MHz).
+
 ## Live switch
 
 `rwsys kern.redwood.poke "fb.mode"` reads counters without changing mode.
