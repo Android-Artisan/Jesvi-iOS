@@ -111,7 +111,9 @@ static const struct {
 	{ D_CL0, "cl0 (A55)", "dvfs_cl0", 2002000, 1053000, 1456000, 2, 82, 90 },
 	{ D_CL1, "cl1 (A76)", "dvfs_cl1", 2504000, 1066000, 1794000, 1, 82, 90 },
 	{ D_CL2, "cl2 (M5)",  "dvfs_cl2", 2730000, 1196000, 1586000, 0, 78, 86 },  /* only with every core up (checked below); dvfs_cl2=0 leaves it */
-	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  377000,  572000,  3, 82, 90 },
+	/* g3d's second step 455, not 377 (B, 2026-11-14): one step of the GPU's own table down from 572, not two -- above
+	 * 90 C swipes went from 572 straight to 377 and the frames past 35 ms doubled (fb histograms); the trip is ~108 C */
+	{ D_G3D, "g3d",       "dvfs_g3d", 800000,  455000,  572000,  3, 82, 90 },
 	{ D_MIF, "mif",       "dvfs_mif", 2028000, 0,       0,       -1, 0, 0 },  /* (2730 = LPDDR5 top: heat for no UI gain, 18:50); dvfs_mif=0 leaves it */
 	{ D_INT, "int",       NULL,       0,       0,       0,       -1, 0, 0 },
 	{ D_DISP, "disp",     NULL,       0,       0,       0,       -1, 0, 0 },
