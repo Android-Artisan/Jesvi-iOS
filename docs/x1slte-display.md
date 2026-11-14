@@ -96,6 +96,9 @@ while the thread runs; set with `/var/jb/usr/sbin/sysctl -w`). Names: `tools/per
 Objective-C method of the given images to its offset from the shared cache base (the sampler's offsets); C functions
 are not in it, and an offset is credited to the nearest method below it, so read only plausible names.
 
+Debug output that cost frame time (GL stats from the render thread, backboardd's console os_log, wake accounting,
+progressd's crash loop) is off or gone: `docs/x1slte-debug.md` lists every switch and how to turn it back on.
+
 What other ports found (newer projects in `git/`): Scion (S9) the same icon-building hitches and the 30 fps caps;
 Ken-u MaliMetal (RK3588) 8-10 -> ~50 fps scrolling by keeping the render thread off slow cores, a fixed GPU clock and
 zero-copy scanout (all of which this port has); Redfin (Pixel 5) UI threads on big cores and vsync phase. None has

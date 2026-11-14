@@ -487,6 +487,11 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
     "optional mild software display warmth (0 or 1)");
 
+/* kern.redwood.wake_stats (osfmk/arm64/psci_smp.c): what wakes the cores, counted at every callout; off by default */
+extern uint32_t redwood_wake_stats;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, wake_stats, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_wake_stats, 0,
+    "count what wakes each core (the \"wakes core\" lines every 10 s); 0 off");
+
 /* kern.redwood.ksample (osfmk/arm64/user_exception_trace.c): sample a thread where it runs -- 1 SpringBoard's main
  * thread, 2 backboardd's render thread, N process N's main thread, 0 off; "SAMPLE" records in /m2m */
 extern int redwood_ksample_get(void);
