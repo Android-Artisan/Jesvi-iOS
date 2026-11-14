@@ -17,6 +17,8 @@ static BOOL active;
 static double deadline;
 static uint64_t usedNonce;
 static int displayToken;
+static int statusToken=-1;
+static void status(uint64_t value){if(statusToken>=0)notify_set_state(statusToken,value);}
 static int (*bagState)(CFDictionaryRef);
 static SEL transition;
 static void finish(void);
@@ -81,7 +83,7 @@ static void finish(void){
     touchObserver=nil;
     @try {if(cover&&nativeMethodMatches())((void(*)(id,SEL,BOOL))objc_msgSend)(cover,transition,NO);}
     @catch(NSException *exception){(void)exception;NSLog(@"RedwoodAODPreview: appearance restoration raised an exception");}
-    cover=nil;
+    cover=nil;status(4);
     NSLog(@"RedwoodAODPreview: normal appearance requested; preview ended");
 }
 static void begin(void){
@@ -91,7 +93,7 @@ static void begin(void){
         if(!candidate||!nativeMethodMatches()||!safeForPreview(candidate)||
             ![candidate isKindOfClass:UIViewController.class]||![(UIViewController*)candidate isViewLoaded]||
             !((UIViewController*)candidate).view.window){
-            NSLog(@"RedwoodAODPreview: declined; expected native method or locked/awake main page missing");return;
+            status(5);NSLog(@"RedwoodAODPreview: declined; expected native method or locked/awake main page missing");return;
         }
         cover=candidate;active=YES;deadline=NSProcessInfo.processInfo.systemUptime+12;
         /* This observation does not recognize a gesture or delay delivery. */
@@ -103,12 +105,13 @@ static void begin(void){
         }];
         [NSRunLoop.mainRunLoop addTimer:watchdog forMode:NSRunLoopCommonModes];
         ((void(*)(id,SEL,BOOL))objc_msgSend)(cover,transition,YES);
-        NSLog(@"RedwoodAODPreview: native appearance requested for 12 seconds; hardware AOD is not enabled");
-    } @catch(NSException *exception){(void)exception;finish();NSLog(@"RedwoodAODPreview: native appearance test aborted");}
+        status(3);NSLog(@"RedwoodAODPreview: native appearance requested for 12 seconds; hardware AOD is not enabled");
+    } @catch(NSException *exception){(void)exception;finish();status(6);NSLog(@"RedwoodAODPreview: native appearance test aborted");}
 }
 __attribute__((constructor))static void start(void){
     if(strcmp(getprogname(),"SpringBoard"))return;
     dispatch_async(dispatch_get_main_queue(),^{
+        notify_register_check(RW_AOD_STATUS,&statusToken);
         transition=sel_registerName("_updateAppearanceForAODTransitionToInactive:");
         void *mkb=dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag",RTLD_NOW);
         bagState=mkb?dlsym(mkb,"MKBGetDeviceLockState"):NULL;
@@ -118,6 +121,7 @@ __attribute__((constructor))static void start(void){
         static int beginToken,endToken;
         notify_register_dispatch(RW_AOD_BEGIN,&beginToken,dispatch_get_main_queue(),^(int token){(void)token;begin();});
         notify_register_dispatch(RW_AOD_END,&endToken,dispatch_get_main_queue(),^(int token){(void)token;finish();});
+        status(nativeMethodMatches()?1:2);
         NSLog(@"RedwoodAODPreview: loaded, idle; native appearance method %@",nativeMethodMatches()?@"verified":@"unavailable");
     });
 }

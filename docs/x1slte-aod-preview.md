@@ -97,3 +97,45 @@ tweak, keybag, passcode, image and phone-owner session alone.
 If the native method/ABI differs, start is refused. If UI restoration is wrong,
 stop and remove the test before trying another capability or backlight change.
 A successful preview must not be documented as working low-power AOD.
+
+## Live installation and timeout check (15 November, 03:07)
+
+The user explicitly transferred phone priority from A to codex-aod. The independent
+tweak and helper were installed, and SpringBoard refreshed (PIDs9 ->337 ->374);
+no kernel flash or hardware reboot command was issued. Direct notify status
+confirms the tweak loaded and found the pinned native appearance method.
+A manually armed begin returned `declined-lockscreen-state`: **the native AOD
+appearance transition has not yet been invoked or visually validated**. No
+capability, brightness, authentication or passcode-setting change was made.
+
+The user reported missing passcode prompting after the refresh and subsequently
+reported it returned. Before that report, read-only status showed native MKB1,
+raw AKS0x5, protected private saved bag present, softpasscode1/autounlock0 and the
+existing passcode-relock tweak/filter intact. Cause is not established. The AOD
+request had been refused; do not claim it ran or that a keybag repair was applied.
+
+User also requested screen timeout. The documented mode1 setting was applied,
+but their first12-second test stayed on. Source and copied installed-library
+disassembly confirm mode1 is the wake-only heuristic; any later input disables
+that branch until another detected wake. A read-only diagnostic of three globals
+in the installed backboardd library showed touch_mode0x101, button service present
+and input_idle274s; no process memory was written.
+Switched `/var/jb/etc/redwood-idle.conf` to documented `mode=2`, preserving the
+user's effective Auto-Lock60seconds. The first SSH write failed during USB loss;
+a subsequent write/read verified mode2. It reloads on the next detected wake.
+Current boot console logs show the10-second untouched-wake timeout firing, and
+independent display state/touch_mode0x1fe confirm display-off. After-interaction
+60-second behavior still needs user confirmation. Reference: x1slte-background.md.
+
+Uptime reset while USB was unavailable; this session issued no reboot command.
+Reset log reads PINRESET with PMIC WTSR. Those bits alone do not identify the
+cause. User was asked whether it was a manual restart. Keep AOD idle while
+resolving that observation. Fresh boot loads the idle test but does not arm it.
+
+The helper now has `status`, reporting only native keybag flags, display-awake
+and preview state. Native notify states distinguish ready, declined, active
+appearance-requested, normal-appearance-requested, unsupported and exception.
+These are operational diagnostics, never authentication or proof of rendering.
+Deployment uses explicit-file SCP because the phone's tar could not find gzip.
+Updates were staged separately and atomically renamed before refreshing so mapped
+executables were not overwritten in place.

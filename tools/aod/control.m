@@ -1,12 +1,38 @@
 /* Root command arms one short appearance test. Does not lock, wake or reboot. */
 #import <Foundation/Foundation.h>
+#import <IOKit/IOKitLib.h>
 #include <notify.h>
+#include <dlfcn.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "preview_token.h"
 int main(int argc,char **argv){@autoreleasepool{
-    if(getuid()!=0||argc!=2||(strcmp(argv[1],"begin")&&strcmp(argv[1],"end"))){fprintf(stderr,"usage (root): aod-preview begin|end\n");return 1;}
+    if(getuid()==0 && argc==2 && !strcmp(argv[1],"status")){
+        void *framework=dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag",RTLD_NOW);
+        int (*state)(CFDictionaryRef)=framework?dlsym(framework,"MKBGetDeviceLockState"):NULL;
+        printf("native_keybag_state=%d\n",state?state(NULL):-1);
+        io_service_t service=IOServiceGetMatchingService(kIOMainPortDefault,IOServiceMatching("AppleKeyStore"));
+        if(service){io_connect_t connection=0;
+            if(IOServiceOpen(service,mach_task_self(),0,&connection)==KERN_SUCCESS){
+                uint64_t bag=0,flags=0;uint32_t count=1;
+                if(IOConnectCallScalarMethod(connection,7,&bag,1,&flags,&count)==KERN_SUCCESS&&count==1)
+                    printf("raw_keybag_flags=%#llx\n",(unsigned long long)flags);
+                IOServiceClose(connection);
+            }IOObjectRelease(service);
+        }
+        int display=-1;uint64_t awake=0;
+        if(notify_register_check("com.apple.iokit.hid.displayStatus",&display)==NOTIFY_STATUS_OK){
+            if(notify_get_state(display,&awake)==NOTIFY_STATUS_OK)printf("display_awake=%llu\n",(unsigned long long)awake);
+            notify_cancel(display);
+        }
+        int token=-1;uint64_t value=0;
+        if(notify_register_check(RW_AOD_STATUS,&token)==NOTIFY_STATUS_OK){notify_get_state(token,&value);notify_cancel(token);}
+        const char *names[]={"not-loaded","ready","unsupported-native-method","appearance-requested","normal-appearance-requested","declined-lockscreen-state","exception"};
+        printf("preview_status=%s\n",value<sizeof(names)/sizeof(names[0])?names[value]:"unknown");
+        return state?0:1;
+    }
+    if(getuid()!=0||argc!=2||(strcmp(argv[1],"begin")&&strcmp(argv[1],"end"))){fprintf(stderr,"usage (root): aod-preview begin|end|status\n");return 1;}
     umask(0077);
     if(mkdir(RW_AOD_DIRECTORY,0755)&&errno!=EEXIST)return 1;
     struct stat st;if(lstat(RW_AOD_DIRECTORY,&st)||!S_ISDIR(st.st_mode)||st.st_uid||(st.st_mode&0022))return 1;
