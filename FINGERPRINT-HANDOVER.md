@@ -29,7 +29,7 @@ modified. Current branch HEAD contains the automatic storage-path fix and host
 view/diagnostic tools. Do not integrate only the last patch into a branch missing
 the earlier TEEGRIS/fingerprint infrastructure.
 
-The phone currently runs **`7e8181fe`, exchange-v2**, with the path restored
+The last verified phone kernel was **`7e8181fe`, exchange-v2**, with the path restored
 manually during this session. It does not yet contain the automatic kernel fix.
 The installed artifact is `out/fingerprint/mach.x1slte-exchange` (15,195,608 B),
 SHA256 `1286c7889ccd348cd0dddc0e3aa9025efa73b5a42eccbeb7d07c04d15ce25432`.
@@ -127,9 +127,9 @@ The capture contains these record types/counts:
 `4:8`, `5:43`, `6:21`, `7:8`, `10:1`, `11:8`, `13:5`.
 All eight type-7 records: opaque metrics `b3=8,b4=1,b5=255`.
 All eight type-11 outcomes: `matched_flag=0, metric_cb=2, aed=0`.
-**Those metric meanings are not yet decoded. Do not call metric_cb=2 a known
-failure reason.** Next trace the writers of those metrics and the actual matcher
-inputs before asking for further presses or assuming HAT/SID is the cause.
+The subsequent offline audit below explains b3 and b5. **Do not call
+metric_cb=2 a known failure reason.** Trace the remaining matcher inputs before
+asking for further presses or assuming HAT/SID is the cause.
 
 Useful TA functions (Ghidra image base +0x100000):
 
@@ -147,6 +147,29 @@ Ghidra projects: `/Users/jesvi/ios-port-research/tools/re/proj/{finge,bauth,tzc}
 Existing/new decompiles: `tools/re/out/`, `tools/re/audit-out/` at workspace root.
 Use `tools/fingerprint/reverse/DecompileOutlined.java` with `-readOnly` for the
 split functions; it changes the analysis model temporarily, not signed firmware.
+
+### Offline comparator audit (15 November 2026)
+
+Reconstructed `qfs_verify_to_db_` (`0x1883b0..0x188bdc`, including outlined
+stub `0x10fbc4`) writes metric `b3=8` only after collecting an eligible template
+and receiving return code zero from `qfs_em_match` (`0x259768`). All eight saved
+verify records have that value. These attempts therefore reached the actual
+comparison engine; they did not terminate at an early empty-template check.
+This does not prove that every template or image input was correct.
+
+Metric `b5=255` is the low byte of the engine's returned template index (-1).
+Metrics `b6` and `b7` come from the result doubles at offsets `+0x38` and `+0x40`.
+The saved pairs are `(1560,2300)`, `(1252,2300)`, `(1070,2300)`, `(1390,2300)`,
+`(1012,2300)`, `(1404,2300)`, `(985,2300)`, `(1364,2300)`. The second value is
+populated from global unsigned short `0x5003ac`; the first comes from the core
+engine's result field. Their precise acceptance semantics still need tracing;
+keep the decoder names opaque and do not change thresholds. `metric_cb=2` is
+also not an established failure reason.
+
+Next inspect core matcher `0x258740`, its backend call `0x26d1e8`, the writers of
+`0x5003ac`, and stock capture setup. No new phone test or kernel flash is required
+to complete that analysis. HAT/SID integration remains necessary for legitimate
+native authentication, but is not established as the cause of these no-matches.
 
 ## Do not repeat the earlier assumptions
 

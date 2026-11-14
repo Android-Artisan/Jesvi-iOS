@@ -695,6 +695,28 @@ Record headers are `<u8 0x28, u8 type, u16 LE size, ...>`; schema comes from
 `0x15d124`, `0x15e9f0`, metric offsets from `0x15d644`. The private capture parses
 exactly to 4,984 bytes. Use `tools/fingerprint/qdbl.py` for an allowlisted summary.
 The eight type-7 records all show opaque metrics `b3=8,b4=1,b5=255`; the eight
-type-11 records show `matched_flag=0, metric_cb=2, aed=0`. These metric meanings
-are **not yet decoded**; do not label metric_cb=2 as a known failure reason or
-change thresholds based on it. Trace their writers next, before more touch tests.
+type-11 records show `matched_flag=0, metric_cb=2, aed=0`. The subsequent comparator audit below explains b3 and b5. Do not label
+metric_cb=2 as a known failure reason or change thresholds based on these values.
+
+### Offline comparator audit (15 November 2026)
+
+Reconstructed `qfs_verify_to_db_` (`0x1883b0..0x188bdc`, including outlined
+stub `0x10fbc4`) writes metric `b3=8` only after collecting an eligible template
+and receiving return code zero from `qfs_em_match` (`0x259768`). All eight saved
+verify records have that value. These attempts therefore reached the actual
+comparison engine; they did not terminate at an early empty-template check.
+This does not prove that every template or image input was correct.
+
+Metric `b5=255` is the low byte of the engine's returned template index (-1).
+Metrics `b6` and `b7` come from the result doubles at offsets `+0x38` and `+0x40`.
+The saved pairs are `(1560,2300)`, `(1252,2300)`, `(1070,2300)`, `(1390,2300)`,
+`(1012,2300)`, `(1404,2300)`, `(985,2300)`, `(1364,2300)`. The second value is
+populated from global unsigned short `0x5003ac`; the first comes from the core
+engine's result field. Their precise acceptance semantics still need tracing;
+keep the decoder names opaque and do not change thresholds. `metric_cb=2` is
+also not an established failure reason.
+
+Next inspect core matcher `0x258740`, its backend call `0x26d1e8`, the writers of
+`0x5003ac`, and stock capture setup. No new phone test or kernel flash is required
+to complete that analysis. HAT/SID integration remains necessary for legitimate
+native authentication, but is not established as the cause of these no-matches.

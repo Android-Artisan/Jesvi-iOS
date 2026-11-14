@@ -29,7 +29,9 @@ def summarize(blob):
         counts[kind] += 1
         if kind == 7:
             verify.append(dict(metric_b3=record[0x12] >> 4,
-                               metric_b4=record[0x12] & 15, metric_b5=record[0x13]))
+                               metric_b4=record[0x12] & 15, metric_b5=record[0x13],
+                               metric_b6=struct.unpack_from("<H", record, 0x14)[0],
+                               metric_b7=struct.unpack_from("<H", record, 0x16)[0]))
         elif kind == 11:
             outcomes.append(dict(matched_flag=record[0x12] >> 4,
                                  metric_cb=record[0x12] & 15, aed=record[0x13] & 1))
