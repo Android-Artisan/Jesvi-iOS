@@ -108,6 +108,37 @@ replace_virtual(const char *what, uintptr_t slot, uintptr_t expected, void *repl
 	return original;
 }
 
+/*
+ * 120 Hz in apps (A, 2026-11-14; boot-arg app_fps=0 leaves Apple's). QuartzCore holds an app on a phone to 60 frames a
+ * second unless its Info.plist has CADisableMinimumFrameDurationOnPhone (the ProMotion opt-in) -- so Settings' scrolling
+ * ran at 60 on the 120 Hz panel while SpringBoard ran at 120. The main bundle's info dictionary is a mutable one here
+ * (__NSDictionaryM, checked on the phone for Preferences and MobileSafari): the key is set in it before QuartzCore asks.
+ */
+static void
+app_fps_unlock(void)
+{
+	char arguments[1024] = "";
+	size_t size = sizeof(arguments) - 1;
+	const char *at;
+	CFBundleRef bundle;
+	CFDictionaryRef info;
+	CFStringRef key = CFSTR("CADisableMinimumFrameDurationOnPhone");
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && (at = strstr(arguments, "app_fps=0")) != NULL &&
+	    (at == arguments || at[-1] == ' ')) {
+		return;
+	}
+	if ((bundle = CFBundleGetMainBundle()) == NULL || (info = CFBundleGetInfoDictionary(bundle)) == NULL ||
+	    CFDictionaryGetValue(info, key) != NULL) {
+		return;
+	}
+	if (strcmp(object_getClassName((id)info), "__NSDictionaryM") != 0) {
+		say("redwood: %s: info dictionary is a %s: frame rate left at 60\n", getprogname(), object_getClassName((id)info));
+		return;
+	}
+	CFDictionarySetValue((CFMutableDictionaryRef)info, key, kCFBooleanTrue);
+}
+
 /* ---- backboardd: CA::WindowServer ------------------------------------------------------------ */
 
 #define VT_APPLE_CLCD_DISPLAY   0x1d5b44520UL   /* vtable for CA::WindowServer::AppleCLCDDisplay */
@@ -1808,6 +1839,22 @@ redwood_init(void)
 		 * (CADeviceUseVBL()); on the iPhone X it runs a timer of its own instead (CADisplayTimer),
 		 * whose phase it would set from the frame timings of a display driver this one is not.
 		 */
+		/*
+		 * CoreAnimation's frame clock at the panel's rate (A, 2026-11-14). The driver publishes 120 Hz in TimingElements,
+		 * but the window server's own clock stayed at 60 (CADisplay.refreshRate 0.016667 asked from a process, with the
+		 * panel scanning 120): it went to 120 only with CA_HEARTBEAT_RATE=120 (docs/x1slte-display.md, the FHD+/120
+		 * retest). fb_mode 1 and 3 run the panel at 120; caenv=CA_HEARTBEAT_RATE=N (below) overrides.
+		 */
+		if (getenv("CA_HEARTBEAT_RATE") == NULL && sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+			const char *mode = strstr(arguments, "fb_mode=");
+
+			if (mode != NULL && (mode == arguments || mode[-1] == ' ') && (mode[8] == '1' || mode[8] == '3') &&
+			    (mode[9] == ' ' || mode[9] == 0)) {
+				setenv("CA_HEARTBEAT_RATE", "120", 1);
+				say("redwood: CoreAnimation's frame clock at 120 a second (CA_HEARTBEAT_RATE, panel fb_mode %c)\n", mode[8]);
+			}
+		}
+		size = sizeof(arguments) - 1;
 		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && strstr(arguments, "ca_vbl=1") != NULL) {
 			setenv("CA_FORCE_TIMER", "1", 1);
 			say("redwood: ca_vbl=1: CoreAnimation is to take the display driver's refresh notifications\n");
@@ -1852,6 +1899,7 @@ redwood_init(void)
 		redwood_location_fixes();
 	} else {
 		redwood_coremotion_fixes();     /* every app (INJECT names their folders): CoreMotion without the SPU */
+		app_fps_unlock();               /* 120 Hz: the ProMotion opt-in QuartzCore looks for */
 		statusbar_shift_start();        /* the status bar's left side (src/statusbar_shift.h) */
 	}
 }

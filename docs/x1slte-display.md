@@ -65,9 +65,49 @@ loop (`redwood_cs40l25.c`) every 4 ms, even idle: about 1,100 wake-ups a second 
 and throttled. Both now sleep when quiet and are woken by a packet, link change or haptic sample. Big-core timer
 wake-ups fell about 8x; idle temperature after boot was 72-75 C.
 
-Open (2026-11-14): scrolling at 120 Hz still has about a quarter of frames at 60-Hz spacing and a few 35-57 ms
-hitches. CPU and GPU are not saturated (backboardd ~30 %, GPU 70-95 % idle while scrolling). The M5 cores averaged
-1.6 GHz (the cooling cap is 1794 MHz above 76 C; the frame floor is 1898 MHz).
+## Smoothness findings (2026-11-14)
+
+How the screen is drawn: backboardd's CoreAnimation uses its **OpenGL ES renderer** (CA::OGL::GLESContext) on our
+Mesa/Panfrost (`userland/src/inject.c`, `eagl.c`), not Metal. Metal (`metal_props`) is off system-wide; only
+PhotosPosterProvider, GradientPosterExtension and EmojiPosterExtension get it (metalon). Trying CoreAnimation on
+Metal in backboardd live (metalon for backboardd) crashed it at start (stack overflow, pc 0x205aa4a8c): reverted.
+
+What was found and done, in order:
+
+| Finding | Evidence | Change |
+| --- | --- | --- |
+| Touch reported ~60 times a second at 120 Hz | 255 events in 4.1 s of finger-down | `sec_ts` 0x94 `{1,2}` (HS120) in 120 Hz modes; `touch_scan=` |
+| Big cores woken ~1,000/s at idle, 84-92 C | `wakes core` lines: `mux_worker` 880/s, `cs_thread` 250/s | both sleep when quiet |
+| SpringBoard caps some animations at 20-30 fps | Scion e3c8ac7: page dots / search pill crossfade after each slide | ranges under 60 raised to 60; `sb_fps=0` |
+| **iOS believed the panel was 60 Hz** | `CADisplay.refreshRate` 0.016667 from a process while DECON scanned 120 | backboardd gets `CA_HEARTBEAT_RATE=120` in fb_mode 1/3 (inject.c) |
+| Apps held to 60 fps on a phone | QuartzCore's `CADisableMinimumFrameDurationOnPhone` (ProMotion opt-in) | set in each app's main-bundle info dictionary at start; `app_fps=0` |
+| Swipe hitches = SpringBoard building icon views | sampler: ~19 % `_updateVisibleIconViews`, ~15 % `_addIconViewsForIcons`, ~12 % icon set-up, ~14 % labels | `sb_keepicons=1` (all icons kept built) is **experimental, off**: with it on the home screen came up empty |
+
+The panel is **not LTPO**: S6E3HAB hubble1 runs fixed modes (120 HS or 60 NS/HS at 1080x2400 and 720x1600), with no
+variable refresh down to 10/1 Hz as on ProMotion iPhones. What iOS must be given is therefore a fixed 120 Hz display:
+one mode in `TimingElements` at 120 (no range), CoreAnimation's clock at 120 (`CA_HEARTBEAT_RATE`), and apps allowed to
+ask for up to 120 (the ProMotion opt-in only lifts QuartzCore's 60 fps app cap; it advertises no variable refresh).
+Apps asking for less get an even divisor (60/40/30) on the same 120 Hz scan. Nothing should try to switch the panel's
+refresh from iOS: a mode change is a boot-time `fb_mode` (the live `fb.mode` poke is one-way, see below). A still
+screen costs no frames (no swaps, the scaler keeps showing the last one); the idle saving of LTPO is not available.
+
+Tools: `kern.redwood.ksample` (1 SpringBoard main, 2 backboardd render, N pid; `SAMPL` records in `/m2m`, every 2 ms
+while the thread runs; set with `/var/jb/usr/sbin/sysctl -w`). Names: `tools/perf/objcmap.m` on the phone maps every
+Objective-C method of the given images to its offset from the shared cache base (the sampler's offsets); C functions
+are not in it, and an offset is credited to the nearest method below it, so read only plausible names.
+
+What other ports found (newer projects in `git/`): Scion (S9) the same icon-building hitches and the 30 fps caps;
+Ken-u MaliMetal (RK3588) 8-10 -> ~50 fps scrolling by keeping the render thread off slow cores, a fixed GPU clock and
+zero-copy scanout (all of which this port has); Redfin (Pixel 5) UI threads on big cores and vsync phase. None has
+removed the per-page icon building cost yet.
+
+Heat: 98 C reached during boot right after several reboots in a row (the phone dropped to Log access, no panic: a
+thermal reset). At the second throttling step every cluster is already at its lowest rung, so no stricter step helps;
+less work per frame does.
+
+Open: the icon-building cost per page; the per-frame CPU of CoreAnimation's GL path; whether the wallpaper parallax
+(redraws the layered poster while the phone moves) costs frames while scrolling (`HomePosterMotionEnabled` in
+`com.redwood.motion` turns it off live).
 
 ## Live switch
 

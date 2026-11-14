@@ -217,6 +217,56 @@ animation_set_range(id self, SEL selector, sb_frame_rate_range range, unsigned r
 	original_animation_set_range(self, selector, sb_fps_raise(range), reason);
 }
 
+/*
+ * Icons kept built (A, 2026-11-14; boot-arg sb_keepicons=0 leaves Apple's). The sampler (kern.redwood.ksample=1) on
+ * SpringBoard's main thread during home-page swipes: ~19 % in -[SBIconListView _updateVisibleIconViewsWith...],
+ * ~15 % -[SBIconListView _addIconViewsForIcons:metrics:], ~12 % configureIconView / -[SBIconView setIcon:], labels and
+ * their legibility images ~14 %: each page's icon views made as it slides in and dropped when it leaves -- on these
+ * cores 40-90 ms turns of the main thread, the hitches (Scion found the same). Every page is told its visible range is
+ * SpringBoard's own "all icons visible" range, so the views are made once and a swipe only moves them.
+ */
+typedef struct {
+	unsigned long location, length;
+} sb_range;
+static void (*original_set_visible)(id, SEL, sb_range, unsigned long, sb_range, unsigned long);
+static unsigned sb_keepicons_on = 0;   /* off: with it on, the home screen came up empty (2026-11-14); sb_keepicons=1 */
+
+static void
+sb_set_visible(id self, SEL cmd, sb_range columns, unsigned long predicted_column, sb_range rows, unsigned long predicted_row)
+{
+	static SEL all_sel;
+
+	if (all_sel == NULL) {
+		all_sel = sel_registerName("_allIconsVisibleColumnOrRowRange");
+	}
+	if (sb_keepicons_on && class_respondsToSelector(object_getClass(self), all_sel)) {
+		sb_range all = ((sb_range (*)(id, SEL))objc_msgSend)(self, all_sel);
+
+		columns = all;
+		rows = all;
+	}
+	original_set_visible(self, cmd, columns, predicted_column, rows, predicted_row);
+}
+
+static void
+sb_keepicons_hook(void)
+{
+	char args[1024] = "";
+	size_t size = sizeof(args) - 1;
+	const char *arg;
+
+	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || (arg = strstr(args, "sb_keepicons=1")) == NULL ||
+	    (arg != args && arg[-1] != ' ')) {
+		return;                 /* Apple's: icons made as pages come into view */
+	}
+	sb_keepicons_on = 1;
+	original_set_visible = (void (*)(id, SEL, sb_range, unsigned long, sb_range, unsigned long))replace_method_by_name(
+	    "SBIconListView", "setVisibleColumnRange:predictedVisibleColumn:visibleRowRange:predictedVisibleRow:",
+	    (IMP)sb_set_visible);
+	say("redwood: home-screen icons kept built on every page (sb_keepicons=1, experimental): %s\n",
+	    original_set_visible ? "yes" : "NO");
+}
+
 static void
 sb_fps_hooks(void)
 {
@@ -1630,6 +1680,7 @@ redwood_springboard_init(void)
 	wallpaper_motion_start();
 	cell_start();
 	sb_fps_hooks();
+	sb_keepicons_hook();
 	statusbar_shift_start();
 	load_tweaks();
 	/*
