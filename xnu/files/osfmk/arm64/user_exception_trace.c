@@ -449,7 +449,7 @@ STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, ustacks_init);
  * addresses (mmu_uvtop(): no fault can be taken in an interrupt), so what is printed is where it was at that moment.
  * Only while the thread runs: a thread that waits costs nothing and prints nothing.
  *   1  SpringBoard's main thread
- *   2  backboardd's render thread (the thread whose name has "render" in it)
+ *   2  backboardd's drawing thread (com.apple.coreanimation.display.primary)
  *   N  (above 2) the main thread of process N
  * One line a sample, "tl: k US CPU U|K PC LR RET...": microseconds of mach_absolute_time (as the other "tl:" lines),
  * the processor, whether the thread was in user space (U) or in the kernel (K: the PC is then where it came in), then
@@ -551,7 +551,9 @@ ksample_find(uint32_t mode, uint32_t *slide)
 				}
 				bsd_getthreadname(get_bsdthread_info(thread), tname);
 				tname[63] = 0;
-				if (strnstr(tname, "render", sizeof(tname)) == NULL) {
+				/* the thread that draws the frames is CoreAnimation's "com.apple.coreanimation.display.primary"
+				 * (163 s of CPU against 16 s for "...render-server", stackshot 2026-11-14): that one first */
+				if (strnstr(tname, "display.primary", sizeof(tname)) == NULL) {
 					continue;
 				}
 			}
