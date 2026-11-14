@@ -156,6 +156,7 @@ def main():
             if not (ROOT / 'userland' / name).is_file():
                 raise ValueError(f'image builder produced no {name}')
         run('./build.sh', 'identity', env=env)
+        run('python3', 'tools/release/loader_font.py', env=env)
         run('bash', 'x1slte.sh', 'embed', env=env)
         run('bash', 'x1slte.sh', 'payload', (ROOT / 'x1slte.cmdline').read_text().strip(), env=env)
         run('bash', 'x1slte.sh', 'pack', env=env)
