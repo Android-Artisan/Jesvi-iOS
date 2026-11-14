@@ -3267,6 +3267,7 @@ extern void redwood_camera_s20_set_rear(bool rear);
 extern bool redwood_camera_s20_rear_is_warm(void);
 extern void redwood_camera_s20_rear_cool(void);
 extern bool redwood_camera_s20_rear_full(void);
+extern void redwood_camera_s20_select_rear_mode(int full);
 static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
 #define GAIN_UNITY              (s20_real ? 0x20 : hw->gain_unity)
@@ -4206,9 +4207,12 @@ ios_select(unsigned index, uint32_t mode_n)
 	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
 	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
 	 */
-	if (s20_real && fake && mode_n <= 2) {
+	if (s20_real && fake && mode_n <= 4) {
 		/* mode 2: the rear main (S5K2LD) instead of the front, asked for by libredwood-media's Back Camera */
-		s20_rear_now = mode_n == 2;
+		s20_rear_now = mode_n >= 2;
+        /* S20 commands 3/4 select native full/binned explicitly. Mode2 retains
+         * the boot profile. This runs only after the previous stream stops. */
+        if (s20_rear_now) redwood_camera_s20_select_rear_mode(mode_n == 3 ? 1 : mode_n == 4 ? 0 : -1);
 		if (!s20_rear_now) {
 			s20_full = mode_n == 0;
 			redwood_camera_s20_set_full(s20_full);

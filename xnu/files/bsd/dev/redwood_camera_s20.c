@@ -188,10 +188,15 @@ void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
  * Binned, the picture was 1008x756 colour cells blown up to the 1504x1128 preview: soft, and every frame went
  * through libredwood-media's slow "magnified" path (11-21 fps, 2026-11-12). cam_s20_rear_full=0: the binned mode.
  */
+/* Selected only by ios_select between sessions; never changed by a live sysctl.
+ * -1 retains the boot profile; 0/1 explicitly select binned/full rear. */
+static int cam_s20_rear_mode_override = -1;
+void redwood_camera_s20_select_rear_mode(int full) { cam_s20_rear_mode_override = full; }
 bool
 redwood_camera_s20_rear_full(void)
 {
 	static int full = -1;
+	if (cam_s20_rear_mode_override >= 0) return cam_s20_rear_mode_override != 0;
 
 	if (full < 0) {
 		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
