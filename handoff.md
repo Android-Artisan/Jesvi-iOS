@@ -38,3 +38,11 @@
 - Backup SHA-256: `58f5543786af33e8480a777a1a61679e42f99afea78a335d75233ec0950e6f58`. It matches the previously installed exchange-v2 slot byte-for-byte.
 - Candidate hashes/sizes: `build/camera-device-20261114/candidate.json`; backup verification: `backup.json`. Private binaries remain outside git.
 - Next: write ONLY recovery offset 0x2000000; verify loader readback plus independent full-slot readback; commit checkpoint, then use authorized test reboot.
+
+## Checkpoint: kernel written and independently verified
+
+- Wrote only recovery kernel offset 0x2000000. Loader reported written/read-back verified.
+- Independently read/downloaded the whole 16-MiB slot afterward and compared byte-for-byte with the padded candidate: identical.
+- Installed slot SHA-256: `dcc5b9e7e87ae854927fdddf79497ef7a90923bf95486f1f9014b1517ae233f8`.
+- Exact rollback slot is preserved. Loader/profile/root/system/userdata were not rewritten.
+- Next: execute the user-authorized test reboot, wait for SSH, verify protected/locked keybag before user unlock, fingerprint exchange-v2 status and camera device.
