@@ -21,6 +21,25 @@ fp_wire_u32(const uint8_t *p)
  return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
      (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
+/* Full research requests are supplied by a privileged local tool, never IPC auth. */
+static inline int
+fp_wire_request_valid(const uint8_t *p, size_t size)
+{
+ uint32_t cmd;
+ if (p == NULL || size != FP_WIRE_SIZE) return 0;
+ cmd = fp_wire_u32(p);
+ if (cmd != fp_wire_u32(p + 4)) return 0;
+ switch (cmd) {
+ case 1: return fp_wire_u32(p + 0xa010) <= 0xa000;
+ case 2: case 3: case 4: case 6: case 7: case 9: case 10: return 1;
+ case 5: return fp_wire_u32(p + 0x64110) <= 0x64000 &&
+     fp_wire_u32(p + 0x64514) <= 0x400;
+ case 13: return fp_wire_u32(p + 0x451) <= 0x400;
+ case 12: return fp_wire_u32(p + 0xfa110) <= 0xfa000 &&
+     fp_wire_u32(p + 0x271014) <= 0xfa000;
+ default: return 0;
+ }
+}
 /* TA bioIndexList is a bounded colon-terminated list, e.g. "1:2:". */
 static inline uint32_t
 fp_wire_id_mask(const uint8_t *ids, uint32_t len)

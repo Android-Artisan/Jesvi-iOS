@@ -11,6 +11,26 @@ static enum fp_wire_result parse(void) {
  return fp_wire_identify(packet,sizeof(packet),0,1);
 }
 int main(void) {
+ assert(!fp_wire_request_valid(NULL,0));
+ reset();put(0,1);put(4,1);
+ assert(fp_wire_request_valid(packet,sizeof(packet)));
+ assert(!fp_wire_request_valid(packet,sizeof(packet)-1));
+ put(4,2);assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(4,1);put(0xa010,0xa001);assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ reset();put(0,5);put(4,5);put(0x64110,0x64001);
+ assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(0x64110,0x64000);put(0x64514,0x401);
+ assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(0x64514,0x400);assert(fp_wire_request_valid(packet,sizeof(packet)));
+ reset();put(0,12);put(4,12);put(0xfa110,0xfa001);
+ assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(0xfa110,0xfa000);put(0x271014,0xfa001);
+ assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(0x271014,0xfa000);assert(fp_wire_request_valid(packet,sizeof(packet)));
+ reset();put(0,8);put(4,8);assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ reset();put(0,13);put(4,13);put(0x451,0x401);
+ assert(!fp_wire_request_valid(packet,sizeof(packet)));
+ put(0x451,0x400);assert(fp_wire_request_valid(packet,sizeof(packet)));
  assert(fp_wire_id_mask(NULL,2)==0);
  assert(fp_wire_id_mask((const uint8_t *)"1:",2)==1);
  assert(fp_wire_id_mask((const uint8_t *)"1:4:",4)==9);

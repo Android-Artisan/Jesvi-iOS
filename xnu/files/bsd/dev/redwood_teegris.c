@@ -2484,6 +2484,8 @@ static uint8_t *fp_buf;
 static int fp_shm_id;
 static uint32_t fp_handle;
 static char fp_cmd_text[300];
+LCK_MTX_DECLARE(fp_command_lock, &tee_lck_grp);
+static bool fp_command_active; /* protected by fp_command_lock */
 
 static int
 fp_ensure(void)
@@ -3170,9 +3172,160 @@ fp_cbge(void)
 	tee_say("%s\n", tee_last);
 }
 
+/* Structured research exchange. Fixed paths, root-owned private files only.
+ * This is a manually armed FINGE client, not an authenticator or native unlock API.
+ * Keeping packing in the host tool avoids a reboot for every protocol experiment.
+ */
+#define FP_RESEARCH_DIR "/var/root/fp-research"
+#define FP_REQUEST_PATH FP_RESEARCH_DIR "/request.bin"
+#define FP_RESPONSE_PATH FP_RESEARCH_DIR "/reply.bin"
+
+static int
+fp_private_attr(vnode_t vp, enum vtype type, mode_t mode, off_t *size)
+{
+ struct vnode_attr va;
+ int err;
+
+ if (vnode_vtype(vp) != type) {
+  return EINVAL;
+ }
+ VATTR_INIT(&va);
+ VATTR_WANTED(&va, va_uid);
+ VATTR_WANTED(&va, va_mode);
+ VATTR_WANTED(&va, va_nlink);
+ VATTR_WANTED(&va, va_data_size);
+ err = vnode_getattr(vp, &va, vfs_context_kernel());
+ if (err != 0) {
+  return err;
+ }
+ if (!VATTR_IS_SUPPORTED(&va, va_uid) || !VATTR_IS_SUPPORTED(&va, va_mode) ||
+     !VATTR_IS_SUPPORTED(&va, va_nlink) || !VATTR_IS_SUPPORTED(&va, va_data_size) ||
+     va.va_uid != 0 || (va.va_mode & 07777) != mode || (type == VREG && va.va_nlink != 1)) {
+  return EPERM;
+ }
+ if (size != NULL) {
+  *size = va.va_data_size;
+ }
+ return 0;
+}
+
+static int
+fp_private_parent(void)
+{
+ vnode_t vp = NULLVP;
+ vfs_context_t ctx = vfs_context_kernel();
+ int err = vnode_open(FP_RESEARCH_DIR, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+
+ if (err == 0) {
+  err = fp_private_attr(vp, VDIR, 0700, NULL);
+  vnode_close(vp, FREAD, ctx);
+ }
+ return err;
+}
+
+static int
+fp_exchange_read(uint8_t **request)
+{
+ vnode_t vp = NULLVP;
+ vfs_context_t ctx = vfs_context_kernel();
+ off_t size = 0;
+ int resid = 0, err;
+
+ *request = NULL;
+ err = vnode_open(FP_REQUEST_PATH, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+ if (err != 0) {
+  return err;
+ }
+ err = fp_private_attr(vp, VREG, 0600, &size);
+ if (err == 0 && size != FP_SHM_SIZE) {
+  err = EINVAL;
+ }
+ if (err == 0 && (*request = tz_alloc(FP_SHM_SIZE)) == NULL) {
+  err = ENOMEM;
+ }
+ if (err == 0) {
+  err = vn_rdwr(UIO_READ, vp, (caddr_t)*request, FP_SHM_SIZE, 0, UIO_SYSSPACE,
+      IO_NODELOCKED, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
+  if (err == 0 && (resid != 0 || !fp_wire_request_valid(*request, FP_SHM_SIZE))) {
+   err = EINVAL;
+  }
+ }
+ vnode_close(vp, FREAD, ctx);
+ if (err != 0 && *request != NULL) {
+  bzero(*request, FP_SHM_SIZE);
+  tz_free(*request, FP_SHM_SIZE);
+  *request = NULL;
+ }
+ return err;
+}
+
+static int
+fp_exchange_write(uint32_t result, uint32_t origin, uint32_t cmd)
+{
+ vnode_t vp = NULLVP;
+ vfs_context_t ctx = vfs_context_kernel();
+ struct vnode_attr va;
+ uint32_t header[5] = { 0x31525046, result, origin, cmd, FP_SHM_SIZE }; /* FPR1 */
+ int resid = 0, err;
+
+ err = vnode_open(FP_RESPONSE_PATH, FWRITE | O_CREAT | O_NOFOLLOW, 0600, 0, &vp, ctx);
+ if (err != 0) {
+  return err;
+ }
+ err = fp_private_attr(vp, VREG, 0600, NULL);
+ if (err == 0) {
+  VATTR_INIT(&va);
+  VATTR_SET(&va, va_data_size, 0);
+  err = vnode_setattr(vp, &va, ctx);
+ }
+ if (err == 0) {
+  err = vn_rdwr(UIO_WRITE, vp, (caddr_t)header, sizeof(header), 0, UIO_SYSSPACE,
+      IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
+  if (err == 0 && resid != 0) {
+   err = EIO;
+  }
+ }
+ if (err == 0) {
+  err = vn_rdwr(UIO_WRITE, vp, (caddr_t)fp_buf, FP_SHM_SIZE, sizeof(header), UIO_SYSSPACE,
+      IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
+  if (err == 0 && resid != 0) {
+   err = EIO;
+  }
+ }
+ vnode_close(vp, FWRITE, ctx);
+ return err;
+}
+
+static void
+fp_exchange(void)
+{
+ uint8_t *request = NULL;
+ uint32_t result = 0, origin = 0, cmd = 0;
+ int err = fp_private_parent();
+
+ if (err == 0) {
+  err = fp_exchange_read(&request);
+ }
+ if (err == 0) {
+  cmd = fp_wire_u32(request);
+  lck_mtx_lock(&tee_client_lock);
+  memcpy(fp_buf, request, FP_SHM_SIZE);
+  result = tee_invoke_shm(&fp_ses, cmd, fp_shm_id, FP_SHM_SIZE, &origin);
+  lck_mtx_unlock(&tee_client_lock);
+  err = fp_exchange_write(result, origin, cmd);
+  bzero(fp_buf, FP_SHM_SIZE);
+ }
+ if (request != NULL) {
+  bzero(request, FP_SHM_SIZE);
+  tz_free(request, FP_SHM_SIZE);
+ }
+ snprintf(tee_last, sizeof(tee_last), "fp exchange: done rc %d transport %#x origin %u cmd %u", err, result, origin, cmd);
+ tee_say("%s\n", tee_last);
+}
+
 /* "N [HEX]": command N with data HEX; the reply's head into tee_last and the log */
 static void
-fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
+fp_cmd_execute(void)
 {
 	uint32_t n = 0, len = 0, result, origin = 0, rlen, status, handle, error;
 	const char *p = fp_cmd_text;
@@ -3184,6 +3337,10 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 	while (*p == ' ') {
 		p++;
+	}
+	if (strcmp(p, "exchange") == 0) {
+		fp_exchange();
+		return;
 	}
 	if (strncmp(p, "power", 5) == 0) {
 		fp_power();
@@ -3319,6 +3476,15 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	tee_say("%s\n", tee_last);
 }
 
+static void
+fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
+{
+ fp_cmd_execute();
+ lck_mtx_lock(&fp_command_lock);
+ fp_command_active = false;
+ lck_mtx_unlock(&fp_command_lock);
+}
+
 static int
 tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
 {
@@ -3326,12 +3492,14 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 	int error, changed = 0;
 	thread_t t;
 
+	lck_mtx_lock(&fp_command_lock);
 	snprintf(out, sizeof(out), "%s\nsmcs %llu schedules %llu event irqs %llu panic irqs %llu cpu_mask %#x user_mask %#x "
 	    "pending cmds %d log lines %llu ree_time %llu\nstorage requests %llu unanswered %llu last cmd %u pending %d\n"
-	    "RPMB irqs %d requests %llu errors %llu\nfingerprint wire: audit-v1 (research only)\nlast: %s\n",
+	    "RPMB irqs %d requests %llu errors %llu\nfingerprint wire: exchange-v2 (research only), active %u\nlast: %s\n",
 	    tee_status, tee_smcs, tee_schedules, tz_events_irq, tz_panic_irq, tz_cpu_mask(), tz_user_cpu_mask(), tz_nr_cmds,
 	    iwlog_lines, ree_time_answers, ts_requests, ts_unanswered, ts_last_cmd, ts_pending, srpmb_irqs, srpmb_requests,
-	    srpmb_errors, tee_last);
+	    srpmb_errors, fp_command_active ? 1 : 0, tee_last);
+	lck_mtx_unlock(&fp_command_lock);
 	/* (sysctl_io_string takes a written value into `out` itself: that is the command) */
 	error = sysctl_io_string(req, out, sizeof(out), 0, &changed);
 	if (error || req->newptr == USER_ADDR_NULL || !changed) {
@@ -3352,9 +3520,21 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 		if (tee_state != TEE_UP) {
 			return ENXIO;
 		}
+		lck_mtx_lock(&fp_command_lock);
+		if (fp_command_active) {
+			lck_mtx_unlock(&fp_command_lock);
+			return EBUSY;
+		}
+		fp_command_active = true;
 		strlcpy(fp_cmd_text, in + 3, sizeof(fp_cmd_text));
 		snprintf(tee_last, sizeof(tee_last), "fp %s: in progress", fp_cmd_text);
-		kernel_thread_start(fp_cmd_thread, NULL, &t);
+		lck_mtx_unlock(&fp_command_lock);
+		if (kernel_thread_start(fp_cmd_thread, NULL, &t) != KERN_SUCCESS) {
+			lck_mtx_lock(&fp_command_lock);
+			fp_command_active = false;
+			lck_mtx_unlock(&fp_command_lock);
+			return EIO;
+		}
 		thread_deallocate(t);
 		return 0;
 	}

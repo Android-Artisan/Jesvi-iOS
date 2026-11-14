@@ -1,24 +1,38 @@
 # S20 ultrasonic fingerprint research
 
-## Status (2026-11-14, protocol audit)
+## Status (2026-11-14, post-reboot audit)
 
-Factory-calibrated enrollment reached 100%. A 376,182-byte template is saved on
-this phone with mode 0600; both factory CBGE files remain private with mode 0600.
-A live, no-finger `fp idinit` check accepted that saved template and returned
-`1:` (enrolled finger ID 1). **No successful match or native fingerprint unlock
-has been verified.** The recorded identify runs returned no-match, including
-with the enrolled thumb. File save/load works; matching after reboot and automatic
-startup restoration remain unverified.
+Factory-calibrated enrollment reached 100% in the previous session. There is
+**no verified match or native fingerprint unlock**. Same-boot identify attempts
+returned no-match. Crucially, those tests and the first audit Init call reused the
+kernel's in-memory template; they did not establish that the saved file was valid.
 
-Work remains on `feat/s20-fingerprint`; main/master and the release DevOps worktree
-are untouched by this audit. Earlier dated sections below are research history;
-where they disagree, the protocol audit below is the current evidence. In
-particular, missing HAT/SID metadata is an authentication integration problem,
-but is not a proven explanation for all no-match results.
+The user approved installation of audit commit `d8a8ee74`. The kernel-slot write
+was read-back verified; the previous slot is backed up locally at
+`out/fingerprint/slot-backup-200455.bin`. The phone reports the `audit-v1` marker.
+Native keybag state was locked (`AKS 0x1`) after boot, and the user confirmed
+passcode unlock, lock and a second passcode unlock work.
 
-The audit kernel is built locally, **not flashed**. Its status reports
-`fingerprint wire: audit-v1 (research only)`. No reboot is implied by a source
-commit or build. The existing software passcode remains the unlock backend.
+Both factory CBGE slots load successfully. A true file load after reboot fails:
+Identify Init returns error **31**, and the TA trace identifies the immediate
+failure as **outer HMAC mismatch (28)** during the store-path-bound check. The file
+is recognized as version 3, but no template is accepted. This does not prove
+whether the mismatch is due to key/context restoration, path binding or bad saved
+bytes. The original 376,182-byte file is preserved, including a private on-phone
+backup. No fresh enrollment or tapping test was started during this audit.
+
+Missing HAT/SID metadata remains an authentication integration gap, not a proven
+explanation for either the earlier no-matches or this integrity failure. A prior
+claim that the template already survives reboot was premature.
+
+Work stays on `feat/s20-fingerprint`; main/master and the release DevOps worktree
+are untouched. A structured `exchange-v2` research bridge is built locally and
+host-tested, **not installed**. It allows proper client-side request packing,
+metadata handling and file-reload experiments without a kernel rebuild per trial.
+Installing it requires a separate reboot approval; the one approved audit-v1
+installation has completed. See [the bridge instructions](../tools/fingerprint/RESEARCH-EXCHANGE.md).
+Earlier dated sections are history; this status and the protocol audit take
+precedence. The existing software passcode remains the unlock backend.
 
 The user wants the actual under-display fingerprint sensor to authenticate native
 iOS unlock, with passcode fallback. Merely detecting a finger, fabricating a
@@ -556,9 +570,9 @@ not be guessed from partial decompiles.
 
 The fully reconstructed `decode_each_templ_ver3` checks outer and inner HMACs,
 decrypts the container, checks the Android user ID, creates the bio ID list and
-copies the decrypted payload into the internal template array. The live Init
-result `1:` is evidence that one template was decoded and identified; it is not
-evidence of a successful comparison with a new capture.
+copies the decrypted payload into the internal template array. The pre-reboot Init
+result `1:` is evidence that the cached template was decoded and identified; it
+was not a forced disk read or a successful comparison with a new capture.
 
 ### Calibration and persistence corrections
 
@@ -602,4 +616,46 @@ python3 tools/passcode/test_build_integration.py
 ```
 
 Host tests and kernel compilation do not qualify fingerprint unlock or prove a
-live match. The audit build has not been installed on the phone.
+live match. Audit-v1 is installed; exchange-v2 has not been installed.
+
+### Post-reboot findings and structured-client preparation
+
+The prior session confirmed there are no saved PREPARE outputs or sealed
+secure-ID metadata. It never sent a storage-path command and never forced a disk
+reload; all successful Init checks reused the cached template. Treat the outer
+HMAC failure as new evidence rather than assuming it caused the earlier no-matches.
+
+Both sides must be read together. The complete TA control dispatcher
+`FUN_001121d0` contains:
+
+- `0x16`: `BAUTH_OP_CODE_SET_ENROLL_SESSION`, writes the low byte of the input
+  **length** to context `+0x48`. However, `BAuth_Control_OP` at client `0x106038`
+  intercepts 0x16 and changes its local session flag without invoking the TA.
+  Thus the prior agent was correct about the stock client flow. Do not treat the
+  unused TA handler as proof of a missing required command.
+- `0x30`: `BAUTH_OP_CODE_SEND_STOREPATH`, accepts up to 100 input bytes and copies
+  them to context `+0x1902ca`.
+
+`encode_each_templ_ver3` (`0x11e4d0`) incorporates that 100-byte path into its
+outer HMAC. Its decoder (`0x11f750`) reconstructs the same authenticated input.
+`get_uniquekey` (`0x117c98`) uses TEES_DeriveKeyKDF with zeroed 16-byte inputs;
+this audit has neither exported its derived key nor proved its stability across
+sessions. The [original TEEGRIS research](https://www.usenix.org/system/files/sec22-shakevsky.pdf)
+(Appendix C) describes KDF binding to secure task UID/group, which is a lead to
+verify against this firmware, not proof of this device's current failure cause.
+
+Samsung's `common_prepare` (`libbauthserver`, `0x14abbc`) reads metadata type 0,
+chooses op 1 for an existing record or op 2 for first initialization, then saves
+valid returned metadata. `BAuth_Prepare` (`libbauthtzcommon`, `0x1044c8`) uses input
+`+0x10` / length `+0xa010`, output `+0x177014` / length `+0x181014`. This output was
+not persisted by the previous generic-command experiments.
+
+The exchange-v2 bridge adds fixed private request/reply files and whole-packet
+validation for a restricted FINGE command set. Its kernel command guard rejects
+overlap with any other fingerprint command. The host also takes a shared lock
+across checkouts before upload. The host refuses the running audit-v1 kernel
+before upload/invoke; this was verified with the real phone and in host tests.
+It never automatically retries a TA command, resets Gatekeeper, signs a fabricated
+HAT or connects results to iOS unlock. All payload files stay mode 0600 in private
+directories. Eight host tests plus the C parser/request tests pass; the kernel
+compiles. Root-only file/transport behavior on exchange-v2 still needs live validation.
