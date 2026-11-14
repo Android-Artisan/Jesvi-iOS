@@ -244,6 +244,7 @@ static const struct {
 	uint8_t vmin, vmax, vset;       /* vsel: 700 mV + 25 mV a step */
 	const char *name;
 } ldos[] = {
+	{ 19, 0x58, 0x2C, 0x2C, 0x2C, "VDD_BTP_1P8" },          /* 1.8 V only: the fingerprint sensor (qbt2000) */
 	{ 21, 0x5A, 0x2C, 0x2C, 0x2C, "vdd_mcu_1p8" },          /* 1.8 V only */
 	{ 22, 0x5B, 0x2C, 0x2C, 0x2C, "VDD_NFC_1P8" },          /* 1.8 V only */
 	{ 25, 0x5E, 0x24, 0x3C, 0x2C, "VDD_FLICKER_1P8" },      /* 1.6-2.2 V; 1.8 V if outside */

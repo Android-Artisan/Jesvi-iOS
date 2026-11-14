@@ -190,6 +190,106 @@ smc(uint64_t f, uint64_t a1, uint64_t a2, uint64_t *x2out)
 	return x0;
 }
 
+#ifdef GENERIC_GIC_V2_IRQ
+/* tzdev's version ABI has seven input registers; zero every unused argument.
+ * Keep this independent of the four-register Samsung SFR debug helper. */
+static uint64_t
+fp_tee_smc(uint64_t function, uint64_t client, uint64_t driver, uint64_t *out_x2)
+{
+    register uint64_t x0 __asm__("x0") = function;
+    register uint64_t x1 __asm__("x1") = client;
+    register uint64_t x2 __asm__("x2") = driver;
+    register uint64_t x3 __asm__("x3") = 0;
+    register uint64_t x4 __asm__("x4") = 0;
+    register uint64_t x5 __asm__("x5") = 0;
+    register uint64_t x6 __asm__("x6") = 0;
+    __asm__ volatile ("dsb sy\n\tsmc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3),
+        "+r"(x4), "+r"(x5), "+r"(x6) : : "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+        "x14", "x15", "x16", "x17", "memory");
+    *out_x2=x2;
+    return x0;
+}
+#include <sys/redwood_fp_probe.h>
+#include <kern/thread.h>
+#include <vm/vm_kern.h>
+extern uint64_t kvtophys(vm_offset_t);
+extern processor_t cpu_to_processor(int);
+extern processor_t thread_bind(processor_t);
+extern wait_result_t thread_block(thread_continue_t);
+extern unsigned int real_ncpus;
+extern int psci_smp_cpu_is_running(int);
+static vm_offset_t fp_channel_pages[9];
+static unsigned fp_channel_count;
+static unsigned fp_channel_cpu_count(void) { return real_ncpus; }
+static bool fp_channel_online(unsigned cpu) {
+    return cpu_to_processor((int)cpu)!=PROCESSOR_NULL && psci_smp_cpu_is_running((int)cpu);
+}
+static void fp_channel_flush(vm_offset_t page) {
+    for(vm_offset_t p=page;p<page+PAGE_SIZE;p+=64) __asm__ volatile ("dc civac, %0" : : "r"(p) : "memory");
+    __asm__ volatile ("dsb sy" : : : "memory");
+}
+static bool fp_channel_allocate(unsigned index,uint32_t *pfn) {
+    vm_offset_t page=0;
+    if(index>=9 || PAGE_SIZE<4096 || kmem_alloc(kernel_map,&page,PAGE_SIZE,
+        KMA_KOBJECT|KMA_ZERO|KMA_DATA,VM_KERN_MEMORY_IOKIT)!=KERN_SUCCESS)return false;
+    /* Retain even a failed translation: at most nine private pages per boot. */
+    fp_channel_pages[index]=page;fp_channel_count=index+1;
+    uint64_t pa=kvtophys(page);
+    if(!pa || (pa&4095) || (pa>>12)>UINT32_MAX)return false;
+    fp_channel_flush(page);*pfn=(uint32_t)(pa>>12);return true;
+}
+static uint64_t fp_channel_call(unsigned cpu,uint64_t function,uint64_t arg1,uint64_t arg2) {
+    processor_t previous=thread_bind(cpu_to_processor((int)cpu));
+    thread_block(THREAD_CONTINUE_NULL);
+    uint64_t unused=0,result=fp_tee_smc(function,arg1,arg2,&unused);
+    thread_bind(previous);thread_block(THREAD_CONTINUE_NULL);return result;
+}
+static void fp_channel_service_prepare(uint32_t pfn) {
+    memcpy((void *)fp_channel_pages[0],&pfn,sizeof(pfn));
+    fp_channel_flush(fp_channel_pages[0]);
+    fp_channel_flush(fp_channel_pages[fp_channel_count-1]);
+}
+static void fp_channel_service_read(uint32_t *cpu,uint32_t *user) {
+    vm_offset_t page=fp_channel_pages[fp_channel_count-1];fp_channel_flush(page);
+    memcpy(cpu,(void *)page,4);memcpy(user,(void *)(page+4),4);
+}
+#include <sys/redwood_fp_channels.h>
+/* Actual saved base DT /teegris: SPI 222/223, level-high => GIC INTID 254/255.
+ * An ISR masks on its first event: no interrupt storm before a scheduler exists.
+ * Never acknowledge a panic as a successful operation or start work in the ISR. */
+extern kern_return_t gic_v3_spi_attach_to(uint32_t,bool,void (*)(void *,uint32_t),void *,int);
+extern void gic_v3_spi_mask(uint32_t);
+extern void gic_v3_spi_detach(uint32_t);
+static uint32_t fp_sysconf_event_irqs,fp_sysconf_panic_irqs;
+static void fp_sysconf_irq(void *context,uint32_t intid) {
+    (void)context;gic_v3_spi_mask(intid);
+    if(intid==254)__atomic_fetch_add(&fp_sysconf_event_irqs,1,__ATOMIC_RELAXED);
+    if(intid==255)__atomic_fetch_add(&fp_sysconf_panic_irqs,1,__ATOMIC_RELAXED);
+}
+static unsigned fp_sysconf_event_count(void) {return __atomic_load_n(&fp_sysconf_event_irqs,__ATOMIC_RELAXED);}
+static unsigned fp_sysconf_panic_count(void) {return __atomic_load_n(&fp_sysconf_panic_irqs,__ATOMIC_RELAXED);}
+static bool fp_sysconf_prepare_irqs(void) {
+    if(gic_v3_spi_attach_to(254,false,fp_sysconf_irq,NULL,0)!=KERN_SUCCESS)return false;
+    if(gic_v3_spi_attach_to(255,false,fp_sysconf_irq,NULL,0)!=KERN_SUCCESS) {
+        gic_v3_spi_detach(254);return false;
+    }
+    if(fp_sysconf_event_count() || fp_sysconf_panic_count()) {
+        gic_v3_spi_mask(254);gic_v3_spi_mask(255);return false;
+    }
+    return true;
+}
+static void fp_sysconf_prepare_request(void) {
+    uint32_t request[3]={254,255,0};
+    bzero((void *)fp_channel_pages[0],4096);
+    memcpy((void *)fp_channel_pages[0],request,sizeof(request));fp_channel_flush(fp_channel_pages[0]);
+}
+static void fp_sysconf_read_words(uint32_t words[4]) {
+    fp_channel_flush(fp_channel_pages[0]);memcpy(words,(void *)fp_channel_pages[0],16);
+}
+#include <sys/redwood_fp_sysconf.h>
+#endif
+
+
 static unsigned
 parse(const char *s, char *cmd, size_t cmdlen, uint64_t *v, unsigned max)
 {
@@ -280,6 +380,9 @@ run(const char *line)
 
 	out_buf[0] = 0;
 #ifdef GENERIC_GIC_V2_IRQ
+    if (strcmp(cmd,"fp.tee-sysconf")==0) {fp_tee_sysconf(n==1?v[0]:2);return;}
+    if (strcmp(cmd,"fp.tee-channels")==0) {fp_tee_channels(n==1?v[0]:2);return;}
+    if (strcmp(cmd,"fp.tee-version")==0) {fp_tee_probe(n==1?v[0]:2);return;}
     if (strcmp(cmd,"cp.memory")==0 && n==0) {cp_memory_audit();return;}
     if (strcmp(cmd,"cp.s2mpu")==0 && n==0) {cp_s2mpu_grant();return;}
     if (strcmp(cmd,"spi8.tx")==0) {
@@ -339,7 +442,7 @@ run(const char *line)
 				return;
 			}
 		}
-		o = (size_t)snprintf(out_buf, cap, "r PA [N] | w PA V | m PA AND OR | sr PA | sw PA V | help\n");
+		o = (size_t)snprintf(out_buf, cap, "r PA [N] | w PA V | m PA AND OR | sr PA | sw PA V | help\nfp.tee-version 0|1 (Exynos): inspect or one-shot TEE compatibility; no authentication\n");
 		for (unsigned i = 0; i < ncmds && o < cap; i++) {
 			o += (size_t)snprintf(out_buf + o, cap - o, "%s %s\n", cmds[i].name, cmds[i].help ? cmds[i].help : "");
 		}

@@ -92,6 +92,7 @@ bsd/dev/redwood_speaker.c
 bsd/dev/redwood_ssp.c
 bsd/dev/redwood_sta.c
 bsd/dev/redwood_tcs3407.c
+bsd/dev/redwood_teegris.c
 bsd/dev/redwood_torch.c
 bsd/dev/redwood_ufs.c
 bsd/dev/redwood_ufshc.c
@@ -235,6 +236,9 @@ bsd/sys/redwood_cp_ipc.h
 bsd/sys/redwood_cp_memory.h
 bsd/sys/redwood_dbgport.h
 bsd/sys/redwood_exynos_spi.h
+bsd/sys/redwood_fp_channels.h
+bsd/sys/redwood_fp_probe.h
+bsd/sys/redwood_fp_sysconf.h
 bsd/sys/redwood_input.h
 bsd/sys/redwood_lx.h
 bsd/sys/redwood_m2m.h
@@ -247,6 +251,7 @@ bsd/sys/redwood_sensors.h
 bsd/sys/redwood_sparse.h
 bsd/sys/redwood_spi8_debug.h
 bsd/sys/redwood_sta.h
+bsd/sys/redwood_teegris.h
 bsd/sys/redwood_virtio_blk.h
 iokit/Kernel/GenericARMPE.cpp
 iokit/Kernel/MiniAppleKeyStore.cpp

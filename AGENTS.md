@@ -33,3 +33,10 @@ assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
 - Build trap: on macOS `userland/build-gpu-y2s.sh` puts `xnu-deps/host-macos/bin` first on PATH, whose `plutil` is a
   NO-OP shell script. Any `plutil -replace/-convert` in build.sh silently does nothing there; edit plists with python3
   plistlib (as the callservicesd job fix does).
+
+- Fingerprint research is isolated on `feat/s20-fingerprint` from main/master
+  `8d584cc`. Read [docs/x1slte-fingerprint.md](docs/x1slte-fingerprint.md) before
+  sensor, TEEGRIS or biometric-provider changes. The prepared kernel adds only
+  a manually armed one-shot compatibility probe; there is no fingerprint unlock.
+  Presence interrupts are not verified matches. Preserve passcode fallback and
+  never expose a public match-success notification or save a code for replay.

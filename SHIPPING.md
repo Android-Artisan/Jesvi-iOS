@@ -6,6 +6,38 @@
   cross-build and isolated GICv2 kernel build pass. No phone access/reboot; fingerprint phone ownership preserved.
 - See docs/x1slte-camera-implementation.md for artifacts, limits and integration/testing requirements.
 
+## 2026-11-14 — TEEGRIS AUX/service handshake succeeds; IRQ/config probe staged
+- Second approved test boot: all 8 AUX registrations and service channel succeeded (result 0, masks 1/1); cached
+  inspect confirmed no retry. Keybag remained protected/locked before first unlock. No fingerprint match attempted.
+- Actual DT confirms TEE IRQ INTIDs 254/255. Next staged kernel has a manually gated bounded SYSCONF exchange,
+  first-event IRQ masking, response validation and panic/error rejection; host tests and kernel build pass.
+- Located a public Exynos990 client-library reference; local-only ELF analysis identifies TEEC identification
+  command IDs 5/6/7. These binaries are not executed/deployed/committed and exact firmware compatibility is unproven.
+- See docs/x1slte-fingerprint.md for test results, remaining matcher/provider work and next-probe boundaries.
+
+## 2026-11-14 — Fingerprint compatibility SMC returns zero; channels staged
+- User approved the probe reboot and phone takeover. Exact current recovery kernel slot backed up locally before
+  flashing; loader verified the new write. Protected keybag restored locked before first unlock (AKS 0x1).
+- Explicit CHECK_VERSION returned x0=0/x2=0, subsequent inspect was cached. User confirmed passcode works after
+  reboot and on the next lock/unlock. This proves no fingerprint match; native biometrics remain unavailable.
+- Added fixed-command probe client and a separately staged AUX/service handshake: dedicated zeroed wired backing,
+  4-KiB wire PFNs, per-CPU affinity, bounded cache maintenance, stop-on-first-error and no automatic retries.
+- Channel host tests with sanitizers and kernel cross-build pass. New channel kernel is NOT flashed; another
+  user-approved reboot is required. No IRQ/SYSCONF/TA loading, enrollment, matching or biometric unlock yet.
+- Detailed evidence, deployment boundaries and traps: docs/x1slte-fingerprint.md. Main/master remain unchanged.
+
+## 2026-11-14 — Fingerprint research branch (not enabled, not shipped)
+- `feat/s20-fingerprint` starts from accepted main/master `8d584cc`, including newer thermal/logging changes.
+- Actual saved DTBO confirms QBT2000, GPA1 IRQ pins 3/1, SPI4 and VDD_BTP_1P8. Live LocalAuthentication reports no
+  biometric capability (-1000); Mesa/Pearl drivers are absent. User re-enabled passcode; protected/locked confirmed.
+- Added a read-only capability probe, allowlisted DTB inventory, host-only fallback policy prototype, and a manually
+  armed one-shot TEEGRIS version diagnostic in the kernel debug port. No biometric match/unlock operation is added.
+- Host policy/guard tests under ASan/UBSan, synthetic inventory, existing passcode build-integration checks and the
+  Exynos GICv2 kernel build pass. Experimental 16-MiB kernel slot is prepared in ignored out/fingerprint; not flashed.
+- Implementation/research, precise missing transport/matcher/provider work and traps: docs/x1slte-fingerprint.md.
+  The first compatibility test requires the shared phone lock and explicit user reboot approval. Keep main/master
+  on accepted code; do not merge this prototype as working fingerprint support.
+
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,
   `50ce5b2` repeat-lock enforcement, empty-probe optimization and file-security refinements.
