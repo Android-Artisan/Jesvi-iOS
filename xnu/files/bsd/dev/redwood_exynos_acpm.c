@@ -134,6 +134,7 @@ static volatile uint8_t *intr, *sram, *cmu_top;
 static struct channel ch_dvfs, ch_tmu;
 static uint32_t targets[NDOMAINS];
 
+uint32_t redwood_dvfs_log = 0;          /* kern.redwood.dvfs_log: every clock change in the log */
 static void dlog(const char *format, ...) __printflike(1, 2);
 
 static void
@@ -344,8 +345,12 @@ set_rate(unsigned domain, uint32_t khz)
 	uint32_t cmd[4] = { domain, khz, FREQ_REQ, 0 };
 	int ret = ipc(&ch_dvfs, cmd);
 
-	dlog("domain %u to %u kHz: %s (%#x %#x %#x %#x)", domain, khz, ret == 0 ? "answered" : ret == 1 ? "sent, no answer" :
-	    "NOT sent", cmd[0], cmd[1], cmd[2], cmd[3]);
+	/* every clock change was a log line (~200 in a few minutes of use, B 2026-11-14): only failures now, all of them
+	 * with kern.redwood.dvfs_log=1 */
+	if (ret != 0 || redwood_dvfs_log) {
+		dlog("domain %u to %u kHz: %s (%#x %#x %#x %#x)", domain, khz, ret == 0 ? "answered" : ret == 1 ? "sent, no answer" :
+		    "NOT sent", cmd[0], cmd[1], cmd[2], cmd[3]);
+	}
 	return ret < 0 ? -1 : 0;
 }
 

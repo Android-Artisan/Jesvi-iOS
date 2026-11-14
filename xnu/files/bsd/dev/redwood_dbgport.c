@@ -487,6 +487,11 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
     "optional mild software display warmth (0 or 1)");
 
+/* kern.redwood.dvfs_log (bsd/dev/redwood_exynos_acpm.c): every clock change in the log; 0 failures only */
+extern uint32_t redwood_dvfs_log;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dvfs_log, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_dvfs_log, 0,
+    "log every DVFS clock change; 0 failures only");
+
 /* kern.redwood.wifi_scan_gap (bsd/dev/redwood_sta.c): broad Wi-Fi scans sooner than this many seconds after the last
  * real one are answered from its results; 0 every scan to the radio */
 extern uint32_t redwood_wifi_scan_gap;

@@ -143,8 +143,10 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
-/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
-/var/jb/usr/lib/libredwood-metaloff.dylib PosterBoard AegirPoster mediaserverd WeatherPoster"}
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd"}
+# (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
+#  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
+#  CollectionsPoster with metalon. Add it live to kern.exec_inject when metal_props is switched on.)
 # libredwood-eagl (src/eagl_app.m): the OpenGL ES games named in EAGL_APPS (their executables' names) draw
 # with Mesa instead of iOS's OpenGL ES on Metal, which hands Metal shaders only Apple's GPU compiler reads.
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
@@ -613,7 +615,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# lines about its own business in the first minutes and pushes everything else out of the
 	# kernel's log; the daemons keep their own standard error on the console all the same.
 	rm -f root/etc/quiet
-	[ -n "$QUIET" ] && : > root/etc/quiet
+	# on by default since 2026-11-14 (B): launchd's notices were the largest share of the log; QUIET=0 brings them back
+	[ "${QUIET-1}" != 0 ] && : > root/etc/quiet
 	# the jobs the iOS launchd will see (/System/Library/LaunchDaemons is a symlink to this directory).
 	# With FLASHBOOT=1 the root will be Apple's whole volume on the flash, not the part of it that fits in
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
