@@ -81,6 +81,9 @@ def main():
     sub.add_parser('devices')
     sub.add_parser('validate')
     sub.add_parser('lock-inputs')
+    p = sub.add_parser('local')
+    p.add_argument('--output', required=True, type=Path)
+    p.add_argument('--check-only', action='store_true')
     p = sub.add_parser('package')
     p.add_argument('--device', default='x1slte')
     p.add_argument('--output', required=True, type=Path)
@@ -95,6 +98,10 @@ def main():
             p.add_argument('--development', action='store_true',
                            help='acknowledge unqualified private development candidate')
     a = parser.parse_args()
+    if a.command == 'local':
+        from local_build import build
+        build(a.output, a.check_only)
+        return 0
     if a.command == 'lock-inputs':
         from private_inputs import write
         write()
@@ -125,6 +132,8 @@ def main():
             raise ValueError('full images are private development candidates only; pass --development')
         from private_inputs import verify
         from images import hfs_kit
+        from extraction import verify as verify_extraction
+        verify_extraction(ROOT)
         verify()
         hfs_kit(ROOT / 'userland/hfs-kit.bin', profile(a.device)['partitions']['userdata'])
         env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1')

@@ -85,3 +85,5 @@ licenses: [NOTICE](NOTICE), [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md),
 [LICENSE](LICENSE), [LICENSE.APSL](LICENSE.APSL). The
 [historical upstream README](docs/upstream/README.md) describes Qualcomm/QEMU work.
 Jesvi iOS is independent of Apple and Samsung.
+
+Local private package automation: [one-command build](docs/release/local-build.md).

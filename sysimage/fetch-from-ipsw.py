@@ -26,7 +26,12 @@ SIZE = 6165698198
 
 def fetch(start, end):
     request = urllib.request.Request(URL, headers={'Range': f'bytes={start}-{end}'})
-    return urllib.request.urlopen(request, timeout=120)
+    response = urllib.request.urlopen(request, timeout=120)
+    expected = f'bytes {start}-{end}/{SIZE}'
+    if response.status != 206 or response.headers.get('Content-Range') != expected:
+        response.close()
+        raise ValueError('Apple CDN did not honor the requested byte range')
+    return response
 
 
 def directory():
@@ -53,7 +58,8 @@ def directory():
                 if offset == 0xFFFFFFFF:
                     offset = values.pop(0)
             q += 4 + length
-        yield name, method, csize, usize, offset
+        crc, = struct.unpack('<I', cd[p + 16:p + 20])
+        yield name, method, csize, usize, offset, crc
         p += 46 + nl + el + cl
 
 
@@ -82,7 +88,7 @@ def download(data, method, csize, output):
 
 def main():
     member, output = sys.argv[1], sys.argv[2]
-    for name, method, csize, usize, offset in directory():
+    for name, method, csize, usize, offset, expected_crc in directory():
         if name != member:
             continue
         if method not in (0, 8):
@@ -100,6 +106,13 @@ def main():
                 break
             print(f'{member}: the download broke off, trying again ({attempt} of {ATTEMPTS})', file=sys.stderr)
             time.sleep(5)
+        if written == usize:
+            crc = 0
+            with open(output, 'rb') as completed:
+                for block in iter(lambda: completed.read(8 * 1024 * 1024), b''):
+                    crc = zlib.crc32(block, crc)
+            if crc & 0xffffffff != expected_crc:
+                sys.exit(f'{member}: ZIP CRC mismatch; quarantine {output} before retrying')
         print(f'{member}: {written} bytes (expected {usize})')
         sys.exit(0 if written == usize else 1)
     sys.exit(f'{member}: not in the archive')

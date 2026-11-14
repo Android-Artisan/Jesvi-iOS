@@ -152,3 +152,6 @@ The full image build requires a freshly prepared, reviewed extraction matching t
 current selection recipe. Do not change `.done-rootfs` timestamps to bypass that
 check. Host validation also needs a C compiler for the data-mount policy test.
 Normal boot has no data formatter; a first-install initializer remains unqualified.
+
+For preparation through verified archive generation with one command, see
+[Local package build](local-build.md).

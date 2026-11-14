@@ -103,4 +103,5 @@ if [ ! -f .done-cryptex-app ]; then
 	[ -f cryptex-app/usr/libexec/webbookmarksd ] || { echo "fetch.sh: the App cryptex is incomplete"; exit 1; }
 	touch .done-cryptex-app
 fi
+python3 ../tools/release/extraction.py write
 echo "fetch.sh: done: $(du -sh rootfs | cut -f1) rootfs, $(du -sh cryptex | cut -f1) cryptex, $(du -sh cryptex-app | cut -f1) App cryptex, $(du -sh $CACHE | cut -f1) dyld shared cache"

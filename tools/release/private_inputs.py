@@ -10,7 +10,7 @@ def inventory():
     paths = ['inputs/x1slte', 'inputs/tools', 'inputs/toolchain.json',
              'sysimage/rootfs', 'sysimage/cryptex', 'sysimage/cryptex-app',
              'sysimage/20F66__iPhone10,3_6', 'sysimage/system.manifest',
-             'sysimage/var.skel', 'userland/hfs-kit.bin']
+             'sysimage/var.skel', 'sysimage/extraction.json', 'userland/hfs-kit.bin']
     paths += [str(p.relative_to(ROOT)) for p in sorted(ROOT.glob('fw-*')) if p.is_dir()]
     if (ROOT / 'jb').exists():
         paths.append('jb')
