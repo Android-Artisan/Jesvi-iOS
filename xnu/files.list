@@ -262,6 +262,7 @@ iokit/Kernel/RedwoodGPU.cpp
 iokit/Kernel/RedwoodMali.cpp
 iokit/Kernel/RedwoodStorage.cpp
 iokit/Kernel/RedwoodWLAN.cpp
+iokit/Kernel/SoftwareKeybag.h
 iokit/Kernel/hakios.battery.cpp
 iokit/Kernel/hakios.gpu.cpp
 iokit/Kernel/hakios.wlan.cpp

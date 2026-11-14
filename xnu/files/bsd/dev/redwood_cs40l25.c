@@ -74,6 +74,7 @@
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
+#include <kern/sched_prim.h>
 #include <machine/machine_routines.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
@@ -1303,11 +1304,16 @@ heard(uint32_t peak)
 		quiet_us = now;
 		return;
 	}
-	if (heard_us == 0 || quiet_us > heard_us || now - heard_us >= ACTIVE_US) {
+	bool onset = heard_us == 0 || quiet_us > heard_us || now - heard_us >= ACTIVE_US;
+
+	if (onset) {
 		onset_us = now;
 		heard_peak = 0;
 	}
 	heard_us = now;
+	if (onset) {
+		thread_wakeup((event_t)(uintptr_t)&heard_us);       /* the service loop sleeps while idle (cs_thread) */
+	}
 	if (peak > heard_peak) {
 		heard_peak = peak;
 	}
@@ -1454,7 +1460,18 @@ serve(void)
 				break;
 			}
 		}
-		delay_for_interval(4, NSEC_PER_MSEC);
+		if (state == IDLE && !active) {
+			/* (A, 2026-11-14) idle: asleep until iOS plays something (heard() wakes it), at most 100 ms --
+			 * the 4 ms look was 250 wake-ups a second of a core with the motor still */
+			assert_wait_timeout((event_t)(uintptr_t)&heard_us, THREAD_UNINT, 100, NSEC_PER_MSEC);
+			if (heard_us != 0 && now_us() - heard_us < ACTIVE_US) {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+			} else {
+				thread_block(THREAD_CONTINUE_NULL);
+			}
+		} else {
+			delay_for_interval(4, NSEC_PER_MSEC);
+		}
 	}
 	hsay("haptic: cs40l25: given up on (%u taps, %u vibrations, %u cut at %u ms)\n", taps, loops, capped, max_ms);
 }
