@@ -635,6 +635,13 @@ call_enabled(void)
 {
     return call_auto() || call_ui_alive();
 }
+/* the other party's number, for RedwoodPhone's own call screen (local only) */
+static void
+call_ui_number(const char *num)
+{
+    FILE *f=fopen(CALL_UI_DIR "/number","w");if (!f) return;
+    fprintf(f,"%s",num);fclose(f);chmod(CALL_UI_DIR "/number",0644);
+}
 static void
 call_ui_state(const char *fmt,...)
 {
@@ -835,6 +842,7 @@ call_invite(int fd,const char *r)
     if (call.ui) {
         char num[64];call_number(call.from,num,sizeof(num));
         printf("%s call: INCOMING: remote media port %s; ringing on the call screen\n",ts_now(),call.sdp_m);
+        call_ui_number(num[0]?num:"Unknown");
         call_ui_state("ringing %u %s",call.id,num[0]?num:"unknown");
     } else printf("%s call: INCOMING (answer mode): remote media port %s; answering in %ds\n",ts_now(),call.sdp_m,CALL_ANSWER_S);
     call_respond("100 Trying",NULL);
@@ -979,6 +987,7 @@ static void call_dial(int sock,const char *tag,const char *number)
     snprintf(call.from,sizeof(call.from),"<%s>",tel);         /* (the far end: To of our requests, its tag added later) */
     snprintf(call.contact,sizeof(call.contact),"<%s>",tel);
     snprintf(call.tag,sizeof(call.tag),"%s",tag);
+    call_ui_number(num[0]?num:"Unknown");
     call_ui_state("dialing %u %s",call.id,tag);
     char sdp[700];unsigned sid=arc4random();
     snprintf(sdp,sizeof(sdp),
