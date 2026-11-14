@@ -127,6 +127,26 @@ static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
  * fb_mode (x1slte, SM-G980F, 2026-11-06): 1 = the panel switched to 1080x2400 at 120 Hz (HS), Samsung's "mres" at start;
  * 0 = as UEFI leaves it (1440x3200 at 60 Hz). Needs fb_scaler=1 (the frame is scaled to the panel's size by DPP 5).
  * See modeSetFhd120().
+ *
+ *   0  1440x3200 @  60   iOS draws 1125x2436 at 3x   touch scan normal 60
+ *   1  1080x2400 @ 120   iOS draws 1125x2436 at 3x   touch scan HS120      <- the phone's preset (x1slte.cmdline)
+ *   2  1080x2400 @  60   iOS draws 1125x2436 at 3x   touch scan normal 60
+ *   3   720x1600 @ 120   iOS draws  750x1624 at 2x   touch scan HS120
+ *   4   720x1600 @  60   iOS draws  750x1624 at 2x   touch scan normal 60
+ *
+ * THE PANEL AT 120 Hz IS NOT iOS AT 120 Hz (A, 2026-11-14; the user: scrolling "a lot better" once all of these held).
+ * The panel is a fixed-rate one (no LTPO); a 120 Hz mode needs every one of these, each following fb_mode by itself:
+ *   - TimingElements at the mode's refresh (this driver: SyncRate 120 in 16.16, one fixed mode, no range);
+ *   - CoreAnimation's clock at 120: backboardd started with CA_HEARTBEAT_RATE=120 (userland/src/inject.c). Without it
+ *     iOS ran its frames for 60 (CADisplay.refreshRate 0.016667) while the panel scanned 120 -- the "60 Hz feel";
+ *   - apps not held to 60: QuartzCore's phone cap lifted with CADisableMinimumFrameDurationOnPhone set in each app's
+ *     info dictionary (inject.c app_fps_unlock; app_fps=0 off);
+ *   - the touch controller scanning at 120: sec_ts 0x94 {1, 2} (bsd/dev/redwood_sec_ts.c ts_set_scan_rate; it reported
+ *     ~60 a second otherwise; touch_scan=N);
+ *   - SpringBoard's own 20-30 fps animation caps raised (userland/src/inject_sb.c sb_fps_hooks; sb_fps=0 off).
+ * At 2x (fb_mode 3/4) also: MobileGestalt's cached scale and pitch (init.c mg_scale_sync) and the status bar's notch
+ * layout (statusbar_shift.h) -- see the drawing size below. Check on the phone: /var/root/hztest must print 120.0 Hz.
+ * Everything here: docs/x1slte-display.md, "Display presets" and "Smoothness findings".
  */
 static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
 /*
