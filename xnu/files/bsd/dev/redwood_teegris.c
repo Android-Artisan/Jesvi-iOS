@@ -2576,6 +2576,148 @@ fp_power(void)
 	    *(volatile uint32_t *)(gpp2 + 8));
 }
 
+/*
+ * "run N OP SECONDS": Samsung's loop (libbauthserver check_opcode): command N again and again with the op code the TA
+ * answered, until it answers 0, fails, or SECONDS pass. Op 4 (WAIT_INTERRUPT) waits for the sensor's interrupt there;
+ * here the sensor is simply asked again every 30 ms. Op 7: sleep the timeout. Each step's response head is logged.
+ */
+/* one bare command (no data) with op code OP; the TA's error, or the invoke's result when that failed */
+static uint32_t
+fp_call(uint32_t n, uint32_t op)
+{
+	uint32_t result, origin = 0;
+
+	bzero(fp_buf, 0x10);
+	bzero(fp_buf + 0x177000, 0x40);
+	*(uint32_t *)(fp_buf + 0x0) = 1;
+	*(uint32_t *)(fp_buf + 0x4) = n;
+	*(uint32_t *)(fp_buf + 0xc) = op;
+	*(uint32_t *)(fp_buf + 0x181014) = 0;
+	*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+	lck_mtx_lock(&tee_client_lock);
+	result = tee_invoke_shm(&fp_ses, n, fp_shm_id, FP_SHM_SIZE, &origin);
+	lck_mtx_unlock(&tee_client_lock);
+	return result != 0 ? result : *(uint32_t *)(fp_buf + 0x2ee008);
+}
+
+extern volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
+#define FP_X_MIN        22000
+#define FP_X_MAX        43500
+#define FP_Y_MIN        44000
+#define FP_Y_MAX        60000
+#define FP_HOLD_MS      150
+
+static void
+fp_run(uint32_t n, uint32_t op, uint32_t seconds)
+{
+	uint64_t deadline;
+	uint32_t steps = 0, last = ~0u, same = 0, bad_quality = 0, good = 0;
+	volatile uint8_t *gpa1 = redwood_gpio_bank(0x15850000, 0x20);
+
+	tee_say("fp run %u: gpa1 con %08x dat %02x pud %08x\n", n, *(volatile uint32_t *)gpa1,
+	    *(volatile uint32_t *)(gpa1 + 4) & 0xff, *(volatile uint32_t *)(gpa1 + 8));
+	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
+	while (mach_absolute_time() < deadline) {
+		uint32_t result, origin = 0, status, error, timeout;
+		uint32_t *r = (uint32_t *)(fp_buf + 0x177008);
+
+		bzero(fp_buf, 0x10);
+		bzero(fp_buf + 0x177000, 0x40);
+		*(uint32_t *)(fp_buf + 0x0) = 1;
+		*(uint32_t *)(fp_buf + 0x4) = n;
+		*(uint32_t *)(fp_buf + 0xc) = op;
+		*(uint32_t *)(fp_buf + 0x181014) = 0;
+		*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+		lck_mtx_lock(&tee_client_lock);
+		result = tee_invoke_shm(&fp_ses, n, fp_shm_id, FP_SHM_SIZE, &origin);
+		lck_mtx_unlock(&tee_client_lock);
+		status = *(uint32_t *)(fp_buf + 0x177004);
+		error = *(uint32_t *)(fp_buf + 0x2ee008);
+		timeout = r[2];
+		steps++;
+		if (r[0] != last || same++ % 100 == 0) {
+			tee_say("fp run %u step %u: op %u -> result %#x status %#x op %u error %#x timeout %d bad %u gpa1 %02x | %08x %08x %08x %08x %08x %08x %08x\n",
+			    n, steps, op, result, status, r[0], error, (int)timeout, bad_quality, *(volatile uint32_t *)(gpa1 + 4) & 0xff,
+			    r[1], r[3], r[4], r[5], r[6], r[7], r[8]);
+			if (r[0] != last) {
+				same = 1;
+			}
+		}
+		last = r[0];
+		if (result == 0 && error == 0x27 && (n == 3 || n == 6)) {
+			uint32_t e1, e2;
+
+			bad_quality++;                  /* BAD_QUALITY: Samsung closes the touch (ENROLL_FINAL op 1), then again */
+			if (n == 3) {
+				uint32_t ef = fp_call(4, 1);
+
+				tee_say("fp run 3: bad image: enroll-final %#x op %u | %08x %08x %08x %08x\n", ef, r[0], r[1], r[3],
+				    r[4], r[5]);
+			} else if (op == 1) {                  /* refused at once (no capture): cancel, init again */
+				e1 = fp_call(10, 1);
+				e2 = fp_call(n - 1, 1);
+				tee_say("fp run %u: bad image refused at once: reset (cancel %#x init %#x), progress lost\n", n, e1, e2);
+				if (e1 != 0 || e2 != 0) {
+					break;
+				}
+			}
+			op = 1;
+			continue;
+		}
+		if (result == 0 && error == 0 && r[0] == 0 && n == 3) {
+			uint32_t ef, progress = r[4];
+
+			good++;
+			ef = fp_call(4, 1);             /* Samsung's enroll(): ENROLL_FINAL after every ENROLL_DO */
+			tee_say("fp run 3: SAMPLE %u ACCEPTED: progress %u; enroll-final %#x op %u | %08x %08x %08x %08x %08x\n", good,
+			    progress, ef, r[0], r[1], r[3], r[4], r[5], r[6]);
+			if (progress >= 100 || r[4] >= 100) {
+				break;
+			}
+			while (redwood_touch_mask != 0 && mach_absolute_time() < deadline) {
+				delay(10000);           /* lift the finger before the next sample */
+			}
+			op = 1;
+			continue;
+		}
+		if (result != 0 || error != 0 || r[0] == 0) {
+			break;
+		}
+		op = r[0];
+		if (op == 4) {
+			/* WAIT_INTERRUPT: the sensor's IPC line (GPA1-3) or its wake-up line (GPA1-1) going high */
+			/*
+			 * The S20 starts a capture from the touch panel (finger on display), not from the sensor's lines: wait
+			 * for a finger held FP_HOLD_MS on the sensor's spot (x centred, 32 mm up: 0-65535 units).
+			 */
+			uint32_t held = 0, logged_x = 0, logged_y = 0;
+
+			while (mach_absolute_time() < deadline && held < FP_HOLD_MS) {
+				uint32_t x = redwood_touch_x, y = redwood_touch_y;
+				bool down = redwood_touch_mask != 0;
+				bool on = down && x > FP_X_MIN && x < FP_X_MAX && y > FP_Y_MIN && y < FP_Y_MAX;
+
+				if (down && (x / 2000 != logged_x || y / 2000 != logged_y)) {
+					tee_say("fp run %u: touch at %u,%u: %s\n", n, x, y, on ? "ON THE SENSOR" : "off the sensor");
+					logged_x = x / 2000;
+					logged_y = y / 2000;
+				}
+				held = on ? held + 5 : 0;
+				delay(5000);
+			}
+			if (held < FP_HOLD_MS) {
+				break;
+			}
+			tee_say("fp run %u: finger held on the sensor: capture\n", n);
+		} else if (op == 7 && timeout != 0 && timeout < 5000000) {
+			delay(timeout);
+		}
+	}
+	fp_handle = last;
+	snprintf(tee_last, sizeof(tee_last), "fp run %u: %u steps, last op %u, %u bad images, %u accepted", n, steps, last, bad_quality, good);
+	tee_say("%s\n", tee_last);
+}
+
 /* "N [HEX]": command N with data HEX; the reply's head into tee_last and the log */
 static void
 fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
@@ -2593,6 +2735,21 @@ fp_cmd_thread(__unused void *arg, __unused wait_result_t wr)
 	}
 	if (strncmp(p, "power", 5) == 0) {
 		fp_power();
+		return;
+	}
+	if (strncmp(p, "run ", 4) == 0) {
+		uint32_t v[3] = { 0, 0, 10 }, k = 0;
+
+		for (p += 4; *p && k < 3; k++) {
+			v[k] = 0;
+			while (*p == ' ') {
+				p++;
+			}
+			while (*p >= '0' && *p <= '9') {
+				v[k] = v[k] * 10 + (uint32_t)(*p++ - '0');
+			}
+		}
+		fp_run(v[0], v[1], v[2] ? v[2] : 10);
 		return;
 	}
 	while (*p >= '0' && *p <= '9') {
