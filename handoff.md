@@ -58,3 +58,10 @@
 - Captured scene is nearly black (~1% samples above black+8). Exposure transport passes, but image quality cannot be accepted from this scene. Asked user whether lens is covered/dark and to provide a lit scene. Do not claim stock quality or visual validation.
 - Evidence is outside git: `/Users/jesvi/ios-port-research/build/camera-device-20261114/` (`rear-probe-2.txt`, `front-probe-1.txt`, `rear-probe-3.txt`, `rear-isp-test.txt`, `test-final-kernel.log`, active library readback). Earlier failed probe logs preserved too.
 - Remaining: physical repeat-lock confirmation, lit-scene RAW/preview inspection and app still/switch testing. Full-resolution rear remains disabled; stock GRAS/CCM/noise transplantation is not yet enabled.
+
+## Front-camera scope clarification
+
+- User requests preserving the existing front-camera values. No front sensor tables, clock/timing descriptors, exposure/gain limits, white-balance gains, colour matrix, shading, noise tuning or tap-metering formula were changed by the camera-quality implementation.
+- Shared ISP plumbing DID change: per-site black levels moved from global variables into each ISP instance; RAW decoding/statistics/rendering now consume that instance; preview cache invalidation includes frame/sensor/black metadata; sharpness receives that state. These apply to front as well as rear, preserving existing front calibration numbers but changing state ownership/cache behavior. Front visual parity is not yet demonstrated.
+- Live front probe temporarily requested 1001 exposure lines and gain register 32 in binned mode for 36 frames; this was a diagnostic command, not a saved front tuning change. Subsequent rear selection completed. Front was only checked for switching regression.
+- Keep front tuning values frozen during subsequent rear research. Any proposed front-specific numerical or processing change must be described to the user first.
