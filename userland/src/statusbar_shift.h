@@ -6,7 +6,9 @@
  * in every app, so this is included by libredwood-sb (inject_sb.c) and libredwood (inject.c).
  *   /var/jb/etc/redwood-statusbar.conf: "lead=N" (points; 0 = Apple's). Read at process start: respring / reopen apps.
  */
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdbool.h>
@@ -316,6 +318,82 @@ sbs_provider_hook(void *unused)
 	}
 }
 
+/*
+ * Island phones (A, 2026-11-15). The status bar keeps the iPhone X notch layout (Split1125, see above), and a notch
+ * layout shows background activity -- a call, the microphone recording, navigation -- as a coloured pill around the
+ * time. An iPhone with a Dynamic Island shows those in the island and leaves the time plain (user 2026-11-15: "when
+ * the dynamic island is present it should be regular time"; the pill is for phones without one). So when MobileGestalt
+ * says this is an island phone (ArtworkDeviceSubType 2556 or 2796, what island=1 sets in the device tree) the status
+ * bar's background-activity entry reads as disabled. Without the island (island=0, other devices) nothing is hooked
+ * and the pill stays, as on a notch iPhone. The island itself is SpringBoard's SystemAperture and is not touched.
+ * (Hooked on the entry's own class only; if that class has no isEnabled, the data's backgroundActivityEntry getter
+ * answers nil instead. Log: which one, in redwood-statusbar.log.)
+ */
+static bool
+sbs_island_present(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+		CFTypeRef (*copy)(CFStringRef, CFDictionaryRef) = mg ? (CFTypeRef (*)(CFStringRef, CFDictionaryRef))dlsym(mg, "MGCopyAnswer") : NULL;
+		int subtype = 0;
+
+		if (copy != NULL) {
+			CFTypeRef v = copy(CFSTR("ArtworkDeviceSubType"), NULL);
+			if (v != NULL) {
+				if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+					CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &subtype);
+				}
+				CFRelease(v);
+			}
+		}
+		cached = subtype == 2556 || subtype == 2796;
+	}
+	return cached == 1;
+}
+static bool
+sbs_bg_disabled(id self, SEL cmd)
+{
+	(void)self; (void)cmd;
+	return false;
+}
+static id
+sbs_bg_none(id self, SEL cmd)
+{
+	(void)self; (void)cmd;
+	return nil;
+}
+static void
+sbs_island_hook(void *unused)
+{
+	static int done;
+	Class ec = objc_getClass("_UIStatusBarDataBackgroundActivityEntry");
+	SEL es = sel_registerName("isEnabled");
+	Method em = ec ? class_getInstanceMethod(ec, es) : NULL;
+
+	(void)unused;
+	if (done || !sbs_island_present()) {
+		return;
+	}
+	if (em != NULL) {
+		if (!class_addMethod(ec, es, (IMP)sbs_bg_disabled, method_getTypeEncoding(em))) {
+			method_setImplementation(em, (IMP)sbs_bg_disabled);         /* (the class's own method) */
+		}
+		done = 1;
+		sbs_log("island: background-activity pill off (entry isEnabled)%.0f%.0f", 0, 0);
+		return;
+	}
+	Class dc = objc_getClass("_UIStatusBarData");
+	SEL gs = sel_registerName("backgroundActivityEntry");
+	Method gm = dc ? class_getInstanceMethod(dc, gs) : NULL;
+	if (gm != NULL) {
+		method_setImplementation(gm, (IMP)sbs_bg_none);
+		done = 1;
+		sbs_log("island: background-activity pill off (data getter)%.0f%.0f", 0, 0);
+	}
+}
+
 static void
 statusbar_shift_start(void)
 {
@@ -324,6 +402,8 @@ statusbar_shift_start(void)
 
 	sbs_provider_hook(NULL);                /* always (cheap: one class method, only acts off the notch layouts) */
 	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_provider_hook);
+	sbs_island_hook(NULL);                  /* island phones only: plain time, the island shows the activity */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_island_hook);
 
 	if (f != NULL) {
 		size_t n = fread(b, 1, sizeof(b) - 1, f);
