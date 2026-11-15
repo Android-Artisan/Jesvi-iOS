@@ -7,6 +7,7 @@ struct ax_receiver {
     volatile uint8_t *bank[AX_REGIONS];struct ax_journal journal;struct ax_io io;
     void *buffer;uint64_t phys;unsigned bytes,total;bool allocated,armed,ready,retained,exported,phy_touched;
     uint32_t irq,error,link0,link1,frames,changed,guard_bad,pixel_min,pixel_max;
+    bool packed,cached;const volatile uint8_t *read_base;
     const char *phase;
 };
 static bool ax_read(void *p,unsigned r,unsigned off,uint32_t *v){
@@ -19,7 +20,8 @@ static uint32_t ax_rd(struct ax_receiver *x,unsigned r,unsigned off){return cam_
 static bool ax_wait_clock(struct ax_receiver *x,unsigned off){
     for(unsigned i=0;i<1000;i++){if(!(ax_rd(x,AX_TOP,off)&(1U<<16)))return true;delay_for_interval(1,NSEC_PER_USEC);}return false;
 }
-static bool ax_receiver_begin(struct ax_receiver *x){
+static bool ax_receiver_begin_mode(struct ax_receiver *x,bool packed){
+    x->packed=packed;
     static const uint32_t physical[AX_REGIONS]={CMU_TOP_PHYS,CMU_CSIS_PHYS,PMU_PHYS,ISPPRE_SYSREG_PHYS,
         0x17070000,0x170d2300,0x170d1000,0x170c0000,0x17110000,0x17140000,0x17020414};
     static const unsigned lengths[AX_REGIONS]={0x4000,0x8000,0x4000,4,0x1000,0x500,0x100,0x5000,0x100,0x100,4};
@@ -48,8 +50,8 @@ static bool ax_receiver_begin(struct ax_receiver *x){
         unsigned off=ch*0x1000+vc*0x100;if((ax_rd(x,AX_DMA,off)|ax_rd(x,AX_DMA,off+0x90))&1U)return false;
     }
     if((ax_rd(x,AX_CSI,4)&1U)||ax_rd(x,AX_DMA,0x1408)||ax_rd(x,AX_CSI,0x14)||ax_rd(x,AX_CSI,0x1c))return false;
-    x->phase="guarded low DMA allocation";x->bytes=width*height*2;
-    x->total=(x->bytes+2*guard+guard-1)&~(guard-1);
+    x->phase="guarded low DMA allocation";x->bytes=packed?((width*10/8+15)&~15U)*height:width*height*2;
+    x->total=((packed?2:1)*x->bytes+(packed?3:2)*guard+guard-1)&~(guard-1);
     if(!redwood_camera_dma_get(x->total,&x->phys,&x->buffer))return false;x->allocated=true;
     if(!x->phys||x->phys+x->total>(1ULL<<32))return false;
     memset(x->buffer,0xa5,x->total);__asm__ volatile("dsb sy":::"memory");
@@ -103,11 +105,13 @@ static bool ax_receiver_begin(struct ax_receiver *x){
     AXW(AX_DMA,8,2U,2U);AXW(AX_DMA,0x1414,1U,0);
     AXW(AX_DMA,0x1400,1U,0);AXW(AX_DMA,0x141c,3U,0);
     AXW(AX_DMA,0x1404,~0U,0x01111110);
-    AXW(AX_DMA,0x1004,0x7fU,6U);
+    AXW(AX_DMA,0x1004,0x7fU,packed?7U:6U);
     AXW(AX_DMA,0x1008,~0U,0);AXW(AX_DMA,0x100c,~0U,0);AXW(AX_DMA,0x10a4,~0U,width);
-    for(unsigned i=0;i<32;i++)AXW(AX_DMA,0x1010+i*4,~0U,(uint32_t)(x->phys+guard));
+    for(unsigned i=0;i<32;i++)AXW(AX_DMA,0x1010+i*4,~0U,(uint32_t)(x->phys+guard+((packed&&(i&1))?x->bytes+guard:0)));
     AXW(AX_DMA,0x10b0,~0U,~0U);
     AXW(AX_DMA,0x24,~0U,0x00804640);AXW(AX_DMA,0x28,~0U,(height<<16)|width);AXW(AX_DMA,0x20,~0U,0x400fffff);
+    void *cached=packed?redwood_camera_dma_cached():NULL;
+    x->cached=cached!=NULL;x->read_base=cached?cached:x->buffer;
     x->armed=true; /* BEFORE enabling: a failed readback may follow a latched write */
     AXW(AX_DMA,0x1000,1U,1U);
     cam_s20_wr(x->bank[AX_DMA],0x1000,ax_rd(x,AX_DMA,0x1000)|2U);
@@ -115,6 +119,7 @@ static bool ax_receiver_begin(struct ax_receiver *x){
     x->ready=true;x->phase="receiver armed";return true;
 #undef AXW
 }
+static bool ax_receiver_begin(struct ax_receiver *x){return ax_receiver_begin_mode(x,false);}
 static void ax_clear_frame_sources(struct ax_receiver *x){
     /* Aggregate FRAMESTART/END remain asserted until per-VC children clear. */
     static const unsigned child[3]={0x24,0x2c,0x634};
@@ -140,7 +145,11 @@ static bool ax_receiver_end(struct ax_receiver *x){
     if(x->ready&&x->allocated){
         const unsigned guard=16384;
         volatile uint8_t *b=x->buffer;
-        for(unsigned i=0;i<x->total;i++)if((i<guard||i>=guard+x->bytes)&&b[i]!=0xa5)x->guard_bad++;
+        for(unsigned i=0;i<x->total;i++){
+            bool pixel=(i>=guard&&i<guard+x->bytes)||(x->packed&&i>=2*guard+x->bytes&&i<2*guard+2*x->bytes);
+            if(!pixel&&b[i]!=0xa5)x->guard_bad++;
+        }
+        if(!x->packed){
         volatile uint16_t *pixels=(volatile uint16_t *)(b+guard);x->pixel_min=0xffff;
         for(unsigned i=0;i<x->bytes/2;i++){
             unsigned v=pixels[i];if(v<x->pixel_min)x->pixel_min=v;if(v>x->pixel_max)x->pixel_max=v;
@@ -150,6 +159,7 @@ static bool ax_receiver_end(struct ax_receiver *x){
             !(x->link0&0x00fff07fU)&&!(x->link1&0x78U)&&!x->guard_bad&&x->changed&&x->pixel_max<=1023;
         if(captured)x->exported=cam_s20_save_frame_named(pixels,4032,3024,true,"S5K2LA");
         x->phase=x->exported?"RAW frame exported":"no clean RAW frame";
+        }else if(x->guard_bad){clean=false;x->phase="stream DMA guard overwritten";}
     }
     if(x->armed){
         cam_s20_wr(x->bank[AX_DMA],0x1408,ax_rd(x,AX_DMA,0x1408));
@@ -160,4 +170,24 @@ static bool ax_receiver_end(struct ax_receiver *x){
     if(x->bank[AX_TOP]&&(!ax_wait_clock(x,0x104c)||!ax_wait_clock(x,0x1848)))clean=false;
     if(x->allocated){redwood_camera_dma_put();x->allocated=false;}
     return clean;
+}
+
+/* Poll a completed packed frame. Caller copies it synchronously before the next
+ * two-frame wrap; CPU ISP rendering happens later outside this callback. */
+static const volatile uint8_t *ax_receiver_next(struct ax_receiver *x,bool *failed){
+    uint32_t st=ax_rd(x,AX_DMA,0x1408);*failed=false;
+    if((st&0x01101000U)||ax_rd(x,AX_DMA,0x1418)||
+       (ax_rd(x,AX_CSI,0x14)&0x00fff07fU)||(ax_rd(x,AX_CSI,0x1c)&0x78U)){*failed=true;return NULL;}
+    if(!(st&(1U<<8))){if(st&(1U<<4))cam_s20_wr(x->bank[AX_DMA],0x1408,1U<<4);return NULL;}
+    uint32_t p=(ax_rd(x,AX_DMA,0x1090)>>2)&31U,st2=ax_rd(x,AX_DMA,0x1408);
+    if(st&(1U<<4))p=(p+31)&31U;
+    else if(st2&(1U<<4))p=(((ax_rd(x,AX_DMA,0x1090)>>2)&31U)+31)&31U;
+    cam_s20_wr(x->bank[AX_DMA],0x1408,(st|st2)&0x01111110U);
+    ax_clear_frame_sources(x);
+    const volatile uint8_t *data=x->read_base+16384+(p&1)*(x->bytes+16384);
+    if(x->cached){
+        for(vm_offset_t line=(vm_offset_t)data&~(vm_offset_t)63;line<(vm_offset_t)data+x->bytes;line+=64)
+            __asm__ volatile("dc ivac, %0"::"r"(line));
+    }
+    __asm__ volatile("dsb sy":::"memory");return data;
 }

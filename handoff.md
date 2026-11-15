@@ -529,3 +529,14 @@ one-shot diagnostic as a working Camera lens. Front settings remain unchanged.
   separately; switch at1x only after stream stop/drain. Current one-shot powers
   down and exports one frame; calling it per preview frame is not a viable backend.
   GW2 identity works, streaming remains unimplemented. Smooth transitions are later.
+
+## Continuous ultra-wide backend prepared (2026-11-15)
+
+Native 2LA stream now routes mode5 through `/dev/redwood-camera`, using two packed
+RAW10 DMA buffers with three guards, cached reads, fixed6652-line frame timing,
+5008ns line timing, identity sensor3 and no focus motor. Front/main mode paths
+retain existing settings. Main warm state is cooled before ultra-wide power-up.
+Cleanup failure poisons future camera opens; abort failure retains DMA memory.
+Host receiver sanitizer tests cover packed slot selection, frame errors, middle
+guard corruption and abort retention; kernel and passcode integration build pass.
+Device validation and Camera zoom UI are pending. Probe supports sensor3.

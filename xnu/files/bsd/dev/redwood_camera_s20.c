@@ -1103,6 +1103,9 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
  */
 /* data: one frame of MIPI RAW10 (four pixels in five bytes), `stride' bytes from one line to the next */
 /* the stream's sensor mode: full 3648x2736 (Samsung's 3648x2736_30fps, FULL MIPI PLL) or the 2x2-binned 1824x1368 */
+static bool cam_s20_ultra;
+void redwood_camera_s20_set_ultra(bool ultra){cam_s20_ultra=ultra;}
+static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap);
 static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
@@ -1140,9 +1143,11 @@ redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 	cam_s20_stream_frames = cam_s20_stream_errors = 0;
 	cam_s20_stream_exposure_failed = false;
 	cam_s20_stream_fn = fn;
-	cam_s20_dma_pattern(args, 2, out, cap);
+	bool clean=true;
+    if(cam_s20_ultra)clean=cam_s20_2la_live(fn,out,cap);
+    else cam_s20_dma_pattern(args, 2, out, cap);
 	cam_s20_stream_fn = NULL;
-	return cam_s20_stream_frames != 0 && !cam_s20_stream_exposure_failed;
+	return clean && cam_s20_stream_frames != 0 && !cam_s20_stream_exposure_failed;
 }
 
 static void
@@ -2940,13 +2945,14 @@ static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
 }
 #include "redwood_camera_s20_aux_rx_impl.h"
 
-static void cam_s20_aux_identify(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, char *out, size_t cap) {
+static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, redwood_s20_frame_fn fn, bool session, char *out, size_t cap) {
     struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
     struct cam_aux_power rails={0};
     struct cam_gw2_power gw2_rails={0};
     struct ax_receiver receiver={0};bool receiver_started=false;
     struct ax_2la_control_report controls={0};
     uint64_t requested_lines=raw&&n>0?args[0]:3000,requested_gain=raw&&n>1?args[1]:0x20;
+    if(session){requested_lines=cam_s20_exp_lines;requested_gain=cam_s20_exp_gain;}
     bool pmic03_saved=false,stream_sent=false,stream_stop=false;
     unsigned counter_changes=0;uint8_t last_counter=0xff;
     volatile uint8_t *reset=NULL,*mclk=NULL,*cmu=NULL;
@@ -2957,10 +2963,10 @@ static void cam_s20_aux_identify(bool gw2, bool stream, bool raw, const uint64_t
     uint8_t model[2]={0},revision[2]={0};
     bool pins=false,bus_saved=false,powered=false,clock_saved=false,clean=true,ok=false;
     const char *phase="busy";
-    if(!cap)return;
-    if((!raw&&n)||(raw&&(n>2||!ax_2la_controls_valid(requested_lines,requested_gain)))){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return;}
-    if(!redwood_camera_aux_acquire())goto report;
-    if(raw){
+    if(!cap)return false;
+    if((!raw&&n)||(raw&&(n>2||!ax_2la_controls_valid(requested_lines,requested_gain)))){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return false;}
+    if(!session&&!redwood_camera_aux_acquire())goto report;
+    if(raw&&!fn){
         lck_mtx_lock(&cam_frame_lock);
         if(cam_frame_copy)kfree_data(cam_frame_copy,cam_frame_size);
         cam_frame_copy=NULL;cam_frame_size=0;lck_mtx_unlock(&cam_frame_lock);
@@ -3031,16 +3037,34 @@ static void cam_s20_aux_identify(bool gw2, bool stream, bool raw, const uint64_t
             struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
             if(!ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls)){ok=false;goto cleanup;}
         }
-        if(raw){receiver_started=true;if(!ax_receiver_begin(&receiver)){ok=false;phase=receiver.phase;goto cleanup;}}
+        if(raw){receiver_started=true;if(!(fn?ax_receiver_begin_mode(&receiver,true):ax_receiver_begin(&receiver))){ok=false;phase=receiver.phase;goto cleanup;}}
         phase=raw?"sensor and RAW receiver":"sensor frame counter (no receiver)";stream_sent=true;
         ok=aux_sensor_write16(&bus,0x0100,0x0100);
         if(!ok)goto cleanup;
-        for(unsigned i=0;i<12;i++){
+        if(fn){
+            unsigned idle=0;bool more=true;
+            cam_s20_exp_pending=false;
+            while(more){
+                bool failed=false;const volatile uint8_t *data=ax_receiver_next(&receiver,&failed);
+                if(failed){ok=false;phase="continuous receiver error";break;}
+                if(!data){if(++idle>1500){ok=false;phase="continuous frame timeout";break;}cam_s20_wait_ms(1);continue;}
+                idle=0;cam_s20_stream_frames++;
+                more=fn(data,4032,3024,5040);
+                if(cam_s20_exp_pending&&more){
+                    uint32_t lines=cam_s20_exp_lines,gain=cam_s20_exp_gain;
+                    cam_s20_exp_pending=false;
+                    struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
+                    if(!ax_2la_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls)){
+                        ok=false;cam_s20_stream_exposure_failed=true;phase="continuous exposure readback failed";break;
+                    }
+                }
+            }
+        }else for(unsigned i=0;i<12;i++){
             uint8_t counter=0xff;delay_for_interval(50,NSEC_PER_MSEC);
             if(!aux_sensor_read(&bus,0x0005,&counter,1)){ok=false;break;}
             if(counter!=0xff){if(last_counter!=0xff&&counter!=last_counter)counter_changes++;last_counter=counter;}
         }
-        if(counter_changes<2)ok=false;
+        if(!fn&&counter_changes<2)ok=false;
     }
 cleanup:
     if(stream_sent){
@@ -3054,8 +3078,8 @@ cleanup:
     }
     if(receiver_started){
         if(!ax_receiver_end(&receiver))clean=false;
-        if(!receiver.exported)ok=false;
-        phase=receiver.phase;
+        if(!fn&&!receiver.exported)ok=false;
+        if(!fn||!clean)phase=receiver.phase;
     }
     if(pins){redwood_gpio_set(reset,0,0);redwood_gpio_set(mclk,mclk_pin,0);redwood_gpio_func(mclk,mclk_pin,REDWOOD_GPIO_OUTPUT);}
     if(clock_saved){
@@ -3085,19 +3109,25 @@ cleanup:
     }
     redwood_camera_aux_release(clean);
 report:
-    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
         receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0&0x00fff07fU,receiver.link1&0x78U,
         receiver.link0,receiver.link1,controls.applied?"true":"false",controls.before[0],controls.before[1],controls.before[2],
         controls.after[0],controls.after[1],controls.after[2],controls.frame_lines,controls.line_pck,receiver.guard_bad,
         receiver.pixel_min,receiver.pixel_max,receiver.retained?"true":"false");
+    return ok&&clean;
 }
 
-static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,false,false,v,n,out,cap);}
-static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(true,false,false,v,n,out,cap);}
+static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
+    if(redwood_camera_s20_rear_is_warm())redwood_camera_s20_rear_cool();
+    return cam_s20_aux_run(false,true,true,NULL,0,fn,true,out,cap);
+}
 
-static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,true,false,v,n,out,cap);}
+static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,false,false,v,n,NULL,false,out,cap);}
+static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,false,false,v,n,NULL,false,out,cap);}
 
-static void cam_s20_2la_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,true,true,v,n,out,cap);}
+static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,false,v,n,NULL,false,out,cap);}
+
+static void cam_s20_2la_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,true,v,n,NULL,false,out,cap);}
 
 void
 redwood_exynos_camera_s20_init(void)

@@ -21,6 +21,7 @@ static int redwood_spmic_read(uint8_t,uint8_t,uint8_t*);
 static uint64_t cam_s20_smc4(uint64_t,uint64_t,uint64_t,uint64_t);
 static bool redwood_camera_dma_get(uint64_t,uint64_t*,void**);
 static void redwood_camera_dma_put(void);
+static void *redwood_camera_dma_cached(void);
 static bool cam_s20_save_frame_named(const volatile uint16_t*,uint32_t,uint32_t,bool,const char*);
 static void delay_for_interval(unsigned,unsigned);
 static void cam_s20_wait_ms(unsigned);
@@ -54,6 +55,7 @@ static void cam_s20_wr(volatile uint8_t *p,uint32_t off,uint32_t v){
 static int redwood_spmic_read(uint8_t a,uint8_t b,uint8_t*v){(void)a;(void)b;*v=0xc0;return 0;}
 static uint64_t cam_s20_smc4(uint64_t a,uint64_t b,uint64_t c,uint64_t d){(void)a;(void)b;(void)c;(void)d;return 0;}
 static bool redwood_camera_dma_get(uint64_t n,uint64_t*p,void**v){allocation=malloc(n);*v=allocation;*p=0x90000000;return allocation!=NULL;}
+static void *redwood_camera_dma_cached(void){return NULL;}
 static void redwood_camera_dma_put(void){releases++;free(allocation);allocation=NULL;}
 static bool cam_s20_save_frame_named(const volatile uint16_t*p,uint32_t w,uint32_t h,bool optical,const char*name){assert(p[0]==256&&w==4032&&h==3024&&optical&&!strcmp(name,"S5K2LA"));exports++;return true;}
 static void delay_for_interval(unsigned a,unsigned b){(void)a;(void)b;}
@@ -66,7 +68,24 @@ static void initial(void){memset(regs,0,sizeof(regs));abort_fail=bad_phy_readbac
  regs[AX_TOP][0x104c/4]=2;regs[AX_TOP][0x1848/4]=5;
 }
 static void frame(struct ax_receiver*x){uint16_t*p=(uint16_t*)((uint8_t*)x->buffer+16384);for(unsigned i=0;i<x->bytes/2;i++)p[i]=256;regs[AX_DMA][0x1408/4]|=1U<<8;regs[AX_CSI][0x500/4]=12;regs[AX_CSI][0x24/4]=1;regs[AX_CSI][0x2c/4]=1;regs[AX_CSI][0x634/4]=1;}
-int main(void){struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
+static void packed_test(void){
+ initial();struct ax_receiver x={0};assert(ax_receiver_begin_mode(&x,true));
+ assert(x.bytes==15240960&&x.total>=2*x.bytes+3*16384);
+ assert((regs[AX_DMA][0x1004/4]&0x7f)==7);
+ assert(regs[AX_DMA][0x1014/4]-regs[AX_DMA][0x1010/4]==x.bytes+16384);
+ bool failed=true;assert(ax_receiver_next(&x,&failed)==NULL&&!failed);
+ regs[AX_DMA][0x1408/4]=0x110;regs[AX_DMA][0x1090/4]=5;
+ assert(ax_receiver_next(&x,&failed)==(uint8_t*)x.buffer+16384&&!failed);
+ regs[AX_DMA][0x1408/4]=0x100;regs[AX_DMA][0x1090/4]=5;
+ assert(ax_receiver_next(&x,&failed)==(uint8_t*)x.buffer+32768+x.bytes&&!failed);
+ regs[AX_DMA][0x1408/4]=0x1000;assert(!ax_receiver_next(&x,&failed)&&failed);
+ regs[AX_DMA][0x1408/4]=0;assert(ax_receiver_end(&x));assert(releases==1&&exports==0);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin_mode(&x,true));
+ ((uint8_t*)x.buffer)[16384+x.bytes]=0;assert(!ax_receiver_end(&x));assert(x.guard_bad==1&&releases==1);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin_mode(&x,true));abort_fail=true;
+ assert(!ax_receiver_end(&x)&&x.retained&&releases==0);free(allocation);allocation=NULL;
+}
+int main(void){packed_test();struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
  assert(x.frames==12&&cam_s20_rd((volatile uint8_t*)regs[AX_CSI],0x1c)==0);
  struct ax_receiver repeated={0};assert(ax_receiver_begin(&repeated));frame(&repeated);assert(ax_receiver_end(&repeated));assert(repeated.exported&&releases==2);
  assert(regs[AX_CSI][0x40/4]==0x3456&&regs[AX_CSI][0x44/4]==0x11223344);assert(regs[AX_PHY][0x104/4]==0x777&&regs[AX_SYS][0]==4&&regs[AX_BIAS][0]==0x99);assert(regs[AX_TOP][0x104c/4]==2&&regs[AX_TOP][0x1848/4]==5);
