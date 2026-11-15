@@ -1,3 +1,10 @@
+## 2026-11-15 (10:58, A) — AOD brightness held (no dark-room fluctuation)
+- Kernel: the AOD level is 30 % of the brightness at the moment AOD starts (2..12 nits), then held; auto-brightness
+  changes during AOD are kept for the wake but do not move it; only a 2x or 1/2 change of light re-takes it.
+  Verified on the phone in a dark room: auto-brightness went 5.44 -> 4.82 nits, AOD held at 2.000 for the whole
+  sample. Host test of the hold logic passes. Flashed 10:55 together with B's avconferenced root change (one reboot).
+  Below ~6 nits normal brightness AOD sits at the panel's lowest step (2 nits); lower needs Samsung's panel AOD mode.
+
 ## 2026-11-15 (10:10, A) — AOD on by default
 - Fresh installs: Always-On Display on, wallpaper and notifications in AOD off (user's choice). A missing or unreadable
   preference file reads as these defaults (`tools/aod/config.h` `rw_aod_default`); a saved choice always wins.
