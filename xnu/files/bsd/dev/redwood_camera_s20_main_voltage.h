@@ -37,4 +37,14 @@ static bool cam_main_voltage_begin(struct cam_main_voltage *s,struct cam_main_vo
            !io.read(io.ctx,cam_main_v_pmic[i],cam_main_v_reg[i],&after)||after!=want)return false;
     }return true;
 }
+/* Enable updates must compare to CURRENT state, never a saved snapshot. */
+struct cam_main_enable_io {void *ctx;bool(*read)(void *,uint8_t,uint8_t *);bool(*write)(void *,uint8_t,uint8_t);};
+static inline bool cam_main_enable_bits(struct cam_main_enable_io io,uint8_t reg,uint8_t value){
+    uint8_t current=0,after=0;
+    if((reg!=0x04&&reg!=0x05&&reg!=0x07)||(value&~0x80))return false;
+    if(!io.read(io.ctx,reg,&current))return false;
+    uint8_t want=(uint8_t)((current&0x7f)|value);
+    if(want==current)return true;
+    return io.write(io.ctx,reg,want)&&io.read(io.ctx,reg,&after)&&after==want;
+}
 #endif

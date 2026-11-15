@@ -117,27 +117,26 @@ cam_s20_pmic03_read(uint8_t reg, uint8_t *value)
 	return redwood_bbi2c_read_reg(&cam_pmic03_bus, CAM_S2MPB03_ADDR, reg, value, 1);
 }
 
-static bool
-cam_s20_pmic03_bits(uint8_t reg, uint8_t before, uint8_t value)
-{
-	uint8_t after = 0, want = (uint8_t)((before & 0x7f) | (value & 0x80));
-	if (reg != CAM_S2MPB03_LDO2 && reg != CAM_S2MPB03_LDO3 && reg != CAM_S2MPB03_LDO5) return false;
-	if (want == before) return true;
-	return redwood_bbi2c_write_reg(&cam_pmic03_bus, CAM_S2MPB03_ADDR, reg, want) &&
-	    cam_s20_pmic03_read(reg, &after) && ((after ^ want) & 0x80) == 0;
-}
-
 static void
 cam_s20_wait_ms(unsigned ms)
 {
 	delay_for_interval(ms, NSEC_PER_MSEC);
 }
 
+static bool main_voltage_read03(void *,uint8_t,uint8_t *);
+static bool main_voltage_write03(void *,uint8_t,uint8_t);
+static bool
+cam_s20_pmic03_bits(uint8_t reg,uint8_t before,uint8_t value)
+{
+    (void)before; /* Snapshot only selects the requested enable bit, not live selectors. */
+    return cam_main_enable_bits((struct cam_main_enable_io){NULL,main_voltage_read03,main_voltage_write03},reg,value&0x80);
+}
+
 static bool main_voltage_read03(void *ctx,uint8_t reg,uint8_t *value) {
-    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO5)&&cam_s20_pmic03_read(reg,value);
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO3||reg==CAM_S2MPB03_LDO5)&&cam_s20_pmic03_read(reg,value);
 }
 static bool main_voltage_write03(void *ctx,uint8_t reg,uint8_t value) {
-    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO5)&&
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO3||reg==CAM_S2MPB03_LDO5)&&
         redwood_bbi2c_write_reg(&cam_pmic03_bus,CAM_S2MPB03_ADDR,reg,value);
 }
 static bool main_voltages(struct cam_main_voltage *saved,bool restore) {
@@ -516,7 +515,10 @@ read_id:
 	if (warm_start && !(ok && id[0] == 0x20 && id[1] == 0xcd)) {
 		/* the warm sensor does not answer as itself: a real power cycle, from the top */
 		printf("camera: rear: the warm sensor did not answer (id %02x%02x): cold start\n", id[0], id[1]);
-		cam_s20_rear_warm = false;
+        /* Keep the original snapshot/voltage journal until fully powered down. */
+        redwood_camera_s20_rear_cool();
+        voltage=cam_s20_rear_cold.voltage;
+        if(voltage.changed||!redwood_bbi2c_setup(&cam_pmic03_bus,false,out,cap))goto cleanup;
 		warm_start = false;
 		cold_again = true;
 		ok = false;
@@ -1330,6 +1332,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 
 			cam_s20_optical_dma = dma;
 			cam_s20_identify(&rx, 1, sensor_report, sizeof(sensor_report));
+            if(!cam_s20_stream_frames)printf("camera: primary setup failed: %s",sensor_report);
 			cam_s20_optical_dma = NULL;
 		} else {
 			cam_s20_optical_dma = dma;
