@@ -831,6 +831,33 @@ public:
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 static IOMobileFramebuffer * gFramebuffer;      /* the one there is (redwood_fb_quiesce) */
 static volatile uint32_t gBLThermalCap;
+/*
+ * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
+ * InactiveOn transition. The panel then runs at a fraction of what CoreBrightness asks (iOS's own AOD brightness curve
+ * never reaches this driver), faded in and out, and CoreBrightness's level comes back exactly on wake.
+ * 0 off; 1 the default (30 %, between 2 and 12 nits, never above what is asked); 2..60 a fixed ceiling in nits.
+ */
+static volatile uint32_t gAODDim;
+static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
+static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 12);
+
+static uint32_t
+aodLevel(uint32_t target)
+{
+	uint32_t mode = gAODDim, level, lo = 2u << 16, hi;
+
+	if (mode == 0 || target == 0) {
+		return target;
+	}
+	if (mode >= 2) {
+		hi = mode << 16;
+		return target < hi ? target : hi;
+	}
+	hi = (gAODMaxNits ? gAODMaxNits : 12) << 16;
+	level = (uint32_t) ((uint64_t) target * (gAODPct ? gAODPct : 30) / 100);
+	level = level < lo ? lo : level > hi ? hi : level;
+	return level < target ? level : target;
+}
 /* the window server's refresh notifications (kFBNotifyVSync): asked for, sent, not sent (no port, or closed) */
 static volatile UInt32 gVSyncAsked, gVSyncSent, gVSyncStopped;         /* nits in 16.16 the panel is held under while the chip is hot; 0: none */
 
@@ -2419,7 +2446,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		bool more = false;
 
 		IOLockLock(fb->fBLLock);
-		target = fb->fBLTarget;
+		target = aodLevel(fb->fBLTarget);
 		from = fb->fFadeFrom;
 		fstart = fb->fFadeStart;
 		flen = fb->fFadeLen;
@@ -2553,6 +2580,9 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	if (fBLCall == NULL || fDsim == NULL) {
 		return;
 	}
+	/* Same order as offWork/blWork: DSIM, then brightness. Alpha state
+	 * and register restoration must not race a wake or an old fade callback. */
+	IOLockLock(fDsimLock);
 	if (gFade && fade16 != 0 && fBLWrites != 0) {
 		uint64_t ns = (uint64_t) fade16 * NSEC_PER_SEC / 65536;
 
@@ -2572,6 +2602,7 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 			fAlphaStart = mach_absolute_time();
 			fAlphaLen = len;
 			thread_call_enter(fAlphaCall);
+			IOLockUnlock(fDsimLock);
 			return;                         /* the backlight stays where it is */
 		}
 	}
@@ -2586,6 +2617,7 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	fBLTarget = level;
 	IOLockUnlock(fBLLock);
 	thread_call_enter(fBLCall);
+	IOLockUnlock(fDsimLock);
 }
 
 /* the window's plane alpha (0 black .. 255 the picture as it is), taken at the next frame */
@@ -2663,47 +2695,35 @@ void
 IOMobileFramebuffer::alphaWork(thread_call_param_t self, thread_call_param_t unused __unused)
 {
 	IOMobileFramebuffer * fb = (IOMobileFramebuffer *) self;
-	uint64_t now = mach_absolute_time(), start = fb->fAlphaStart, len = fb->fAlphaLen, done;
-	uint32_t alpha;
-
-	if (len == 0) {
-		return;                                 /* (restored meanwhile: a wake, a brightness) */
-	}
-	done = now - start;
-	if (fb->fAlphaUp) {
-		/* power on: 0 -> 255, then the window's own registers back exactly */
-		alpha = done >= len ? 255 : (uint32_t) (255 * done / len);
-		IOLockLock(fb->fDsimLock);
-		if (fb->fAlphaLen != 0 && fb->fAlphaUp) {
-			if (alpha >= 255) {
-				fb->fAlphaLen = 0;
-				fb->fAlphaUp = false;
-				fb->alphaRestore();
-			} else {
-				fb->alphaSet(alpha);
-			}
-		}
-		IOLockUnlock(fb->fDsimLock);
-		if (alpha < 255) {
-			uint64_t next;
-
-			clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
-			thread_call_enter_delayed(fb->fAlphaCall, next);
-		}
-		return;
-	}
-	alpha = done >= len ? 0 : (uint32_t) (255 - 255 * done / len);
+	/* A pending callback belongs to no particular fade. Read direction, time
+	 * and length under the same lock as wake/brightness, then apply only that
+	 * current fade. An old fade-out must never paint black after a new wake. */
 	IOLockLock(fb->fDsimLock);
-	if (fb->fAlphaLen != 0) {
+	uint64_t len = fb->fAlphaLen;
+	if (len == 0) { IOLockUnlock(fb->fDsimLock); return; }
+	uint64_t now = mach_absolute_time();
+	uint64_t done = now >= fb->fAlphaStart ? now - fb->fAlphaStart : 0;
+	uint32_t alpha;
+	bool more = done < len;
+	if (fb->fAlphaUp) {
+		alpha = more ? (uint32_t)(255 * done / len) : 255;
+		if (!more) {
+			fb->fAlphaLen = 0;
+			fb->fAlphaUp = false;
+			fb->alphaRestore();
+		} else fb->alphaSet(alpha);
+	} else {
+		alpha = more ? (uint32_t)(255 - 255 * done / len) : 0;
 		fb->alphaSet(alpha);
+		/* Retain the finished fade-out until offWork sends DCS28 or wake
+		 * restores it. No further alpha callback is needed at zero. */
 	}
-	IOLockUnlock(fb->fDsimLock);
-	if (alpha != 0) {
+	if (more) {
 		uint64_t next;
-
 		clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
 		thread_call_enter_delayed(fb->fAlphaCall, next);
 	}
+	IOLockUnlock(fb->fDsimLock);
 }
 
 /* A helper of the scaling (fb_threads): waits for rows to do, does them, says so. */
@@ -3784,6 +3804,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	case kFBMethodSwapSignal:
 	case kFBMethodSwapCancel:
 	case kFBMethodSwapCancelAll:
+		/* Swap signalling/cancellation is unrelated to panel power. A swap
+		 * identifier (including zero) must never become an on/off request. */
+		return kIOReturnSuccess;
 	case kFBMethodRequestPowerChange:               /* in: 0 off, 1 on */
 		if (args->scalarInputCount >= 1) {
 			fOwner->displayPower(in[0] != 0);
@@ -4377,6 +4400,43 @@ redwood_fb_thermal_cap(uint32_t nits)
 	}
 }
 
+/* kern.redwood.display_aod (bsd/dev/redwood_dbgport.c): see gAODDim. Entering fades over 600 ms, leaving over 200. */
+extern "C" int redwood_fb_aod(int value);
+extern "C" int
+redwood_fb_aod(int value)
+{
+	IOMobileFramebuffer * fb = gFramebuffer;
+
+	if (value < 0) {
+		return (int) gAODDim;
+	}
+	if (value > 60) {
+		return -1;
+	}
+	if ((uint32_t) value == gAODDim) {
+		return value;
+	}
+	if (fb == NULL || fb->fBLCall == NULL || fb->fDsim == NULL || fb->fDsimLock == NULL) {
+		gAODDim = (uint32_t) value;
+		return value;
+	}
+	IOLockLock(fb->fDsimLock);
+	IOLockLock(fb->fBLLock);
+	gAODDim = (uint32_t) value;
+	if (fb->fBLTarget != 0 && fb->fBLWrites != 0) {
+		uint64_t len;
+
+		nanoseconds_to_absolutetime((value ? 600 : 200) * NSEC_PER_MSEC, &len);
+		fb->fFadeFrom = fb->fBLCurrent;
+		fb->fFadeStart = mach_absolute_time();
+		fb->fFadeLen = len;
+	}
+	IOLockUnlock(fb->fBLLock);
+	thread_call_enter(fb->fBLCall);
+	IOLockUnlock(fb->fDsimLock);
+	return value;
+}
+
 extern "C" void redwood_fb_quiesce(void);
 extern "C" void
 redwood_fb_quiesce(void)
@@ -4740,7 +4800,7 @@ IOMobileFramebuffer::modeCounters(const char * when, char * out, size_t cap)
 	IOSleep(100);
 	te1 = dpuRead(fDecon, DECON_TE_COUNT);
 	fc1 = dpuRead(fDecon, DECON_FRAME_COUNT);
-	snprintf(out + at, cap - at, "%s: in 100 ms %u TE pulses, %u frames; DECON global %#x trig %#x shadow %#x int-pending %#x "
+	snprintf(out + at, cap - at, "%s: in 100 ms TE-count delta %#x (raw), %u frames; DECON global %#x trig %#x shadow %#x int-pending %#x "
 	    "int-enable %#x; DSIM intsrc %#x fifoctrl %#x link1 %#x config %#x; %ux%u\n", when, te1 - te0, fc1 - fc0,
 	    dpuRead(fDecon, DECON_GLOBAL_CONTROL), dpuRead(fDecon, DECON_TRIG_CONTROL), dpuRead(fDecon, DECON_SHADOW_UPDATE),
 	    dpuRead(fDecon, DECON_INT_PENDING), dpuRead(fDecon, DECON_INT_ENABLE), dpuRead(fDsim, DSIM_INTSRC),
@@ -4759,13 +4819,14 @@ IOMobileFramebuffer::modeLive(int mode)
 			strlcat(fModeReport, "resolution already switched; cold restart required for another mode\n", sizeof(fModeReport));
 			return;
 		}
+		IOLockLock(fDsimLock);
 		if (fDisplayOff || fOffPending || fFramesMasked) {
 			/* (B, 2026-11-07: a switch while the display was off left the panel black after the wake) */
+			IOLockUnlock(fDsimLock);
 			strlcat(fModeReport, "the display is off: switch with the screen on\n", sizeof(fModeReport));
 			return;
 		}
 		fModeAsk = (uint32_t) mode;
-		IOLockLock(fDsimLock);
 		ok = modeSetFhd120();
 		IOLockUnlock(fDsimLock);
 		strlcat(fModeReport, ok ? "switched (see the fb_mode lines in the log)\n" : "NOT switched (see the fb_mode lines)\n",

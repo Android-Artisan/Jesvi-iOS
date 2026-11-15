@@ -16,6 +16,36 @@
 - Open: missed-call banner/badge (callservicesd sees the missed call and sets the badge count; iOS's notification
   delivery for Phone shows nothing -- not the call stack); avconferenced is denied (mkjobs) and callservicesd /
   InCallService retry it every 2 s; RCS needs a client of our own.
+## 2026-11-15 — AOD and AOD wallpaper default off
+
+Show Wallpaper now defaults off as well as AOD. Updated source, tracked clean-build
+prebuilts and helper; explicit user opt-in still works. Both saved settings and
+settled native AOD policy verified off on the current phone without refresh/reboot.
+Config and AOD/passcode assembly regressions pass.
+
+## 2026-11-15 — AOD clean-image inclusion
+
+S20 root assembly now includes native AOD and its helper from tracked prebuilts,
+independent of data-volume tweaks. Source and macOS GPU build paths refresh them;
+missing inputs fail assembly. Injection is targeted, repeatable and preserves
+other rules. Default off; existing user setting retained. Root/standalone modules
+use distinct Settings classes and shared duplicate hook guards. iOS cross-build,
+AOD assembly/config/token checks and required passcode assembly regression pass.
+Full system/root images not rebuilt or flashed here. Physical panel ALPM remains
+separate experimental work. Local only at user's request after upstream403.
+
+## 2026-11-15 — native AOD service (feature branch)
+
+Settings-controlled native Always-On Display, default off, pinned to this S20 /
+iOS16.5 cache. Adapt native capability providers and use Apple's pseudo-flipbook
+live-composition backend: CAFlipBook returned no frame and trapped SpringBoard at
+BacklightServicesHost0x1eebbd068 (`renderedFrame != nil`). The fallback avoids that
+unsupported capture path without bypassing assertions. User confirmed persistent
+AOD with no restart; native state1 and unchanged SpringBoard PID independently
+observed. Repeat passcode/AOD-cycle confirmation remains pending. No kernel reboot
+or panel ALPM activation. Build, config/token regressions, package allowlist and
+hash checks pass. Standalone installer/package prepared; clean image integration
+still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
 
 ## 2026-11-15 (08:10, A) — texts react at once; outgoing-call delay measured; cellulard timing
 - Texts: redwood-ims sends a text the moment Messages drops it in sms-out (kqueue), RedwoodSMS picks up received

@@ -330,6 +330,13 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/libredwood.dylib src/inject.c src/inject_sensors.c src/inject_location.c
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
 			-o obj/libredwood-sb.dylib src/inject_sb.c src/inject_location.c
+		# Persistent native AOD: a root-image copy, independent of existing /var/jb tweaks.
+		$DYN -fobjc-arc -fblocks -DRW_ALWAYS_ON_ROOT_IMAGE -dynamiclib \
+			-install_name /redwood/lib/libredwood-alwayson.dylib -framework Foundation -framework UIKit \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework Preferences \
+			-o obj/libredwood-alwayson.dylib ../tools/aod/alwayson.m ../tools/aod/settings.m
+		$DYN -fobjc-arc -fblocks -framework Foundation -framework IOKit \
+			-o obj/aod-preview ../tools/aod/control.m
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
@@ -585,6 +592,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		*) echo "$library $names" ;;
 		esac
 	done > root/etc/inject.conf
+	if [ "${DEVICE:-x1slte}" = x1slte ]; then
+		python3 ../tools/aod/prepare-root.py root --binaries obj
+	fi
 	cp $IOS/var.skel root/etc/var.skel              # the directories init creates in /private/var
 	# time zones: the template's links go in a circle until the time zone daemon has run (/usr/share/zoneinfo
 	# points back into /var); point them at the data that ships with the system, and use this machine's zone
