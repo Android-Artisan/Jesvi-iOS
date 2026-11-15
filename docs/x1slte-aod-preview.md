@@ -219,3 +219,21 @@ Disable/revert, touch/button wake, repeated transitions and charging must be tes
 Measure actual refresh/panel power separately. No DSI writes, kernel flash or
 hardware reboot were performed for the native-service fix. A kernel installation
 and reboot require fresh explicit user authorization.
+
+### Clean-image integration (15 November, follow-up)
+
+S20 root assembly now runs `tools/aod/prepare-root.py` after writing inject.conf.
+It copies tracked `libredwood-alwayson.dylib` and the control helper into the image
+and adds exactly one targeted SpringBoard/Preferences injection rule. Repeated
+assembly preserves other injection rules. Missing required AOD prebuilts fail
+assembly rather than silently dropping the feature. No user preference is seeded;
+new installs remain off, and existing settings survive image updates.
+
+Both source compilation in `userland/build.sh` and the macOS GPU build path
+refresh the module/helper. Root-image and standalone Settings controller classes
+have distinct runtime names; shared service/Settings guards avoid duplicate hooks
+when the existing data-volume tweak is present. The root-image module supplies
+its own inactive/off passcode revocation and still retains the core passcode chain.
+`python3 tools/aod/test_build_integration.py` and the required software-passcode
+assembly regression pass without firmware or an existing `/var/jb` tree. The
+complete multi-gigabyte image has not been rebuilt or flashed in this step.

@@ -14,6 +14,11 @@ flags=(-target arm64-apple-ios16.0 -isysroot "$sdk" -fobjc-arc -fblocks -O2 -Wal
   -F"$sdk/System/Library/PrivateFrameworks" -framework Preferences \
   -Wl,-install_name,/var/jb/Library/MobileSubstrate/DynamicLibraries/RedwoodAlwaysOn.dylib \
   tools/aod/alwayson.m tools/aod/settings.m -o "$output/RedwoodAlwaysOn.dylib"
+"$cc" "${flags[@]}" -DRW_ALWAYS_ON_ROOT_IMAGE -dynamiclib -framework Foundation -framework UIKit \
+  -F"$sdk/System/Library/PrivateFrameworks" -framework Preferences \
+  -Wl,-install_name,/redwood/lib/libredwood-alwayson.dylib \
+  tools/aod/alwayson.m tools/aod/settings.m -o "$output/libredwood-alwayson.dylib"
+/usr/bin/codesign -f -s - "$output/libredwood-alwayson.dylib"
 /usr/bin/codesign -f -s - "$output/RedwoodAlwaysOn.dylib"
 /usr/bin/codesign -f -s - "$output/RedwoodAODPreview.dylib"
 /usr/bin/codesign -f -s - "$output/aod-preview"

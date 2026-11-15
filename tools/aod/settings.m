@@ -3,6 +3,11 @@
 #include <mach-o/dyld.h>
 #include <stdatomic.h>
 #include "config.h"
+/* Distinct runtime class names let root-image and standalone copies coexist;
+ * shared hook guards still install exactly one service and Settings row. */
+#ifdef RW_ALWAYS_ON_ROOT_IMAGE
+#define RWAlwaysOnController RWAlwaysOnImageController
+#endif
 @interface PSSpecifier:NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString*)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(NSInteger)cell edit:(Class)edit;
 - (id)propertyForKey:(NSString*)key;

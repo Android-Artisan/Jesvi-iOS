@@ -1,3 +1,14 @@
+## 2026-11-15 — AOD clean-image inclusion
+
+S20 root assembly now includes native AOD and its helper from tracked prebuilts,
+independent of data-volume tweaks. Source and macOS GPU build paths refresh them;
+missing inputs fail assembly. Injection is targeted, repeatable and preserves
+other rules. Default off; existing user setting retained. Root/standalone modules
+use distinct Settings classes and shared duplicate hook guards. iOS cross-build,
+AOD assembly/config/token checks and required passcode assembly regression pass.
+Full system/root images not rebuilt or flashed here. Physical panel ALPM remains
+separate experimental work. Local only at user's request after upstream403.
+
 ## 2026-11-15 — native AOD service (feature branch)
 
 Settings-controlled native Always-On Display, default off, pinned to this S20 /
