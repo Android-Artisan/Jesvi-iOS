@@ -33,16 +33,19 @@ int main(int argc,char **argv){@autoreleasepool{
         }
         int token=-1;uint64_t value=0;
         if(notify_register_check(RW_AOD_STATUS,&token)==NOTIFY_STATUS_OK){notify_get_state(token,&value);notify_cancel(token);}
-        const char *names[]={"not-loaded","ready","unsupported-native-method","appearance-requested","normal-appearance-requested","declined-lockscreen-state","exception"};
+        const char *names[]={"not-loaded","ready","unsupported-native-method","appearance-requested","normal-appearance-requested","declined-lockscreen-state","exception","native-service-took-over"};
         printf("preview_status=%s\n",value<sizeof(names)/sizeof(names[0])?names[value]:"unknown");
         token=-1;value=0;
         if(notify_register_check(RW_AOD_SERVICE_STATUS,&token)==NOTIFY_STATUS_OK){notify_get_state(token,&value);notify_cancel(token);}
-        printf("native_service_ready=%u configured_enabled=%u native_policy_enabled=%u backlight_state=%u os_support=%u os_native_support=%u os_observed=%u\n",
+        printf("native_service_ready=%u configured_enabled=%u native_policy_enabled=%u requested_state=%u os_support=%u os_native_support=%u os_observed=%u\n",
             (unsigned)(value&1),(unsigned)((value>>1)&1),(unsigned)((value>>2)&1),(unsigned)((value>>8)&15),(unsigned)((value>>4)&1),(unsigned)((value>>5)&1),(unsigned)((value>>6)&1));
+        printf("requested_observed=%u completed_observed=%u completed_state=%u idle_suppressed=%u\n",
+            !!(value&RW_AOD_REQUEST_VALID),!!(value&RW_AOD_COMPLETED_VALID),(unsigned)((value>>12)&15),rw_aod_idle_suppressed(value));
         printf("saved_enabled=%u saved_wallpaper=%u\n",rw_aod_value(rw_aod_config(),@"Enabled")?1:0,rw_aod_value(rw_aod_config(),@"ShowWallpaper")?1:0);
         return state?0:1;
     }
     if(getuid()!=0||argc!=2||(strcmp(argv[1],"begin")&&strcmp(argv[1],"end"))){fprintf(stderr,"usage (root): aod-preview begin|end|status|enable|disable|wallpaper-on|wallpaper-off\n");return 1;}
+    if(!strcmp(argv[1],"begin")&&rw_aod_value(rw_aod_config(),@"Enabled")){fprintf(stderr,"Disable native AOD before using the manual appearance preview.\n");return 1;}
     umask(0077);
     if(mkdir(RW_AOD_DIRECTORY,0755)&&errno!=EEXIST)return 1;
     struct stat st;if(lstat(RW_AOD_DIRECTORY,&st)||!S_ISDIR(st.st_mode)||st.st_uid||(st.st_mode&0022))return 1;

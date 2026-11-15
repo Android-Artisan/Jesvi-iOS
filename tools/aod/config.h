@@ -10,7 +10,7 @@
 #define RW_AOD_CONFIG "/var/mobile/Library/Preferences/com.redwood.alwayson.plist"
 #endif
 #define RW_AOD_CHANGED "com.redwood.alwayson.changed"
-#define RW_AOD_SERVICE_STATUS "com.redwood.alwayson.status"
+#include "state.h"
 static inline BOOL rw_aod_target(void){
     char args[2048]={0};size_t n=sizeof(args)-1;
     if(sysctlbyname("kern.bootargs",args,&n,NULL,0))return NO;

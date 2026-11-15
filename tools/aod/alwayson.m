@@ -5,18 +5,34 @@
 #import <objc/runtime.h>
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
+#include <stdatomic.h>
+#include <sys/sysctl.h>
 #include "config.h"
 void rw_alwayson_settings_start(void);
-static BOOL enabled,ready,configured,osSupports,osNativeSupported,osObserved;
-static long long lastState;
-static int statusToken=-1;
+static atomic_bool enabled,ready,configured,osSupports,osNativeSupported,osObserved;
+static _Atomic(long long) lastState,completedState;
+static atomic_bool requestObserved,completionObserved;
+static atomic_uint_fast64_t transitionGeneration;
+static int statusToken=-1,lowPowerToken=-1;
+/* Low Power Mode suspends AOD, as on iPhone; the saved setting is kept. */
+static BOOL lowPowerMode(void){
+    uint64_t on=0;
+    if(lowPowerToken<0&&notify_register_check("com.apple.system.lowpowermode",&lowPowerToken)!=NOTIFY_STATUS_OK)return NO;
+    return notify_get_state(lowPowerToken,&on)==NOTIFY_STATUS_OK&&on;
+}
+/* Kernel AOD panel dimming (kern.redwood.display_aod): absent on old kernels. */
+static void panelAOD(BOOL on){
+    int value=on?1:0;(void)sysctlbyname("kern.redwood.display_aod",NULL,NULL,&value,sizeof(value));
+}
 static __weak id platform;
 static BOOL (*osSupportOriginal)(id,SEL);
-static id (*engineInitOriginal)(id,SEL,id,id,id,id);
+typedef id (*RWEngineInit)(id __attribute__((ns_consumed)),SEL,id,id,id,id) __attribute__((ns_returns_retained));
+static RWEngineInit engineInitOriginal;
 static void (*pseudoOriginal)(id,SEL,BOOL);
 static void (*bindOriginal)(id,SEL);
 static void (*updateOriginal)(id,SEL);
 static void (*transitionOriginal)(id,SEL,id,long long,id);
+static void (*completeOriginal)(id,SEL,id,long long,id);
 static id object(id obj,const char *name){
     SEL sel=sel_registerName(name);NSMethodSignature *sig=[obj methodSignatureForSelector:sel];
     return sig&&sig.numberOfArguments==2&&sig.methodReturnType[0]=='@'?((id(*)(id,SEL))objc_msgSend)(obj,sel):nil;
@@ -34,17 +50,20 @@ static BOOL setBool(id obj,const char *name,BOOL value){
 }
 static void publish(void){
     if(statusToken<0)return;
-    uint64_t flags=(ready?1:0)|(enabled?2:0)|(boolean(platform,"isAlwaysOnEnabled")?4:0);
+    uint64_t flags=RW_AOD_STATUS_VERSION|(ready?RW_AOD_READY:0)|(enabled?RW_AOD_ENABLED:0)|(boolean(platform,"isAlwaysOnEnabled")?RW_AOD_NATIVE_ENABLED:0);
+    flags|=requestObserved?RW_AOD_REQUEST_VALID:0;flags|=completionObserved?RW_AOD_COMPLETED_VALID:0;
     flags|=osSupports?16:0;flags|=osNativeSupported?32:0;flags|=osObserved?64:0;
-    flags|=((uint64_t)lastState&15)<<8;notify_set_state(statusToken,flags);
+    flags|=((uint64_t)lastState&15)<<8;flags|=((uint64_t)completedState&15)<<12;notify_set_state(statusToken,flags);
 }
 static void applyDomain(id domain){
-    NSDictionary *config=rw_aod_config();enabled=rw_aod_value(config,@"Enabled");
-    BOOL ok=setBool(domain,"setEnableAlwaysOn:",enabled);
+    NSDictionary *config=rw_aod_config();enabled=rw_aod_value(config,@"Enabled")&&!lowPowerMode();
+    BOOL ok=YES;
     /* Native development support flag; not a global MobileGestalt override. */
     ok=setBool(domain,"setForceAndromedaSupport:",YES)&&ok;
     ok=setBool(domain,"setShowWallpaperInAlwaysOn:",rw_aod_value(config,@"ShowWallpaper"))&&ok;
     ok=setBool(domain,"setShowNotificationsInAlwaysOn:",rw_aod_value(config,@"ShowNotifications"))&&ok;
+    /* Apply appearance before enabling: avoid briefly rendering old wallpaper. */
+    ok=setBool(domain,"setEnableAlwaysOn:",ok&&enabled)&&ok;
     configured=ok;
     if(!ok){enabled=NO;setBool(domain,"setEnableAlwaysOn:",NO);}
     publish();
@@ -65,7 +84,8 @@ static BOOL observedOSSupport(id self,SEL cmd){
 static void useLiveComposition(id self,SEL cmd,BOOL requested){
     (void)requested;pseudoOriginal(self,cmd,YES);
 }
-static id engineInitialized(id self,SEL cmd,id delegate,id provider,id os,id budget){
+static id engineInitialized(id self __attribute__((ns_consumed)),SEL cmd,id delegate,id provider,id os,id budget) __attribute__((ns_returns_retained));
+static id engineInitialized(id self __attribute__((ns_consumed)),SEL cmd,id delegate,id provider,id os,id budget){
     id result=engineInitOriginal(self,cmd,delegate,provider,os,budget);
     if(result)setBool(result,"setUsePseudoFlipbook:",YES);
     return result;
@@ -89,16 +109,24 @@ static void revokeForInactive(void){
     id app=UIApplication.sharedApplication;id auth=object(app,"authenticationController");
     SEL revoke=sel_registerName("revokeAuthenticationImmediatelyForPublicReason:");
     NSMethodSignature *sig=[auth methodSignatureForSelector:revoke];
-    if(sig&&sig.numberOfArguments==3&&sig.methodReturnType[0]=='v')
+    if(sig&&sig.numberOfArguments==3&&sig.methodReturnType[0]=='v'&&[sig getArgumentTypeAtIndex:2][0]=='@')
         ((void(*)(id,SEL,id))objc_msgSend)(auth,revoke,@"Redwood Always-On: locked display");
 }
 static void backlightWillChange(id self,SEL cmd,id host,long long state,id event){
-    lastState=state;transitionOriginal(self,cmd,host,state,event);publish();
+    lastState=state;requestObserved=YES;uint64_t generation=++transitionGeneration;
+    /* InactiveOn (1) is the AOD picture: dim the panel; awake states restore. */
+    if(state==1)panelAOD(enabled);else if(state>=2)panelAOD(NO);
+    transitionOriginal(self,cmd,host,state,event);publish();
     /* InactiveOn is AOD, not an authenticated screen. Preserve the software
      * passcode policy even if displayStatus stays on in this native mode. */
-    if(enabled&&(state==0||state==1))dispatch_async(dispatch_get_main_queue(),^{
+    if(enabled&&rw_aod_inactive(state))dispatch_async(dispatch_get_main_queue(),^{
+        if(!rw_aod_revoke_current(enabled,generation,transitionGeneration,lastState))return;
         @try {revokeForInactive();}@catch(NSException *exception){(void)exception;}
     });
+}
+static void backlightCompleted(id self,SEL cmd,id backlight,long long state,id event){
+    completeOriginal(self,cmd,backlight,state,event);
+    completedState=state;completionObserved=YES;publish();
 }
 static BOOL pinned(Method method,const char *image,uintptr_t address,unsigned arguments,char result){
     if(!method||method_getNumberOfArguments(method)!=arguments)return NO;
@@ -121,7 +149,8 @@ __attribute__((constructor))static void start(void){
     Class sharedGuard=objc_getClass("SBBacklightPlatformProvider");
     const void *guardKey=(const void*)sel_registerName("redwoodAlwaysOnServiceInstalled");
     if(sharedGuard&&objc_getAssociatedObject((id)sharedGuard,guardKey))return;
-    enabled=rw_aod_value(rw_aod_config(),@"Enabled");
+    enabled=rw_aod_value(rw_aod_config(),@"Enabled")&&!lowPowerMode();
+    panelAOD(NO); /* a SpringBoard restart never leaves the panel dimmed */
     notify_register_check(RW_AOD_SERVICE_STATUS,&statusToken);
     Class defaults=objc_getClass("SBAlwaysOnDefaults"),provider=objc_getClass("SBBacklightPlatformProvider"),controller=objc_getClass("SBBacklightController");
     Class engine=objc_getClass("BLSHAlwaysOnPresentationEngine");
@@ -131,8 +160,10 @@ __attribute__((constructor))static void start(void){
     Method bind=class_getInstanceMethod(defaults,sel_registerName("_bindAndRegisterDefaults"));
     Method support=class_getClassMethod(provider,sel_registerName("deviceSupportsAlwaysOn"));
     Method update=class_getInstanceMethod(provider,sel_registerName("_updateAlwaysOnEnabled"));
+    Method complete=class_getInstanceMethod(controller,sel_registerName("backlight:didCompleteUpdateToState:forEvent:"));
     Method transition=class_getInstanceMethod(controller,sel_registerName("backlightHost:willTransitionToState:forEvent:"));
-    if(!pinned(engineInit,"/BacklightServicesHost.framework/",0x1eebb29c4,6,'@')||
+    if(!pinned(complete,"/SpringBoard.framework/",0x1c5066388,5,'v')||
+        !pinned(engineInit,"/BacklightServicesHost.framework/",0x1eebb29c4,6,'@')||
         !pinned(pseudo,"/BacklightServicesHost.framework/",0x1eebb8dd4,3,'v')||
         !pinned(osSupport,"/BacklightServicesHost.framework/",0x1eeba9734,2,'B')||
         !pinned(bind,"/SpringBoardFoundation.framework/",0x18e609e4c,2,'v')||
@@ -149,9 +180,11 @@ __attribute__((constructor))static void start(void){
     osSupportOriginal=(void*)method_setImplementation(osSupport,(IMP)observedOSSupport);
     method_setImplementation(support,(IMP)s20Support);
     updateOriginal=(void*)method_setImplementation(update,(IMP)policyUpdated);
+    completeOriginal=(void*)method_setImplementation(complete,(IMP)backlightCompleted);
     transitionOriginal=(void*)method_setImplementation(transition,(IMP)backlightWillChange);
     ready=YES;objc_setAssociatedObject((id)sharedGuard,guardKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_async(dispatch_get_main_queue(),^{applySettings();});
     static int token;notify_register_dispatch(RW_AOD_CHANGED,&token,dispatch_get_main_queue(),^(int t){(void)t;applySettings();});
+    static int lpmToken;notify_register_dispatch("com.apple.system.lowpowermode",&lpmToken,dispatch_get_main_queue(),^(int t){(void)t;applySettings();});
     publish();
 }

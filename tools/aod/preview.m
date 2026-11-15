@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "preview_token.h"
+#include "config.h"
 static id cover;
 static NSTimer *watchdog;
 static UIGestureRecognizer *touchObserver;
@@ -37,7 +38,7 @@ static BOOL getBool(id object,const char *name,BOOL fallback){
 static id manager(void){return getObject((id)objc_getClass("SBLockScreenManager"),"sharedInstance");}
 static BOOL displayAwake(void){uint64_t on=0;return notify_get_state(displayToken,&on)==NOTIFY_STATUS_OK&&on;}
 static BOOL safeForPreview(id c){
-    return bagState && bagState(NULL)==1 && displayAwake() &&
+    return !rw_aod_value(rw_aod_config(),@"Enabled") && bagState && bagState(NULL)==1 && displayAwake() &&
         getBool(manager(),"isUILocked",NO) &&
         getBool(c,"isMainPageVisible",NO) &&
         !getBool(c,"isPasscodeLockVisible",YES) &&
@@ -81,10 +82,16 @@ static void finish(void){
     [watchdog invalidate];watchdog=nil;
     if([cover isKindOfClass:UIViewController.class])[((UIViewController*)cover).view removeGestureRecognizer:touchObserver];
     touchObserver=nil;
-    @try {if(cover&&nativeMethodMatches())((void(*)(id,SEL,BOOL))objc_msgSend)(cover,transition,NO);}
+    int nativeToken=-1;uint64_t flags=0;
+    if(notify_register_check(RW_AOD_SERVICE_STATUS,&nativeToken)==NOTIFY_STATUS_OK){notify_get_state(nativeToken,&flags);notify_cancel(nativeToken);}
+    BOOL nativeOwnsAppearance=(flags&7)==7&&((flags>>8)&15)==1;
+    BOOL restored=NO;
+    @try {if(!nativeOwnsAppearance&&cover&&nativeMethodMatches()){
+        ((void(*)(id,SEL,BOOL))objc_msgSend)(cover,transition,NO);restored=YES;
+    }}
     @catch(NSException *exception){(void)exception;NSLog(@"RedwoodAODPreview: appearance restoration raised an exception");}
-    cover=nil;status(4);
-    NSLog(@"RedwoodAODPreview: normal appearance requested; preview ended");
+    cover=nil;status(nativeOwnsAppearance?7:restored?4:6);
+    NSLog(@"RedwoodAODPreview: preview ended; %@",nativeOwnsAppearance?@"native service owns appearance":restored?@"normal appearance requested":@"restoration failed");
 }
 static void begin(void){
     if(active||!consumeToken())return;

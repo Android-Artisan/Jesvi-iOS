@@ -34,6 +34,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <notify.h>
+#include "../../tools/aod/state.h"
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
@@ -1575,6 +1576,7 @@ idle_thread(__unused void *argument)
 {
 	int lock_s = 10, auto_s = 60, mode = 1;     /* (default 1 since 2026-11-13, the user's wish; was 2) */
 	uint64_t woke_at = 0;
+	int aod_token = NOTIFY_TOKEN_INVALID;
 	bool was_on = false, booted = false;
 	char arguments[1024] = "";
 	size_t size = sizeof(arguments) - 1;
@@ -1593,6 +1595,7 @@ idle_thread(__unused void *argument)
 	if (mode == 0) {
 		return NULL;                    /* idle_lock=0: iOS's own, broken, idle timer */
 	}
+	(void)notify_register_check(RW_AOD_SERVICE_STATUS, &aod_token);
 	say("redwood: idle timer (idle_lock=%d): %d s after a wake with no touch%s\n", mode, lock_s,
 	    mode >= 2 ? ", Auto-Lock's time once touched" : "");
 	for (;;) {
@@ -1608,7 +1611,11 @@ idle_thread(__unused void *argument)
 		booted |= touch_mode != 0;      /* (0 before the window server has said anything) */
 		/* touch detection mode: 0xfe/0xff the display off; 0x1/0x101 the lock screen (pocket touches); 0 unlocked */
 		on = (touch_mode & 0xff) != TOUCH_MODE_WAKE && (touch_mode & 0xff) != TOUCH_MODE_OFF && booted;
-		if (!on) {
+		uint64_t aod_flags = 0;
+		bool aod_inactive = aod_token != NOTIFY_TOKEN_INVALID &&
+		    notify_get_state(aod_token, &aod_flags) == NOTIFY_STATUS_OK && rw_aod_idle_suppressed(aod_flags);
+		if (!on || aod_inactive) {
+			/* AOD may keep touch/displayStatus on: another lock press can wake it. */
 			was_on = false;
 			continue;
 		}
