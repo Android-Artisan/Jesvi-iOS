@@ -56,6 +56,7 @@ bsd/dev/redwood_camera_s20.c
 bsd/dev/redwood_camera_s20_2ld.h
 bsd/dev/redwood_camera_s20_2ld_ret.h
 bsd/dev/redwood_camera_s20_3j1.h
+bsd/dev/redwood_camera_s20_controls.h
 bsd/dev/redwood_cpufreq.c
 bsd/dev/redwood_cs40l25.c
 bsd/dev/redwood_dbgport.c

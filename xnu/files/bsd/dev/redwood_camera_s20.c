@@ -18,14 +18,36 @@
 #include <sys/redwood_audio.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
+#include "redwood_camera_s20_controls.h"
+#include "redwood_camera_s20_aux_power.h"
+#include "redwood_camera_s20_gw2_power.h"
+#include "redwood_camera_s20_main_voltage.h"
+#include "redwood_camera_s20_aux_table.h"
+#include "redwood_camera_s20_2la.h"
+#include "redwood_camera_s20_2la_controls.h"
 #include "redwood_camera_s20_3j1.h"
 #include "redwood_camera_s20_2ld.h"
 #include "redwood_camera_s20_2ld_ret.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#include "redwood_camera_s20_map_cache.h"
+static LCK_GRP_DECLARE(s20_map_group,"s20_camera_register_maps");
+static LCK_MTX_DECLARE(s20_map_lock,&s20_map_group);
+static struct s20_map_cache s20_register_maps;
+static uintptr_t s20_map_new(void *context,uint64_t physical,uint64_t bytes) {
+    (void)context;return (uintptr_t)ml_io_map((vm_offset_t)physical,(vm_size_t)bytes);
+}
+static vm_offset_t cam_s20_io_map(vm_offset_t physical,vm_size_t bytes) {
+    lck_mtx_lock(&s20_map_lock);
+    vm_offset_t address=(vm_offset_t)s20_map_get(&s20_register_maps,physical,bytes,s20_map_new,NULL);
+    lck_mtx_unlock(&s20_map_lock);return address;
+}
+
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
 extern bool redwood_s2mpb02_camera_bits(uint8_t reg, uint8_t mask, uint8_t value);
 extern bool redwood_s2mpb02_front_voltages(uint8_t saved[4], bool restore);
+extern bool redwood_s2mpb02_main_voltages(struct cam_main_voltage *,bool,bool *,void *,
+    bool(*)(void *,uint8_t,uint8_t *),bool(*)(void *,uint8_t,uint8_t));
 extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
 
 #define PINCTRL_PERIC1_GPC0       0x0a0U
@@ -95,20 +117,32 @@ cam_s20_pmic03_read(uint8_t reg, uint8_t *value)
 	return redwood_bbi2c_read_reg(&cam_pmic03_bus, CAM_S2MPB03_ADDR, reg, value, 1);
 }
 
-static bool
-cam_s20_pmic03_bits(uint8_t reg, uint8_t before, uint8_t value)
-{
-	uint8_t after = 0, want = (uint8_t)((before & 0x7f) | (value & 0x80));
-	if (reg != CAM_S2MPB03_LDO2 && reg != CAM_S2MPB03_LDO3 && reg != CAM_S2MPB03_LDO5) return false;
-	if (want == before) return true;
-	return redwood_bbi2c_write_reg(&cam_pmic03_bus, CAM_S2MPB03_ADDR, reg, want) &&
-	    cam_s20_pmic03_read(reg, &after) && ((after ^ want) & 0x80) == 0;
-}
-
 static void
 cam_s20_wait_ms(unsigned ms)
 {
 	delay_for_interval(ms, NSEC_PER_MSEC);
+}
+
+static bool main_voltage_read03(void *,uint8_t,uint8_t *);
+static bool main_voltage_write03(void *,uint8_t,uint8_t);
+static bool
+cam_s20_pmic03_bits(uint8_t reg,uint8_t before,uint8_t value)
+{
+    (void)before; /* Snapshot only selects the requested enable bit, not live selectors. */
+    return cam_main_enable_bits((struct cam_main_enable_io){NULL,main_voltage_read03,main_voltage_write03},reg,value&0x80);
+}
+
+static bool main_voltage_read03(void *ctx,uint8_t reg,uint8_t *value) {
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO3||reg==CAM_S2MPB03_LDO5)&&cam_s20_pmic03_read(reg,value);
+}
+static bool main_voltage_write03(void *ctx,uint8_t reg,uint8_t value) {
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO3||reg==CAM_S2MPB03_LDO5)&&
+        redwood_bbi2c_write_reg(&cam_pmic03_bus,CAM_S2MPB03_ADDR,reg,value);
+}
+static bool main_voltages(struct cam_main_voltage *saved,bool restore) {
+    bool clean=true,ok=redwood_s2mpb02_main_voltages(saved,restore,&clean,NULL,main_voltage_read03,main_voltage_write03);
+    if(!clean)printf("camera: primary voltage rollback failed; PMIC access blocked\n");
+    return ok&&clean;
 }
 
 static uint64_t
@@ -187,10 +221,15 @@ void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
  * Binned, the picture was 1008x756 colour cells blown up to the 1504x1128 preview: soft, and every frame went
  * through libredwood-media's slow "magnified" path (11-21 fps, 2026-11-12). cam_s20_rear_full=0: the binned mode.
  */
+/* Selected only by ios_select between sessions; never changed by a live sysctl.
+ * -1 retains the boot profile; 0/1 explicitly select binned/full rear. */
+static int cam_s20_rear_mode_override = -1;
+void redwood_camera_s20_select_rear_mode(int full) { cam_s20_rear_mode_override = full; }
 bool
 redwood_camera_s20_rear_full(void)
 {
 	static int full = -1;
+	if (cam_s20_rear_mode_override >= 0) return cam_s20_rear_mode_override != 0;
 
 	if (full < 0) {
 		/* OFF (2026-11-12): in this mode the sensor's RAW10 is no plain Bayer -- even rows carry light in 1 pixel of 4,
@@ -284,6 +323,7 @@ cam_s20_af_down(void)
 /* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
  * the sensor's black level per site (2026-11-12) */
 static uint32_t cam_s20_rear_test_lines = 16384;
+static int cam_s20_rear_i2c_half_us=1;
 static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
 
 /*
@@ -292,9 +332,14 @@ static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: hal
  * bit-banged I2C was most of the ~3.1 s every start and flip took. redwood_camera_s20_rear_cool() (the camera
  * thread, 20 s after the last session) takes it down as a session's end used to. cam_s20_rear_warm=0: never warm.
  */
+/* Rear diagnostic options: bit0 stock-style no hold, bit1 force cold sessions.
+ * Root-only writes; each session takes one snapshot. Default zero preserves behavior. */
+static int cam_s20_rear_diag;
+void redwood_camera_s20_rear_cool(void);
 static bool cam_s20_rear_warm;
 static struct {
 	uint8_t p02[3], p03[3];
+    struct cam_main_voltage voltage;
 	uint32_t reset_con, reset_dat, reset_pud, mclk_con, mclk_dat, mclk_pud, clock[4];
 } cam_s20_rear_cold;
 bool redwood_camera_s20_rear_is_warm(void) { return cam_s20_rear_warm; }
@@ -307,7 +352,20 @@ static volatile uint32_t cam_s20_exp_lines, cam_s20_exp_gain, cam_s20_exp_frame;
 static volatile bool cam_s20_exp_pending;
 static uint32_t cam_s20_stream_frames, cam_s20_stream_errors, cam_s20_stream_bytes;
 static bool cam_s20_stream_cached;
+static bool cam_s20_stream_exposure_failed;
 static volatile uint8_t *cam_s20_optical_dma;
+
+static bool
+cam_s20_exposure_write16(void *context, uint16_t reg, uint16_t value)
+{
+    return cam_3j1_write16(context, reg, value);
+}
+
+static bool
+cam_s20_exposure_write8(void *context, uint16_t reg, uint8_t value)
+{
+    return cam_3j1_write8(context, reg, value);
+}
 
 static void
 cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
@@ -334,10 +392,10 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	/* half_us 1 (2026-11-12; was 2, and 4 before): the 7354-record global table is ~180 000 bits, and the rear
 	 * still took ~3 s from a flip to its first frame at 2. The S5K2LD takes fast-mode I2C (400 kHz); the pin
 	 * writes themselves keep a half period well above the 0.6 us fast mode wants. cam_s20_rear_i2c=N sets it. */
-	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
+	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = (uint32_t)__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED) };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p02[3] = { 0 }, p03[3] = { 0 }, id[2] = { 0 }, rev[2] = { 0 };
 	uint32_t reset_con = cam_s20_rd(reset, REDWOOD_GPIO_CON), reset_dat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t reset_pud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mclk_con = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -347,6 +405,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char acked[96] = "";
 	bool pmic03_ready = false, sensor_ready = false, clock_ready = false, rails02 = false, rails03 = false;
 	bool ok = false, sensor_ack = false, warm_start = false, cold_again = false;
+    struct cam_main_voltage voltage={0};
+	unsigned diag = (unsigned)__atomic_load_n(&cam_s20_rear_diag, __ATOMIC_RELAXED);
 	uint32_t clock_offsets[4] = { CMU_CIS_CLK0_MUX, CMU_CIS_CLK0_DIV, CMU_CIS_CLK0_GATE, CMU_CIS_CLK0_QCH };
 	unsigned i;
 
@@ -361,6 +421,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		(void)snprintf(out, cap, "{\"camera\":\"S5K2LD\",\"result\":\"error\",\"phase\":\"CMU map\"}\n");
 		return;
 	}
+	if (diag & 2U) redwood_camera_s20_rear_cool();
 	cam_pmic03_bus.bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM0);
 	cam_pmic03_bus.sda_bank = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM1);
 	pmic03_ready = true;
@@ -378,6 +439,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (cam_s20_rear_warm) {
 		/* what was there before the rear was first powered: what the real power-down goes back to */
 		memcpy(p02, cam_s20_rear_cold.p02, sizeof(p02));
+        voltage=cam_s20_rear_cold.voltage;
 		memcpy(p03, cam_s20_rear_cold.p03, sizeof(p03));
 		reset_con = cam_s20_rear_cold.reset_con; reset_dat = cam_s20_rear_cold.reset_dat; reset_pud = cam_s20_rear_cold.reset_pud;
 		mclk_con = cam_s20_rear_cold.mclk_con; mclk_dat = cam_s20_rear_cold.mclk_dat; mclk_pud = cam_s20_rear_cold.mclk_pud;
@@ -386,6 +448,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		goto warm_bus;
 	}
 cold_start:
+    (void)snprintf(phase,sizeof(phase),"primary board voltages");
+    if(!main_voltages(&voltage,false))goto cleanup;
 	/* x1slte's per-module power sequence: shared 1.3 V first, reset low, then VDDIO/analog/PHY/core. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	redwood_gpio_func(reset, 0, REDWOOD_GPIO_OUTPUT);
@@ -452,7 +516,10 @@ read_id:
 	if (warm_start && !(ok && id[0] == 0x20 && id[1] == 0xcd)) {
 		/* the warm sensor does not answer as itself: a real power cycle, from the top */
 		printf("camera: rear: the warm sensor did not answer (id %02x%02x): cold start\n", id[0], id[1]);
-		cam_s20_rear_warm = false;
+        /* Keep the original snapshot/voltage journal until fully powered down. */
+        redwood_camera_s20_rear_cool();
+        voltage=cam_s20_rear_cold.voltage;
+        if(voltage.changed||!redwood_bbi2c_setup(&cam_pmic03_bus,false,out,cap))goto cleanup;
 		warm_start = false;
 		cold_again = true;
 		ok = false;
@@ -548,12 +615,12 @@ read_id:
 			unsigned k, t;
 
 			(void)snprintf(stream_phase, sizeof(stream_phase), "receiver map");
-			rx_pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
-			rx_cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-			rx_csi = (volatile uint8_t *)ml_io_map(CSIS0_PHYS, 0x1000);
-			rx_phy = (volatile uint8_t *)ml_io_map(CSIS0_DCPHY_PHYS, 0x500);
-			rx_bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-			rx_sys = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+			rx_pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
+			rx_cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+			rx_csi = (volatile uint8_t *)cam_s20_io_map(CSIS0_PHYS, 0x1000);
+			rx_phy = (volatile uint8_t *)cam_s20_io_map(CSIS0_DCPHY_PHYS, 0x500);
+			rx_bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+			rx_sys = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 			if (rx_pmu == NULL || rx_cmu == NULL || rx_csi == NULL || rx_phy == NULL || rx_bias == NULL || rx_sys == NULL) goto stream_done;
 			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS domain off");
 			if (!(cam_s20_rd(rx_pmu, 0x1d84) & 1U)) goto stream_done;
@@ -677,13 +744,20 @@ read_id:
 						uint32_t el = cam_s20_exp_lines, eg = cam_s20_exp_gain, ef = cam_s20_exp_frame;
 
 						cam_s20_exp_pending = false;
-						/* (the SMIA registers are on page 0x4000: the tables leave others selected) */
-						(void)cam_3j1_write16(&sensor_bus, 0xFCFC, 0x4000);
-						(void)cam_3j1_write8(&sensor_bus, 0x0104, 1);
-						if (ef) (void)cam_3j1_write16(&sensor_bus, 0x0340, (uint16_t)ef);
-						(void)cam_3j1_write16(&sensor_bus, 0x0202, (uint16_t)el);
-						(void)cam_3j1_write16(&sensor_bus, 0x0204, (uint16_t)eg);
-						(void)cam_3j1_write8(&sensor_bus, 0x0104, 0);
+						const struct redwood_2ld_control_io io = {
+						    .context = &sensor_bus, .write16 = cam_s20_exposure_write16, .write8 = cam_s20_exposure_write8
+						};
+						uint16_t failed_reg;
+
+						if (!redwood_2ld_write_exposure_mode(&io, !(diag & 1U), el, eg, ef, &failed_reg)) {
+							/* Do not emit future frames tagged with an unacknowledged request.
+							 * Break through the normal DMA abort/stream-off cleanup below. */
+							cam_s20_stream_exposure_failed = true;
+							cam_s20_stream_errors++;
+							ok = false;
+							(void)snprintf(phase, sizeof(phase), "rear exposure I2C reg %#x", failed_reg);
+							break;
+						}
 					}
 					if (cam_s20_af_pending && cam_s20_af_ready) {
 						uint32_t want = cam_s20_af_want;
@@ -735,7 +809,7 @@ read_id:
 		(void)cam_3j1_write16(&sensor_bus, 0x0100, 0x0000);
 		cam_s20_wait_ms(40);
 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
-		(void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
+		if (ok) (void)snprintf(stream_phase, sizeof(stream_phase), "streamed (tables+run %llu ms)", ns / 1000000ULL);
 	}
 stream_done:
 	if (rx_saved) {
@@ -768,10 +842,12 @@ cleanup:
 		uint32_t want = 1;
 
 		(void)PE_parse_boot_argn("cam_s20_rear_warm", &want, sizeof(want));
+		if (diag & 2U) want = 0;
 		if (want && ok && cam_s20_stream_fn != NULL && cam_s20_stream_frames != 0 && clock_ready && rails02 && rails03) {
 			/* kept warm: the sensor in standby (stream off above), everything else as it is */
 			if (!cam_s20_rear_warm) {
 				memcpy(cam_s20_rear_cold.p02, p02, sizeof(p02));
+                cam_s20_rear_cold.voltage=voltage;
 				memcpy(cam_s20_rear_cold.p03, p03, sizeof(p03));
 				cam_s20_rear_cold.reset_con = reset_con; cam_s20_rear_cold.reset_dat = reset_dat; cam_s20_rear_cold.reset_pud = reset_pud;
 				cam_s20_rear_cold.mclk_con = mclk_con; cam_s20_rear_cold.mclk_dat = mclk_dat; cam_s20_rear_cold.mclk_pud = mclk_pud;
@@ -810,6 +886,7 @@ cleanup:
 	}
 	if (rails02)
 		(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+    if(voltage.changed&&!main_voltages(&voltage,true)){ok=false;cam_s20_stream_exposure_failed=true;}
 	/* Use the GPIO helpers so register updates keep the shared pinctrl-bank lock. */
 	redwood_gpio_restore(reset, 0, reset_con & mask_reset, reset_pud & mask_reset, reset_dat & 1U);
 	redwood_gpio_restore(mclk, 0, mclk_con & mask_mclk, mclk_pud & mask_mclk, mclk_dat & 1U);
@@ -829,7 +906,7 @@ redwood_camera_s20_rear_cool(void)
 {
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	const uint8_t *p02 = cam_s20_rear_cold.p02, *p03 = cam_s20_rear_cold.p03;
 	char report[160];
 
@@ -854,6 +931,7 @@ redwood_camera_s20_rear_cool(void)
 	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO5, p03[2], p03[2] & 0x80);
 	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO3, p03[1], p03[1] & 0x80);
 	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+    if(cam_s20_rear_cold.voltage.changed&&!main_voltages(&cam_s20_rear_cold.voltage,true))cam_s20_stream_exposure_failed=true;
 	redwood_gpio_restore(reset, 0, cam_s20_rear_cold.reset_con & 0xfU, cam_s20_rear_cold.reset_pud & 0xfU, cam_s20_rear_cold.reset_dat & 1U);
 	redwood_gpio_restore(mclk, 0, cam_s20_rear_cold.mclk_con & 0xfU, cam_s20_rear_cold.mclk_pud & 0xfU, cam_s20_rear_cold.mclk_dat & 1U);
 	redwood_bbi2c_restore(&cam_pmic03_bus);
@@ -867,7 +945,7 @@ cam_s20_front_identify(__unused const uint64_t *v, __unused unsigned n, char *ou
 	struct redwood_bbi2c sensor_bus = { .name = "S20 front SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p[5] = { 0 }, id[2] = { 0 }, rev = 0;
 	uint32_t rcon = cam_s20_rd(reset, REDWOOD_GPIO_CON), rdat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t rpud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mcon = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -1000,7 +1078,7 @@ static size_t cam_frame_size;
 /* Export a CPU-owned copy, so DMA memory can be released before a host download.
  * RWCAM001 is the existing tools/camraw.py format: one packed MIPI RAW10 frame. */
 static bool
-cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t height, bool optical)
+cam_s20_save_frame_named(const volatile uint16_t *pixels, uint32_t width, uint32_t height, bool optical, const char *label)
 {
 	uint32_t stride = width * 5 / 4, bytes = stride * height;
 	size_t size = 4096 + bytes;
@@ -1009,7 +1087,7 @@ cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t hei
 	memcpy(copy, "RWCAM001", 8);
 	uint32_t header[] = { width, height, stride, 1, 1, 1, bytes, optical ? 1U : 0U };
 	memcpy(copy + 8, header, sizeof(header));
-	strlcpy((char *)copy + 40, optical ? "SAK3J1" : "S20 DMA TPG", 16);
+	strlcpy((char *)copy + 40, label, 16);
 	for (uint32_t i = 0, o = 4096; i < width * height; i += 4, o += 5) {
 		uint16_t a = pixels[i], b = pixels[i+1], c = pixels[i+2], d = pixels[i+3];
 		copy[o] = a >> 2; copy[o+1] = b >> 2; copy[o+2] = c >> 2; copy[o+3] = d >> 2;
@@ -1022,6 +1100,11 @@ cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t hei
 	return true;
 }
 
+static bool
+cam_s20_save_frame(const volatile uint16_t *pixels,uint32_t width,uint32_t height,bool optical){
+    return cam_s20_save_frame_named(pixels,width,height,optical,optical?"SAK3J1":"S20 DMA TPG");
+}
+
 static int
 cam_s20_frame_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
     __unused int arg2, struct sysctl_req *req)
@@ -1032,7 +1115,32 @@ cam_s20_frame_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1,
 	lck_mtx_unlock(&cam_frame_lock);
 	return error;
 }
+static int
+cam_s20_rear_diag_sysctl(struct sysctl_oid *oidp, __unused void *arg1,
+    __unused int arg2, struct sysctl_req *req)
+{
+    int value = __atomic_load_n(&cam_s20_rear_diag, __ATOMIC_RELAXED);
+    int error = sysctl_handle_int(oidp, &value, 0, req);
+    if (error || !req->newptr) return error;
+    if (value < 0 || value > 3) return EINVAL;
+    __atomic_store_n(&cam_s20_rear_diag, value, __ATOMIC_RELAXED);
+    return 0;
+}
+
+static int
+cam_s20_rear_i2c_sysctl(struct sysctl_oid *oidp,__unused void *arg1,__unused int arg2,struct sysctl_req *req) {
+    int value=__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED);
+    int error=sysctl_handle_int(oidp,&value,0,req);
+    if(error||!req->newptr)return error;
+    if(value!=1&&value!=2)return EINVAL;
+    __atomic_store_n(&cam_s20_rear_i2c_half_us,value,__ATOMIC_RELAXED);return 0;
+}
+
 SYSCTL_DECL(_kern_redwood);
+SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_rear_i2c, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    0,0,cam_s20_rear_i2c_sysctl,"I","Next primary setup I2C half-period:1 or2us; NACK fallback remains2");
+SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_rear_diag, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    0, 0, cam_s20_rear_diag_sysctl, "I", "Next rear session: bit0 no group hold; bit1 cold start");
 int redwood_camera_s20_turn;    /* kern.redwood.camera_turn: libredwood-media turns the front camera's pictures (bit 0) */
 SYSCTL_INT(_kern_redwood, OID_AUTO, camera_turn, CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, &redwood_camera_s20_turn, 0, "");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_LOCKED,
@@ -1046,6 +1154,9 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
  */
 /* data: one frame of MIPI RAW10 (four pixels in five bytes), `stride' bytes from one line to the next */
 /* the stream's sensor mode: full 3648x2736 (Samsung's 3648x2736_30fps, FULL MIPI PLL) or the 2x2-binned 1824x1368 */
+static bool cam_s20_ultra;
+void redwood_camera_s20_set_ultra(bool ultra){cam_s20_ultra=ultra;}
+static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap);
 static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
@@ -1081,10 +1192,13 @@ redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 	uint64_t args[2] = { cam_s20_rear ? 2 : 1, 14 };
 	if (fn == NULL || cam_s20_stream_fn != NULL) return false;
 	cam_s20_stream_frames = cam_s20_stream_errors = 0;
+	cam_s20_stream_exposure_failed = false;
 	cam_s20_stream_fn = fn;
-	cam_s20_dma_pattern(args, 2, out, cap);
+	bool clean=true;
+    if(cam_s20_ultra)clean=cam_s20_2la_live(fn,out,cap);
+    else cam_s20_dma_pattern(args, 2, out, cap);
 	cam_s20_stream_fn = NULL;
-	return cam_s20_stream_frames != 0;
+	return clean && cam_s20_stream_frames != 0 && !cam_s20_stream_exposure_failed;
 }
 
 static void
@@ -1129,10 +1243,10 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		sensor_mode = 2;
 	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
-	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	if (!pmu) pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	if (!pmu) goto report;
 	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { phase = "CSIS domain off"; goto report; }
-	if (!cmu) cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+	if (!cmu) cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
 	if (!cmu) goto report;
 	/* Read SysMMU only with all its S1/S2 clock gates observed on. */
 	for (i = 0; i < 4; i++) {
@@ -1143,9 +1257,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2)) {
 		phase = "CSIS secure access"; goto report;
 	}
-	if (!mmu0) mmu0 = (volatile uint8_t *)ml_io_map(0x17110000, 0x100);
-	if (!mmu1) mmu1 = (volatile uint8_t *)ml_io_map(0x17140000, 0x100);
-	if (!dma) dma = (volatile uint8_t *)ml_io_map(0x170c0000, 0x5000);
+	if (!mmu0) mmu0 = (volatile uint8_t *)cam_s20_io_map(0x17110000, 0x100);
+	if (!mmu1) mmu1 = (volatile uint8_t *)cam_s20_io_map(0x17140000, 0x100);
+	if (!dma) dma = (volatile uint8_t *)cam_s20_io_map(0x170c0000, 0x5000);
 	if (!mmu0 || !mmu1 || !dma) goto report;
 	if (cam_s20_dma_quarantined) {
 		/* a stop that was not acknowledged in time may have ended since: looked at again instead of refusing until a reboot */
@@ -1176,7 +1290,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (!redwood_camera_dma_get(total, &phys, &buffer)) { phase = "no free low-memory slot"; goto report; }
 	allocated = true;
 	if (optical) {
-		route = (volatile uint8_t *)ml_io_map(rear ? 0x1702041c : 0x17020418, 4);
+		route = (volatile uint8_t *)cam_s20_io_map(rear ? 0x1702041c : 0x17020418, 4);
 		if (!route) { phase = "DMA input mux map"; goto release; }
 		route_saved = cam_s20_rd(route, 0);
 	}
@@ -1230,6 +1344,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 
 			cam_s20_optical_dma = dma;
 			cam_s20_identify(&rx, 1, sensor_report, sizeof(sensor_report));
+            if(!cam_s20_stream_frames)printf("camera: primary setup failed: %s",sensor_report);
 			cam_s20_optical_dma = NULL;
 		} else {
 			cam_s20_optical_dma = dma;
@@ -1325,10 +1440,10 @@ report:
 static void
 cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *top = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x3000);
-	volatile uint8_t *csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
-	volatile uint8_t *vc0 = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_VC0_PHYS, 0x100);
-	volatile uint8_t *common = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_COMMON_PHYS, 0x100);
+	volatile uint8_t *top = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x3000);
+	volatile uint8_t *csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
+	volatile uint8_t *vc0 = (volatile uint8_t *)cam_s20_io_map(CSIS1_DMA1_VC0_PHYS, 0x100);
+	volatile uint8_t *common = (volatile uint8_t *)cam_s20_io_map(CSIS1_DMA1_COMMON_PHYS, 0x100);
 	if (cap == 0) return;
 	if (top == NULL || csi == NULL || vc0 == NULL || common == NULL) {
 		(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"csis1-inventory\",\"result\":\"error\",\"phase\":\"map\"}\n");
@@ -1361,7 +1476,7 @@ cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *ou
 static void
 cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL;
 	uint32_t conf = 0, status = 0, initial_status = 0, after = 0, regs[8] = { 0 }, i;
 	uint64_t smc = 0;
@@ -1387,7 +1502,7 @@ cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, ch
 			smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
 		}
 	}
-	if (status & 1U) cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+	if (status & 1U) cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
 	map_ok = cmu != NULL;
 	if (map_ok) {
 		regs[0] = cam_s20_rd(cmu, 0x0600);
@@ -1429,7 +1544,7 @@ cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, ch
 void
 cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL;
 	volatile uint8_t *csi = NULL;
 	uint32_t pd_status, cmu_before = 0, cmu_during = 0, cmu_after = 0;
@@ -1440,8 +1555,8 @@ cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *o
 		(void)snprintf(out, cap, "{\"stage\":\"csis1-gate\",\"result\":\"error\",\"phase\":\"CSIS power domain off\",\"write_sensor\":false}\n");
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
 	if (cmu == NULL || csi == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis1-gate\",\"result\":\"error\",\"phase\":\"map\",\"write_sensor\":false}\n");
 		return;
@@ -1487,7 +1602,7 @@ cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *o
 static void
 cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL, *dphy = NULL, *isppre = NULL;
 	uint32_t qcmu = 0, qcmu_on = 0, qcmu_after = 0, qcsis = 0, qcsis_on = 0, qcsis_after = 0;
 	uint32_t iso = 0, iso_after = 0, reset_sysreg = 0, sc[8] = { 0 }, lane0[6] = { 0 };
@@ -1500,9 +1615,9 @@ cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-snapshot\",\"result\":\"error\",\"phase\":\"CSIS domain off\"}\n");
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (cmu == NULL || dphy == NULL || isppre == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-snapshot\",\"result\":\"error\",\"phase\":\"map\"}\n");
 		return;
@@ -1551,7 +1666,7 @@ cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char
 static void
 cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *sysreg;
 	uint32_t status;
 	uint64_t smc;
@@ -1562,7 +1677,7 @@ cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char 
 	}
 	/* exynos9830.dts: pd-csis need_smc=0x17010204; Linux calls this on domain-on. */
 	smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
-	sysreg = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	sysreg = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (sysreg == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-secure\",\"result\":\"error\",\"phase\":\"sysreg map\",\"smc\":\"%#llx\"}\n", smc);
 		return;
@@ -1578,7 +1693,7 @@ cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char 
 static void
 cam_s20_csis_reset_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *sysreg;
 	uint32_t before, requested, during, after;
 	uint64_t smc;
@@ -1588,7 +1703,7 @@ cam_s20_csis_reset_probe(__unused const uint64_t *v, __unused unsigned n, char *
 		return;
 	}
 	smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
-	sysreg = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	sysreg = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (sysreg == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-reset\",\"result\":\"error\",\"phase\":\"sysreg map\",\"smc\":\"%#llx\"}\n", smc);
 		return;
@@ -1631,7 +1746,7 @@ cam_s20_regdump(void)
 		volatile uint8_t *va = NULL;
 		for (p = 0; p < pages; p++) if (page_phys[p] == pa) { va = page_virt[p]; break; }
 		if (va == NULL && pages < 24) {
-			va = (volatile uint8_t *)ml_io_map(pa, 0x1000);
+			va = (volatile uint8_t *)cam_s20_io_map(pa, 0x1000);
 			page_phys[pages] = pa; page_virt[pages] = va; pages++;
 		}
 		cam_regdump_vals[i] = va ? cam_s20_rd(va, cam_regdump_addr[i] & 0xfff) : 0xdeadbeefU;
@@ -1709,7 +1824,7 @@ cam_s20_csis_dphy_config_probe(__unused const uint64_t *v, __unused unsigned n, 
 	static const uint32_t lane_base[] = { 0x0100, 0x0200, 0x0300, 0x0400 };
 	static const uint32_t lane_regs[] = { 0x0000, 0x0004, 0x0008, 0x000c, 0x0010, 0x0014, 0x0018, 0x0030, 0x0034, 0x0040, 0x0050 };
 	static const uint32_t bias_offs[] = { 0x0000, 0x0004, 0x0008, 0x0010 };
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL, *dphy = NULL, *bias = NULL, *isppre = NULL;
 	uint32_t sc_saved[8] = { 0 }, lane_saved[4][11] = { { 0 } }, bias_saved[3] = { 0 };
 	uint32_t qcmu = 0, qcsis = 0, iso = 0, reset = 0, qcmu_after = 0, qcsis_after = 0, iso_after = 0, reset_after = 0;
@@ -1731,10 +1846,10 @@ cam_s20_csis_dphy_config_probe(__unused const uint64_t *v, __unused unsigned n, 
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-config\",\"result\":\"error\",\"phase\":\"PHY rails off\",\"ldo5s\":\"%#x\",\"ldo6s\":\"%#x\"}\n", ldo5, ldo6);
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-	isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+	isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (cmu == NULL || dphy == NULL || bias == NULL || isppre == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-config\",\"result\":\"error\",\"phase\":\"map\"}\n");
 		return;
@@ -2034,7 +2149,7 @@ cam_s20_front_set_mode(__unused const uint64_t *v, __unused unsigned n, char *ou
 	struct redwood_bbi2c bus = { .name = "SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p[5] = { 0 };
 	uint32_t rcon = cam_s20_rd(reset, REDWOOD_GPIO_CON), rdat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t rpud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mcon = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -2135,13 +2250,13 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	static const uint32_t phy_bias_offs[] = { 0x0000, 0x0004, 0x0008 };
 	static const uint32_t csi_offs[] = { 0x0004, 0x0008, 0x000c, 0x0040, 0x0044, 0x0050, 0x0054, 0x0600, 0x0690, 0x0704 };
 	struct redwood_bbi2c bus = { .name = "SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
-	volatile uint8_t *cmu_top = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	volatile uint8_t *csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
-	volatile uint8_t *dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	volatile uint8_t *bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-	volatile uint8_t *isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *cmu_top = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	volatile uint8_t *csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
+	volatile uint8_t *dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	volatile uint8_t *bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+	volatile uint8_t *isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
 	uint8_t voltage_saved[4] = { 0 };
@@ -2277,7 +2392,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if ((csi_qch & qch_mask) != qch_value) { cam_s20_update_bits(cmu, 0x3064, qch_mask, qch_value); qch_changed = true; }
 	if (!(iso & 1U)) { cam_s20_update_bits(pmu, 0x0730, 1U, 1U); iso_changed = true; }
 	if (match_rest) {
-		isp_page = (volatile uint8_t *)ml_io_map(0x17020000, 0x1000);
+		isp_page = (volatile uint8_t *)cam_s20_io_map(0x17020000, 0x1000);
 		if (isp_page == NULL) { strlcpy(phase, "isppre page map", sizeof(phase)); goto cleanup; }
 		mux_saved = cam_s20_rd(isp_page, 0x418);
 		for (i = 0; i < 3; i++) ois_saved[i] = cam_s20_rd(cmu, ois_offs[i]);
@@ -2843,11 +2958,238 @@ cam_s20_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, si
 	    0x15c302c0U, "gpm22-0", 0);
 }
 
+/* Explicit bounded auxiliary probes. Identity paths never write setfiles.
+ * Only the separately requested A202 sensor-counter test writes ordinary2LA
+ * configuration and starts/stops the sensor. No CSI/PHY/DMA access or bus scan. */
+extern bool redwood_camera_aux_acquire(void);
+extern void redwood_camera_aux_release(bool clean);
+extern bool redwood_s2mpb02_2la_power(struct cam_aux_power *, bool, bool *);
+extern bool redwood_s2mpb02_gw2_power(struct cam_gw2_power *,bool,bool *,void *,
+    bool (*)(void *,uint8_t,uint8_t *),bool (*)(void *,uint8_t,uint8_t));
+static bool aux_pmic03_read(void *ctx,uint8_t reg,uint8_t *v){(void)ctx;return cam_s20_pmic03_read(reg,v);}
+static bool aux_pmic03_write(void *ctx,uint8_t reg,uint8_t v){
+    (void)ctx;if(reg!=0x03&&reg!=0x05&&reg!=0x08&&reg!=0x09)return false;
+    return redwood_bbi2c_write_reg(&cam_pmic03_bus,CAM_S2MPB03_ADDR,reg,v);
+}
+static bool aux_sensor_write16(void *p,uint16_t reg,uint16_t value){
+    const uint8_t bytes[4]={(uint8_t)(reg>>8),(uint8_t)reg,(uint8_t)(value>>8),(uint8_t)value};
+    return redwood_bbi2c_xfer(p,0x2d,bytes,4,NULL,0);
+}
+static bool aux_sensor_read(struct redwood_bbi2c *bus,uint16_t reg,uint8_t *v,unsigned bytes){
+    const uint8_t address[2]={(uint8_t)(reg>>8),(uint8_t)reg};
+    return redwood_bbi2c_xfer(bus,0x2d,address,2,v,bytes);
+}
+static bool aux_sensor_read16(void *p,uint16_t reg,uint16_t *value){
+    uint8_t v[2]={0};if(!aux_sensor_read(p,reg,v,2))return false;*value=(uint16_t)((v[0]<<8)|v[1]);return true;
+}
+static bool aux_sensor_write8(void *p,uint16_t reg,uint8_t value){
+    const uint8_t v[3]={(uint8_t)(reg>>8),(uint8_t)reg,value};return redwood_bbi2c_xfer(p,0x2d,v,3,NULL,0);
+}
+static void aux_sensor_pause(void *p,unsigned us){(void)p;delay_for_interval(us,NSEC_PER_USEC);}
+static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
+    volatile uint8_t *sb=bus->sda_bank?bus->sda_bank:bus->bank;
+    redwood_bbi2c_restore(bus);
+    uint32_t sc=0xfU<<(bus->scl*4),sd=0xfU<<(bus->sda*4);
+    return !(((cam_s20_rd(bus->bank,REDWOOD_GPIO_CON)^bus->saved_con)&sc)||
+        ((cam_s20_rd(bus->bank,REDWOOD_GPIO_PUD)^bus->saved_pud)&sc)||
+        ((cam_s20_rd(sb,REDWOOD_GPIO_CON)^(sb==bus->bank?bus->saved_con:bus->saved_sda_con))&sd)||
+        ((cam_s20_rd(sb,REDWOOD_GPIO_PUD)^(sb==bus->bank?bus->saved_pud:bus->saved_sda_pud))&sd));
+}
+#include "redwood_camera_s20_aux_rx_impl.h"
+
+static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, redwood_s20_frame_fn fn, bool session, char *out, size_t cap) {
+    struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
+    struct cam_aux_power rails={0};
+    struct cam_gw2_power gw2_rails={0};
+    struct ax_receiver receiver={0};bool receiver_started=false;
+    struct ax_2la_control_report controls={0};
+    uint64_t requested_lines=raw&&n>0?args[0]:3000,requested_gain=raw&&n>1?args[1]:0x20;
+    if(session){requested_lines=cam_s20_exp_lines;requested_gain=cam_s20_exp_gain;}
+    bool pmic03_saved=false,stream_sent=false,stream_stop=false;
+    unsigned counter_changes=0;uint8_t last_counter=0xff;
+    volatile uint8_t *reset=NULL,*mclk=NULL,*cmu=NULL;
+    uint32_t offs[4]={0x1024,0x1820,0x2028,0x3010};
+    unsigned mclk_pin=gw2?0:3;
+    const char *sensor=gw2?"GW2":"2LA";
+    uint32_t r[3]={0},m[3]={0},clock[4]={0};
+    uint8_t model[2]={0},revision[2]={0};
+    bool pins=false,bus_saved=false,powered=false,clock_saved=false,clean=true,ok=false;
+    const char *phase="busy";
+    if(!cap)return false;
+    if((!raw&&n)||(raw&&(n>2||!ax_2la_controls_valid(requested_lines,requested_gain)))){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return false;}
+    if(!session&&!redwood_camera_aux_acquire())goto report;
+    if(raw&&!fn){
+        lck_mtx_lock(&cam_frame_lock);
+        if(cam_frame_copy)kfree_data(cam_frame_copy,cam_frame_size);
+        cam_frame_copy=NULL;cam_frame_size=0;lck_mtx_unlock(&cam_frame_lock);
+    }
+    phase="map";
+    reset=redwood_gpio_bank(PINCTRL_CMGP_PHYS,gw2?0x400:0x420);
+    mclk=redwood_gpio_bank(PINCTRL_PERIC1_PHYS,PINCTRL_PERIC1_GPC0);
+    bus.bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,0x1c0);
+    bus.sda_bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,0x1e0);
+    if(gw2){
+        /* Active pinctrl hsi2c1-bus is gpp0-2/3. The recovery gpios property
+         * lists gpc0 pins and MUST NOT be mistaken for native bus routing. */
+        bus.name="S20 GW2 HSI2C1 gpp0-2/3";
+        bus.bank=redwood_gpio_bank(PINCTRL_PERIC0_PHYS,0);bus.sda_bank=bus.bank;
+        bus.scl=2;bus.sda=3;
+        offs[0]=CMU_CIS_CLK0_MUX;offs[1]=CMU_CIS_CLK0_DIV;
+        offs[2]=CMU_CIS_CLK0_GATE;offs[3]=CMU_CIS_CLK0_QCH;
+    }
+    cmu=(volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS,0x4000);
+    if(!reset||!mclk||!bus.bank||!bus.sda_bank||!cmu)goto cleanup;
+    for(unsigned i=0;i<3;i++){r[i]=cam_s20_rd(reset,i*4);m[i]=cam_s20_rd(mclk,i*4);}
+    pins=true;
+    redwood_gpio_set(reset,0,0);redwood_gpio_func(reset,0,REDWOOD_GPIO_OUTPUT);
+    redwood_gpio_pull(reset,0,REDWOOD_GPIO_PULL_NONE);
+    phase="rails (cold dedicated supplies and BUCK2 1.3V required)";
+    if(gw2){
+        phase="S2MPB03 bus";
+        cam_pmic03_bus.bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,PINCTRL_CMGP_GPM0);
+        cam_pmic03_bus.sda_bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,PINCTRL_CMGP_GPM1);
+        if(!cam_pmic03_bus.bank||!cam_pmic03_bus.sda_bank)goto cleanup;
+        pmic03_saved=true;
+        if(!redwood_bbi2c_setup(&cam_pmic03_bus,false,out,cap))goto cleanup;
+        phase="GW2 fixed rail transaction";
+        if(!redwood_s2mpb02_gw2_power(&gw2_rails,false,&clean,NULL,aux_pmic03_read,aux_pmic03_write))goto cleanup;
+    }else if(!redwood_s2mpb02_2la_power(&rails,false,&clean))goto cleanup;
+    powered=true;
+    phase="I2C setup";bus_saved=true;
+    if(!redwood_bbi2c_setup(&bus,true,out,cap))goto cleanup;
+    delay_for_interval(10,NSEC_PER_USEC);
+    if(!gw2){redwood_gpio_set(reset,0,1);delay_for_interval(10,NSEC_PER_USEC);}
+    for(unsigned i=0;i<4;i++)clock[i]=cam_s20_rd(cmu,offs[i]);
+    clock_saved=true;phase="MCLK";
+    cam_s20_wr(cmu,offs[0],clock[0]&~1U);cam_s20_wr(cmu,offs[1],clock[1]&~0x1fU);
+    cam_s20_wr(cmu,offs[3],clock[3]|3U);
+    cam_s20_wr(cmu,offs[2],clock[2]|(1U<<20)|(1U<<21));
+    redwood_gpio_set(mclk,mclk_pin,0);redwood_gpio_func(mclk,mclk_pin,2);redwood_gpio_pull(mclk,mclk_pin,REDWOOD_GPIO_PULL_NONE);
+    if(gw2){redwood_gpio_set(reset,0,1);delay_for_interval(8,NSEC_PER_MSEC);}
+    else delay_for_interval(2,NSEC_PER_MSEC);
+    phase="model/revision";
+    const uint8_t a[2]={0,0},b[2]={0,2};
+    ok=redwood_bbi2c_xfer(&bus,0x2d,a,2,model,2)&&redwood_bbi2c_xfer(&bus,0x2d,b,2,revision,2);
+    if(ok&&(model[0]==0&&model[1]==0))ok=false;
+    if(ok&&(model[0]==0xff&&model[1]==0xff))ok=false;
+    if(stream){
+        if(!ok||gw2||model[0]!=0x20||model[1]!=0xca||revision[0]!=0xa2||revision[1]!=0x02){ok=false;phase="A202 model/revision gate";goto cleanup;}
+        phase="A202 initial/global2/mode/single-sync";
+        struct cam_aux_table_io io={&bus,aux_sensor_write16,aux_sensor_pause};
+#define AUX_TABLE(t) cam_aux_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
+        ok=AUX_TABLE(redwood_2la_setfile_A_initial_setting)&&AUX_TABLE(redwood_2la_setfile_A_Global_2)&&
+           AUX_TABLE(redwood_2la_setfile_A_4032x3024_30fps)&&AUX_TABLE(redwood_2la_dual_single_A_settings);
+#undef AUX_TABLE
+        if(!ok)goto cleanup;
+        uint8_t size[4]={0};phase="mode output readback";
+        ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
+        if(!ok)goto cleanup;
+        if(raw){
+            phase="bounded exposure/gain readback";
+            struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
+            if(!ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls)){ok=false;goto cleanup;}
+        }
+        if(raw){receiver_started=true;if(!(fn?ax_receiver_begin_mode(&receiver,true):ax_receiver_begin(&receiver))){ok=false;phase=receiver.phase;goto cleanup;}}
+        phase=raw?"sensor and RAW receiver":"sensor frame counter (no receiver)";stream_sent=true;
+        ok=aux_sensor_write16(&bus,0x0100,0x0100);
+        if(!ok)goto cleanup;
+        if(fn){
+            unsigned idle=0;bool more=true;
+            cam_s20_exp_pending=false;
+            while(more){
+                bool failed=false;const volatile uint8_t *data=ax_receiver_next(&receiver,&failed);
+                if(failed){ok=false;phase="continuous receiver error";break;}
+                if(!data){if(++idle>1500){ok=false;phase="continuous frame timeout";break;}cam_s20_wait_ms(1);continue;}
+                idle=0;cam_s20_stream_frames++;
+                more=fn(data,4032,3024,5040);
+                if(cam_s20_exp_pending&&more){
+                    uint32_t lines=cam_s20_exp_lines,gain=cam_s20_exp_gain;
+                    cam_s20_exp_pending=false;
+                    struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
+                    if(!ax_2la_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls)){
+                        ok=false;cam_s20_stream_exposure_failed=true;phase="continuous exposure readback failed";break;
+                    }
+                }
+            }
+        }else for(unsigned i=0;i<12;i++){
+            uint8_t counter=0xff;delay_for_interval(50,NSEC_PER_MSEC);
+            if(!aux_sensor_read(&bus,0x0005,&counter,1)){ok=false;break;}
+            if(counter!=0xff){if(last_counter!=0xff&&counter!=last_counter)counter_changes++;last_counter=counter;}
+        }
+        if(!fn&&counter_changes<2)ok=false;
+    }
+cleanup:
+    if(stream_sent){
+        bool stopped=aux_sensor_write16(&bus,0xfcfc,0x4000)&&aux_sensor_write16(&bus,0x0100,0x0000);
+        if(stopped)for(unsigned i=0;i<10;i++){
+            uint8_t counter=0;delay_for_interval(10,NSEC_PER_MSEC);
+            if(!aux_sensor_read(&bus,0x0005,&counter,1))break;
+            if(counter==0xff){stream_stop=true;break;}
+        }
+        if(!stream_stop)ok=false;
+    }
+    if(receiver_started){
+        if(!ax_receiver_end(&receiver))clean=false;
+        if(!fn&&!receiver.exported)ok=false;
+        if(!fn||!clean)phase=receiver.phase;
+    }
+    if(pins){redwood_gpio_set(reset,0,0);redwood_gpio_set(mclk,mclk_pin,0);redwood_gpio_func(mclk,mclk_pin,REDWOOD_GPIO_OUTPUT);}
+    if(clock_saved){
+        /* Gate first; then restore div/mux/QCH and the prior gate exactly. */
+        cam_s20_wr(cmu,offs[2],clock[2]&~((1U<<20)|(1U<<21)));
+        cam_s20_wr(cmu,offs[1],clock[1]);cam_s20_wr(cmu,offs[0],clock[0]);
+        cam_s20_wr(cmu,offs[3],clock[3]);cam_s20_wr(cmu,offs[2],clock[2]);
+        const uint32_t masks[4]={1U,0x1fU,1U<<20,3U};
+        for(unsigned i=0;i<4;i++)if((cam_s20_rd(cmu,offs[i])^clock[i])&masks[i])clean=false;
+    }
+    if(bus_saved&&!aux_bus_restore_checked(&bus))clean=false;
+    if(powered){
+        bool restored=true;
+        bool done=gw2?redwood_s2mpb02_gw2_power(&gw2_rails,true,&restored,NULL,aux_pmic03_read,aux_pmic03_write):
+            redwood_s2mpb02_2la_power(&rails,true,&restored);
+        if(!done||!restored)clean=false;
+    }
+    if(pmic03_saved&&!aux_bus_restore_checked(&cam_pmic03_bus))clean=false;
+    if(pins){
+        redwood_gpio_restore(reset,0,r[0],r[2],r[1]);
+        redwood_gpio_restore(mclk,mclk_pin,m[0],m[2],m[1]);
+        for(unsigned i=0;i<3;i++){
+            uint32_t rm=i==1?((r[0]&0xfU)==REDWOOD_GPIO_OUTPUT?1U:0):0xfU;
+            uint32_t mm=i==1?(((m[0]>>(mclk_pin*4))&0xfU)==REDWOOD_GPIO_OUTPUT?(1U<<mclk_pin):0):(0xfU<<(mclk_pin*4));
+            if(((cam_s20_rd(reset,i*4)^r[i])&rm)||((cam_s20_rd(mclk,i*4)^m[i])&mm))clean=false;
+        }
+    }
+    redwood_camera_aux_release(clean);
+report:
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+        receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0&0x00fff07fU,receiver.link1&0x78U,
+        receiver.link0,receiver.link1,controls.applied?"true":"false",controls.before[0],controls.before[1],controls.before[2],
+        controls.after[0],controls.after[1],controls.after[2],controls.frame_lines,controls.line_pck,receiver.guard_bad,
+        receiver.pixel_min,receiver.pixel_max,receiver.retained?"true":"false");
+    return ok&&clean;
+}
+
+static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
+    if(redwood_camera_s20_rear_is_warm())redwood_camera_s20_rear_cool();
+    return cam_s20_aux_run(false,true,true,NULL,0,fn,true,out,cap);
+}
+
+static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,false,false,v,n,NULL,false,out,cap);}
+static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,false,false,v,n,NULL,false,out,cap);}
+
+static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,false,v,n,NULL,false,out,cap);}
+
+static void cam_s20_2la_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,true,v,n,NULL,false,out,cap);}
+
 void
 redwood_exynos_camera_s20_init(void)
 {
 	/* printf is not included in the phone's HTTP /log stream. Return snapshots
 	 * over the existing root-only kern.redwood.poke interface instead. */
+	redwood_dbgport_add("cam.s20.2la.raw", ": [lines [again-code]]: A202 native12MP RAW; default3000 lines/1x; stock bounds/readback, guarded DMA", cam_s20_2la_raw);
+	redwood_dbgport_add("cam.s20.2la.stream", ": A202-only bounded native12MP sensor-counter test; no receiver/DMA; restores power and pins", cam_s20_2la_stream);
+	redwood_dbgport_add("cam.s20.gw2.id", ": cold/idle-only bounded GW2 identity read; both PMIC rail maps restored, no streaming", cam_s20_gw2_identify);
+	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
 	redwood_dbgport_add("cam.s20.id", " [1]: one-shot rear S5K2LD model/revision read (1: then its tables, ~0.5 s of streaming read by its frame counter); rails and pins restored", cam_s20_identify);
 	redwood_dbgport_add("cam.s20.front.id", ": one-shot front SAK3J1 model/revision read; camera rail enable bits and pins are restored", cam_s20_front_identify);

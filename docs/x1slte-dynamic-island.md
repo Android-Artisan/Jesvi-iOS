@@ -123,10 +123,31 @@ The rest of the geometry (minimise animation, radius, minimal views) follows the
 
 ## Status bar
 
-Apple's layout, unchanged (user 2026-11-13 22:20: "go back to default"). The phone uses UIKit's notch layout
-(_UIStatusBarVisualProvider_Split1125; the screen is the iPhone X's). `src/statusbar_shift.h` can still move things
-(`lead=`, `trail=`, `notch=`, `cut=` in /var/jb/etc/redwood-statusbar.conf, respring), but every value is 0 = off by
-default and nothing is hooked then.
+The phone keeps UIKit's notch layout (_UIStatusBarVisualProvider_Split1125; the screen is the iPhone X's), shaped by
+`src/statusbar_shift.h` (in SpringBoard via libredwood-sb and in every app via libredwood). Settings in
+`/var/jb/etc/redwood-statusbar.conf` (one line, e.g. `lead=12 bolt=0`), read at process start: respring / reopen apps.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `lead=N` | **12** (2026-11-15: "remove the left padding") | moves the time N/2 pt nearer the left edge; the battery side is given back so it stays put. `lead=0`: Apple's place |
+| `bolt=0/1` | **0** | island phones only: `0` no bolt in the battery icon (the island shows charging), `1` keep it |
+| `trail=N` | 0 | battery side N pt further inward |
+| `notch=N` | 0 (Apple's 209) | notch width reported to the layout (wider side areas, e.g. 125) |
+| `cut=N` | 0 | DynamicSplit layout only (not used on this screen) |
+
+Island phones (detected by the device tree's `/product artwork-device-subtype` 2556 or 2796, the value `island=1`
+sets; MobileGestalt only as a fallback) also get, with no setting:
+- **plain time**: the status bar's background-activity entry reads as disabled, so a call, recording or navigation is
+  shown by the island only, not as a coloured pill around the time;
+- no bolt in the battery icon (see `bolt`).
+With `island=0` (or another device) none of this is hooked. Log: `/var/mobile/Library/Logs/redwood-statusbar.log`
+(`island: artwork subtype 2556 (island 1)`, `background-activity pill off (entry isEnabled)`).
+
+Traps:
+- MobileGestalt answers `ArtworkDeviceSubType` only to entitled processes: SpringBoard's and apps' libraries got nil,
+  so the first version never armed. Read the device tree (IOKit) instead.
+- The mic/camera privacy dot still sits at the notch layout's place (above the signal); moving it into the island is
+  not done.
 
 ## Known issue
 
