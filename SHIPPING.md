@@ -1,3 +1,13 @@
+## 2026-11-15 (10:05, B) — avconferenced back on demand
+- mkjobs.py: avconferenced out of DENY (it crash-looped when the port had no camera/audio; both work now). Without it
+  callservicesd and InCallService asked for it every 2 s during calls ("Server died. Attempt reconnect"). Feature-flag
+  Mach services ({"#IfFeatureFlagEnabled", "#Then"}) are now resolved at build time to "#Then" (iOS 16.5 ships them on).
+- Verified live (job bootstrapped by hand, gone at the next reboot until the next image): started on demand during a
+  call (10:00), no crash, 0 % CPU idle, no reconnect spam. In the image from the next boot-image build.
+- Calls/texts: the 09:08 redwood-ims survived A's 09:24 reboot (same binary), registered, reg-event subscribed + "active".
+- Note: prebuilt/userland/init does not have seed_phone yet (only a PREBUILT=1 build uses it; a normal build compiles
+  src/init.c). Refresh it with tools/update-prebuilt.sh at the next full build.
+
 ## 2026-11-15 (09:45, A) — AOD: wallpaper fades to black on lock (AOD wallpaper off)
 - Locking from the home screen or an app no longer shows the lock screen wallpaper before AOD: a black layer fades in
   over it (0.35 s, under the clock) and goes on wake. From the lock screen itself iOS's own fade stays (user's choice).
