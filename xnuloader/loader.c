@@ -4761,6 +4761,48 @@ menu_flush(void)
 	clean_dcache(SCREEN.base, SCREEN.base + (uint64_t)SCREEN.stride * SCREEN.height);
 }
 
+/*
+ * The boot screen for people who just use the phone (A, 2026-11-15): no text and no menu, only iOS's own boot logo
+ * (ProgressUI apple-logo@3x, white on black, centered, the size it has once iOS runs) from the moment the loader
+ * starts until iOS draws -- the same picture Samsung's bootloader shows from up_param (tools/bootlogo/mkbootlogo.py
+ * makes both from YOUR iOS root; the artwork is never committed: without xnuloader/applelogo.h the screen is black).
+ * A volume key pressed while the logo shows opens the menu. bootui=0 in the payload's cmdline: the loader's text and
+ * the menu with its countdown, as before (development).
+ */
+#if __has_include("applelogo.h")
+#include "applelogo.h"
+#endif
+static int bootui = 1;
+#define BOOTUI_KEY_MS   700             /* how long a volume key press is looked for before iOS starts */
+
+static void
+boot_logo(void)
+{
+	menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+#ifdef APPLELOGO_W
+	/* drawn for the 1440-wide native panel (iOS's 3x at 1080 is x 4/3); centered as iOS centers it */
+	int ox = ((int)SCREEN.width - APPLELOGO_W) / 2, oy = ((int)SCREEN.height - APPLELOGO_H) / 2;
+	uint32_t at = 0;
+
+	for (uint32_t i = 0; i + 1 < sizeof(applelogo_rle); i += 2) {
+		uint32_t v = applelogo_rle[i], n = applelogo_rle[i + 1];
+
+		for (uint32_t k = 0; k < n; k++, at++) {
+			int px = ox + (int)(at % APPLELOGO_W), py = oy + (int)(at / APPLELOGO_W);
+
+			if (v == 0 || px < 0 || py < 0 || px >= (int)SCREEN.width || py >= (int)SCREEN.height) {
+				continue;
+			}
+			uint32_t *row = (uint32_t *)(uintptr_t)(SCREEN.base + (uint64_t)(menu_output_height ?
+			    (uint32_t)py * menu_output_height / SCREEN.height : (uint32_t)py) * SCREEN.stride);
+			row[menu_output_width ? (uint32_t)px * menu_output_width / SCREEN.width : (uint32_t)px] =
+			    menu_rgb(v * 0x010101u);
+		}
+	}
+#endif
+	menu_flush();
+}
+
 enum { MENU_BOOT, MENU_USB, MENU_DOWNLOAD, MENU_REBOOT, MENU_OFF, MENU_COUNT };
 static const char *const menu_items[MENU_COUNT] = { "Boot iOS", "Log access (USB)", "Download Mode", "Reboot", "Power off" };
 
@@ -4871,6 +4913,25 @@ menu_choose(const char *banner, int wait)
 		}
 		menu_draw(selected, banner, 0);
 	}
+}
+
+/* the logo is up: a volume key within BOOTUI_KEY_MS opens the menu, else iOS starts */
+static int
+bootui_choose(void)
+{
+	uint64_t freq = timer_freq(), began = READ_SYSREG(CNTVCT_EL0);
+
+	while (menu_key() != 0) {               /* (keys still held from the bootloader's combination) */
+	}
+	while (READ_SYSREG(CNTVCT_EL0) - began < freq * BOOTUI_KEY_MS / 1000) {
+		int k = menu_key();
+
+		if (k == 'u' || k == 'd') {
+			return menu_choose("", 0);
+		}
+		BS->stall(10000);
+	}
+	return MENU_BOOT;
 }
 
 /* a status screen: a title and up to four lines */
@@ -5190,8 +5251,14 @@ stage_write(const char *part, uint64_t off)
 		}
 	} else if (str_eq(part, "super") && SUPER_ROOT_LEN != 0 && off + len <= SUPER_ROOT_LEN && SUPER_ROOT_LEN <= SUPER_TAIL_START) {
 		/* x1slte, iOS only (2026-11-06): the system volume at the head of super (Android's system/vendor are gone) */
+	} else if (str_eq(part, "up_param")) {
+		/* (A, 2026-11-15) Samsung's splash pictures (logo.jpg...): a tar of JPEGs, nothing the phone runs. Only a
+		 * whole tar from offset 0 (ustar magic in its first header), so a wrong download cannot land here. */
+		if (off != 0 || stage_len < 512 || memcmp(stage_buf + 257, "ustar", 5) != 0) {
+			return "refused: up_param takes only a tar of pictures, from offset 0";
+		}
 	} else if (!(str_eq(part, "recovery") || str_eq(part, "boot") || (str_eq(part, "super") && off >= SUPER_TAIL_START))) {
-		return "refused: only recovery, boot, super's free tail (SUPER_TAIL_START) and the userdata window";
+		return "refused: only recovery, boot, up_param, super's free tail (SUPER_TAIL_START) and the userdata window";
 	}
 	if (bio == NULL || bio->media == NULL || src == NULL || len == 0) {
 		return "no such partition, or nothing downloaded";
@@ -5333,7 +5400,7 @@ static void
 y2s_menu_loop(void)
 {
 	const char *banner = "";
-	int wait = 3;
+	int wait = 3, first = 1;
 
 	misc_keep_recovery();
 
@@ -5350,9 +5417,12 @@ y2s_menu_loop(void)
 			choice = MENU_USB;
 			wait = 0;
 			banner = "the kernel asked for Log access";
+		} else if (bootui && first) {
+			choice = bootui_choose();
 		} else {
 			choice = menu_choose(banner, wait);
 		}
+		first = 0;
 		wait = 0;
 		if (choice == MENU_USB) {
 			if (!log_access()) {
@@ -5367,9 +5437,13 @@ y2s_menu_loop(void)
 				ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 				continue;
 			}
-			menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
-			menu_text_center((int)SCREEN.height / 2 - 40, "Starting iOS", 5, 0xffffff);
-			menu_flush();
+			if (bootui) {
+				boot_logo();
+			} else {
+				menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
+				menu_text_center((int)SCREEN.height / 2 - 40, "Starting iOS", 5, 0xffffff);
+				menu_flush();
+			}
 			log_len = 0;
 			print("== XNULOADER run (menu) ==\n");
 			if (!run_kernel(0, 0)) {
@@ -6090,6 +6164,7 @@ efi_main(efi_handle image, efi_system_table *st)
 	IMAGE = image;
 
 	BS->set_watchdog_timer(0, 0, 0, NULL);
+	screen_quiet = 1;               /* (the boot screen: no text; bootui=0 brings it back once the payload is read) */
 
 	print("== XNULOADER v3 ==\n");
 	print("CurrentEL=%x MIDR=%x MMFR0=%x CNTFRQ=%d image=%x\n", READ_SYSREG(CurrentEL) >> 2, READ_SYSREG(MIDR_EL1),
@@ -6112,6 +6187,9 @@ efi_main(efi_handle image, efi_system_table *st)
 		print("display %d x %d at %x\n", (uint64_t)SCREEN.width, (uint64_t)SCREEN.height, SCREEN.base);
 	}
 	print("platform %s\n", PLAT->name);
+	if (PLAT == &platform_y2s && SCREEN.base != 0) {
+		boot_logo();
+	}
 #ifdef CELLULAR_PREFLIGHT_ONLY
 	return cellular_memory_preflight();
 #endif
@@ -6138,6 +6216,15 @@ efi_main(efi_handle image, efi_system_table *st)
 	report_cellular_memory();
 
 	int have_payload = parse_payload(&pi, 0);
+	for (const char *c = have_payload && pi.cmdline ? pi.cmdline : ""; *c; c++) {
+		if (starts_with(c, "bootui=0") && (c == pi.cmdline || c[-1] == ' ')) {
+			bootui = 0;
+			screen_quiet = 0;
+		}
+	}
+	if (PLAT != &platform_y2s) {
+		screen_quiet = 0;       /* (QEMU and the rest: as before) */
+	}
 	if (have_payload && pi.usb_mode && usb_start()) {
 		flush_log();
 		usb_command_loop();

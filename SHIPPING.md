@@ -1,3 +1,10 @@
+## 2026-11-15 (16:40, A) — boot screen: iOS's logo from power-on, no loader text or menu
+- Samsung's splash (up_param logo.jpg), the UEFI's logo (was Project Silicium) and the loader show iOS's own boot logo,
+  same size and place; the loader prints nothing and boots iOS at once (volume key during the logo: the menu;
+  `bootui=0`: old behavior). The kernel scales the loader's picture at the 1080x2400 switch so the logo does not jump.
+  User-verified on the phone (a split-second tear at the 120 Hz switch kept by choice). Made at build time from the iOS
+  root (tools/bootlogo); no Apple artwork in git. Loader can now write up_param (tar only). docs/x1slte-boot-screen.md.
+
 ## 2026-11-15 (11:50, A) — screen-off / AOD power: fast cores asleep, fewer wake-ups
 - Screen off or AOD: the scheduler runs on the four A55s only (`scroff_little=1`, live `kern.redwood.scroff_little`,
   state `kern.redwood.scroff_little_now`); all 8 cores back the moment the display comes on (before the wake boost),

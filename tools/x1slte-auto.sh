@@ -25,6 +25,11 @@ fastboot devices | grep -q fastboot || { echo "[auto] the phone did not reach Lo
 # --all: system.apfs and the recovery image in one Log access visit, one restart (A, 2026-11-14)
 if [ "$F" = --all ]; then ./x1slte.sh uroot userland/system.apfs || exit 1; ./x1slte.sh uflash || exit 1
 elif [ "$F" = --recovery ]; then ./x1slte.sh uflash || exit 1; else ./x1slte.sh uroot "$F" || exit 1; fi
+# UP_PARAM=out/up_param-apple.img (A, 2026-11-15): Samsung's splash pictures too, in the same Log access visit. Needs a
+# loader that takes up_param (2026-11-15 and later); an older one refuses it and nothing is written.
+if [ -n "${UP_PARAM:-}" ]; then
+	"${FASTBOOT:-fastboot}" stage "$UP_PARAM" > /dev/null 2>&1 && echo "[auto] up_param: $("${FASTBOOT:-fastboot}" oem write up_param 0 2>&1 | tr '\n' ' ')"
+fi
 ./x1slte.sh ureboot
 echo "[auto] waiting for iOS (USB cable or Wi-Fi)"
 for i in $(seq 1 90); do sleep 4; IP=$(phone-ip 2>/dev/null) && {
