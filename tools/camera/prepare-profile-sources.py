@@ -36,6 +36,10 @@ def declaration(source, name):
 
 def prepare(out):
     source = original('camera_device.c')
+    source = source.replace('#include "camera_isp.h"', '#include "camera_isp.h"\n#include "camera_s20_zoom.h"')
+    source = source.replace('{ "MaxZoomFactor", "Number", "ReadOnly" }', '{ "MinZoomFactor", "Number", "ReadOnly" }, { "MaxZoomFactor", "Number", "ReadOnly" }')
+    source = source.replace('} else if (key_is(key, "MaxZoomFactor")) {', '} else if (key_is(key, "MinZoomFactor")) {\n        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.6f:1.0f);\n\t} else if (key_is(key, "MaxZoomFactor")) {')
+    source = source.replace('zoom = zoom < 1 ? 1 : zoom > MAX_ZOOM ? MAX_ZOOM : zoom;', 'zoom=s20_zoom_clamp((float)zoom,s->camera->sensor==1,access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0);')
     current = (ROOT/'userland/src/camera_device.c').read_text()
     shared = {}
     for name in ('stream', 'output', 'camera', 'device'):
@@ -51,22 +55,36 @@ static bool front_experimental_profile(void)
     FILE *fp = fopen(rw_path("redwood-front-profile", (char[160]){0}, 160), "r");
     if (!fp) return false;
     bool enabled = fscanf(fp, "%31s", value) == 1 && strcmp(value, "experimental") == 0;
-    fclose(fp);
-    return enabled;
+    fclose(fp); return enabled;
+}
+static bool rear_ultra_selected(struct stream *s)
+{
+    if(s->camera->sensor!=1 || access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)!=0)return false;
+    float z=s->zoom;FILE *f=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");
+    if(f){float v;if(fscanf(f,"%f",&v)==1)z=v;fclose(f);}
+    return s20_zoom_mode(s20_zoom_clamp(z,true,true),true)==5;
+}
+static void *worker_original_body(void *context);
+static void *worker_body(void *context)
+{
+    struct stream *s=stream_of(context);
+    if(s->camera->sensor!=1)return front_experimental_profile()?redwood_camera_experimental_worker(context):worker_original_body(context);
+    while(s->running){
+        bool ultra=rear_ultra_selected(s);
+        say("profile: rear %s worker",ultra?"ultra-wide":"original primary");
+        if(ultra)redwood_camera_experimental_worker(context);else worker_original_body(context);
+        if(!s->running || ultra==rear_ultra_selected(s))break;
+    }
+    return NULL;
 }
 '''
-    # These source spellings are pinned and intentionally fail closed on drift.
     marker = 'static void *\nworker_body(void *context)\n{'
     if source.count(marker) != 1:
         raise ValueError('original worker changed')
-    source = source.replace(marker, bridge+'\n'+marker)
-    start = source.index(marker)
-    at = source.index('\tstruct stream *s = stream_of(o);', start) + len('\tstruct stream *s = stream_of(o);')
-    source = source[:at]+r'''
-    bool experimental = s->camera->sensor == 1 || front_experimental_profile();
-    say("profile: %s uses %s worker", s->camera->name, experimental ? "experimental" : "original");
-    if (experimental) return redwood_camera_experimental_worker(context);
-'''+source[at:]
+    source = source.replace(marker, bridge+'\nstatic void *\nworker_original_body(void *context)\n{')
+    source = source.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(rear_ultra_selected(s))break;')
+    source = source.replace('if (n != (ssize_t)sizeof(head)) {', 'if(n==(ssize_t)sizeof(head)&&s->camera->sensor==1&&head.sensor==3)continue;\n            if (n != (ssize_t)sizeof(head)) {')
+    current = current.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(s->camera->sensor==1){float z=s->zoom;FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");if(lf){float v;if(fscanf(lf,"%f",&v)==1)z=v;fclose(lf);}if(s20_zoom_mode(s20_zoom_clamp(z,true,true),true)!=5)break;}')
     out.mkdir(parents=True, exist_ok=True)
     legacy = out/'original'
     legacy.mkdir(exist_ok=True)
@@ -91,7 +109,7 @@ void *redwood_camera_experimental_worker(void *context)
 '''
     (out/'experimental-device.c').write_text(current)
     report = dict(original_source_commit=ORIGINAL, shared_layout_hashes=shared,
-                  default_front='original', rear='experimental',
+                  default_front='original', rear='original primary; experimental ultra-wide',
                   profile_flag='redwood-front-profile', selection='per stream; no mid-frame switch',
                   warning='experimental profile is not verified Samsung factory tuning')
     (out/'profile-build.json').write_text(json.dumps(report, indent=2)+'\n')

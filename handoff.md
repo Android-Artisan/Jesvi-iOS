@@ -540,3 +540,36 @@ Cleanup failure poisons future camera opens; abort failure retains DMA memory.
 Host receiver sanitizer tests cover packed slot selection, frame errors, middle
 guard corruption and abort retention; kernel and passcode integration build pass.
 Device validation and Camera zoom UI are pending. Probe supports sensor3.
+
+## In-Camera lens switch installed (2026-11-15 22:40 IST)
+
+- Continuous native 2LA36-frame driver probe passed; subsequent main36, front36
+  and repeated ultra36 captures passed. Kernel f893d339 installed/readback verified,
+  build22:26:06; slot SHA29986a7f71cfb4b6d5ad2735fe76adcafdd6ef10c218867fce2f2f583f45b607.
+- Built and installed dual-worker development media library: original pinned
+  d5b02944 front AND primary workers, experimental worker only for ultra-wide.
+  Shared stream/object ABI checked; both ISP symbol sets isolated. Front profile
+  remains original unless user explicitly opts into experimental.
+- Camera-only RedwoodCameraLenses tweak adds0.6x/1x overlay buttons. Writes
+  redwood-rear-zoom in mediaserverd cache; backend feature flag
+  redwood-ultrawide-enable.1x selects original main worker/mode2;0.6x selects
+  ultra-wide worker/mode5. Workers close/drain on lens change. No smooth transition
+  promise, no calibrated stock2LA colour map yet. Buttons may appear on front UI
+  but do not change front processing; their selection controls rear only.
+- Paths: /var/redwood/libredwood-media-dev.dylib,
+  /var/jb/usr/lib/TweakInject/RedwoodCameraLenses.{dylib,plist}. Installed library
+  SHA67564b5a360f3d5abbface8a0e478c0184a85dfea2e62e6ebce3da82808fccb7.
+- Added Camera to existing live kern.exec_inject tweak-loader entry, preserving
+  all other entries. Current read-only root lacks Camera in that entry; this
+  runtime change DOES NOT persist reboot. Future build.sh already includes Camera.
+  After reboot restore only Camera token in existing tweak entry; never overwrite
+  entire injection config from a stale backup. No new reboot performed for UI.
+- Camera/mediaserverd restarted; file installation and injection config verified.
+  Waiting for user to reopen rear Camera and confirm buttons/live lens switching.
+  UI/backend integration NOT visually accepted yet.
+- Host zoom routing tests, original-source isolation tests, media and UI builds
+  pass. A read-only verification pipeline used rg on phone (unavailable); replaced
+  with installed grep. That error did not interrupt the earlier installation.
+- Rollback: remove development media override + lens tweak pair, restart Camera
+  and mediaserverd. Original image library remains untouched. Private artifacts and
+  original injection config are under build/camera-aux-latest-20261115.
