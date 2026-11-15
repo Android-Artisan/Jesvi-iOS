@@ -776,3 +776,12 @@ No image flash/reboot in this turn. Clean-install image integration and prebuilt
 artifacts prepared in working tree, NOT deployed/merged/pushed. Latest user
 requires final testing and explicit “OK, push it” before permanent deployment,
 local branch merges and remote push. This overrides earlier blanket merge request.
+
+## 2026-11-16 user acceptance and permanent installation
+
+User accepted and explicitly authorized push, permanence and active-branch merges.
+Implementation d07148b4 is installed in recovery/root and the standalone boot
+head. Cold reboot passed; keybag locked, root media hash matches accepted build,
+36frames each UW/main/front passed. Development override is disabled and backed
+up. Source and tracked prebuilts cover clean builds; no data wipe was done.
+See docs/x1slte-camera-wrapup.md and latest SHIPPING.md for hashes and rollback.

@@ -1,3 +1,9 @@
+## 2026-11-16 — Native rear lens control and primary autofocus shipped
+- Native Camera zoom selects ultra-wide below1x and primary at1–5x; front keeps its original processing. GW2 is identified but not exposed.
+- Correct primary rail voltages and full scaled autofocus travel; user confirms close focus works. Rear zoom no longer reconfigures the capture graph during video.
+- Source and signed prebuilts included in S20 root assembly: media, native dial, brightness hook, tweak loader and clean-data enable seeding.
+- Permanent recovery/boot update installed and read-back verified. Keybag locked after reboot;36frames each from ultra-wide, primary and front passed. Full wiped-data install is fixture-tested only. See docs/x1slte-camera-wrapup.md.
+
 ## 2026-11-15 (17:30, A) — UEFI line "- JESVI -"
 - The line under the UEFI's logo reads "- JESVI -" (was "[JESVI]"); the menu title "JesviOS" (was "JesViOS"). Dev-mode build flashed.
 
