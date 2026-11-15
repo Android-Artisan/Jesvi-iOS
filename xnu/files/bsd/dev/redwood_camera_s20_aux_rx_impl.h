@@ -7,6 +7,7 @@ struct ax_receiver {
     volatile uint8_t *bank[AX_REGIONS];struct ax_journal journal;struct ax_io io;
     void *buffer;uint64_t phys;unsigned bytes,total;bool allocated,armed,ready,retained,exported,phy_touched;
     uint32_t irq,error,link0,link1,frames,changed,guard_bad,pixel_min,pixel_max;
+    unsigned failed_region,failed_offset;uint32_t failed_mask,failed_want,failed_actual;
     bool packed,cached,gw2;unsigned width,height;const volatile uint8_t *read_base;
     const char *phase;
 };
@@ -38,7 +39,7 @@ static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,bool gw2)
     uint8_t rail5=0,rail6=0;
     if(redwood_spmic_read(1,0x2e,&rail5)||redwood_spmic_read(1,0x2f,&rail6)||!(rail5&0xc0)||!(rail6&0xc0))return false;
     if(cam_s20_smc4(SMC_PREPARE_PD_ONOFF,1,CSIS_NEED_SMC,2))return false;
-#define AXW(r,o,m,v) do{if(!ax_jwrite(&x->journal,x->io,r,o,m,v))return false;}while(0)
+#define AXW(r,o,m,v) do{if(!ax_jwrite(&x->journal,x->io,r,o,m,v)){x->failed_region=r;x->failed_offset=ax_offset(x,r,o);x->failed_mask=m;x->failed_want=v;x->failed_actual=ax_rd(x,r,o);return false;}}while(0)
     x->phase="CSIS clocks";
     static const unsigned qch[4]={0x3058,0x3078,0x307c,0x3070};
     for(unsigned i=0;i<4;i++)AXW(AX_CMU,gw2&&i==3?0x3068:qch[i],7U,2U);
@@ -105,8 +106,8 @@ static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,bool gw2)
     AXW(AX_CSI,0x690,1U<<23,1U<<23);
     cam_s20_wr(x->bank[AX_CSI],0xc,0xf); /* self-clearing shadow update */
     AXW(AX_CSI,0x10,~0U,0x00fff07f);AXW(AX_CSI,0x18,~0U,0x7f);
-    x->phase="WDMA0 unpacked16 input";
-    AXW(AX_MUX,0,~0U,4U);
+    x->phase=gw2?"WDMA3 RAW10 input":"WDMA0 RAW10 input";
+    AXW(AX_MUX,0,~0U,gw2?2U:4U);
     AXW(AX_DMA,8,2U,2U);AXW(AX_DMA,0x1414,1U,0);
     AXW(AX_DMA,0x1400,1U,0);AXW(AX_DMA,0x141c,3U,0);
     AXW(AX_DMA,0x1404,~0U,0x01111110);

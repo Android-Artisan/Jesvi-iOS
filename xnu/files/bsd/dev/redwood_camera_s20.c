@@ -3183,11 +3183,11 @@ cleanup:
     }
     redwood_camera_aux_release(clean);
 report:
-    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"mode_size\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"receiver_write\":[%u,%u,%u,%u,%u],\"mode_size\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
         receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0&0x00fff07fU,receiver.link1&0x78U,
         receiver.link0,receiver.link1,controls.applied?"true":"false",controls.before[0],controls.before[1],controls.before[2],
         controls.after[0],controls.after[1],controls.after[2],controls.frame_lines,controls.line_pck,receiver.guard_bad,
-        receiver.pixel_min,receiver.pixel_max,mode_width,mode_height,receiver.retained?"true":"false");
+        receiver.pixel_min,receiver.pixel_max,receiver.failed_region,receiver.failed_offset,receiver.failed_mask,receiver.failed_want,receiver.failed_actual,mode_width,mode_height,receiver.retained?"true":"false");
     return ok&&clean;
 }
 
