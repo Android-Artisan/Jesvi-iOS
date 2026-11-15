@@ -1,3 +1,10 @@
+## 2026-11-15 (11:10, A) — AOD at 30 % of the slider (user-chosen)
+- AOD level is now set in slider terms: 30 % of the slider position at AOD start (100 % -> 30 %, 50 % -> 15 %,
+  25 % -> 8 %), about 7 % of the light: clearly dimmer than the awake screen by the same step at every level.
+  (30 % of the nits looked ~2/3 as bright; 35 % of the slider still too close; user chose 3/10: "good like this".)
+  Live tuning without a reboot: `rwsys kern.redwood.poke "fb.aod PCT"` (10..60). Hold + 2x re-take unchanged.
+  Kernel flashed 11:06 (kernel slot only).
+
 ## 2026-11-15 (11:05, A) — AOD well visible on a bright screen
 - AOD cap raised 12 -> 60 nits: the same 30 % of the brightness at AOD start everywhere (10 nits -> 3, 40 -> 12,
   80 -> 24, 120 -> 36, 200+ -> 60). User-verified at 40-50 % brightness: "well visible". Dark-room hold unchanged.
