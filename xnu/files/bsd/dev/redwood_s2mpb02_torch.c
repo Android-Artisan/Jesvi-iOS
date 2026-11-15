@@ -20,6 +20,7 @@
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
+#include <kern/sched_prim.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
@@ -266,6 +267,7 @@ torch_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 			return error;
 		}
 		wanted = value > 1000 ? 1000 : value;
+		thread_wakeup((event_t)&wanted);        /* the thread sleeps while the light is off (torch_thread) */
 	}
 	return 0;
 }
@@ -394,6 +396,17 @@ torch_thread(__unused void *parameter, __unused wait_result_t result)
 		if (applied != 0 && now - since >= (uint64_t)max_secs * 1000) {
 			printf("torch: on for %u s, the limit: off until iOS asks again\n", max_secs);
 			hold_off = true;
+			continue;
+		}
+		if (applied == 0 && wanted == 0) {
+			/* (A, 2026-11-15) off: sleep until iOS asks (torch_write wakes us), not a 30 ms poll -- it woke a big
+			 * core ~33 times a second with the screen off. The 10 s timeout is only a safety net. */
+			assert_wait_timeout((event_t)&wanted, THREAD_UNINT, 10000, NSEC_PER_MSEC);
+			if (wanted != 0) {
+				clear_wait(current_thread(), THREAD_AWAKENED);
+			} else {
+				thread_block(THREAD_CONTINUE_NULL);
+			}
 			continue;
 		}
 		delay_for_interval(30, NSEC_PER_MSEC);
