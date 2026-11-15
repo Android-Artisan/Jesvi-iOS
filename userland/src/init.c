@@ -1375,6 +1375,143 @@ restore_var(void)
 	}
 }
 
+#ifndef ENOENT
+#define ENOENT 2
+#endif
+
+/* Hand a tree to an owner: every directory and file under PATH, PATH included. 1 if all of it. */
+static int
+chown_tree(const char *path, int uid, int gid)
+{
+	char buf[4096], f[512];
+	struct stat st;
+	off_t position = 0;
+	ssize_t n;
+	int ok, fd;
+
+	if (lstat(path, &st) != 0 || lchown(path, uid, gid) != 0) {
+		return 0;
+	}
+	if ((st.st_mode & S_IFMT) != S_IFDIR) {
+		return 1;
+	}
+	if ((fd = open(path, O_RDONLY | O_DIRECTORY, 0)) < 0) {
+		return 0;
+	}
+	ok = 1;
+	while (ok && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; ok && at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const char *name = ((struct dirent *)(buf + at))->d_name;
+
+			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+				continue;
+			}
+			if (strlen(path) + strlen(name) + 2 > sizeof(f)) {
+				ok = 0;
+				break;
+			}
+			strcpy(f, path);
+			strcpy(f + strlen(f), "/");
+			strcpy(f + strlen(f), name);
+			ok = chown_tree(f, uid, gid);
+		}
+	}
+	close(fd);
+	return ok;
+}
+
+/*
+ * The default wallpaper (userland/build.sh: a Photos poster with its lock-screen clock and paired home
+ * screen, PosterBoard's store reduced to it): copied into a data volume that has no poster store at all --
+ * a new one, or one wiped -- and owned by mobile, as PosterBoard keeps it. A phone with wallpapers of its own
+ * (any store there, even an empty one) is left exactly as it is. After restore_var, so a var_store volume
+ * is judged by what it brought back.
+ */
+/*
+ * The phone's call and text pieces that live on the data volume (B, 2026-11-15): redwood-ims, redwood-telephonyd,
+ * callservicesd, the call-screen hook, RedwoodSMS/RedwoodCellular. They used to be put there by hand, so a fresh or
+ * wiped data volume booted with the launchd jobs but without their programs: no calls, no texts, nothing said.
+ * build.sh lists them in /etc/seed.list (mode, owner, group, destination, source; a source starting with "/System"
+ * is in the system image, any other in this boot image). Each is copied only where there is none -- a newer one
+ * put on the phone by hand (tools/cellular/telephonyd/deploy-native-calls.sh) is never replaced.
+ */
+static void
+mkdir_parents(const char *path)
+{
+	char d[512];
+
+	if (strlen(path) >= sizeof(d)) {
+		return;
+	}
+	strcpy(d, path);
+	for (char *p = d + 1; *p; p++) {
+		if (*p == '/') {
+			*p = 0;
+			mkdir(d, 0755);
+			*p = '/';
+		}
+	}
+}
+static void
+seed_phone(void)
+{
+	static char list[4096];
+	int copied = 0, kept = 0, failed = 0;
+
+	if (read_whole(in_image("/etc/seed.list"), list, sizeof(list)) <= 0) {
+		return;
+	}
+	for (char *line = list; *line;) {
+		char *end = strchr(line, '\n'), *f[6];
+		struct stat had;
+
+		if (end) {
+			*end = 0;
+		}
+		if (split_tabs(line, f, 6) == 5) {
+			const char *from = strncmp(f[4], "/System/", 8) == 0 ? f[4] : in_image(f[4]);
+
+			if (lstat(f[3], &had) == 0) {
+				kept++;
+			} else {
+				mkdir_parents(f[3]);
+				if (copy_file(from, f[3], (int)parse_number(f[0], 8), (int)parse_number(f[1], 10), (int)parse_number(f[2], 10))) {
+					copied++;
+				} else {
+					printf("  seed %s: %s\n", f[3], strerror(errno));
+					failed++;
+				}
+			}
+		}
+		if (!end) {
+			break;
+		}
+		line = end + 1;
+	}
+	printf("  phone pieces on the data volume: %d put in place, %d already there, %d failed\n", copied, kept, failed);
+}
+
+static void
+default_wallpaper(void)
+{
+	static const char from[] = "/System/Library/Redwood/DefaultWallpaper/PRBPosterExtensionDataStore";
+	static const char to[] = "/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore";
+	static const char part[] = "/private/var/mobile/Library/Application Support/.PRBPosterExtensionDataStore.redwood";
+	struct stat st;
+	int files = 0;
+
+	if (lstat(from, &st) != 0 || lstat(to, &st) == 0 || errno != ENOENT) {
+		return;
+	}
+	printf("\n-- the default wallpaper (a data volume without one) --\n");
+	/* made under another name and renamed whole: a copy cut short (the phone off halfway) is not a store */
+	if (copy_tree(from, part, &files) && chown_tree(part, 501, 501) && rename(part, to) == 0) {
+		printf("  %d files in %s\n", files, to);
+	} else {
+		printf("  %s: %s (a part left by an earlier try blocks it: %s)\n", to, strerror(errno), part);
+	}
+}
+
 static int
 count_entries(const char *path)
 {
@@ -1818,6 +1955,8 @@ main(int argc, char **argv, char **envp)
 	show_system();
 	mount_writable();
 	restore_var();
+	default_wallpaper();
+	seed_phone();
 	test_files();
 	test_writable();
 	test_memory();

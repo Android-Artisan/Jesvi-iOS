@@ -330,6 +330,13 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/libredwood.dylib src/inject.c src/inject_sensors.c src/inject_location.c
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-sb.dylib -framework CoreFoundation -framework IOKit -lobjc \
 			-o obj/libredwood-sb.dylib src/inject_sb.c src/inject_location.c
+		# Persistent native AOD: a root-image copy, independent of existing /var/jb tweaks.
+		$DYN -fobjc-arc -fblocks -DRW_ALWAYS_ON_ROOT_IMAGE -dynamiclib \
+			-install_name /redwood/lib/libredwood-alwayson.dylib -framework Foundation -framework UIKit -framework QuartzCore \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework Preferences \
+			-o obj/libredwood-alwayson.dylib ../tools/aod/alwayson.m ../tools/aod/settings.m
+		$DYN -fobjc-arc -fblocks -framework Foundation -framework IOKit \
+			-o obj/aod-preview ../tools/aod/control.m
 		# ... the tweak loader of the package manager's prefix (src/inject_tweaks.c): it goes into a
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
@@ -429,6 +436,25 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	[ -f ../prebuilt/userland/redwood-cellulard ] && cp ../prebuilt/userland/redwood-cellulard root/bin/
+	# The phone's call and text pieces that run from the data volume (B, 2026-11-15): put in place by init on a data
+	# volume that has none (src/init.c seed_phone; a newer one put there by hand is kept). Without this a fresh or wiped
+	# phone booted with the jobs (com.redwood.telephonyd, callservicesd) but not their programs: no calls, no texts.
+	# callservicesd (5 MB, too big for this image) comes from the system image (/System/Library/Redwood/Phone).
+	mkdir -p root/seed; : > root/etc/seed.list
+	for x in redwood-ims:755:/private/var/root/redwood-ims \
+	         redwood-telephonyd:755:/private/var/jb/redwood/bin/redwood-telephonyd \
+	         libredwood-calls.dylib:755:/private/var/jb/redwood/lib/libredwood-calls.dylib \
+	         RedwoodSMS.dylib:755:/private/var/jb/usr/lib/TweakInject/RedwoodSMS.dylib \
+	         RedwoodCellular.dylib:644:/private/var/jb/usr/lib/TweakInject/RedwoodCellular.dylib; do
+		f=${x%%:*}; rest=${x#*:}; mode=${rest%%:*}; dst=${rest#*:}
+		if [ -f ../prebuilt/userland/$f ]; then cp ../prebuilt/userland/$f root/seed/$f; printf '%s\t0\t0\t%s\t/seed/%s\n' $mode $dst $f >> root/etc/seed.list
+		else echo "build.sh: prebuilt/userland/$f missing: a fresh phone will have no calls/texts piece $dst" >&2; fi
+	done
+	for x in RedwoodSMS RedwoodCellular; do
+		[ -f ../tools/cellular/$x.plist ] && cp ../tools/cellular/$x.plist root/seed/$x.plist &&
+			printf '644\t0\t0\t/private/var/jb/usr/lib/TweakInject/%s.plist\t/seed/%s.plist\n' $x $x >> root/etc/seed.list
+	done
+	printf '755\t0\t0\t/private/var/jb/redwood/callservicesd\t/System/Library/Redwood/Phone/callservicesd\n' >> root/etc/seed.list
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
 	[ -f obj/softkeybag-init ] && cp obj/softkeybag-init root/bin/
 	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
@@ -566,6 +592,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		*) echo "$library $names" ;;
 		esac
 	done > root/etc/inject.conf
+	if [ "${DEVICE:-x1slte}" = x1slte ]; then
+		python3 ../tools/aod/prepare-root.py root --binaries obj
+	fi
 	cp $IOS/var.skel root/etc/var.skel              # the directories init creates in /private/var
 	# time zones: the template's links go in a circle until the time zone daemon has run (/usr/share/zoneinfo
 	# points back into /var); point them at the data that ships with the system, and use this machine's zone
@@ -628,19 +657,23 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
 	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
 	# /var/jb/Applications) as the CallKit provider of redwood-ims
+	# Calls (A, 2026-11-15; native only, the user's decision): redwood-telephonyd (/var/jb/redwood/bin, installed by
+	# tools/cellular/telephonyd/install.sh) is the telephony CallKit provider under CommCenter's identity. RedwoodPhone,
+	# the third-party style provider of the old engine, is no longer shipped.
+	CALL_PROVIDER=../tools/cellular/telephonyd/com.redwood.telephonyd.plist
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
 	[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
 		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
 			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
 		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+		cp $CALL_PROVIDER root/LaunchDaemons/
 	else
 		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
 		# points at /System/.../callservicesd -- absent -- so launchd failed it with EX_CONFIG and no incoming
 		# call reached the call screen): the job as it runs on the phone, kept in the tree
 		cp com.apple.telephonyutilities.callservicesd.plist root/LaunchDaemons/
-		cp ../tools/cellular/RedwoodPhone/com.redwood.phone.plist root/LaunchDaemons/
+		cp $CALL_PROVIDER root/LaunchDaemons/
 	fi
 	# Native USB mux services: loopback only, socket activated, no panic-on-crash policy.
 	cp com.redwood.usbmux-lockdown.plist root/LaunchDaemons/
@@ -899,6 +932,22 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		sysroot/System/Library/LaunchAngels sysroot/System/Library/xpc/launchd.plist
 	ln -s /redwood/LaunchDaemons sysroot/System/Library/LaunchDaemons
 	mkdir -p sysroot/redwood sysroot/sbin
+	# The default wallpaper (B, 2026-11-14, the user's pick): a Photos poster with its lock-screen clock style,
+	# layout and paired home screen -- PosterBoard's store (PRBPosterExtensionDataStore) reduced to that one poster.
+	# init copies it into a data volume that has no poster store yet (userland/src/init.c, default_wallpaper); a
+	# phone with wallpapers of its own is never touched. 3.5 MB (the editing source is HEIC; snapshots are left out,
+	# PosterBoard renders them again).
+	if [ -d defaults/wallpaper/PRBPosterExtensionDataStore ]; then
+		mkdir -p sysroot/System/Library/Redwood/DefaultWallpaper
+		cp -R defaults/wallpaper/PRBPosterExtensionDataStore sysroot/System/Library/Redwood/DefaultWallpaper/
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type d -exec chmod 0777 {} +
+		find sysroot/System/Library/Redwood/DefaultWallpaper -type f -exec chmod 0644 {} +
+	fi
+	# callservicesd for the data volume (B, 2026-11-15): init copies it to /var/jb/redwood where its job runs it
+	# (src/init.c seed_phone); select-system.py leaves framework executables out of the image, so it is added here
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	if [ -f $IOS/rootfs/$CSD ]; then mkdir -p sysroot/System/Library/Redwood/Phone; cp $IOS/rootfs/$CSD sysroot/System/Library/Redwood/Phone/callservicesd; chmod 755 sysroot/System/Library/Redwood/Phone/callservicesd
+	else echo "build.sh: no $CSD in the iOS root: a fresh phone will have no callservicesd" >&2; fi
 	# where the kernel mounts the iOS root container off the phone's flash (boot-arg apfs_volume=):
 	# iOS has no /System/Volumes, and nothing can make a directory in this image once it is built
 	mkdir -p sysroot/System/Volumes/iOS

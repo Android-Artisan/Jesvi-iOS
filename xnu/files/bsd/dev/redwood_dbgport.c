@@ -590,6 +590,28 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, display_warmth,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, warm_sysctl, "I",
     "optional mild software display warmth (0 or 1)");
 
+/* kern.redwood.display_aod (iokit/Kernel/MiniIOMobileFramebuffer.cpp redwood_fb_aod): the panel dimmed while the
+ * Always-On Display shows. SpringBoard (mobile) sets it on the backlight's InactiveOn transition: bounded 0..60, a
+ * brightness ceiling only, never a register or power command. */
+extern int redwood_fb_aod(int value);
+static int
+aod_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg2, struct sysctl_req *req)
+{
+	int value = redwood_fb_aod(-1), error;
+
+	error = SYSCTL_OUT(req, &value, sizeof(value));
+	if (!error && req->newptr != USER_ADDR_NULL) {
+		if (req->newlen != sizeof(value)) error = EINVAL;
+		else if (!(error = SYSCTL_IN(req, &value, sizeof(value)))) {
+			if (value < 0 || value > 60 || redwood_fb_aod(value) != value) error = EINVAL;
+		}
+	}
+	return error;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, display_aod,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, NULL, 0, aod_sysctl, "I",
+    "Always-On Display panel dimming: 0 off, 1 default, 2..60 ceiling in nits");
+
 /* kern.redwood.dvfs_log (bsd/dev/redwood_exynos_acpm.c): every clock change in the log; 0 failures only */
 extern uint32_t redwood_dvfs_log;
 SYSCTL_UINT(_kern_redwood, OID_AUTO, dvfs_log, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_dvfs_log, 0,

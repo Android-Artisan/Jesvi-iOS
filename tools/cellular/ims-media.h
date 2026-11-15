@@ -6,6 +6,11 @@
  *        -> 8 kHz -> 48 kHz stereo -> /dev/redwood-audio (the speaker driver's raw input, sys/redwood_audio.h)
  *   out  /dev/redwood-mic (48 kHz mono, docs/x1slte-audio.md) -> 8 kHz -> AMR-NB 12.2 -> RTP to the SDP's c=/m=
  * opencore-amr 0.1.6 (Apache-2.0), built static for iOS: work/third_party/amr-build/out (see tools/cellular/build-ims.sh).
+ *
+ * (B, 2026-11-15) the payload types are the negotiated ones (Jio offers AMR as 100 or 112: with 112 every packet was
+ * dropped here before -- silence one way), each call has its own RTP port (ims-call.h), DTMF goes out as RFC 4733
+ * telephone-events from the send thread, and a local ringback tone plays while an outgoing call rings without early
+ * media (media_tone).
  */
 #include <math.h>
 #include <sys/sysctl.h>
@@ -14,7 +19,6 @@
 #include <opencore-amrnb/interf_dec.h>
 #include <opencore-amrnb/interf_enc.h>
 
-#define MEDIA_PT 100
 static const int amr_bits[16] = { 95, 103, 118, 134, 148, 159, 204, 244, 39, 0, 0, 0, 0, 0, 0, 0 };
 
 /* the jitter buffer: decoded 8 kHz samples, played out at a steady 48 kHz by media_play (the speaker driver repeats
@@ -35,7 +39,24 @@ static struct {
     struct sockaddr_in6 peer;
     pthread_t rx, tx;
     unsigned rx_pkts, rx_frames, tx_pkts, rx_bad, tx_err, mic_bytes; int tx_errno;
-} med = { .sock = -1, .spk = -1, .mic = -1 };
+    int pt, dtmf_pt, lport;             /* negotiated AMR / telephone-event payload types; our RTP port */
+    unsigned rx_other;                  /* packets of other payload types (CN, events): counted, not played */
+} med = { .sock = -1, .spk = -1, .mic = -1, .pt = 100, .dtmf_pt = 101 };
+
+/* DTMF digits waiting to go out (ims-call.h); the send thread turns each into RFC 4733 events */
+static char dtmf_q[64];
+static volatile unsigned dtmf_w, dtmf_r;
+static void media_dtmf(const char *digits)
+{
+    for (const char *d = digits; *d; d++) {
+        char c = *d;
+        if (c >= 'a' && c <= 'd') c = (char)(c - 32);
+        if (!((c >= '0' && c <= '9') || c == '*' || c == '#' || (c >= 'A' && c <= 'D'))) continue;
+        if (dtmf_w - dtmf_r >= sizeof(dtmf_q)) break;
+        dtmf_q[dtmf_w % sizeof(dtmf_q)] = c; dtmf_w++;
+    }
+}
+static int dtmf_code(char c) { return c >= '0' && c <= '9' ? c - '0' : c == '*' ? 10 : c == '#' ? 11 : c - 'A' + 12; }
 
 /* bit reader / writer, MSB first */
 static unsigned getbits(const uint8_t *b, size_t *pos, int n)
@@ -87,7 +108,7 @@ static void *media_rx(void *arg)
         if (poll(&p, 1, 200) <= 0) continue;
         ssize_t n = recv(med.sock, pkt, sizeof(pkt), 0);
         if (n < 13 || (pkt[0] >> 6) != 2) { med.rx_bad++; continue; }
-        if ((pkt[1] & 0x7f) != MEDIA_PT) continue;          /* (telephone-event, comfort noise of other types) */
+        if ((pkt[1] & 0x7f) != med.pt) { med.rx_other++; continue; }   /* (telephone-event, comfort noise) */
         med.rx_pkts++;
         uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
         if (have_seq) {
@@ -200,6 +221,7 @@ static void *media_tx(void *arg)
     uint32_t ts = arc4random(), ssrc = arc4random();
     int first = 1;
     unsigned long mic_try = 0;
+    int ev = -1, ev_phase = 0, ev_n = 0; uint32_t ev_ts = 0;   /* the RFC 4733 event going out: 1 tone, 2 end, 3 gap */
     while (med.run) {
         /* the mic may be held by iOS's own audio for a moment (the call's audio session opens its input: "mic NOT open",
          * 2026-11-14 04:46): ask again every 200 ms; meanwhile silence goes out at 20 ms, so the stream never stops */
@@ -236,9 +258,30 @@ static void *media_tx(void *arg)
         uint8_t st[64];
         int len = Encoder_Interface_Encode(enc, MR122, pcm, st, 0);
         if (len < 1) continue;
+        /* DTMF: 100 ms of event packets (every 20 ms, same timestamp, growing duration, marker on the first), the end
+         * packet three times, then 60 ms of voice before the next digit. The voice clock (ts) runs on meanwhile. */
+        if (ev_phase == 0 && dtmf_r != dtmf_w && med.dtmf_pt > 0) {
+            ev = dtmf_code(dtmf_q[dtmf_r % sizeof(dtmf_q)]); dtmf_r++; ev_phase = 1; ev_n = 0; ev_ts = ts;
+        }
+        if (ev_phase == 1 || ev_phase == 2) {
+            uint8_t e[16];
+            int end = ev_phase == 2;
+            unsigned dur = end ? 800 : 160 * (unsigned)(ev_n + 1);
+            e[0] = 0x80; e[1] = (uint8_t)(med.dtmf_pt | (ev_phase == 1 && ev_n == 0 ? 0x80 : 0));
+            e[2] = (uint8_t)(seq >> 8); e[3] = (uint8_t)seq; seq++;
+            e[4] = (uint8_t)(ev_ts >> 24); e[5] = (uint8_t)(ev_ts >> 16); e[6] = (uint8_t)(ev_ts >> 8); e[7] = (uint8_t)ev_ts;
+            e[8] = (uint8_t)(ssrc >> 24); e[9] = (uint8_t)(ssrc >> 16); e[10] = (uint8_t)(ssrc >> 8); e[11] = (uint8_t)ssrc;
+            e[12] = (uint8_t)ev; e[13] = (uint8_t)((end ? 0x80 : 0) | 10); e[14] = (uint8_t)(dur >> 8); e[15] = (uint8_t)dur;
+            if (sendto(med.sock, e, sizeof(e), 0, (struct sockaddr *)&med.peer, sizeof(med.peer)) > 0) med.tx_pkts++;
+            ts += 160; ev_n++;
+            if (ev_phase == 1 && ev_n == 5) { ev_phase = 2; ev_n = 0; }
+            else if (ev_phase == 2 && ev_n == 3) { ev_phase = 3; ev_n = 0; }
+            continue;
+        }
+        if (ev_phase == 3 && ++ev_n >= 3) ev_phase = 0;
         int ftv = (st[0] >> 3) & 15, bits = amr_bits[ftv];
         uint8_t pkt[12 + 40] = { 0 };
-        pkt[0] = 0x80; pkt[1] = (uint8_t)(MEDIA_PT | (first ? 0x80 : 0)); first = 0;
+        pkt[0] = 0x80; pkt[1] = (uint8_t)(med.pt | (first ? 0x80 : 0)); first = 0;
         pkt[2] = (uint8_t)(seq >> 8); pkt[3] = (uint8_t)seq; seq++;
         pkt[4] = (uint8_t)(ts >> 24); pkt[5] = (uint8_t)(ts >> 16); pkt[6] = (uint8_t)(ts >> 8); pkt[7] = (uint8_t)ts; ts += 160;
         pkt[8] = (uint8_t)(ssrc >> 24); pkt[9] = (uint8_t)(ssrc >> 16); pkt[10] = (uint8_t)(ssrc >> 8); pkt[11] = (uint8_t)ssrc;
@@ -277,9 +320,13 @@ static void media_route(const struct in6_addr *dst, const char *ifn)
     close(rs);
 }
 
-/* rport: the SDP's m= port; remote: its c= address; sock: a UDP socket bound to our RTP port */
-static int media_start(int sock, const char *remote, unsigned rport)
+/* rport: the SDP's m= port; remote: its c= address; sock: a UDP socket bound to our RTP port lport; pt / dtmf_pt: the
+ * negotiated payload types (dtmf_pt 0: none) */
+static void media_tone(int on);
+static int media_start(int sock, const char *remote, unsigned rport, int pt, int dtmf_pt, int lport)
 {
+    media_tone(0);
+    med.pt = pt; med.dtmf_pt = dtmf_pt; med.lport = lport; med.rx_other = 0; dtmf_r = dtmf_w;
     memset(&med.peer, 0, sizeof(med.peer));
     med.peer.sin6_len = sizeof(med.peer); med.peer.sin6_family = AF_INET6; med.peer.sin6_port = htons((uint16_t)rport);
     if (inet_pton(AF_INET6, remote, &med.peer.sin6_addr) != 1) return -1;
@@ -289,18 +336,19 @@ static int media_start(int sock, const char *remote, unsigned rport)
     med.mic = open("/dev/redwood-mic", O_RDONLY | O_NONBLOCK);
     med.rx_pkts = med.rx_frames = med.tx_pkts = med.rx_bad = med.tx_err = med.mic_bytes = 0; med.tx_errno = 0;
     {   /* the earpiece (top amplifier only) unless the call screen says speaker; iOS's own audio leaves the device to us */
-        int one = 1;
+        int one = 1, r = med.route;
         sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
-        sysctlbyname("kern.redwood.snd_route", NULL, NULL, &one, sizeof(one));
+        sysctlbyname("kern.redwood.snd_route", NULL, NULL, &r, sizeof(r));
     }
-    notify_post("com.redwood.call.started");               /* the call screen's Speaker button back to off */
-    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2; med.muted = 0; med.route = 1;
+    /* (route and mute belong to the whole call session, not to one media start: a hold/swap restarts the media and must
+     * not undo the user's Speaker or Mute -- ims-call.h resets them when the first call of a session begins) */
+    fifo_w = fifo_r = 0; med.underruns = med.concealed = 0; med.mic_gain = 2;
     fir_init();
     med.run = 1;
     pthread_create(&med.play, NULL, media_play, NULL);
     pthread_create(&med.rx, NULL, media_rx, NULL);
     pthread_create(&med.tx, NULL, media_tx, NULL);
-    printf("call: media (AP): RTP :%d <-> [%s]:%u, speaker %s, mic %s\n", CALL_RTP_PORT, remote, rport,
+    printf("call: media (AP): RTP :%d <-> [%s]:%u, AMR PT %d, DTMF PT %d, speaker %s, mic %s\n", lport, remote, rport, pt, dtmf_pt,
         med.spk >= 0 ? "open" : strerror(errno), med.mic >= 0 ? "open" : "NOT open");
     return 0;
 }
@@ -310,12 +358,67 @@ static void media_stop(void)
     if (!med.run) return;
     med.run = 0;
     pthread_join(med.rx, NULL); pthread_join(med.tx, NULL); pthread_join(med.play, NULL);
-    printf("call: media (AP): stopped: in %u packets / %u frames (%u bad), out %u packets (%u failed: %s), mic %u bytes, %u underruns\n",
-        med.rx_pkts, med.rx_frames, med.rx_bad, med.tx_pkts, med.tx_err, strerror(med.tx_errno), med.mic_bytes, med.underruns);
+    printf("call: media (AP): stopped: in %u packets / %u frames (%u bad, %u other types), out %u packets (%u failed: %s), mic %u bytes, %u underruns\n",
+        med.rx_pkts, med.rx_frames, med.rx_bad, med.rx_other, med.tx_pkts, med.tx_err, strerror(med.tx_errno), med.mic_bytes, med.underruns);
     if (med.spk >= 0) close(med.spk);
     if (med.mic >= 0) close(med.mic);
     if (med.sock >= 0) close(med.sock);
     med.spk = med.mic = med.sock = -1;
     {int zero = 0; sysctlbyname("kern.redwood.snd_call", NULL, NULL, &zero, sizeof(zero));
      sysctlbyname("kern.redwood.snd_route", NULL, NULL, &zero, sizeof(zero));}
+}
+
+
+/*
+ * The ringback tone (B, 2026-11-15): an outgoing call that rings at the other end without early media (180 without
+ * SDP) is silent on a VoLTE phone unless the phone plays the tone itself, as a baseband does. On the call's route,
+ * 48 kHz stereo to /dev/redwood-audio. India (IMSI 404/405/406): 400 Hz modulated by 25 Hz, 0.4 on 0.2 off 0.4 on
+ * 2.0 off; elsewhere 440 + 480 Hz, 2 s on 4 s off.
+ */
+static struct { volatile int run; pthread_t th; int fd; int india; } tone = { .fd = -1 };
+static void *tone_thread(void *arg)
+{
+    (void)arg;
+    int16_t out[480 * 2];
+    unsigned long n = 0;                                    /* 48 kHz samples played */
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    rt_thread(44);
+    while (tone.run) {
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        unsigned long due = (unsigned long)((now.tv_sec - t0.tv_sec) * 48000L + (now.tv_nsec - t0.tv_nsec) / 20833L);
+        if (due < n + 480) { usleep(3000); continue; }
+        for (int i = 0; i < 480; i++, n++) {
+            double t = n / 48000.0, v = 0;
+            if (tone.india) {
+                double c = fmod(t, 3.0);
+                if (c < 0.4 || (c >= 0.6 && c < 1.0)) v = sin(2 * M_PI * 400 * t) * (0.5 + 0.5 * sin(2 * M_PI * 25 * t));
+            } else if (fmod(t, 6.0) < 2.0) v = 0.5 * (sin(2 * M_PI * 440 * t) + sin(2 * M_PI * 480 * t));
+            out[2 * i] = out[2 * i + 1] = (int16_t)(v * 6000);
+        }
+        if (tone.fd >= 0) (void)!write(tone.fd, out, sizeof(out));
+        if (n % 24000 < 480) { int r = med.route; sysctlbyname("kern.redwood.snd_route", NULL, NULL, &r, sizeof(r)); }
+        if (due > n + 4800) n = due;
+    }
+    return NULL;
+}
+static void media_tone(int on)
+{
+    if (on && !tone.run) {
+        if (med.run) return;                                /* (the call's own audio has the speaker) */
+        tone.india = !strncmp(cfg.imsi, "404", 3) || !strncmp(cfg.imsi, "405", 3) || !strncmp(cfg.imsi, "406", 3);
+        tone.fd = open("/dev/redwood-audio", O_WRONLY | O_NONBLOCK);
+        int one = 1, r = med.route;
+        sysctlbyname("kern.redwood.snd_call", NULL, NULL, &one, sizeof(one));
+        sysctlbyname("kern.redwood.snd_route", NULL, NULL, &r, sizeof(r));
+        tone.run = 1;
+        pthread_create(&tone.th, NULL, tone_thread, NULL);
+        printf("%s call: ringback tone on (%s)\n", ts_now(), tone.india ? "India" : "default");
+    } else if (!on && tone.run) {
+        tone.run = 0;
+        pthread_join(tone.th, NULL);
+        if (tone.fd >= 0) close(tone.fd);
+        tone.fd = -1;
+        if (!med.run) { int zero = 0; sysctlbyname("kern.redwood.snd_call", NULL, NULL, &zero, sizeof(zero)); sysctlbyname("kern.redwood.snd_route", NULL, NULL, &zero, sizeof(zero)); }
+        printf("%s call: ringback tone off\n", ts_now());
+    }
 }

@@ -37,6 +37,149 @@
 - Implementation/research, precise missing transport/matcher/provider work and traps: docs/x1slte-fingerprint.md.
   The first compatibility test requires the shared phone lock and explicit user reboot approval. Keep main/master
   on accepted code; do not merge this prototype as working fingerprint support.
+## 2026-11-15 (11:10, A) — AOD at 30 % of the slider (user-chosen)
+- AOD level is now set in slider terms: 30 % of the slider position at AOD start (100 % -> 30 %, 50 % -> 15 %,
+  25 % -> 8 %), about 7 % of the light: clearly dimmer than the awake screen by the same step at every level.
+  (30 % of the nits looked ~2/3 as bright; 35 % of the slider still too close; user chose 3/10: "good like this".)
+  Live tuning without a reboot: `rwsys kern.redwood.poke "fb.aod PCT"` (10..60). Hold + 2x re-take unchanged.
+  Kernel flashed 11:06 (kernel slot only).
+
+## 2026-11-15 (11:05, A) — AOD well visible on a bright screen
+- AOD cap raised 12 -> 60 nits: the same 30 % of the brightness at AOD start everywhere (10 nits -> 3, 40 -> 12,
+  80 -> 24, 120 -> 36, 200+ -> 60). User-verified at 40-50 % brightness: "well visible". Dark-room hold unchanged.
+  Kernel e8499142 flashed 11:00 (kernel slot only, phone's loader/root kept). Boot arg `fb_aod_max` still overrides.
+
+## 2026-11-15 (10:58, A) — AOD brightness held (no dark-room fluctuation)
+- Kernel: the AOD level is 30 % of the brightness at the moment AOD starts (2..12 nits), then held; auto-brightness
+  changes during AOD are kept for the wake but do not move it; only a 2x or 1/2 change of light re-takes it.
+  Verified on the phone in a dark room: auto-brightness went 5.44 -> 4.82 nits, AOD held at 2.000 for the whole
+  sample. Host test of the hold logic passes. Flashed 10:55 together with B's avconferenced root change (one reboot).
+  Below ~6 nits normal brightness AOD sits at the panel's lowest step (2 nits); lower needs Samsung's panel AOD mode.
+
+## 2026-11-15 (10:10, A) — AOD on by default
+- Fresh installs: Always-On Display on, wallpaper and notifications in AOD off (user's choice). A missing or unreadable
+  preference file reads as these defaults (`tools/aod/config.h` `rw_aod_default`); a saved choice always wins.
+  Config regression (`tools/aod/test_config.m`) and AOD build tests pass. This phone already had on/off saved: no change.
+
+## 2026-11-15 (10:05, B) — avconferenced back on demand
+- mkjobs.py: avconferenced out of DENY (it crash-looped when the port had no camera/audio; both work now). Without it
+  callservicesd and InCallService asked for it every 2 s during calls ("Server died. Attempt reconnect"). Feature-flag
+  Mach services ({"#IfFeatureFlagEnabled", "#Then"}) are now resolved at build time to "#Then" (iOS 16.5 ships them on).
+- Verified live (job bootstrapped by hand, gone at the next reboot until the next image): started on demand during a
+  call (10:00), no crash, 0 % CPU idle, no reconnect spam. In the image from the next boot-image build.
+- Calls/texts: the 09:08 redwood-ims survived A's 09:24 reboot (same binary), registered, reg-event subscribed + "active".
+- Note: prebuilt/userland/init does not have seed_phone yet (only a PREBUILT=1 build uses it; a normal build compiles
+  src/init.c). Refresh it with tools/update-prebuilt.sh at the next full build.
+
+## 2026-11-15 (09:45, A) — AOD: wallpaper fades to black on lock (AOD wallpaper off)
+- Locking from the home screen or an app no longer shows the lock screen wallpaper before AOD: a black layer fades in
+  over it (0.35 s, under the clock) and goes on wake. From the lock screen itself iOS's own fade stays (user's choice).
+  Commit 1295706d (tools/aod/alwayson.m; QuartzCore added to the AOD dylib's build lines). User-verified ("perfecto").
+- Researched, left as is (user: not worth battery/complexity): a short black moment when waking from AOD after ~2-6 s.
+  iOS ends AOD live rendering ("live-rendering assertion released", backboardd "Set Blanked: YES / Display 1 power
+  off"; the panel keeps showing the AOD picture from its own memory, so AOD stays visible at no cost), then wakes with
+  its fade-in-from-black animation (performWake: fade-in hard-coded on). Same for button and tap; quick wakes before
+  the blank are smooth. Only fix: keep iOS live-rendering through AOD (battery).
+
+## 2026-11-15 (09:35, A) — Always-On Display: panel dimming, lift-to-wake from AOD, Low Power Mode, permanent in x1slte
+- AOD (native iOS Always-On, default off, wallpaper off) merged from feat/s20-aod-preview (codex-aod's work, finished by A).
+- Kernel `kern.redwood.display_aod`: while AOD shows the panel runs at 30 % of CoreBrightness's level (2..12 nits;
+  boot args `fb_aod_pct`, `fb_aod_max`), 600 ms fade in, 200 ms out, exact level back on wake. Before: AOD stayed at
+  full brightness (40-55 nits). SpringBoard's AOD service sets it on the InactiveOn transition, clears it on wake/start.
+- Framebuffer: fade reads under the DSIM lock (a stale fade-out can no longer paint black after a wake); swap
+  signal/cancel no longer fall through into panel power.
+- redwood-motiond: AOD counts as asleep, so raise-to-wake works from AOD; Low Power Mode suspends AOD and raise-to-wake.
+- Verified on the phone (user): dim fade into AOD, pickup wakes at normal brightness, passcode still asked, Low Power
+  Mode: screen fully off and pickup ignored. Flashed: phone's loader/boot line + x1slte kernel 03c2c41a-equivalent +
+  phone's root with the new motiond (docs/x1slte-root-swap.md method). The phone's fingerprint-research kernel
+  (feat/s20-fingerprint, not in x1slte) was replaced by the main line.
+- Not done: Samsung ALPM/HLPM panel mode and a 120->60 Hz drop in AOD (mode switch is one-way per boot today).
+
+## 2026-11-15 (09:30, B) — calls/VoLTE/texts wrap-up: registration never drops for a refresh; everything in the image
+- Registration refreshed in place at half its lifetime (Jio: 3600 of 7200 s) on the same connection and SAs: the ~110
+  min full restart (10-90 s without calls or texts, the main cause of late texts) is now only the fallback (401 or no
+  answer, never during a call). Subscribed to the reg event: a network-side deregistration starts a fresh registration
+  at once instead of at the next health check. Granted lifetime read from the 200.
+- Sign-off fixed: it carried REGISTER 2's digest under nc=00000002 (wrong digest, refused, old registration lingered);
+  now built when sent with its own nc.
+- Permanent by default: a fresh or wiped data volume now gets every call/text piece from the images at boot
+  (userland/src/init.c seed_phone, /etc/seed.list from build.sh): /var/root/redwood-ims, /var/jb/redwood/bin/
+  redwood-telephonyd, /var/jb/redwood/callservicesd (system image: /System/Library/Redwood/Phone), libredwood-calls,
+  RedwoodSMS + RedwoodCellular (dylib + plist). Copied only where missing; a newer one deployed by hand is kept.
+  Before, the jobs were in the image but these programs were only on this phone's data volume.
+- Prebuilts refreshed: redwood-ims, redwood-telephonyd, libredwood-calls.dylib.
+- Verified: engine and init build clean. Not yet verified on the phone: the first in-place refresh (log line
+  "registration refreshed in place"), seeding (needs a fresh image + wiped data volume to see "put in place").
+- Open: missed-call banner/badge (callservicesd sees the missed call and sets the badge count; iOS's notification
+  delivery for Phone shows nothing -- not the call stack); avconferenced is denied (mkjobs) and callservicesd /
+  InCallService retry it every 2 s; RCS needs a client of our own.
+## 2026-11-15 — AOD and AOD wallpaper default off
+
+Show Wallpaper now defaults off as well as AOD. Updated source, tracked clean-build
+prebuilts and helper; explicit user opt-in still works. Both saved settings and
+settled native AOD policy verified off on the current phone without refresh/reboot.
+Config and AOD/passcode assembly regressions pass.
+
+## 2026-11-15 — AOD clean-image inclusion
+
+S20 root assembly now includes native AOD and its helper from tracked prebuilts,
+independent of data-volume tweaks. Source and macOS GPU build paths refresh them;
+missing inputs fail assembly. Injection is targeted, repeatable and preserves
+other rules. Default off; existing user setting retained. Root/standalone modules
+use distinct Settings classes and shared duplicate hook guards. iOS cross-build,
+AOD assembly/config/token checks and required passcode assembly regression pass.
+Full system/root images not rebuilt or flashed here. Physical panel ALPM remains
+separate experimental work. Local only at user's request after upstream403.
+
+## 2026-11-15 — native AOD service (feature branch)
+
+Settings-controlled native Always-On Display, default off, pinned to this S20 /
+iOS16.5 cache. Adapt native capability providers and use Apple's pseudo-flipbook
+live-composition backend: CAFlipBook returned no frame and trapped SpringBoard at
+BacklightServicesHost0x1eebbd068 (`renderedFrame != nil`). The fallback avoids that
+unsupported capture path without bypassing assertions. User confirmed persistent
+AOD with no restart; native state1 and unchanged SpringBoard PID independently
+observed. Repeat passcode/AOD-cycle confirmation remains pending. No kernel reboot
+or panel ALPM activation. Build, config/token regressions, package allowlist and
+hash checks pass. Standalone installer/package prepared; clean image integration
+still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
+
+## 2026-11-15 (08:10, A) — texts react at once; outgoing-call delay measured; cellulard timing
+- Texts: redwood-ims sends a text the moment Messages drops it in sms-out (kqueue), RedwoodSMS picks up received
+  texts and send results the moment they land (vnode watch); the 1 s / 2 s polls are now only a fallback. RP-ACK goes
+  to the SMSC (P-Asserted-Identity), and an SMSC retry of the same text is acknowledged but not shown twice.
+  On the phone: /var/root/redwood-ims (active from its next restart, at the latest the ~110 min re-registration),
+  /var/jb/usr/lib/TweakInject/RedwoodSMS.dylib (from the next imagent start). Backups: *.pre-sms, *.pre-watch.
+  Copies: prebuilt/userland/redwood-ims, prebuilt/userland/RedwoodSMS.dylib. Not yet timed on the phone.
+- cellulard: ms wall-time stamps on IPC lines and a decoded line for the IMS voice bearer (16/0b). It runs as
+  /var/root/redwood-cellulard (the /redwood/bin copy re-execs it). A timed call showed no delay on our side: the
+  bearer comes up 33 ms after the 183. Details: docs/x1slte-native-calls.md "Open problems".
+- RCS: not in iOS 16 Messages; Jio has its own RCS config server (config.rcs.mnc869.mcc405...). Next step if wanted:
+  check whether it provisions a non-Google client before building anything.
+
+## 2026-11-15 (02:16, A) — native calls permanent; status bar on island phones; Cellular settings live
+- Calls: native only, on at boot. `feat/native-calls` merged into x1slte (ad93a151); redwood-telephonyd starts from the
+  boot image and registers as `com.apple.coretelephony telephony=1`; RedwoodPhone no longer shipped. Engine review
+  fixes (bounded SIP message building, 100rel, no 32 s give-up after 100 Trying, one INVITE dump), telephonyd bounded
+  sets + cheap unchanged-file path. Docs: `docs/x1slte-native-calls.md`.
+- Status bar (island phones, device-tree detection): plain time (activity only in the island), no battery bolt
+  (`bolt=1` keeps it), left padding removed (`lead=12`, `lead=0` Apple's). Docs: `docs/x1slte-dynamic-island.md`.
+- Settings > Cellular: VoLTE / Calls / Text Messages from the live engine state.
+- Flashed three times by swapping only root.apfs inside the phone's own recovery image (loader, kernel and signature
+  byte-identical): `docs/x1slte-root-swap.md`. Verified after each boot: telephonyd at boot, VoLTE registered,
+  island hook armed. Not yet seen on screen by the user: plain time while recording, no bolt while charging.
+- Open: outgoing calls' late ringing (precondition / modem IPC 0x16), the privacy dot position, Personal Hotspot.
+
+## 2026-11-14 — Default wallpaper: the user's photo poster ships with the image
+- `92857ab9`: the user's Photos poster (their picture, lock-screen clock style, layout, paired home screen) is the
+  wallpaper of a phone whose data volume has no poster store yet: a fresh install or a factory reset.
+- `userland/defaults/wallpaper/PRBPosterExtensionDataStore/59` (3.5 MB: PosterBoard's store reduced to that one poster,
+  snapshots left out, editing source as HEIC) -> system image `/System/Library/Redwood/DefaultWallpaper` (build.sh)
+  -> `init` `default_wallpaper()` copies it (part name, renamed whole) to `/var/mobile/Library/Application Support`,
+  owned by mobile. A phone with wallpapers of its own is never touched.
+- Verified on the phone (user, 2026-11-14 22:40): the shipped store alone, swapped in over an Apple wallpaper and
+  resprung, shows the photo with the same clock style on lock and home screen ("perfecto").
+- Takes effect with the next system image (`userland/build-gpu-y2s.sh` rebuilds the prebuilt init too).
 
 ## 2026-11-14 — Persistent software passcode and clean-build defaults
 - Source history: `368e80c` verifier/ABI foundation, `110f0f8` native persistence and keybag events,

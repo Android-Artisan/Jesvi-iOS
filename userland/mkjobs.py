@@ -225,7 +225,10 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'Blue
         # these start, crash and are asked for again, over and over. (aggregated, which was among them, is where
         # iOS 16 keeps its power log -- com.apple.powerlog.plxpclogger.xpc and the rest -- that Settings > Battery
         # waits for; it now runs through a session.)
-        'homed', 'routined', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd', 'avconferenced',
+        'homed', 'routined', 'com.apple.dmd', 'syncdefaultsd', 'photoanalysisd',
+        # (avconferenced is let through again, B 2026-11-15: it crash-looped when the port had no camera and no audio;
+        #  both work now, and without it callservicesd and InCallService asked for it every 2 s during calls, "Server
+        #  died. Attempt reconnect", for the whole call. On demand only: KeepAlive false, no RunAtLoad.)
         # x1slte (2026-11-06): Visual Voicemail spins without a baseband (85 % of a core, the SoC at 92-94 C)
         'voicemail.vmd',
         # x1slte (2026-11-06): coreduetd (66 %) asks for duetexpertd's services (denied above) without end, and biomed
@@ -380,6 +383,14 @@ if rest:
         if label in oslog:
             job.setdefault('EnvironmentVariables', {})['OS_ACTIVITY_DT_MODE'] = 'YES'
         apply_job_env(label, job)
+        # Mach services offered only behind a feature flag ({"#IfFeatureFlagEnabled": ..., "#Then": true}, e.g.
+        # avconferenced's): resolved here to the "#Then" value, as iOS 16.5 ships those flags on -- so the job does
+        # not depend on this port's launchd evaluating FeatureFlags (B, 2026-11-15)
+        ms = job.get('MachServices')
+        if isinstance(ms, dict):
+            for k, v in list(ms.items()):
+                if isinstance(v, dict) and '#IfFeatureFlagEnabled' in v:
+                    ms[k] = v.get('#Then', True)
         with open(f'{dest}/{name}', 'wb') as f:
             plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)
         count += 1

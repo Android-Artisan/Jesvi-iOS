@@ -53,6 +53,7 @@ void dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_cal(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap);
 void dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap);
+void dbg_fb_aod(const uint64_t *v, unsigned n, char *out, size_t cap);
 }
 class IOMobileFramebuffer;
 static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.mode */
@@ -831,6 +832,59 @@ public:
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 static IOMobileFramebuffer * gFramebuffer;      /* the one there is (redwood_fb_quiesce) */
 static volatile uint32_t gBLThermalCap;
+/*
+ * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
+ * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here, in
+ * SLIDER terms: AOD sits at fb_aod_pct (default 30; live: kern.redwood.poke "fb.aod PCT") % of the slider position the screen had when AOD began, on the
+ * same slider -> nits curve as legacyToNits16 (2 + 418 s^2.2 nits). 100 % -> 30 %, 50 % -> 15 %, 25 % -> 8 %: about
+ * 7 % of the light, clearly dimmer than the awake screen by the same step at every level (30 % of the NITS looked
+ * ~2/3 as bright, 35 % of the slider still too close: the user chose 3/10). Floor: the panel's 2 nits.
+ * Then HELD: auto-brightness keeps sending small changes during AOD (a dark room's sensor wobble showed at the
+ * panel's 1-nit bottom steps); those are kept for the wake but do not move the AOD picture. Only a big change of
+ * light (CoreBrightness asking 2x or 1/2 of the level AOD started from) takes the level again. Faded in and out;
+ * CoreBrightness's exact level comes back on wake. 0 off; 1 the default; 2..60 a fixed ceiling in nits.
+ */
+static volatile uint32_t gAODDim;
+static uint32_t gAODBase, gAODLevel;    /* (fBLLock) nits 16.16 AOD started from, and the level held */
+static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
+static volatile uint32_t gAODPctLive;    /* fb.aod PCT (0: the boot value) */
+static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 60);
+/* (p / 100)^2.2 in 1/65536 for p = 10, 15 .. 60: a slider fraction p of s is (p/100)^2.2 of the nits above 2 */
+static const uint32_t gAODSliderFactor[11] = { 414, 1009, 1900, 3104, 4636, 6508, 8730, 11312, 14263, 17590, 21302 };
+
+static uint32_t
+aodFrom(uint32_t base)
+{
+	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, pct = gAODPctLive ? gAODPctLive : gAODPct, level;
+
+	pct = pct < 10 ? 10 : pct > 60 ? 60 : pct;
+	if (base <= lo) {
+		return base;
+	}
+	level = lo + (uint32_t) (((uint64_t) (base - lo) * gAODSliderFactor[(pct - 10) / 5]) >> 16);
+	return level > hi ? hi : level;
+}
+
+/* (fBLLock held) */
+static uint32_t
+aodLevel(uint32_t target)
+{
+	uint32_t mode = gAODDim;
+
+	if (mode == 0 || target == 0) {
+		return target;
+	}
+	if (mode >= 2) {
+		uint32_t hi = mode << 16;
+
+		return target < hi ? target : hi;
+	}
+	if (gAODBase == 0 || (uint64_t) target >= 2ull * gAODBase || 2ull * target <= gAODBase) {
+		gAODBase = target;              /* (the first request, or a real change of light) */
+		gAODLevel = aodFrom(target);
+	}
+	return gAODLevel < target ? gAODLevel : target;
+}
 /* the window server's refresh notifications (kFBNotifyVSync): asked for, sent, not sent (no port, or closed) */
 static volatile UInt32 gVSyncAsked, gVSyncSent, gVSyncStopped;         /* nits in 16.16 the panel is held under while the chip is hot; 0: none */
 
@@ -1020,6 +1074,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	redwood_dbgport_add("fb.cal", "[address length]: read panel calibration SPI flash (JEDEC ID if no args; factory range 0xf0000..0xf8fff, max 128 bytes)", dbg_fb_cal);
+	redwood_dbgport_add("fb.aod", "[PCT]: Always-On Display level, PCT (10..60) % of the slider position, live", dbg_fb_aod);
 	redwood_dbgport_add("fb.warm", "[0|1]: optional mild software True Tone approximation, restore exact prior DQE state on disable", dbg_fb_warm);
 	redwood_dbgport_add("fb.factory", "[0|1]: factory gamma/AOR status, disable/restore, or load/enable verified normal and 120 Hz calibration", dbg_fb_factory);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
@@ -2419,7 +2474,7 @@ IOMobileFramebuffer::blWork(thread_call_param_t self, thread_call_param_t unused
 		bool more = false;
 
 		IOLockLock(fb->fBLLock);
-		target = fb->fBLTarget;
+		target = aodLevel(fb->fBLTarget);
 		from = fb->fFadeFrom;
 		fstart = fb->fFadeStart;
 		flen = fb->fFadeLen;
@@ -2553,6 +2608,9 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	if (fBLCall == NULL || fDsim == NULL) {
 		return;
 	}
+	/* Same order as offWork/blWork: DSIM, then brightness. Alpha state
+	 * and register restoration must not race a wake or an old fade callback. */
+	IOLockLock(fDsimLock);
 	if (gFade && fade16 != 0 && fBLWrites != 0) {
 		uint64_t ns = (uint64_t) fade16 * NSEC_PER_SEC / 65536;
 
@@ -2572,6 +2630,7 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 			fAlphaStart = mach_absolute_time();
 			fAlphaLen = len;
 			thread_call_enter(fAlphaCall);
+			IOLockUnlock(fDsimLock);
 			return;                         /* the backlight stays where it is */
 		}
 	}
@@ -2586,6 +2645,7 @@ IOMobileFramebuffer::brightnessRequest(uint32_t level, uint32_t fade16)
 	fBLTarget = level;
 	IOLockUnlock(fBLLock);
 	thread_call_enter(fBLCall);
+	IOLockUnlock(fDsimLock);
 }
 
 /* the window's plane alpha (0 black .. 255 the picture as it is), taken at the next frame */
@@ -2663,47 +2723,35 @@ void
 IOMobileFramebuffer::alphaWork(thread_call_param_t self, thread_call_param_t unused __unused)
 {
 	IOMobileFramebuffer * fb = (IOMobileFramebuffer *) self;
-	uint64_t now = mach_absolute_time(), start = fb->fAlphaStart, len = fb->fAlphaLen, done;
-	uint32_t alpha;
-
-	if (len == 0) {
-		return;                                 /* (restored meanwhile: a wake, a brightness) */
-	}
-	done = now - start;
-	if (fb->fAlphaUp) {
-		/* power on: 0 -> 255, then the window's own registers back exactly */
-		alpha = done >= len ? 255 : (uint32_t) (255 * done / len);
-		IOLockLock(fb->fDsimLock);
-		if (fb->fAlphaLen != 0 && fb->fAlphaUp) {
-			if (alpha >= 255) {
-				fb->fAlphaLen = 0;
-				fb->fAlphaUp = false;
-				fb->alphaRestore();
-			} else {
-				fb->alphaSet(alpha);
-			}
-		}
-		IOLockUnlock(fb->fDsimLock);
-		if (alpha < 255) {
-			uint64_t next;
-
-			clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
-			thread_call_enter_delayed(fb->fAlphaCall, next);
-		}
-		return;
-	}
-	alpha = done >= len ? 0 : (uint32_t) (255 - 255 * done / len);
+	/* A pending callback belongs to no particular fade. Read direction, time
+	 * and length under the same lock as wake/brightness, then apply only that
+	 * current fade. An old fade-out must never paint black after a new wake. */
 	IOLockLock(fb->fDsimLock);
-	if (fb->fAlphaLen != 0) {
+	uint64_t len = fb->fAlphaLen;
+	if (len == 0) { IOLockUnlock(fb->fDsimLock); return; }
+	uint64_t now = mach_absolute_time();
+	uint64_t done = now >= fb->fAlphaStart ? now - fb->fAlphaStart : 0;
+	uint32_t alpha;
+	bool more = done < len;
+	if (fb->fAlphaUp) {
+		alpha = more ? (uint32_t)(255 * done / len) : 255;
+		if (!more) {
+			fb->fAlphaLen = 0;
+			fb->fAlphaUp = false;
+			fb->alphaRestore();
+		} else fb->alphaSet(alpha);
+	} else {
+		alpha = more ? (uint32_t)(255 - 255 * done / len) : 0;
 		fb->alphaSet(alpha);
+		/* Retain the finished fade-out until offWork sends DCS28 or wake
+		 * restores it. No further alpha callback is needed at zero. */
 	}
-	IOLockUnlock(fb->fDsimLock);
-	if (alpha != 0) {
+	if (more) {
 		uint64_t next;
-
 		clock_interval_to_deadline(1000000u / refreshHz(), kMicrosecondScale, &next);
 		thread_call_enter_delayed(fb->fAlphaCall, next);
 	}
+	IOLockUnlock(fb->fDsimLock);
 }
 
 /* A helper of the scaling (fb_threads): waits for rows to do, does them, says so. */
@@ -3784,6 +3832,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	case kFBMethodSwapSignal:
 	case kFBMethodSwapCancel:
 	case kFBMethodSwapCancelAll:
+		/* Swap signalling/cancellation is unrelated to panel power. A swap
+		 * identifier (including zero) must never become an on/off request. */
+		return kIOReturnSuccess;
 	case kFBMethodRequestPowerChange:               /* in: 0 off, 1 on */
 		if (args->scalarInputCount >= 1) {
 			fOwner->displayPower(in[0] != 0);
@@ -4377,6 +4428,45 @@ redwood_fb_thermal_cap(uint32_t nits)
 	}
 }
 
+/* kern.redwood.display_aod (bsd/dev/redwood_dbgport.c): see gAODDim. Entering fades over 600 ms, leaving over 200. */
+extern "C" int redwood_fb_aod(int value);
+extern "C" int
+redwood_fb_aod(int value)
+{
+	IOMobileFramebuffer * fb = gFramebuffer;
+
+	if (value < 0) {
+		return (int) gAODDim;
+	}
+	if (value > 60) {
+		return -1;
+	}
+	if ((uint32_t) value == gAODDim) {
+		return value;
+	}
+	if (fb == NULL || fb->fBLCall == NULL || fb->fDsim == NULL || fb->fDsimLock == NULL) {
+		gAODDim = (uint32_t) value;
+		return value;
+	}
+	IOLockLock(fb->fDsimLock);
+	IOLockLock(fb->fBLLock);
+	gAODDim = (uint32_t) value;
+	gAODBase = value == 1 ? fb->fBLTarget : 0;     /* entering: the brightness right now */
+	gAODLevel = gAODBase ? aodFrom(gAODBase) : 0;
+	if (fb->fBLTarget != 0 && fb->fBLWrites != 0) {
+		uint64_t len;
+
+		nanoseconds_to_absolutetime((value ? 600 : 200) * NSEC_PER_MSEC, &len);
+		fb->fFadeFrom = fb->fBLCurrent;
+		fb->fFadeStart = mach_absolute_time();
+		fb->fFadeLen = len;
+	}
+	IOLockUnlock(fb->fBLLock);
+	thread_call_enter(fb->fBLCall);
+	IOLockUnlock(fb->fDsimLock);
+	return value;
+}
+
 extern "C" void redwood_fb_quiesce(void);
 extern "C" void
 redwood_fb_quiesce(void)
@@ -4740,7 +4830,7 @@ IOMobileFramebuffer::modeCounters(const char * when, char * out, size_t cap)
 	IOSleep(100);
 	te1 = dpuRead(fDecon, DECON_TE_COUNT);
 	fc1 = dpuRead(fDecon, DECON_FRAME_COUNT);
-	snprintf(out + at, cap - at, "%s: in 100 ms %u TE pulses, %u frames; DECON global %#x trig %#x shadow %#x int-pending %#x "
+	snprintf(out + at, cap - at, "%s: in 100 ms TE-count delta %#x (raw), %u frames; DECON global %#x trig %#x shadow %#x int-pending %#x "
 	    "int-enable %#x; DSIM intsrc %#x fifoctrl %#x link1 %#x config %#x; %ux%u\n", when, te1 - te0, fc1 - fc0,
 	    dpuRead(fDecon, DECON_GLOBAL_CONTROL), dpuRead(fDecon, DECON_TRIG_CONTROL), dpuRead(fDecon, DECON_SHADOW_UPDATE),
 	    dpuRead(fDecon, DECON_INT_PENDING), dpuRead(fDecon, DECON_INT_ENABLE), dpuRead(fDsim, DSIM_INTSRC),
@@ -4759,13 +4849,14 @@ IOMobileFramebuffer::modeLive(int mode)
 			strlcat(fModeReport, "resolution already switched; cold restart required for another mode\n", sizeof(fModeReport));
 			return;
 		}
+		IOLockLock(fDsimLock);
 		if (fDisplayOff || fOffPending || fFramesMasked) {
 			/* (B, 2026-11-07: a switch while the display was off left the panel black after the wake) */
+			IOLockUnlock(fDsimLock);
 			strlcat(fModeReport, "the display is off: switch with the screen on\n", sizeof(fModeReport));
 			return;
 		}
 		fModeAsk = (uint32_t) mode;
-		IOLockLock(fDsimLock);
 		ok = modeSetFhd120();
 		IOLockUnlock(fDsimLock);
 		strlcat(fModeReport, ok ? "switched (see the fb_mode lines in the log)\n" : "NOT switched (see the fb_mode lines)\n",
@@ -5061,11 +5152,37 @@ dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap)
 		else if (v[0] == 0 && gFactoryEnabled) { gFactoryEnabled = false; gFactoryRestore = true; }
 		fb->fBLValid = false;
 	}
-	snprintf(out, cap, "factory %s; loaded %u; checksums normal %#x / 120 HS %#x; target %u.%03u nominal nits\n",
+	snprintf(out, cap, "factory %s; loaded %u; checksums normal %#x / 120 HS %#x; target %u.%03u nominal nits; "
+	    "AOD %u, held %u.%03u nits (from %u.%03u)\n",
 	    gFactoryEnabled ? "enabled" : "disabled", gFactoryReady, gFactoryChecksums[0], gFactoryChecksums[1],
-	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16));
+	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16), gAODDim,
+	    gAODLevel >> 16, (unsigned)(((uint64_t)(gAODLevel & 0xffff) * 1000) >> 16),
+	    gAODBase >> 16, (unsigned)(((uint64_t)(gAODBase & 0xffff) * 1000) >> 16));
 	IOLockUnlock(fb->fDsimLock);
 	if (n && fb->fBLCall != NULL) thread_call_enter(fb->fBLCall);
+}
+
+/* fb.aod [PCT]: the AOD level as PCT (10..60, steps of 5) % of the slider position, live; then re-taken at once */
+extern "C" void
+dbg_fb_aod(const uint64_t * v, unsigned n, char * out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+
+	if (n > 0 && v[0] >= 10 && v[0] <= 60) {
+		gAODPctLive = (uint32_t) v[0];
+		if (fb != NULL && fb->fBLLock != NULL && fb->fBLCall != NULL) {
+			IOLockLock(fb->fBLLock);
+			if (gAODBase != 0) {
+				gAODLevel = aodFrom(gAODBase);
+			}
+			IOLockUnlock(fb->fBLLock);
+			thread_call_enter(fb->fBLCall);
+		}
+	}
+	snprintf(out, cap, "fb.aod: %u %% of the slider (boot %u); AOD %u, held %u.%03u nits from %u.%03u\n",
+	    gAODPctLive ? gAODPctLive : gAODPct, gAODPct, gAODDim, gAODLevel >> 16,
+	    (unsigned)(((uint64_t)(gAODLevel & 0xffff) * 1000) >> 16), gAODBase >> 16,
+	    (unsigned)(((uint64_t)(gAODBase & 0xffff) * 1000) >> 16));
 }
 
 extern "C" void
