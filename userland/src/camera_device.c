@@ -584,7 +584,7 @@ stream_copy_property(CMBaseObjectRef o, CFStringRef key, CFAllocatorRef allocato
 		 */
 		value = number_f(s->camera->pixel_size);
 	} else if (key_is(key, "MinZoomFactor")) {
-        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.6f:1.0f);
+        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.5f:1.0f);
 	} else if (key_is(key, "MaxZoomFactor")) {
 		value = number_f(MAX_ZOOM);
 	} else if (key_is(key, "ZoomFactor")) {

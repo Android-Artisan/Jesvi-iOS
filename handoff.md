@@ -659,3 +659,39 @@ No debug probe dylib/plist remains in TweakInject. Camera injection runtime entr
 will need restoring after reboot, preserving all other entries. Next: kernel-only
 flash/readback under existing camera-test reboot authorization, then isolated
 scaled UI test, install and verify both preferred view and range with user.
+
+## Native controls accepted; primary audit in progress (2026-11-16)
+
+Mapping-cache kernel installed and independently read back; running00:33:05.
+Four alternating driver captures3/1/3/1 passed36 frames each (~1.8–2.0s ultra,
+~4.6s primary INCLUDING36frames). User confirmed native0.9 default, full0.5
+range, primary1x and dragging all work. They report1x->0.9 instant, reverse slow.
+Final request CANCELS fake1x labeling: stock-style0.5 ultra minimum/crop denominator,
+0.9 default (just below switch),1x physical primary. Updated UI+media installed.
+Default route written before Camera graph starts to avoid redundant main startup.
+Native delegate forwards graph zoom only on target change, restores fractional
+range/dial against primary graph's1x floor, resets old primary digital crop when
+crossing lenses. Existing front and UW colours accepted by user; preserve them.
+
+Source adds rear Photo startup preferences in native tweak and changes generic
+inject.c's OLD front-reset preference to rear for future full builds. Revised UI
+with explicit rear preference is built but not installed yet (keep user at1x for
+primary audit). Generic inject source not rebuilt/deployed. Runtime Camera tweak
+injection still requires root-image integration for reboot persistence.
+
+Primary audit: sensor1 RAW2016x1512/GRBG matches2LD; all3 tracked2LD tables exactly
+match Samsung source. Primary per-sensor CCM differs from front/UW; no copiedUW
+matrix found. Legacy filename camera-s5khm2sd.isp is an alias, not sensor identity.
+Live primary capture gain422/32 (~13.2x), exposure20436*1468ns (~30ms), private
+primary-audit/primary-live.raw/.json. Do NOT infer dark calibration from scene RAW.
+Phone logs show thermal throttling around72–75C and CPU ISP bottleneck. Don't
+raise thermal limits or keep other sensors streaming to improve FPS.
+
+CONFIRMED voltage mismatch: while user left rear1x active, cam.pmic1 dump at
+primary-audit/active-primary-pmic02-map.txt shows S2MPB02 LDO1 register1e=98:
+enabled, selector18 (0.9V). Board requirement is1.05V, selector24. Prior source
+audit also requires PMIC03 LDO2=selector1c and LDO5=selector2e. Main startup
+currently preserves selectors and only enables rails. Next primary-only patch
+must set fixed board voltages while OFF, snapshot/readback and restore them on
+failure/shutdown/warm-cool; leave all front/UW tuning untouched. Not yet a proven
+explanation for image quality. User permits primary1x as temporary test default.

@@ -1776,13 +1776,8 @@ opengl_es(void)
 }
 
 
-/*
- * Camera.app opens on the front camera in Photo (2026-11-12, the user's wish: the S20's one working camera is
- * the front one). Camera.app goes back to its defaults -- the back camera, Photo -- once its reset time
- * (CAMUserPreferenceResetTimeoutDate, a few minutes after it was left) has passed; it reads that as it starts
- * or comes back (-[CAMUserPreferences readPreferencesWithOverrides:...]). Here, just before, a reset that is
- * due is done our way: the front camera and Photo written, and the reset time pushed on.
- */
+/* Camera.app resets to rear Photo. The native S20 lens adapter chooses the
+ * user's preferred 0.9x ultra-wide route independently of front/rear selection. */
 static IMP camera_read_prefs_original;
 
 static BOOL
@@ -1793,8 +1788,8 @@ camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call
 	CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
 
 	if (until == NULL || CFGetTypeID(until) != CFDateGetTypeID() || CFDateGetAbsoluteTime(until) <= now) {
-		int front = 1, photo = 0;
-		CFNumberRef device = CFNumberCreate(NULL, kCFNumberIntType, &front), mode = CFNumberCreate(NULL, kCFNumberIntType, &photo);
+		int rear = 0, photo = 0;
+		CFNumberRef device = CFNumberCreate(NULL, kCFNumberIntType, &rear), mode = CFNumberCreate(NULL, kCFNumberIntType, &photo);
 		CFDateRef later = CFDateCreate(NULL, now + 600);
 
 		CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureDevice"), device, app);
@@ -1804,7 +1799,7 @@ camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call
 		CFRelease(device);
 		CFRelease(mode);
 		CFRelease(later);
-		say("redwood: Camera: its reset was due: the front camera and Photo instead\n");
+		say("redwood: Camera: its reset was due: the rear camera and Photo instead\n");
 	}
 	if (until != NULL) {
 		CFRelease(until);
@@ -1814,7 +1809,7 @@ camera_read_prefs(id self, SEL selector, id overrides, long emulation, BOOL call
 }
 
 static void
-camera_front_by_default(void)
+camera_rear_by_default(void)
 {
 	Class c = objc_getClass("CAMUserPreferences");
 	Method m = c != Nil ? class_getInstanceMethod(c,
@@ -1825,7 +1820,7 @@ camera_front_by_default(void)
 		return;
 	}
 	camera_read_prefs_original = method_setImplementation(m, (IMP)camera_read_prefs);
-	say("redwood: Camera: opens on the front camera in Photo after its reset time\n");
+	say("redwood: Camera: opens on the rear camera in Photo after its reset time\n");
 }
 
 #include "statusbar_shift.h"
@@ -1843,7 +1838,7 @@ redwood_init(void)
 	}
 	slide = (uintptr_t)cache - CACHE_BASE;
 	if (strcmp(name, "Camera") == 0) {
-		camera_front_by_default();
+		camera_rear_by_default();
 	}
 	/* the call hooks live outside the boot image (A, 2026-11-14), so they change without a reboot:
 	 * /var/jb/redwood/lib/libredwood-calls.dylib (userland/src/calls_tweak.c), in the Phone app and the call screen */

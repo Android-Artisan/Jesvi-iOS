@@ -11,9 +11,13 @@
 @interface RWTestController:NSObject
 @property(nonatomic,strong) RWTestGraph *graph;
 @property(nonatomic) NSUInteger forwarded;
+@property(nonatomic) double graphZoom;
 @end
 @implementation RWTestController
 - (id)_currentGraphConfiguration{return self.graph;}
+- (void)zoomControl:(id)zoom didChangeZoomFactor:(double)factor interactionType:(NSInteger)type {
+    (void)zoom;(void)type;self.graphZoom=factor;
+}
 - (void)zoomControl:(id)zoom didChangeSelectedButtonIndex:(NSUInteger)index displayZoomFactor:(double)factor {
     (void)zoom;(void)index;(void)factor;self.forwarded++;
 }
@@ -28,15 +32,28 @@ int main(void){@autoreleasepool{
     [@"1\n" writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil];
     configureZoom(zoom);
     RWNativeLensDelegate *proxy=objc_getAssociatedObject(zoom,&proxyKey);assert(proxy&&proxy.rear&&proxy.original==original);
-    assert(([[zoom valueForKey:@"_displayZoomFactors"] isEqual:@[@0.6,@1.0]]));
-    [proxy zoomControl:zoom didChangeSelectedButtonIndex:0 displayZoomFactor:0.6];assert(selectedIndex()==0&&original.forwarded==0);
-    [proxy zoomControl:zoom didChangeSelectedButtonIndex:1 displayZoomFactor:1];assert(selectedIndex()==1&&original.forwarded==0);
-    [proxy zoomControl:zoom didChangeSelectedButtonIndex:2 displayZoomFactor:2];assert(original.forwarded==1);
+    assert(requestedZoom()==0.9);
+    assert(fabs(((double(*)(id,SEL,double))objc_msgSend)(zoom,NSSelectorFromString(@"_displayZoomValueForZoomFactor:"),0.9)-0.9)<0.0001);
+    assert([[zoom valueForKey:@"_zoomFactors"] containsObject:@0.5]);
+    assert([[zoom valueForKey:@"minimumZoomFactor"] doubleValue]==0.5);
+    [proxy zoomControl:zoom didChangeSelectedButtonIndex:0 displayZoomFactor:(0.5/displayBase)];assert(requestedZoom()==0.5&&original.forwarded==0);
+    [proxy zoomControl:zoom didChangeSelectedButtonIndex:1 displayZoomFactor:(1/displayBase)];assert(requestedZoom()==1&&original.forwarded==0);
+    [proxy toggleBetweenZoomFactorsForZoomControl:zoom];assert(requestedZoom()==0.5);
+    [proxy toggleBetweenZoomFactorsForZoomControl:zoom];assert(requestedZoom()==1);
+    [proxy zoomControl:zoom didChangeZoomFactor:2.5 interactionType:1];assert(requestedZoom()==2.5&&original.graphZoom==2.5);
+    [proxy zoomControl:zoom didChangeZoomFactor:0.8 interactionType:1];assert(requestedZoom()==0.8&&original.graphZoom==1);
+    [proxy zoomControl:zoom didChangeZoomFactor:0.5 interactionType:1];assert(requestedZoom()==0.5);
+    ((void(*)(id,SEL,double))objc_msgSend)(zoom,NSSelectorFromString(@"setMinAvailableZoomFactor:"),1);
+    ((void(*)(id,SEL,double))objc_msgSend)(zoom,NSSelectorFromString(@"setZoomFactor:"),1);
+    configureZoom(zoom);
+    assert([[zoom valueForKey:@"minAvailableZoomFactor"] doubleValue]==0.5);
+    assert([[zoom valueForKey:@"zoomFactor"] doubleValue]==0.5);
     original.graph.devicePosition=1;configureZoom(zoom);assert(!proxy.rear);
+    [proxy zoomControl:zoom didChangeZoomFactor:3 interactionType:1];assert(original.graphZoom==3&&requestedZoom()==0.5);
     assert(((id(*)(id,SEL))objc_msgSend)(zoom,getter)==original);
     original.graph.devicePosition=0;configureZoom(zoom);assert(proxy.rear);
     assert(((id(*)(id,SEL))objc_msgSend)(zoom,getter)==proxy);
     configureZoom(zoom);assert(proxy.original==original);
     [[NSFileManager defaultManager]removeItemAtPath:control error:nil];
-    puts("PASS: actual native selector, rear lens writes, callback forwarding, front restoration, rear re-entry");
+    puts("PASS: actual native selector, rear selection/toggle/drag writes, front restoration, rear re-entry");
 }}

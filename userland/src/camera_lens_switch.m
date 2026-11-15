@@ -4,44 +4,79 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
 #include <string.h>
+#include <math.h>
 #ifndef RW_LENS_CONTROL_PATH
 #define RW_LENS_CONTROL_PATH @"/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-rear-zoom"
 #endif
 static NSString *const control=RW_LENS_CONTROL_PATH;
 static char proxyKey;
-static SEL selectionSelector(void) {
-    return NSSelectorFromString(@"configureForSelectionOnlyWithDisplayZoomFactors:selectedIndex:compactPlatterLayout:animated:");
+static BOOL defaultRearApplied;
+static SEL configurationSelector(void) {
+    return NSSelectorFromString(@"configureForDualDeviceWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:dualCameraSwitchOverZoomFactor:displayDualCameraSwitchOverZoomFactor:");
 }
-static NSUInteger selectedIndex(void) {
+static double requestedZoom(void) {
     double z=[NSString stringWithContentsOfFile:control encoding:NSUTF8StringEncoding error:nil].doubleValue;
-    return z>0&&z<1?0:1;
+    return isfinite(z)&&z>=0.5?fmin(z,5):1;
 }
-static void showSelection(id zoom,NSUInteger index,BOOL animated) {
-    ((void(*)(id,SEL,id,NSUInteger,BOOL,BOOL))objc_msgSend)(zoom,selectionSelector(),@[@0.6,@1.0],index,NO,animated);
+/* Stock-style display: 0.5x full ultra-wide, 1x primary. No relabeling. */
+static const double displayBase=1.0;
+static void showZoom(id zoom,double factor) {
+    SEL min=NSSelectorFromString(@"setMinAvailableZoomFactor:");
+    if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
+    ((void(*)(id,SEL,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5/displayBase,5,5/displayBase,1,1/displayBase);
+    if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
 }
 @interface RWNativeLensDelegate:NSObject
 @property(nonatomic,weak) id original;
-@property(nonatomic,weak) id zoom;
 @property(nonatomic) BOOL rear;
-@property(nonatomic) NSUInteger index;
+@property(nonatomic) double factor;
+@property(nonatomic) double graphFactor;
 @end
 @implementation RWNativeLensDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
     return [super respondsToSelector:selector]||[self.original respondsToSelector:selector];
 }
 - (id)forwardingTargetForSelector:(SEL)selector {return self.original;}
+- (BOOL)writeZoom:(double)factor {
+    if(!isfinite(factor))return NO;
+    factor=fmax(0.5,fmin(5,factor));
+    if(![[NSString stringWithFormat:@"%.6f\n",factor] writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])return NO;
+    self.factor=factor;return YES;
+}
+- (void)notifyGraphForZoom:(id)zoom interactionType:(NSInteger)type {
+    double target=fmax(1,self.factor);
+    if(fabs(self.graphFactor-target)<0.0001)return;
+    SEL sel=NSSelectorFromString(@"zoomControl:didChangeZoomFactor:interactionType:");
+    if([self.original respondsToSelector:sel]){
+        self.graphFactor=target;
+        ((void(*)(id,SEL,id,double,NSInteger))objc_msgSend)(self.original,sel,zoom,target,type);
+    }
+}
 - (void)zoomControl:(id)zoom didChangeSelectedButtonIndex:(NSUInteger)index displayZoomFactor:(double)factor {
-    if(!self.rear||index>1||(factor!=0.6&&factor!=1.0)) {
-        SEL s=_cmd;
-        if([self.original respondsToSelector:s])((void(*)(id,SEL,id,NSUInteger,double))objc_msgSend)(self.original,s,zoom,index,factor);
+    if(!self.rear){
+        if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id,NSUInteger,double))objc_msgSend)(self.original,_cmd,zoom,index,factor);
         return;
     }
-    NSError *error=nil;
-    if(![(index==0?@"0.6\n":@"1\n") writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        NSLog(@"redwood native lens write failed: %@",error);showSelection(zoom,selectedIndex(),NO);return;
-    }
-    self.index=index;showSelection(zoom,index,NO);
+    if([self writeZoom:factor*displayBase]){[self notifyGraphForZoom:zoom interactionType:0];showZoom(zoom,self.factor);}
 }
+- (BOOL)canToggleBetweenZoomFactorsForZoomControl:(id)zoom {
+    if(self.rear)return YES;
+    SEL sel=_cmd;return [self.original respondsToSelector:sel]?((BOOL(*)(id,SEL,id))objc_msgSend)(self.original,sel,zoom):NO;
+}
+- (void)toggleBetweenZoomFactorsForZoomControl:(id)zoom {
+    if(self.rear){if([self writeZoom:requestedZoom()<1?1:0.5]){[self notifyGraphForZoom:zoom interactionType:0];showZoom(zoom,self.factor);}return;}
+    if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id))objc_msgSend)(self.original,_cmd,zoom);
+}
+- (void)zoomControl:(id)zoom didChangeZoomFactor:(double)factor interactionType:(NSInteger)type {
+    if(self.rear){
+        if(![self writeZoom:factor])return;
+        /* Reset any prior primary digital crop on crossing to ultra-wide,
+         * but send the graph's 1x floor only once so it cannot fight the dial. */
+        [self notifyGraphForZoom:zoom interactionType:type];return;
+    }
+    if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id,double,NSInteger))objc_msgSend)(self.original,_cmd,zoom,factor,type);
+}
+
 @end
 static void configureZoom(UIView *zoom) {
     SEL getDelegate=NSSelectorFromString(@"delegate"),setDelegate=NSSelectorFromString(@"setDelegate:");
@@ -60,13 +95,23 @@ static void configureZoom(UIView *zoom) {
         if(delegate==proxy)((void(*)(id,SEL,id))objc_msgSend)(zoom,setDelegate,controller);
         proxy.rear=NO;return;
     }
-    if(!proxy){proxy=[RWNativeLensDelegate new];proxy.index=NSNotFound;proxy.zoom=zoom;objc_setAssociatedObject(zoom,&proxyKey,proxy,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    if(!defaultRearApplied){
+        if([@"0.9\n" writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])defaultRearApplied=YES;
+    }
+    if(!proxy){proxy=[RWNativeLensDelegate new];proxy.factor=-1;objc_setAssociatedObject(zoom,&proxyKey,proxy,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     proxy.original=controller;proxy.rear=YES;
     if(delegate!=proxy)((void(*)(id,SEL,id))objc_msgSend)(zoom,setDelegate,proxy);
-    NSUInteger index=selectedIndex();
+    double factor=requestedZoom();
     NSArray *factors=nil;
-    @try{factors=[zoom valueForKey:@"_displayZoomFactors"];}@catch(__unused NSException *e){}
-    if(proxy.index!=index||![factors isEqual:@[@0.6,@1.0]]){proxy.index=index;showSelection(zoom,index,NO);}
+    @try{factors=[zoom valueForKey:@"_zoomFactors"];}@catch(__unused NSException *e){}
+    if(proxy.factor!=factor||![factors containsObject:@0.5]){proxy.factor=factor;showZoom(zoom,factor);}
+    /* The single-device graph can republish a 1x UI floor and zoom. The rear
+     * route accepts 0.5x; retain that range and the user's nominal lens value. */
+    SEL min=NSSelectorFromString(@"setMinAvailableZoomFactor:");
+    if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
+    SEL get=NSSelectorFromString(@"zoomFactor"),set=NSSelectorFromString(@"setZoomFactor:");
+    if([zoom respondsToSelector:get]&&[zoom respondsToSelector:set]&&fabs(((double(*)(id,SEL))objc_msgSend)(zoom,get)-factor)>0.0001)
+        ((void(*)(id,SEL,double))objc_msgSend)(zoom,set,factor);
 }
 static void walk(UIView *view,Class cls) {
     if([view isKindOfClass:cls]){configureZoom(view);return;}
@@ -75,12 +120,23 @@ static void walk(UIView *view,Class cls) {
 __attribute__((constructor))static void start(void) {
     @autoreleasepool {
         if(![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.camera"])return;
+        /* Override the earlier bring-up preference for the front camera. */
+        CFStringRef app=CFSTR("com.apple.camera");
+        CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureDevice"),(__bridge CFTypeRef)@0,app);
+        CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceCaptureMode"),(__bridge CFTypeRef)@0,app);
+        CFPreferencesSetAppValue(CFSTR("CAMUserPreferenceResetTimeoutDate"),(__bridge CFTypeRef)[NSDate dateWithTimeIntervalSinceNow:600],app);
+        CFPreferencesAppSynchronize(app);
+        /* Set preferred rear route before Camera starts its graph, avoiding a
+         * primary cold start immediately followed by an ultra-wide cold start. */
+        defaultRearApplied=[@"0.9\n" writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil];
         dispatch_async(dispatch_get_main_queue(),^{
-            Class cls=NSClassFromString(@"CAMZoomControl");
-            Method method=class_getInstanceMethod(cls,selectionSelector());
-            if(!method||strcmp(method_getTypeEncoding(method),"v40@0:8@16Q24B32B36"))return;
             NSTimer *timer=[NSTimer timerWithTimeInterval:.5 repeats:YES block:^(__unused NSTimer *t){
                 if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
+                /* CameraUI may load after tweak constructors and the first main
+                 * queue turn. Resolve it here so early loading cannot disable UI. */
+                Class cls=NSClassFromString(@"CAMZoomControl");
+                Method method=class_getInstanceMethod(cls,configurationSelector());
+                if(!method||strcmp(method_getTypeEncoding(method),"v72@0:8d16d24d32d40d48d56d64"))return;
                 for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
                     if([scene isKindOfClass:UIWindowScene.class]&&scene.activationState==UISceneActivationStateForegroundActive)
                         for(UIWindow *window in ((UIWindowScene*)scene).windows)walk(window,cls);
