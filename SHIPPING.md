@@ -1,3 +1,8 @@
+## 2026-11-15 (16:55, A) — dev mode: the HackiOS menu back for development
+- `DEVMODE=1` (common/devices/x1slte.local.conf or env) builds the loader with a `devmode` payload entry: text and the
+  HackiOS menu with its countdown, as before. Default off (iOS's logo, no menu); release builds force it off. On for
+  the developer's phone (flashed 16:54; takes effect at the next cold boot).
+
 ## 2026-11-15 (16:40, A) — boot screen: iOS's logo from power-on, no loader text or menu
 - Samsung's splash (up_param logo.jpg), the UEFI's logo (was Project Silicium) and the loader show iOS's own boot logo,
   same size and place; the loader prints nothing and boots iOS at once (volume key during the logo: the menu;
