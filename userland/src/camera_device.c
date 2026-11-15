@@ -1045,7 +1045,9 @@ frame_metadata(const struct isp *isp, const struct redwood_camera_frame *f, cons
 	 * (-[BWMultiStreamCameraSourceNode _ispAppliedZoomFactorFromSampleBufferMetadataDictionary:outputIndex:])
 	 * and would make up the rest of what was asked for itself; without it, a zoomed preview stood still.
 	 */
-	md_put(m, MD_ZOOM, number_f(f->sensor==3?isp->zoom*0.6f:isp->zoom));
+	/* Overlay lens selection leaves the graph request at1x. Report the
+     * crop applied within the selected physical lens, not its nominal UI label. */
+	md_put(m, MD_ZOOM, number_f(isp->zoom));
 	return m;
 }
 

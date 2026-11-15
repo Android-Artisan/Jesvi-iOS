@@ -573,3 +573,14 @@ Device validation and Camera zoom UI are pending. Probe supports sensor3.
 - Rollback: remove development media override + lens tweak pair, restart Camera
   and mediaserverd. Original image library remains untouched. Private artifacts and
   original injection config are under build/camera-aux-latest-20261115.
+
+### UI first test and crop-metadata correction
+
+User sees buttons;0.6 appears ineffective,1x restores primary. Private
+ui-switch-kernel.log proves actual2LA sessions delivered871 and428 frames,
+with clean stops and PrimaryScaler frames accepted (~25fps first session).
+Suspected presentation issue: nominal0.6 label was reported as applied zoom
+while the overlay leaves graph-requested zoom at1, allowing graph to crop
+the ultra-wide back toward main FoV. Corrected metadata to per-lens ISP crop.
+Rebuilt and reinstalled media override, restarted Camera/mediaserverd; awaiting
+user retry. This is a proposed visual fix, not yet visually confirmed.
