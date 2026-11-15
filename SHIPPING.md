@@ -1,3 +1,6 @@
+## 2026-11-15 (17:30, A) — UEFI line "- JESVI -"
+- The line under the UEFI's logo reads "- JESVI -" (was "[JESVI]"); the menu title "JesviOS" (was "JesViOS"). Dev-mode build flashed.
+
 ## 2026-11-15 (17:20, A) — boot screen texts: JesViOS, [JESVI]
 - Loader menu title "JesViOS" (was HackiOS) on the menu and every status screen; subtitle back to "Galaxy S20  -  iOS 16.5".
   The UEFI's line under its logo reads "[JESVI]" (was "[Volume Up] Boot Manager"), in both modes. Dev-mode build flashed.
