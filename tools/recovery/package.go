@@ -39,12 +39,18 @@ type Config struct {
 	Files              map[string]Image `json:"files"`
 	KitSHA256          string           `json:"kit_sha256"`
 	KitBytes           int64            `json:"kit_bytes"`
+	Splash             SplashFile       `json:"splash"` // the power-on splash (splash.go); zero: none
+}
+type SplashFile struct {
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
 }
 type Bundle struct {
 	Config Config
 	Files  map[string]*zip.File
 	Kit    []byte
 	Staged map[string][]byte
+	Splash []byte
 }
 
 var imageParts = map[string]string{"boot.img": "boot", "recovery.img": "recovery", "system.apfs": "super"}
@@ -76,8 +82,19 @@ func checkConfig(c Config) error {
 	default:
 		return errors.New("unknown package action")
 	}
-	if len(c.Models) == 0 || len(c.Bootloaders) == 0 || len(c.Products) == 0 || len(c.Partitions) != 4 {
+	// the four fixed destinations, and optionally up_param (Samsung's splash pictures: splash.go)
+	up, hasUp := c.Partitions["up_param"]
+	if len(c.Models) == 0 || len(c.Bootloaders) == 0 || len(c.Products) == 0 || len(c.Partitions) != 4 && !(hasUp && len(c.Partitions) == 5) {
 		return errors.New("unsupported device profile")
+	}
+	if hasUp && (up < 1<<20 || up > 64<<20 || up%4096 != 0) {
+		return errors.New("unsupported up_param geometry")
+	}
+	if s := c.Splash; s.Bytes != 0 || s.SHA256 != "" {
+		hash, e := hex.DecodeString(s.SHA256)
+		if c.Action != "install" || !hasUp || s.Bytes <= 0 || s.Bytes > splashMax || e != nil || len(hash) != 32 {
+			return errors.New("invalid splash: install packages for profiles with up_param only, at most 1 MiB")
+		}
 	}
 	for _, p := range []string{"boot", "recovery", "super", "userdata"} {
 		if n := c.Partitions[p]; n < 16<<20 || n%4096 != 0 {
@@ -127,7 +144,7 @@ func readSmall(f *zip.File, max int64) ([]byte, error) {
 func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	files := make(map[string]*zip.File)
 	meta := map[string]bool{"installer.json": true, "README.txt": true, "META-INF/com/google/android/update-binary": true, "META-INF/com/google/android/updater-script": true}
-	payload := map[string]bool{"hfs-kit.bin": true, "candidate.json": true}
+	payload := map[string]bool{"hfs-kit.bin": true, "candidate.json": true, "splash.jpg": true}
 	for name := range imageParts {
 		payload[name] = true
 	}
@@ -173,6 +190,9 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	want := len(meta)
 	if c.Action == "install" {
 		want += len(payload)
+		if c.Splash.Bytes == 0 {
+			want-- // (splash.jpg only with a splash in the configuration)
+		}
 	}
 	for name := range meta {
 		if files[name] == nil {
@@ -231,7 +251,20 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	if _, e = parseKit(kit, capacities["userdata"]); e != nil {
 		return nil, e
 	}
-	b := &Bundle{Config: c, Files: files, Kit: kit, Staged: staged}
+	var splash []byte
+	if c.Splash.Bytes > 0 {
+		if files["splash.jpg"] == nil {
+			return nil, errors.New("splash.jpg missing")
+		}
+		if splash, e = readSmall(files["splash.jpg"], splashMax); e != nil {
+			return nil, e
+		}
+		ssum := sha256.Sum256(splash)
+		if int64(len(splash)) != c.Splash.Bytes || !sameSHA(ssum[:], c.Splash.SHA256) {
+			return nil, errors.New("splash integrity failure")
+		}
+	}
+	b := &Bundle{Config: c, Files: files, Kit: kit, Staged: staged, Splash: splash}
 	if e = checkImages(b); e != nil {
 		return nil, e
 	}

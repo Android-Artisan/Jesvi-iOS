@@ -87,6 +87,9 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 	if mode == "fresh" {
 		names = append(names, "userdata")
 	}
+	if b.Splash != nil {
+		names = append(names, "up_param")
+	}
 	targets := make(map[string]Target)
 	for _, name := range names {
 		t, e := device.OpenWritable(name)
@@ -175,6 +178,15 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 	}
 	if e = writeImage("boot.img"); e != nil {
 		return fmt.Errorf("boot: %w", e)
+	}
+	// last: Samsung's power-on splash (iOS is installed whatever happens here)
+	if b.Splash != nil {
+		if e = device.CheckSafe(); e != nil {
+			return e
+		}
+		if e = applySplash(targets["up_param"], b.Splash, log); e != nil {
+			return fmt.Errorf("power-on splash (iOS itself is installed; Samsung's splash may need its BL from Odin): %w", e)
+		}
 	}
 	log("All written ranges passed readback. No reboot requested.")
 	return nil
@@ -298,6 +310,19 @@ func restoreAndroid(b *Bundle, device Device, log func(string)) error {
 		}
 	} else {
 		log("userdata holds no iOS volume; leaving it alone")
+	}
+	// Samsung's own power-on splash back, when the installer saved it (splash.go)
+	if _, ok := capacities["up_param"]; ok {
+		up, e := device.OpenWritable("up_param")
+		if e != nil {
+			return e
+		}
+		if e = device.CheckSafe(); e != nil {
+			return e
+		}
+		if e = restoreSplash(up, log); e != nil {
+			return fmt.Errorf("power-on splash: %w", e)
+		}
 	}
 	return nil
 }
