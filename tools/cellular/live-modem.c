@@ -151,6 +151,13 @@ static int route(void *context)
     m->pads_changed=1;
     return masked(0x10730068,0xffff0000u,0) || masked(0x10730060,0xffff0000u,0x22220000u) ? -1:0;
 }
+/* wall time HH:MM:SS.mmm, as redwood-ims.log writes it (A, 2026-11-15: to line up the two logs) */
+static const char *ts_ms(void)
+{
+    static char b[16];struct timeval tv;gettimeofday(&tv,NULL);struct tm tm;localtime_r(&tv.tv_sec,&tm);
+    snprintf(b,sizeof(b),"%02d:%02d:%02d.%03d",tm.tm_hour,tm.tm_min,tm.tm_sec,(int)(tv.tv_usec/1000));
+    return b;
+}
 static int inputs(uint32_t *value)
 {
     uint32_t active,wake,hold;
@@ -478,10 +485,22 @@ static void sbd_dump_dl(void)
                 printf("cellular: AT <- ");for (unsigned k=4;k<show;k++) putchar(big[k]=='\r'?' ':big[k]=='\n'?'|':(big[k]>=32&&big[k]<127?big[k]:'.'));printf("\n");fflush(stdout);
                 show=0;
             }
+            if (sbd_chs[id].ch==235 && show>=14 && big[8]==0x16 && big[9]==0x0b) {
+                /* (A, 2026-11-15) IMS 16/0b: the dedicated (voice) bearer. Payload: [0] ?, [1] QCI, [2] 1 up / 3 down,
+                 * 4 x u32 bit rates, [19] EPS bearer id, then the TFT: [24..25] our RTP port (LE), [28..43] the far
+                 * end's IPv6, [44..45] its port. One line with the wall time, to line up with redwood-ims.log. */
+                const uint8_t *q=big+11;unsigned n=show-11;
+                if (q[2]==1 && n>=46) {
+                    char a6[INET6_ADDRSTRLEN]="";inet_ntop(AF_INET6,q+28,a6,sizeof(a6));
+                    printf("%s cellular: IMS voice bearer UP: QCI %u, bearer %u, port %u <-> [%s]:%u\n",ts_ms(),q[1],q[19],
+                        q[24]|q[25]<<8,a6,q[44]|q[45]<<8);
+                } else printf("%s cellular: IMS voice bearer %s: QCI %u (state %u)\n",ts_ms(),q[2]==3?"DOWN":"change",q[1],q[2]);
+                fflush(stdout);
+            }
             if (sbd_chs[id].ch==235 && show>=11 && !verbose()) show=0;  /* (quiet: the per-message dump only when verbose) */
             if (sbd_chs[id].ch==235 && show>=11) {
-                printf("cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
-                    big[8],big[9],big[10],big[6],big[7],show-11);
+                printf("%s cellular live DL: IPC <- group %02x index %02x type %02x (mseq %u aseq %u, %u bytes):",
+                    ts_ms(),big[8],big[9],big[10],big[6],big[7],show-11);
                 /* SIM APDU answers, UICC auth, IMSI and IMEI stay out of the log (they go to root-only files) */
                 int secret=(big[8]==0x05 && (big[9]==0x06 || big[9]==0x09)) || (big[8]==0x0a && (big[9]==0x02 || big[9]==0x03));
                 if (secret) printf(" <not logged>\n");
