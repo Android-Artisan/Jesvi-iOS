@@ -27,9 +27,12 @@ static inline NSDictionary *rw_aod_config(void){
     id obj=[NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:NULL];
     return [obj isKindOfClass:NSDictionary.class]?obj:@{};
 }
+/* Defaults (user, 2026-11-15): Always-On Display on; wallpaper and notifications in AOD off.
+ * A missing, malformed or unsafe preference file reads as the defaults. */
+static inline BOOL rw_aod_default(NSString *key){return [key isEqualToString:@"Enabled"];}
 static inline BOOL rw_aod_value(NSDictionary *d,NSString *key){
     id v=d[key];if([v isKindOfClass:NSNumber.class])return [v boolValue];
-    return NO;
+    return rw_aod_default(key);
 }
 static inline BOOL rw_aod_set(NSString *key,BOOL value){
     if(![@[@"Enabled",@"ShowWallpaper",@"ShowNotifications"] containsObject:key])return NO;
