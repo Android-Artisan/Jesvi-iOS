@@ -7,7 +7,7 @@ height; an iPhone X's is 9.7 %). No loader text, no menu, no countdown. Samsung'
 | Screen | Where the logo comes from | Made by |
 | --- | --- | --- |
 | Samsung's splash | `up_param` partition, `logo.jpg` (1440x3120, baseline 4:4:4 JPEG like Samsung's own) | `out/up_param-apple.img` |
-| UEFI (was "Project Silicium") | the BootLogo BMP inside the UEFI's LZMA firmware volume, swapped in place (same 300x300 8-bit BMP, every offset and size unchanged; only that file differs after decompression) | patched in `out/x1slte-embed.img` |
+| UEFI (was "Project Silicium") | the BootLogo BMP inside the UEFI's LZMA firmware volume, swapped in place (same 300x300 8-bit BMP, every offset and size unchanged), always remade from the untouched `build/uefi/Mu-x1slte.img`; its `[Volume Up] Boot Manager` line under the logo is blanked (spaces) for end users, kept in dev mode | patched in `out/x1slte-embed.img` |
 | Loader | `xnuloader/applelogo.h` (RLE), drawn by `boot_logo()` | loader.c |
 | Kernel until iOS's first frame | the loader's picture, scaled 1440x3200 -> 1080x2400 in place when fb_mode switches the panel (175 ms, frames paused) | MiniIOMobileFramebuffer.cpp `bootPictureScale` |
 
@@ -22,6 +22,9 @@ loader's screen is black and the UEFI/splash keep their old pictures.
   of `./x1slte.sh payload`; it becomes a `devmode` entry in the loader's payload table (not the boot line, which is
   full). Without it (the default) end users get iOS's logo and no menu. Release builds (`tools/release`, which sets
   `JESVI_TARGET`) never get dev mode, whatever the local config says. `bootui=0` in the cmdline does the same.
+  In the local conf write `DEVMODE=${DEVMODE:-1}` so `DEVMODE=0 ./x1slte.sh payload ...` still builds an end-user image.
+- The menu's subtitle: `Galaxy S20  -  iOS 16.5  -  Jesvi` (loader.c `menu_draw`); every on-screen text is in loader.c
+  (`menu_draw`, `menu_items`, `menu_status` calls).
 - A volume key pressed while the loader's logo shows (0.7 s): the menu (Boot iOS, Log access, Download Mode, Reboot,
   Power off). Log access asked by a tool (`rwlogd /menu?to=1`, x1slte-auto.sh) works as before.
 - `fb_bootpic=0`: no scaling of the loader's picture at the mode switch (the logo then jumps a third bigger).

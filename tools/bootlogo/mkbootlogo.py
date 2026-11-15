@@ -35,6 +35,7 @@ LOGO_H = 300        # one size on every screen: the UEFI's logo slot is a 300 x 
                     # 300 of the panel's 3200 rows is 9.4 %, an iPhone X's 237 of 2436 is 9.7 %
 UEFI_LZMA = bytes.fromhex('98584eee143959429d6edc7bd79403cf')      # EFI_LZMA_CUSTOM_DECOMPRESS_GUID
 UEFI_BMP_SIZE = 91078                                                # SiliciumPkg BootLogo.bmp: 300x300, 8 bit
+UEFI_HINT = b'[Volume Up] Boot Manager'      # Mu-Silicium's line under its logo (its own boot menu): blank for end users
 
 
 def find_rootfs():
@@ -148,28 +149,42 @@ def uefi_bmp(nw, nh, cov):
     return bmp
 
 
-def patch_uefi(path, bmp):
-    """swap the UEFI's boot logo inside its LZMA-compressed firmware volume, every offset and size unchanged"""
-    import lzma
-    d = bytearray(open(path, 'rb').read())
+def lzma_section(d):
+    """the UEFI's LZMA-compressed firmware volume: (start, end) of its data in the boot image d"""
     g = d.find(UEFI_LZMA)
     if g < 4:
-        return 'no LZMA section'
+        return None
     sec = g - 4
     size = int.from_bytes(d[sec:sec + 3], 'little'); doff = struct.unpack('<H', d[g + 16:g + 18])[0]
-    start, end = sec + doff, sec + size
-    hdr = bytes(d[start:start + 13]); props, dict_size = hdr[0], struct.unpack('<I', hdr[1:5])[0]
+    return sec + doff, sec + size
+
+
+def patch_uefi(path, bmp, hint=False, pristine=None):
+    """the UEFI's logo (and its '[Volume Up] Boot Manager' line: blank unless hint) inside its LZMA-compressed firmware
+    volume, every offset and size unchanged. Always made from the untouched UEFI image (pristine), so it can be redone
+    either way; the result is written into the same section of path (the boot image, payload already spliced)."""
+    import lzma
+    d = bytearray(open(path, 'rb').read())
+    src = open(pristine, 'rb').read() if pristine and os.path.isfile(pristine) else bytes(d)
+    a, b = lzma_section(d) or (None, None), lzma_section(src) or (None, None)
+    if a[0] is None or b[0] is None or a != b:
+        return 'no LZMA section where the untouched UEFI has it: not patched'
+    start, end = a
+    hdr = bytes(src[start:start + 13]); props, dict_size = hdr[0], struct.unpack('<I', hdr[1:5])[0]
     raw_len = struct.unpack('<Q', hdr[5:13])[0]
-    fv = bytearray(lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(bytes(d[start:end])))
+    fv = bytearray(lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(bytes(src[start:end])))
     assert len(fv) == raw_len
     j = fv.find(b'BM' + struct.pack('<I', UEFI_BMP_SIZE))
     if j < 0:
         return 'no %d-byte BMP in the firmware volume' % UEFI_BMP_SIZE
-    if fv[j:j + UEFI_BMP_SIZE] == bmp:
-        return 'already the iOS logo'
-    ffs = j - 4 - 24
-    assert fv[ffs + 19] & 0x40 == 0, 'the logo file is checksummed (FFS_ATTRIB_CHECKSUM): not patched'
+    assert fv[j - 28 + 19] & 0x40 == 0, 'the logo file is checksummed (FFS_ATTRIB_CHECKSUM): not patched'
     fv[j:j + UEFI_BMP_SIZE] = bmp
+    k = fv.find(UEFI_HINT)
+    if k >= 0 and not hint:
+        fv[k:k + len(UEFI_HINT)] = b' ' * len(UEFI_HINT)
+    current = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(bytes(d[start:end]))
+    if current[:raw_len] == bytes(fv):
+        return 'already as wanted (iOS logo, Boot Manager line %s)' % ('shown' if hint else 'blank')
     lc, rest = props % 9, props // 9; lp, pb = rest % 5, rest // 5
     body = lzma.compress(bytes(fv), format=lzma.FORMAT_RAW, filters=[{'id': lzma.FILTER_LZMA1, 'dict_size': dict_size,
                          'lc': lc, 'lp': lp, 'pb': pb, 'preset': 9 | lzma.PRESET_EXTREME}])
@@ -180,7 +195,7 @@ def patch_uefi(path, bmp):
     assert check[:raw_len] == bytes(fv), 'round trip failed'
     d[start:end] = new + b'\0' * (end - start - len(new))
     open(path, 'wb').write(d)
-    return 'patched (%d of %d bytes)' % (len(new), end - start)
+    return 'patched: iOS logo, Boot Manager line %s (%d of %d bytes)' % ('shown' if hint else 'blank', len(new), end - start)
 
 
 def main():
@@ -190,6 +205,9 @@ def main():
     ap.add_argument('--header', default=os.path.join(TOP, 'xnuloader', 'applelogo.h'))
     ap.add_argument('--embed', default=os.path.join(TOP, 'out', 'x1slte-embed.img'),
                     help='the boot image whose UEFI logo is replaced (in place)')
+    ap.add_argument('--uefi', default=os.path.expanduser('~/ios-port-research/build/uefi/Mu-x1slte.img'),
+                    help='the untouched UEFI image the firmware volume is always made from')
+    ap.add_argument('--dev', action='store_true', help="dev mode: keep the UEFI's '[Volume Up] Boot Manager' line")
     a = ap.parse_args()
     if not a.rootfs or not os.path.isfile(os.path.join(a.rootfs, LOGO)):
         sys.exit('mkbootlogo: no iOS root with %s (--rootfs DIR)' % LOGO)
@@ -205,7 +223,7 @@ def main():
         open(os.path.join(od, name), 'wb').write(jpeg444.encode(1440, ch, grey))   # baseline 4:4:4, as Samsung's
     open(os.path.join(od, 'uefi-bootlogo.bmp'), 'wb').write(uefi_bmp(nw, nh, big))
     if os.path.isfile(a.embed):
-        print('mkbootlogo: UEFI logo in %s: %s' % (os.path.relpath(a.embed, TOP), patch_uefi(a.embed, uefi_bmp(nw, nh, big))))
+        print('mkbootlogo: UEFI logo in %s: %s' % (os.path.relpath(a.embed, TOP), patch_uefi(a.embed, uefi_bmp(nw, nh, big), a.dev, a.uefi)))
     if os.path.isfile(a.up_param):
         m = make_up_param(a.up_param, os.path.join(od, 'logo.jpg'), os.path.join(TOP, 'out', 'up_param-apple.img'))
         print('mkbootlogo: out/up_param-apple.img (tar %d bytes, logo.jpg replaced)' % m)
