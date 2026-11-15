@@ -833,28 +833,34 @@ static IOMobileFramebuffer * gFramebuffer;      /* the one there is (redwood_fb_
 static volatile uint32_t gBLThermalCap;
 /*
  * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
- * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here:
- * a percentage of the brightness at the moment AOD began (default 30 %, between 2 and 60 nits, never above it: the
- * same proportion from a dark room to daylight, so a bright screen gives a well visible AOD),
- * then HELD. Auto-brightness keeps sending small changes during AOD (in a dark room the sensor wobbles, and at the
- * panel's 1-nit bottom steps each one showed): those are kept for the wake but do not move the AOD picture. Only a
- * big change of light (CoreBrightness asking 2x or 1/2 of the level AOD started from: a walk outside, a lamp on)
- * takes the level again. Faded in and out; CoreBrightness's exact level comes back on wake.
- * 0 off; 1 the default; 2..60 a fixed ceiling in nits.
+ * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here, in
+ * SLIDER terms: AOD sits at fb_aod_pct (default 35) % of the slider position the screen had when AOD began, on the
+ * same slider -> nits curve as legacyToNits16 (2 + 418 s^2.2 nits). 100 % -> 35 %, 50 % -> 18 %, 25 % -> 9 %: about
+ * 10 % of the light, which the eye sees as about half as bright, the same "a bit dimmer" step at every level (30 %
+ * of the nits looked ~2/3 as bright: too close to the awake screen, the user found). Floor: the panel's 2 nits.
+ * Then HELD: auto-brightness keeps sending small changes during AOD (a dark room's sensor wobble showed at the
+ * panel's 1-nit bottom steps); those are kept for the wake but do not move the AOD picture. Only a big change of
+ * light (CoreBrightness asking 2x or 1/2 of the level AOD started from) takes the level again. Faded in and out;
+ * CoreBrightness's exact level comes back on wake. 0 off; 1 the default; 2..60 a fixed ceiling in nits.
  */
 static volatile uint32_t gAODDim;
 static uint32_t gAODBase, gAODLevel;    /* (fBLLock) nits 16.16 AOD started from, and the level held */
-static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
+static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 35);
 static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 60);
+/* (p / 100)^2.2 in 1/65536 for p = 10, 15 .. 60: a slider fraction p of s is (p/100)^2.2 of the nits above 2 */
+static const uint32_t gAODSliderFactor[11] = { 414, 1009, 1900, 3104, 4636, 6508, 8730, 11312, 14263, 17590, 21302 };
 
 static uint32_t
 aodFrom(uint32_t base)
 {
-	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, level;
+	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, pct = gAODPct, level;
 
-	level = (uint32_t) ((uint64_t) base * (gAODPct ? gAODPct : 30) / 100);
-	level = level < lo ? lo : level > hi ? hi : level;
-	return level < base ? level : base;
+	pct = pct < 10 ? 10 : pct > 60 ? 60 : pct;
+	if (base <= lo) {
+		return base;
+	}
+	level = lo + (uint32_t) (((uint64_t) (base - lo) * gAODSliderFactor[(pct - 10) / 5]) >> 16);
+	return level > hi ? hi : level;
 }
 
 /* (fBLLock held) */
