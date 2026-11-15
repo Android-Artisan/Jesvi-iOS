@@ -1,3 +1,35 @@
+# Latest accepted source/image integration — 2026-11-15 evening
+
+User resumed and requested latest main/master/system BEFORE hardware tests.
+Merged actual master45820593 via bbc8e510; freshly fetched private
+jesvi-eulah/Jesvi-iOS main/master also45820593. Both ancestry checks pass.
+Source includes logo/menu/dev-release flag, AOD, battery/sleep optimizations and
+telephonyd packaging guard. Main/master refs unchanged by our work.
+
+Authoritative integration record: docs/x1slte-camera-latest-integration.md.
+Exact times: main/master16:57:59IST; candidate kernel21:17:15IST. All301 tracked
+XNU overlay files match build tree; entire redwood.patch reverse-check passes.
+Correction: wake-tracing hook was ALREADY present in nested tree from11:46; five
+other idle drivers needed refresh. Do not repeat earlier missing-hook claim.
+
+Fresh complete recovery backup; actual root matches staged root exactly.
+Live loader code/settings match latest staged loader except PE timestamp2bytes.
+Base-system superblock/SystemVersion and Camera/SpringBoard/keybagd hashes match.
+Full-device system hash NOT completed: slow raw scan stopped, partial checksum
+labeled INCOMPLETE. Original front media library retained. No device writes yet.
+
+Merged candidate slot hash15d996b7e22abd719c79e3daa5b7a65ed64ac06a7601e56a4c45a5c1e4f747dd.
+Rollback-current kernel hash e5ec842f99a017e1891986de5021b96ab12c9bd42ad73ee56768927a29220c6f.
+All artifacts/backup in build/camera-aux-latest-20261115 OUTSIDE git. Old uninstalled
+candidates below are superseded. Kernel/AOD/passcode/camera host checks pass.
+
+Phone lock codex-camera-aux. Next: explicit fresh permission for one kernel-only
+install/reboot, then bounded2LA stream counter and GW2 ID with cleanup gates.
+Preserve PHONE loader/root/system/data. Last confirmed auxiliary hardware success
+remains2LA20ca/a202 ID twice; no auxiliary RAW capture yet.
+
+---
+
 # PAUSED DEVICE ACCESS — wait for user's explicit handback
 
 User says another session has the phone; wait for readiness notification, not a
