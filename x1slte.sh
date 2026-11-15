@@ -174,6 +174,15 @@ PY
 }
 
 cmd_pack() {
+	# (A, 2026-11-15) a stale userland/root.apfs (Nov 14: the old com.redwood.phone job, no com.redwood.telephonyd) was
+	# packed and flashed: calls sat at "Starting..." until the right root went back. Refuse a root without the phone's
+	# call provider job; ROOT_OK=1 packs it anyway (a test root on purpose).
+	if [ "${ROOT_OK:-0}" != 1 ] && ! LC_ALL=C grep -q -a 'com.redwood.telephonyd' userland/root.apfs; then
+		echo "x1slte.sh: pack: userland/root.apfs has no com.redwood.telephonyd job (stale root: calls would stay at"
+		echo "  \"Starting...\"). Rebuild it (userland/build.sh) or take the phone's own root (docs/x1slte-root-swap.md);"
+		echo "  ROOT_OK=1 to pack it anyway."
+		return 1
+	fi
 	python3 - "$EMBED" "$PAYLOAD_AT" <<'PY'
 import struct, sys
 ker = open('out/mach.x1slte', 'rb').read()
