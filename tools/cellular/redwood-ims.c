@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/event.h>
 #include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -394,9 +395,17 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     if (i+ul<=n && ul<sizeof(pdu)-1) {pdu[0]=0;memcpy(pdu+1,b+i,ul);ok=!sms_decode(pdu,ul+1,from,sizeof(from),text,sizeof(text),when,sizeof(when));}
     printf("SMS (IMS) from %s at %s: %s\n",from,when,ok?text:"(undecoded TPDU)");fflush(stdout);
     if (ok) {
-        unsigned cr=0,ct=0,cs=0;
-        if (sms_concat_info(pdu,ul+1,&cr,&ct,&cs)) sms_cat_add(from,cr,ct,cs,text);
-        else sms_to_inbox(from,ref,text);
+        unsigned cr=0,ct=0,cs=0;int cat=sms_concat_info(pdu,ul+1,&cr,&ct,&cs);
+        /* the same text again (same sender, SMSC time stamp, part and text) is an SMSC retry: ACK it, do not show it twice */
+        static struct {uint64_t h;time_t t;} seen[32];static unsigned seen_n;
+        uint64_t h=1469598103934665603ULL;const char *parts[3]={from,when,text};
+        for (int k=0;k<3;k++) {for (const char *c=parts[k];*c;c++) h=(h^(uint8_t)*c)*1099511628211ULL;h=(h^0xff)*1099511628211ULL;}
+        h=(h^(cr<<16|cs))*1099511628211ULL;
+        time_t now=time(NULL);int dup=0;
+        for (unsigned k=0;k<32;k++) if (seen[k].h==h && now-seen[k].t<86400) dup=1;
+        if (dup) {printf("SMS: repeat of a text already delivered (SMSC retry), not shown again\n");fflush(stdout);}
+        else {seen[seen_n++%32].h=h;seen[(seen_n-1)%32].t=now;
+            if (cat) sms_cat_add(from,cr,ct,cs,text); else sms_to_inbox(from,ref,text);}
     }
     FILE *f=fopen("/var/root/cell-sms.txt","a");
     if (f) {fchmod(fileno(f),0600);fprintf(f,"%llu\t%s\t%s\t",(unsigned long long)time(NULL),from,when);
@@ -407,6 +416,12 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     const char *u1=strchr(fr,'<'),*u2=u1?strchr(u1,'>'):NULL;if (!u1 || !u2) return 1;
     if (u2-u1-1<(long)sizeof(sms_sc_uri)) snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%.*s",(int)(u2-u1-1),u1+1);
     {FILE *q=fopen("/var/root/cell-smsc","w");if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n",sms_sc_uri);for (unsigned k=0;k<sms_scl;k++) fprintf(q,"%02x",sms_sc[k]);fputc('\n',q);fclose(q);}}
+    /* The RP-ACK goes to the SMSC: the URI in P-Asserted-Identity of its MESSAGE (TS 24.341 5.3.2.4; Jio: sip:A2P@...).
+     * The From URI (the originator's number) is only the fallback: sent there, Jio sometimes answers 403 and the SMSC,
+     * never acknowledged, delivers the same text again after ~1 and ~5 min (A, 2026-11-15: triple texts). */
+    char pai[300];const char *t1=u1,*t2=u2;
+    if (hdr(req,"P-Asserted-Identity",pai,sizeof(pai))) {const char *p1=strchr(pai,'<'),*p2=p1?strchr(p1,'>'):NULL;
+        if (p1 && p2 && p2-p1>5 && !strncmp(p1+1,"sip:",4)) {t1=p1;t2=p2;}}
     static const uint8_t ackbody_t[]={0x02,0,0x41,0x02,0x00,0x00};uint8_t ack[sizeof(ackbody_t)];memcpy(ack,ackbody_t,sizeof(ack));ack[1]=(uint8_t)ref;
     char m[4000];int o=snprintf(m,sizeof(m),
         "MESSAGE %.*s SIP/2.0\r\n"
@@ -422,12 +437,12 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
         "Accept-Contact: *;+g.3gpp.smsip\r\n"
         "Content-Type: application/vnd.3gpp.sms\r\n"
         "Content-Length: %zu\r\n\r\n",
-        (int)(u2-u1-1),u1+1,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
-        (int)(u2-u1-1),u1+1,arc4random(),cfg.ip6,ci,sizeof(ack));
+        (int)(t2-t1-1),t1+1,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
+        (int)(t2-t1-1),t1+1,arc4random(),cfg.ip6,ci,sizeof(ack));
     if (o<0 || (size_t)o+sizeof(ack)>sizeof(m)) return 1;
     memcpy(m+o,ack,sizeof(ack));
     ssize_t w=send(sock,m,(size_t)o+sizeof(ack),0);
-    printf("--> RP-ACK (ref %u) %s\n",ref,w>0?"sent":"NOT sent");fflush(stdout);
+    printf("--> RP-ACK (ref %u) to the %s %s\n",ref,t1==u1?"sender":"SMSC",w>0?"sent":"NOT sent");fflush(stdout);
     return 1;
 }
 
@@ -796,7 +811,18 @@ int main(int argc,char **argv)
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
-         if (poll(p,(nfds_t)k,pend?0:calls_live()?200:1000)<0) break;}
+         /* the outbox folder as one more poll entry (after k: the loop below never sees it): a text from Messages
+          * goes out the moment its file lands, not at the next 1 s tick (A, 2026-11-15) */
+         static int okq=-2,odfd=-1;
+         if (okq==-2) {okq=kqueue();int dfd=okq>=0?open("/var/tmp/redwood-cell/sms-out",O_EVTONLY):-1;
+             if (dfd<0) {if (okq>=0) close(okq);okq=-2;}   /* (no folder yet: sms_outbox makes it; try again next turn) */
+             else {struct kevent ev;EV_SET(&ev,dfd,EVFILT_VNODE,EV_ADD|EV_CLEAR,NOTE_WRITE|NOTE_EXTEND|NOTE_DELETE|NOTE_RENAME,0,NULL);
+                 if (kevent(okq,&ev,1,NULL,0,NULL)<0) {close(dfd);close(okq);okq=-1;} else odfd=dfd;}}
+         int kn=k;if (okq>=0) p[kn++]=(struct pollfd){okq,POLLIN,0};
+         if (poll(p,(nfds_t)kn,pend?0:calls_live()?200:1000)<0) break;
+         if (okq>=0 && (p[k].revents&POLLIN)) {struct kevent ev;struct timespec z={0,0};int gone=0;
+             while (kevent(okq,NULL,0,&ev,1,&z)>0) if (ev.fflags&(NOTE_DELETE|NOTE_RENAME)) gone=1;
+             if (gone) {close(okq);close(odfd);odfd=-1;okq=-2;}}}   /* (the folder was replaced: watch the new one next turn) */
         {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */

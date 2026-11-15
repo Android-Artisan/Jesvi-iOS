@@ -15,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 
 static NSString *const RWIn = @"/var/tmp/redwood-cell/sms-in";
 static NSString *const RWOut = @"/var/tmp/redwood-cell/sms-out";
@@ -303,14 +304,41 @@ static void rw_check_results(void)
     }
 }
 
-static void rw_tick(void *ctx)
+static void rw_work(void)
 {
-    (void)ctx;
     @autoreleasepool {
         @try { rw_probe(); rw_deliver_inbox(); rw_check_results(); }
         @catch (NSException *e) { rw_log(@"tick threw %@: %@", e.name, e.reason); }
     }
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, rw_tick);
+}
+
+/* Texts in and send results are picked up the moment their file appears (a vnode watch on each folder); the timer
+ * is only the fallback, e.g. when a folder is recreated (A, 2026-11-15: was a 2 s poll, up to 2 s each way). */
+static void rw_watch(NSString *dir)
+{
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    int fd = open(dir.fileSystemRepresentation, O_EVTONLY);
+    if (fd < 0) { rw_log(@"watch %@: %s (timer only)", dir.lastPathComponent, strerror(errno)); return; }
+    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd,
+        DISPATCH_VNODE_WRITE | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME, dispatch_get_main_queue());
+    if (!src) { close(fd); return; }
+    dispatch_source_set_event_handler(src, ^{
+        unsigned long f = dispatch_source_get_data(src);
+        rw_work();
+        if (f & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME)) {   /* the folder itself went: watch the new one */
+            dispatch_source_cancel(src);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ rw_watch(dir); });
+        }
+    });
+    dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+    dispatch_resume(src);
+}
+
+static void rw_tick(void *ctx)
+{
+    (void)ctx;
+    rw_work();
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, rw_tick);
 }
 
 static void rw_install(void *ctx)
@@ -326,6 +354,8 @@ static void rw_install(void *ctx)
         dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, rw_install);
         return;
     }
+    rw_watch(RWIn);
+    rw_watch(RWOut);
     rw_tick(NULL);
 }
 
