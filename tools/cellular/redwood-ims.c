@@ -721,11 +721,25 @@ static void ims_cmd_poll(int sock,int portc)
     if (have>=sizeof(buf)-1) have=0;
 }
 
+/* Signing off (A, 2026-11-15): a REGISTER with Expires 0 over the protected connection, built once we are registered
+ * and sent before every exit we choose (health check failed, a text not confirmed, the ~110 min refresh, SIGTERM).
+ * Without it the network kept the old registration: the P-CSCF we had been on stayed silent to the next start, and a
+ * registration through the other one could take 200 OK yet carry nothing (08:17, 08:39). */
+static char dereg_msg[4000];static int dereg_len;
+static void ims_dereg(int wait)
+{
+    if (!dereg_len || call_sock<0) return;
+    int w=(int)send(call_sock,dereg_msg,(size_t)dereg_len,0);dereg_len=0;
+    if (!wait) {usleep(300000);return;}
+    char r[3000];int n=0;
+    if (w>0) do n=recv_msg(call_sock,r,sizeof(r),2); while (n>0 && strncmp(r,"SIP/2.0",7));
+    printf("signed off: %s\n",w<=0?"could not send":n>0?(strncmp(r,"SIP/2.0 2",9)?"refused":"done"):"no answer");fflush(stdout);
+}
 static void ims_stop(int sig)
 {   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own). A call in progress is closed
      * first (A, 2026-11-14: a restart mid-call left it open on the network: every later call got "busy") */
     (void)sig;
-    call_abort_all("the phone service restarted");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
+    call_abort_all("the phone service restarted");ims_dereg(0);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
 }
 
 int main(int argc,char **argv)
@@ -870,7 +884,16 @@ int main(int argc,char **argv)
     int p3=sp_add(&pc6,(int)pports,&me6,portc,IPSEC_DIR_INBOUND,0),p4=sp_add(&pc6,(int)pportc,&me6,ports,IPSEC_DIR_INBOUND,0);
     memset(ck,0,sizeof(ck));memset(ik,0,sizeof(ik));
     printf("    IPsec: SAs %d %d %d %d, policies %d %d %d %d (0 = accepted)\n",e1,e2,e3,e4,p1,p2,p3,p4);
-    if (e1 || e2 || e3 || e4 || p1 || p2 || p3 || p4) {ipsec_flush();return 1;}
+    if (e1 || e2 || e3 || e4 || p1 || p2 || p3 || p4) {ipsec_flush();
+        /* The two outbound SAs refused (EINVAL, "SAs 22 0 0 22"; seen after quick restarts): flushing and adding the
+         * same ones again never helped (3 of 3), but the next start's fresh challenge (new SPIs) always did. So a new
+         * challenge at once: re-exec once (--sa-retried), instead of redwood-cellulard's next start 30 s later. */
+        if (!flag(argc,argv,"--sa-retried") && argc<60) {
+            char *nv[64];int k=0;for (int i=0;i<argc;i++) nv[k++]=argv[i];nv[k++]="--sa-retried";nv[k]=NULL;
+            close(s);if (ls>=0) close(ls);close(us);if (pfk>=0) close(pfk);isim_close();
+            printf("    a new challenge at once\n");fflush(stdout);usleep(300000);execv(argv[0],nv);
+        }
+        return 1;}
 
     /* 4. the second REGISTER, protected: port-c -> the P-CSCF's port-s */
     char ha1[33],ha2[33],resp[33],buf[600],cnonce[20];
@@ -909,6 +932,23 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
+    {   /* the sign-off, ready for any exit (same auth as REGISTER 2, next nc, Expires 0) */
+        char c0[1400];snprintf(c0,sizeof(c0),"%s",common);char *ex=strstr(c0,"Expires: 600000\r\n");
+        if (ex) {ex[9]='0';memmove(ex+10,ex+15,strlen(ex+15)+1);}   /* "Expires: 600000\r\n" -> "Expires: 0\r\n" */
+        int dn=snprintf(dereg_msg,sizeof(dereg_msg),
+            "REGISTER %s SIP/2.0\r\n"
+            "Via: SIP/2.0/%s [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+            "CSeq: 3 REGISTER\r\n"
+            "%s"
+            "Authorization: Digest username=\"%s\",realm=\"%s\",nonce=\"%s\",uri=\"%s\",response=\"%s\",algorithm=AKAv1-MD5,qop=auth,nc=00000002,cnonce=\"%s\"\r\n"
+            "Security-Client: %s\r\n"
+            "Security-Verify: %s\r\n"
+            "Content-Length: 0\r\n\r\n",uri,T,cfg.ip6,ports,arc4random(),c0,user,cfg.realm,nonce,uri,resp,cnonce,secc,secs);
+        dereg_len=ex && dn>0 && dn<(int)sizeof(dereg_msg)?dn:0;
+    }
+    /* the next start goes to the OTHER P-CSCF first: the one we are on still holds this connection after we leave and
+     * stays silent to a new REGISTER from the same port-c for a while (seen at every restart 2026-11-15: 8 s lost) */
+    if (cfg.npc>1) {FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","w");if (q) {fprintf(q,"%d\n",(pci+1)%cfg.npc);fclose(q);}}
     {FILE *q=fopen("/var/root/ims-last-contact","w");if (q) {fprintf(q,"%s\n",my_contact);fclose(q);chmod("/var/root/ims-last-contact",0600);}}
     {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)time(NULL));fclose(q);}}
     sms_keep_registration(r);
@@ -916,16 +956,21 @@ int main(int argc,char **argv)
 
     /* 5. stay: show what the network sends, answer requests with 200 */
     int cs[8];int ncs=0;time_t registered_at=time(NULL),reopened_at=0;
-    /* Health check (A, 2026-11-15): an OPTIONS to our own identity, 15 s after registering and then every 5 min when
+    /* Health check (A, 2026-11-15): an OPTIONS to our own identity, 15 s after registering and then every 2 min when
      * idle. It goes out through the P-CSCF and S-CSCF and comes back, so any answer (even an error) proves the
      * registration carries traffic. No answer in 10 s = a dead registration that only looks alive (texts to us are
      * then held at the SMSC for minutes): start afresh. */
-    uint32_t probe_cid=0;time_t probe_at=0,next_probe=registered_at+15;
+    /* Only a 2xx counts: it is our own 200 coming back. 408/480/504 = the network can send for us but not reach us
+     * (08:28:55: 504 while a text to us waited at the SMSC until the next registration, 3.5 min later). */
+    /* (08:42-08:45: checks 15 s after registering got no answer although the connection worked -- the sign-off was
+     * answered -- and each failure restarted the client: a loop. So: first check after 60 s, two failures in a row
+     * (30 s apart) before acting, and at most one restart from the check per 15 min, remembered across restarts.) */
+    uint32_t probe_cid=0;int probe_dead=0,probe_fails=0;time_t probe_at=0,next_probe=registered_at+60;
     snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
     call_registered=1;calls_snapshot(1);   /* (a fresh start: the call screen ends any call it still shows from before) */
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        if (time(NULL)-registered_at>6600 && !calls_live()) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+        if (time(NULL)-registered_at>6600 && !calls_live()) {printf("re-registration due: leaving for a fresh start\n");ims_dereg(1);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
@@ -963,9 +1008,20 @@ int main(int argc,char **argv)
         }
         ims_cmd_poll(s,portc);
         {time_t now=time(NULL);int dead=0;
-         if (probe_cid && now-probe_at>10) {printf("%s health check: no answer in 10 s\n",ts_now());dead=1;probe_cid=0;}
+         int failed=0;
+         if (probe_dead) {failed=1;probe_dead=0;}
+         /* (no answer at all is NOT a failure: on Jio the OPTIONS to ourselves often goes unanswered on a registration
+          *  that works -- a call went through at 08:48 during such a check. Only an explicit error counts.) */
+         else if (probe_cid && now-probe_at>10) {printf("%s health check: no answer (not counted)\n",ts_now());probe_cid=0;}
+         if (failed && ++probe_fails<2) {next_probe=now+30;printf("    (checking again in 30 s)\n");}
+         else if (failed) {
+            probe_fails=0;time_t lastr=0;FILE *q=fopen("/var/tmp/redwood-cell/ims-health-restart","r");
+            if (q) {long long v=0;if (fscanf(q,"%lld",&v)==1) lastr=(time_t)v;fclose(q);}
+            if (now-lastr<900) printf("    (a restart from the check %lld s ago: not again yet)\n",(long long)(now-lastr));
+            else {q=fopen("/var/tmp/redwood-cell/ims-health-restart","w");if (q) {fprintf(q,"%lld\n",(long long)now);fclose(q);}dead=1;}
+         }
          else if (!probe_cid && now>=next_probe && sms_impu[0] && !calls_live()) {
-            probe_cid=arc4random()|1;probe_at=now;next_probe=now+300;
+            probe_cid=arc4random()|1;probe_at=now;if (now>=next_probe) next_probe=now+120;
             char pm[2400];int po=snprintf(pm,sizeof(pm),
                 "OPTIONS %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\nMax-Forwards: 70\r\n%s"
                 "From: <%s>;tag=%08x\r\nTo: <%s>\r\nCall-ID: %08x@[%s]\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
@@ -975,7 +1031,7 @@ int main(int argc,char **argv)
          if (sms_conn_dead) {dead=1;sms_conn_dead=0;}
          if (dead) {
             if (calls_live()) printf("    (a call is up: kept for now)\n");
-            else {printf("the registration carries nothing: a fresh registration\n");fflush(stdout);
+            else {printf("the registration carries nothing: a fresh registration\n");fflush(stdout);ims_dereg(1);
                 unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
          }}
         call_tick();
@@ -993,7 +1049,11 @@ int main(int argc,char **argv)
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) continue;
             if (!strncmp(r,"SIP/2.0",7) && probe_cid) {char pci_[200];   /* the health check's answer */
-                if (hdr(r,"Call-ID",pci_,sizeof(pci_)) && (uint32_t)strtoul(pci_,NULL,16)==probe_cid) {if (atoi(r+8)>=200) probe_cid=0;continue;}}
+                if (hdr(r,"Call-ID",pci_,sizeof(pci_)) && (uint32_t)strtoul(pci_,NULL,16)==probe_cid) {int code=atoi(r+8);
+                    if (code==408 || code==480 || code==503 || code==504) {printf("%s health check: %d -- the network cannot reach us\n",ts_now(),code);probe_dead=1;}
+                    if (code>=200 && code<300) probe_fails=0;
+                    if (code>=200) probe_cid=0;
+                    continue;}}
             if (!strncmp(r,"SIP/2.0",7) && sms_ack_answer(s,r,portc)) continue;
             if (!strncmp(r,"SIP/2.0",7) && call_response(r)) continue;
             if (strncmp(r,"SIP/2.0",7) && i!=1 && call_request(p[i].fd,r)) continue;
