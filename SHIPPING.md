@@ -1,3 +1,17 @@
+## 2026-11-15 (09:35, A) — Always-On Display: panel dimming, lift-to-wake from AOD, Low Power Mode, permanent in x1slte
+- AOD (native iOS Always-On, default off, wallpaper off) merged from feat/s20-aod-preview (codex-aod's work, finished by A).
+- Kernel `kern.redwood.display_aod`: while AOD shows the panel runs at 30 % of CoreBrightness's level (2..12 nits;
+  boot args `fb_aod_pct`, `fb_aod_max`), 600 ms fade in, 200 ms out, exact level back on wake. Before: AOD stayed at
+  full brightness (40-55 nits). SpringBoard's AOD service sets it on the InactiveOn transition, clears it on wake/start.
+- Framebuffer: fade reads under the DSIM lock (a stale fade-out can no longer paint black after a wake); swap
+  signal/cancel no longer fall through into panel power.
+- redwood-motiond: AOD counts as asleep, so raise-to-wake works from AOD; Low Power Mode suspends AOD and raise-to-wake.
+- Verified on the phone (user): dim fade into AOD, pickup wakes at normal brightness, passcode still asked, Low Power
+  Mode: screen fully off and pickup ignored. Flashed: phone's loader/boot line + x1slte kernel 03c2c41a-equivalent +
+  phone's root with the new motiond (docs/x1slte-root-swap.md method). The phone's fingerprint-research kernel
+  (feat/s20-fingerprint, not in x1slte) was replaced by the main line.
+- Not done: Samsung ALPM/HLPM panel mode and a 120->60 Hz drop in AOD (mode switch is one-way per boot today).
+
 ## 2026-11-15 (09:30, B) — calls/VoLTE/texts wrap-up: registration never drops for a refresh; everything in the image
 - Registration refreshed in place at half its lifetime (Jio: 3600 of 7200 s) on the same connection and SAs: the ~110
   min full restart (10-90 s without calls or texts, the main cause of late texts) is now only the fallback (401 or no
