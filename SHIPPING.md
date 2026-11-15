@@ -1,3 +1,8 @@
+## 2026-11-15 (10:10, A) — AOD on by default
+- Fresh installs: Always-On Display on, wallpaper and notifications in AOD off (user's choice). A missing or unreadable
+  preference file reads as these defaults (`tools/aod/config.h` `rw_aod_default`); a saved choice always wins.
+  Config regression (`tools/aod/test_config.m`) and AOD build tests pass. This phone already had on/off saved: no change.
+
 ## 2026-11-15 (10:05, B) — avconferenced back on demand
 - mkjobs.py: avconferenced out of DENY (it crash-looped when the port had no camera/audio; both work now). Without it
   callservicesd and InCallService asked for it every 2 s during calls ("Server died. Attempt reconnect"). Feature-flag
