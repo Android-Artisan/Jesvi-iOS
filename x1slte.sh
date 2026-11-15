@@ -104,13 +104,14 @@ cmd_payload() {
 	# system volume where Android's system/vendor were); userdata only in system.img's extent while that is in use
 	# the boot logo (A, 2026-11-15): iOS's own, from the iOS root, into xnuloader/applelogo.h, the UEFI's logo slot and
 	# out/up_param-apple.img; git-ignored outputs (Apple artwork). No iOS root: the loader's screen stays black.
-	# DEVMODE=1 (A, 2026-11-15): the loader's HackiOS menu, countdown and text at every boot, for development. Set it in
+	# DEVMODE=1 (A, 2026-11-15): the loader's JesViOS menu, countdown and text at every boot, for development. Set it in
 	# common/devices/x1slte.local.conf (this Mac only, git-ignored) or the environment. Off: iOS's logo, no menu (end
 	# users). Release builds (tools/release sets JESVI_TARGET) never get it.
 	local devmode=${DEVMODE:-0}
 	[ -n "${JESVI_TARGET:-}" ] && devmode=0
-	[ "$devmode" = 1 ] && echo "payload: dev mode (the HackiOS menu at boot)"
-	python3 -I tools/bootlogo/mkbootlogo.py $([ "$devmode" = 1 ] && echo --dev) || echo "payload: no boot logo (tools/bootlogo/mkbootlogo.py failed)"
+	[ "$devmode" = 1 ] && echo "payload: dev mode (the JesViOS menu at boot)"
+	# (the UEFI's line under the logo reads "[JESVI]" in both modes; mkbootlogo --dev would keep Mu's "[Volume Up] Boot Manager")
+	python3 -I tools/bootlogo/mkbootlogo.py || echo "payload: no boot logo (tools/bootlogo/mkbootlogo.py failed)"
 	# CELLULAR_RESERVE_CP=1 by default (2026-11-13: two flashes built without it left cellular with "IPC map refused":
 	# no LTE, no VoLTE). CELLULAR_RESERVE_CP= (empty) builds the loader without the CP reservation.
 	env GIC_V2=1 CELLULAR_RESERVE_CP="${CELLULAR_RESERVE_CP-1}" SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
