@@ -17,7 +17,11 @@ loader's screen is black and the UEFI/splash keep their old pictures.
 
 ## Switches
 
-- `bootui=0` in the payload's cmdline: the loader's text and the HackiOS menu with its 3 s countdown, as before.
+- **Dev mode** (`DEVMODE=1`): the loader's text and the HackiOS menu with its 3 s countdown at every boot, for
+  development. Put `DEVMODE=1` in `common/devices/x1slte.local.conf` (this Mac only, git-ignored) or the environment
+  of `./x1slte.sh payload`; it becomes a `devmode` entry in the loader's payload table (not the boot line, which is
+  full). Without it (the default) end users get iOS's logo and no menu. Release builds (`tools/release`, which sets
+  `JESVI_TARGET`) never get dev mode, whatever the local config says. `bootui=0` in the cmdline does the same.
 - A volume key pressed while the loader's logo shows (0.7 s): the menu (Boot iOS, Log access, Download Mode, Reboot,
   Power off). Log access asked by a tool (`rwlogd /menu?to=1`, x1slte-auto.sh) works as before.
 - `fb_bootpic=0`: no scaling of the loader's picture at the mode switch (the logo then jumps a third bigger).
