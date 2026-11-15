@@ -725,15 +725,100 @@ static void ims_cmd_poll(int sock,int portc)
  * and sent before every exit we choose (health check failed, a text not confirmed, the ~110 min refresh, SIGTERM).
  * Without it the network kept the old registration: the P-CSCF we had been on stayed silent to the next start, and a
  * registration through the other one could take 200 OK yet carry nothing (08:17, 08:39). */
+/*
+ * The registration's own state, kept for refreshing it in place (B, 2026-11-15). Until now the ~110 min refresh was
+ * a full restart (sign-off, new challenge, new SAs): 10-90 s without VoLTE, calls "not reachable", texts held at the
+ * SMSC. Now: a REGISTER on the same protected connection and SAs, same Call-ID, next CSeq, the digest with the next nc
+ * (RFC 2617: HA1 from the first challenge's RES stays valid for that nonce). If the network answers 200 the
+ * registration simply runs on; if it wants a new challenge (401) or does not answer, the old fresh start follows (not
+ * during a call: the current registration is still good until it expires).
+ */
+static struct {
+    char ha1[33],ha2[33],nonce[300],cnonce[20],user[128],uri[128],common[1400],secc[900],secs[900],cid[120];
+    const char *T;int port,ok;unsigned nc,cseq;
+} reg;
+static int reg_build(char *out,size_t cap,int expires)
+{
+    if (!reg.ok) return 0;
+    char c0[1400],resp[33],buf[600];
+    snprintf(c0,sizeof(c0),"%s",reg.common);
+    if (expires==0) {char *ex=strstr(c0,"Expires: 600000\r\n");if (ex) {ex[9]='0';memmove(ex+10,ex+15,strlen(ex+15)+1);}}
+    unsigned nc=++reg.nc,cseq=++reg.cseq;
+    {size_t L=(size_t)snprintf(buf,sizeof(buf),"%s:%s:%08x:%s:auth:%s",reg.ha1,reg.nonce,nc,reg.cnonce,reg.ha2);md5hex(buf,L,resp);}
+    int n=snprintf(out,cap,
+        "REGISTER %s SIP/2.0\r\n"
+        "Via: SIP/2.0/%s [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+        "CSeq: %u REGISTER\r\n"
+        "%s"
+        "Authorization: Digest username=\"%s\",realm=\"%s\",nonce=\"%s\",uri=\"%s\",response=\"%s\",algorithm=AKAv1-MD5,qop=auth,nc=%08x,cnonce=\"%s\"\r\n"
+        "Security-Client: %s\r\n"
+        "Security-Verify: %s\r\n"
+        "Content-Length: 0\r\n\r\n",reg.uri,reg.T,cfg.ip6,reg.port,arc4random(),cseq,c0,reg.user,cfg.realm,reg.nonce,reg.uri,resp,nc,reg.cnonce,reg.secc,reg.secs);
+    return n>0 && n<(int)cap?n:0;
+}
+/* the network's own word on our registration (RFC 3680 reg event, TS 24.229 5.1.1.3): a NOTIFY saying our contact
+ * was terminated (deactivated, rejected, expired, unregistered) means the network dropped us -- without it we noticed
+ * only at the next health check (minutes, texts held meanwhile); "shortened" asks for a refresh soon */
+static int reg_event_dead,reg_event_refresh,reg_refresh_failed;
+static char reg_sub_cid[64];
+static void reg_notify(const char *r)
+{
+    char ev[64];
+    if (!hdr(r,"Event",ev,sizeof(ev)) && !hdr(r,"o",ev,sizeof(ev))) return;
+    if (strncmp(ev,"reg",3) || (ev[3] && ev[3]!=';' && ev[3]!=' ')) return;
+    const char *b=strstr(r,"\r\n\r\n");if (!b) return;
+    char me[96];snprintf(me,sizeof(me),"[%s]:%d",cfg.ip6,reg.port);
+    int mine=0,term=0,shorter=0;
+    for (const char *c=b;(c=strstr(c,"<contact"));c+=8) {
+        const char *e=strstr(c,"</contact>");if (!e) break;
+        const char *u=strstr(c,"<uri>");
+        if (!u || u>e || !memmem(u,(size_t)(e-u),me,strlen(me))) continue;
+        mine=1;
+        const char *st=strstr(c,"state=\"terminated\"");if (st && st<e) term=1;
+        const char *sh=strstr(c,"event=\"shortened\"");if (sh && sh<e) shorter=1;
+    }
+    if (!mine) {const char *g=strstr(b,"<registration");if (g && strstr(g,"state=\"terminated\"")) term=1;}
+    printf("%s registration event: %s\n",ts_now(),term?"the network dropped us":shorter?"shortened (refresh soon)":"active");
+    if (term) reg_event_dead=1; else if (shorter) reg_event_refresh=1;
+}
+/* the granted lifetime of our contact in a 200 to REGISTER (expires=N on our Contact, else Expires), 0 if none */
+static int reg_granted(const char *r)
+{
+    char me[96];snprintf(me,sizeof(me),"[%s]:%d",cfg.ip6,reg.port);
+    for (const char *q=r;(q=strstr(q,"\r\nContact:"));q+=10) {
+        const char *e=strstr(q+2,"\r\n");if (!e) break;
+        const char *m=memmem(q,(size_t)(e-q),me,strlen(me)),*x=m?memmem(m,(size_t)(e-m),"expires=",8):NULL;
+        if (x) return atoi(x+8);
+    }
+    char ex[32];return hdr(r,"Expires",ex,sizeof(ex))?atoi(ex):0;
+}
+static time_t reg_refresh_after(int granted)
+{   /* half the lifetime, 10 min .. 1 h (Jio grants 7200 s) */
+    int h=granted>0?granted/2:3600;return h<600?600:h>3600?3600:h;
+}
+static void reg_subscribe(int s,int portc)
+{
+    if (!sms_impu[0]) return;
+    char m[3000];snprintf(reg_sub_cid,sizeof(reg_sub_cid),"%08x%08x@[%s]",arc4random(),arc4random(),cfg.ip6);
+    int n=snprintf(m,sizeof(m),
+        "SUBSCRIBE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\nMax-Forwards: 70\r\n%s"
+        "From: <%s>;tag=%08x\r\nTo: <%s>\r\nCall-ID: %s\r\nCSeq: 1 SUBSCRIBE\r\n"
+        "Contact: <sip:%s@[%s]:%d;transport=tcp>\r\nP-Preferred-Identity: <%s>\r\n"
+        "Event: reg\r\nAccept: application/reginfo+xml\r\nExpires: 600000\r\nContent-Length: 0\r\n\r\n",
+        sms_impu,cfg.ip6,portc,arc4random(),sms_route,sms_impu,arc4random(),sms_impu,reg_sub_cid,cfg.imsi,cfg.ip6,reg.port,sms_impu);
+    if (n>0 && n<(int)sizeof(m) && send(s,m,(size_t)n,0)==n) printf("%s registration events: subscribed\n",ts_now());
+}
 static char dereg_msg[4000];static int dereg_len;
 static void ims_dereg(int wait)
 {
     if (!dereg_len || call_sock<0) return;
-    int w=(int)send(call_sock,dereg_msg,(size_t)dereg_len,0);dereg_len=0;
+    dereg_len=0;
+    int n=reg_build(dereg_msg,sizeof(dereg_msg),0);if (!n) return;
+    int w=(int)send(call_sock,dereg_msg,(size_t)n,0);
     if (!wait) {usleep(300000);return;}
-    char r[3000];int n=0;
-    if (w>0) do n=recv_msg(call_sock,r,sizeof(r),2); while (n>0 && strncmp(r,"SIP/2.0",7));
-    printf("signed off: %s\n",w<=0?"could not send":n>0?(strncmp(r,"SIP/2.0 2",9)?"refused":"done"):"no answer");fflush(stdout);
+    char r[3000];int k=0;
+    if (w>0) do k=recv_msg(call_sock,r,sizeof(r),2); while (k>0 && strncmp(r,"SIP/2.0",7));
+    printf("signed off: %s\n",w<=0?"could not send":k>0?(strncmp(r,"SIP/2.0 2",9)?"refused":"done"):"no answer");fflush(stdout);
 }
 static void ims_stop(int sig)
 {   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own). A call in progress is closed
@@ -901,6 +986,11 @@ int main(int argc,char **argv)
     {size_t L=(size_t)snprintf(buf,sizeof(buf),"REGISTER:%s",uri);md5hex(buf,L,ha2);}
     snprintf(cnonce,sizeof(cnonce),"%08x%08x",arc4random(),arc4random());
     {size_t L=(size_t)snprintf(buf,sizeof(buf),"%s:%s:00000001:%s:auth:%s",ha1,nonce,cnonce,ha2);md5hex(buf,L,resp);}
+    /* (kept for the in-place refresh and the sign-off: reg_build) */
+    memcpy(reg.ha1,ha1,33);memcpy(reg.ha2,ha2,33);snprintf(reg.nonce,sizeof(reg.nonce),"%s",nonce);snprintf(reg.cnonce,sizeof(reg.cnonce),"%s",cnonce);
+    snprintf(reg.user,sizeof(reg.user),"%s",user);snprintf(reg.uri,sizeof(reg.uri),"%s",uri);snprintf(reg.common,sizeof(reg.common),"%s",common);
+    snprintf(reg.secc,sizeof(reg.secc),"%s",secc);reg.T=T;reg.port=ports;reg.nc=1;reg.cseq=2;
+    snprintf(reg.cid,sizeof(reg.cid),"%08x@[%s]",cid,cfg.ip6);
     memset(ha1,0,sizeof(ha1));
     /* our previous contact, if it was another (address or port changed): removed in this same REGISTER (expires=0),
      * so the network never offers a call to a dead contact first ("busy", late rings) */
@@ -932,20 +1022,10 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
-    {   /* the sign-off, ready for any exit (same auth as REGISTER 2, next nc, Expires 0) */
-        char c0[1400];snprintf(c0,sizeof(c0),"%s",common);char *ex=strstr(c0,"Expires: 600000\r\n");
-        if (ex) {ex[9]='0';memmove(ex+10,ex+15,strlen(ex+15)+1);}   /* "Expires: 600000\r\n" -> "Expires: 0\r\n" */
-        int dn=snprintf(dereg_msg,sizeof(dereg_msg),
-            "REGISTER %s SIP/2.0\r\n"
-            "Via: SIP/2.0/%s [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
-            "CSeq: 3 REGISTER\r\n"
-            "%s"
-            "Authorization: Digest username=\"%s\",realm=\"%s\",nonce=\"%s\",uri=\"%s\",response=\"%s\",algorithm=AKAv1-MD5,qop=auth,nc=00000002,cnonce=\"%s\"\r\n"
-            "Security-Client: %s\r\n"
-            "Security-Verify: %s\r\n"
-            "Content-Length: 0\r\n\r\n",uri,T,cfg.ip6,ports,arc4random(),c0,user,cfg.realm,nonce,uri,resp,cnonce,secc,secs);
-        dereg_len=ex && dn>0 && dn<(int)sizeof(dereg_msg)?dn:0;
-    }
+    /* the registration is refreshable from here on (reg_build: refresh in place, sign-off). (The sign-off of 08:53 was
+     * prebuilt with REGISTER 2's digest response under nc=00000002 -- a wrong digest, so it was refused and the old
+     * registration lingered; it is now built when sent, with its own nc.) */
+    snprintf(reg.secs,sizeof(reg.secs),"%s",secs);reg.ok=1;dereg_len=1;
     /* the next start goes to the OTHER P-CSCF first: the one we are on still holds this connection after we leave and
      * stays silent to a new REGISTER from the same port-c for a while (seen at every restart 2026-11-15: 8 s lost) */
     if (cfg.npc>1) {FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","w");if (q) {fprintf(q,"%d\n",(pci+1)%cfg.npc);fclose(q);}}
@@ -956,6 +1036,8 @@ int main(int argc,char **argv)
 
     /* 5. stay: show what the network sends, answer requests with 200 */
     int cs[8];int ncs=0;time_t registered_at=time(NULL),reopened_at=0;
+    int granted=reg_granted(r);time_t refresh_at=registered_at+reg_refresh_after(granted),rereg_sent=0;unsigned rereg_cseq=0;int subscribed=0;
+    printf("registration lifetime %d s: refreshed in place after %ld s\n",granted,(long)(refresh_at-registered_at));
     /* Health check (A, 2026-11-15): an OPTIONS to our own identity, 15 s after registering and then every 2 min when
      * idle. It goes out through the P-CSCF and S-CSCF and comes back, so any answer (even an error) proves the
      * registration carries traffic. No answer in 10 s = a dead registration that only looks alive (texts to us are
@@ -970,6 +1052,25 @@ int main(int argc,char **argv)
     call_registered=1;calls_snapshot(1);   /* (a fresh start: the call screen ends any call it still shows from before) */
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
+        {   /* the in-place refresh (reg_build); no answer in 15 s or anything but 2xx -> the fresh start below, when no
+             * call is up (with a call: the current registration still holds until it expires; tried again in 5 min) */
+            time_t now=time(NULL);
+            if (!subscribed && now-registered_at>=3 && sms_impu[0]) {reg_subscribe(s,portc);subscribed=1;}
+            if (reg_event_refresh) {reg_event_refresh=0;if (refresh_at>now+5) refresh_at=now+5;}
+            if (!rereg_sent && now>=refresh_at) {
+                char rm[4000];int rn=reg_build(rm,sizeof(rm),600000);
+                if (rn && send(s,rm,(size_t)rn,0)==rn) {rereg_sent=now;rereg_cseq=reg.cseq;printf("%s registration: refreshing in place\n",ts_now());}
+                else refresh_at=now+60;
+            }
+            int failed=0;
+            if (rereg_sent && now-rereg_sent>15) {printf("%s registration refresh: no answer\n",ts_now());rereg_sent=0;failed=1;}
+            if (reg_refresh_failed) {reg_refresh_failed=0;failed=1;}
+            if (reg_event_dead) {reg_event_dead=0;failed=1;}
+            if (failed) {
+                if (calls_live()) {printf("    (a call is up: the fresh registration waits)\n");refresh_at=now+300;}
+                else {printf("a fresh registration\n");fflush(stdout);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+            }
+        }
         if (time(NULL)-registered_at>6600 && !calls_live()) {printf("re-registration due: leaving for a fresh start\n");ims_dereg(1);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
@@ -1048,6 +1149,25 @@ int main(int argc,char **argv)
                 else {call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}} break;}
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) continue;
+            if (!strncmp(r,"SIP/2.0",7)) {   /* our refresh REGISTER's / SUBSCRIBE's answer */
+                char rci[200],rcq[80];
+                if (hdr(r,"Call-ID",rci,sizeof(rci)) && hdr(r,"CSeq",rcq,sizeof(rcq))) {
+                    if (rereg_sent && !strcmp(rci,reg.cid) && strstr(rcq,"REGISTER") && (unsigned)atoi(rcq)==rereg_cseq) {
+                        int code=atoi(r+8);if (code<200) continue;
+                        rereg_sent=0;
+                        if (code<300) {
+                            registered_at=time(NULL);granted=reg_granted(r);refresh_at=registered_at+reg_refresh_after(granted);
+                            {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)registered_at);fclose(q);}}
+                            printf("%s registration refreshed in place (lifetime %d s, next in %ld s)\n",ts_now(),granted,(long)(refresh_at-registered_at));
+                            subscribed=0;   /* (the subscription is renewed with it) */
+                        } else {printf("%s registration refresh: %d%s\n",ts_now(),code,code==401?" (the network wants a new challenge)":"");reg_refresh_failed=1;}
+                        continue;
+                    }
+                    if (reg_sub_cid[0] && !strcmp(rci,reg_sub_cid) && strstr(rcq,"SUBSCRIBE")) {
+                        int code=atoi(r+8);if (code>=200) printf("%s registration events: %d\n",ts_now(),code);continue;
+                    }
+                }
+            }
             if (!strncmp(r,"SIP/2.0",7) && probe_cid) {char pci_[200];   /* the health check's answer */
                 if (hdr(r,"Call-ID",pci_,sizeof(pci_)) && (uint32_t)strtoul(pci_,NULL,16)==probe_cid) {int code=atoi(r+8);
                     if (code==408 || code==480 || code==503 || code==504) {printf("%s health check: %d -- the network cannot reach us\n",ts_now(),code);probe_dead=1;}
@@ -1089,6 +1209,7 @@ int main(int argc,char **argv)
                 if (hdr(r,"CSeq",cq,sizeof(cq))) MSG_CAT(m,o,"CSeq: %s\r\n",cq);
                 MSG_CAT(m,o,"Content-Length: 0\r\n\r\n");
                 if (strncmp(r,"ACK",3)) {if (MSG_FITS(m,o)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}}
+                if (!strncmp(r,"NOTIFY ",7)) reg_notify(r);
                 sms_incoming(s,r,(size_t)g,portc);
             }
         }
