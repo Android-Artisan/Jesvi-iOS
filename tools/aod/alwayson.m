@@ -158,7 +158,7 @@ static void wallpaperForAOD(BOOL aod){
 }
 static void backlightWillChange(id self,SEL cmd,id host,long long state,id event){
     lastState=state;requestObserved=YES;uint64_t generation=++transitionGeneration;
-    NSLog(@"RedwoodAOD: will %lld at %.3f event=%@",state,CACurrentMediaTime(),event);
+    NSLog(@"RedwoodAOD: will %lld at %.3f",state,CACurrentMediaTime());
     /* InactiveOn (1) is the AOD picture: dim the panel; awake states restore. */
     if(state==1)panelAOD(enabled);else if(state>=2)panelAOD(NO);
     @try {if(state==1&&enabled)wallpaperForAOD(YES);else if(state>=2)wallpaperForAOD(NO);}
