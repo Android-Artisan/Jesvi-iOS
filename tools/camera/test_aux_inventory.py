@@ -33,11 +33,18 @@ class Fixups(unittest.TestCase):
             '/pmic/regulators/ldo12': {'regulator-name': b'VDDA_2.8V_WIDESUB\0',
                 'regulator-min-microvolt': (2800000).to_bytes(4,'big')},
             '/pmic/regulators/unrelated': {'regulator-name': b'unrelated\0'}}
+        base['/__symbols__']['is_sensor2']=b'/is_sensor2@17050000\0'
+        base['/is_sensor2@17050000']={}
+        overlay['/__fixups__']['is_sensor2']=b'/fragment@22:target:0\0'
+        overlay['/fragment@22']={'target':b'\xff'*4}
+        overlay['/fragment@22/__overlay__']={'use_cphy':(1).to_bytes(4,'big'),'dma_ch':(3).to_bytes(4,'big')}
         with patch.dict(M['inventory'].__globals__, {'NODES': lambda b: base if b==b'base' else overlay}):
             result=M['inventory'](b'base',b'overlay')['overlay_nodes']
         self.assertEqual(result['/fragment@19/__overlay__']['clock-frequency'],[1000000])
         self.assertEqual(result['/pmic/regulators/ldo12']['regulator-min-microvolt'],[2800000])
         self.assertNotIn('/pmic/regulators/unrelated',result)
+        self.assertEqual(result['/fragment@22/__overlay__']['use_cphy'],[1])
+        self.assertEqual(result['/fragment@22/__overlay__']['dma_ch'],[3])
 
     def test_invalid_offsets_rejected(self):
         for offset in (-4, 1, 4):

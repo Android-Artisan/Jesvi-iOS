@@ -1,3 +1,36 @@
+# PAUSED DEVICE ACCESS — wait for user's explicit handback
+
+User says another session has the phone; wait for readiness notification, not a
+20-minute timer. A holds the phone for idle-power kernel work. No second reboot
+approval was given. NO more SSH, capture, flash, restart or sensor commands until
+handback and successful lock acquisition. The first approved boot completed.
+
+Offline audit completed: corrected both auxiliary receivers to C-PHY3trios;
+GW2 board overlay selects WDMA3, not base-tree WDMA0; active GW2 I2C is gpp0-2/3,
+not recovery-gpio gpc0. Reproducible receiver-plan JSON/tool and regression tests
+added. GW2 successful rail restoration now follows stock NORMAL_OFF order with
+AF-off9us; partial failures still reverse their touched writes. Source-level main
+rear voltage-selector gap documented for later LIVE measurement, not called a
+noise fix. See latest docs/x1slte-camera-aux.md section for complete findings.
+
+**Last verified hardware success:**2LA ID20ca/a202 twice, successful cleanup,
+unchanged PMIC map across repeat. User confirms front/main and repeat unlocking.
+No auxiliary RAW image or new app lens. GW2 has not been powered/probed yet.
+2LA counter-stream and GW2 ID source prepared; post-audit kernel builds/tests pass.
+
+Our previously installed kernel may ALREADY BE REPLACED by A. An in-flight slot
+read mismatched during their takeover: saved unverified-concurrent-slot-read.bin;
+DO NOT USE THAT FILE FOR ROLLBACK. Freshly identify/backup current kernel once
+A releases, integrate their latest accepted work, rebuild, obtain explicit NEW
+reboot approval. Current local main/master8eaa52cf may advance. Do not flash our
+pre-idle-power candidate over A's newer kernel. Previous current candidate hashes
+below are historical. New UNINSTALLED post-audit slot hash38d0ab3d... (artifact-next.json).
+
+All work stays feat/s20-rear-aux; main/master unchanged by this session. Push
+remains unavailable (upstream403). Keep original front and accepted brightness.
+
+---
+
 # Latest live sensor progress — 2026-11-15
 
 Installed source8b39c494 after ONE explicit user-approved install/reboot. Loader

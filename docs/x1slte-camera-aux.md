@@ -31,8 +31,9 @@ identical selected camera nodes; separate checks establish the addresses below.
 | Declared active size | 4032×3024 | 9248×6936 |
 
 GW2 module-node suffix `@5A` is not its CIS bus address. Linux sensor enums53/54
-are not hardware model IDs. Both channel-mode nodes declare WDMA0 at0x170c1000
-and a mux register at0x17020414; initial bring-up must be exclusive. The GW2 controller recovery-GPIO metadata lists gpc0 pins, but its ACTIVE
+are not hardware model IDs. The base tree declares WDMA0 defaults for both, but the PHONE OVERLAY
+changes GW2 to WDMA3 (0x170c4000, mux0x17020420). 2LA stays WDMA0
+(0x170c1000, mux0x17020414). Initial bring-up remains exclusive. The GW2 controller recovery-GPIO metadata lists gpc0 pins, but its ACTIVE
 pinctrl resolves to hsi2c1-bus, gpp0-2/3. Use the active pinctrl for native sensor
 bus access; do not drive the clock pins as I2C based on recovery metadata.
 Restore pin ownership on sensor changes and keep initial tests exclusive.
@@ -181,3 +182,63 @@ Requires a NEW explicit install/reboot approval; the first approval is consumed.
 After boot run ID commands, then2LA stream only if ID/cleanup pass. Close Camera,
 wait20s, refuse busy rather than forcing ownership. Stop on failed cleanup; do
 not run additional experiments against an unknown power state.
+
+## Offline audit while phone is with the other session
+
+User explicitly paused device work until they announce readiness. The second
+reboot request is NOT approved. A took the phone for idle-power work; stop all
+SSH/captures/changes. The previous in-flight slot read finished with a mismatch
+against our installed candidate as the other session changed the kernel. It is
+retained as `unverified-concurrent-slot-read.bin`, NOT a valid rollback image.
+Do not assume our identity kernel remains installed. Integrate A's latest
+accepted commits and freshly back up the actual slot after handback, before any
+new deployment. Do not flash this branch's older candidate over their idle work.
+
+The initial inventory missed receiver overlay fragments22/24. This is corrected:
+extractor now retains explicit board `use_cphy`, DMA/VC channels, PHY references
+and child routes. `aux-receiver-plan.py` requires those overrides and rejects
+base-only/inconsistent routing. Four regression tests check this and both saved
+overlays yield the same effective receiver plan:
+
+| Property | 2LA | GW2 |
+|---|---|---|
+| Mode | C-PHY,3 trios | C-PHY,3 trios |
+| CSIS |4:0x17070000 |2:0x17050000 |
+| PHY analog block |0x170d2300 |0x170d1b00 |
+| PHY reset bit index |2 |1 |
+| WDMA |0 |3 |
+| VC0 DMA |0x170c1000 |0x170c4000 |
+| DMA common |0x170c1400 |0x170c4400 |
+| Mux register |0x17020414 |0x17020420 |
+| Mode0 speed label |1501 |2964 |
+| Mode0 VC1 |unused |TAILPDAF,1152×1720 RAW10 |
+
+Generic `phy-names=csis_dphy` does NOT select D-PHY. Board `use_cphy=1` is
+explicit. Module common lane value2 is CSI_DATA_LANES_3 (three C-PHY trios), not
+“two D-PHY lanes”. Source csi-v5_3 on CONFIG_PABLO_V8_0_0 selects PHY0503.0000,
+mode0xC/type0xDC for CSI A/C/E, matching0/2/4. The7nm C-PHY settle table gives7
+around the1501/1950/2964 source rates. Do not transplant the front four-lane
+D-PHY setup. No receiver code is enabled in this checkpoint: first prove sensor
+counter, then bounded CSI/VC0/DMA capture, excluding GW2 tail-PDAF from image data.
+
+The GW2 journal now distinguishes a complete power-on from a partial failure.
+Complete transactions restore rails in DT NORMAL_OFF order: AF, CAMIO, SUBIO,
+VTIO, analog, core, OIS digital, OIS VM; AF-off delay9us. Partial failures roll
+back touched registers in reverse order. Fault tests check exact successful
+shutdown order/delay as well as every failed operation. This is still a bounded
+diagnostic power path; production concurrency and optics are not implemented.
+
+Additional MAIN-rear audit to measure after handback: source cam_s20_pmic03_bits
+and redwood_s2mpb02_camera_bits change enable bits while preserving selectors.
+DT requires S2MPB03 LDO2 core1.05V (selector0x1c), LDO5 analog2.95V (selector0x2e,
+despite the rail's2.8V name), and S2MPB02 LDO1 sensor-PHY1.05V (selector0x24).
+The read-only inactive S2MPB02 baseline had LDO1 selector0x18, which decodes to
+0.9V; simply enabling that byte would retain0.9V. This is a source/snapshot
+inference, NOT a live main-stream voltage measurement or a proven grain cause.
+Check selectors while main is active, calibration/board requirements and fault
+cleanup before proposing a rear-only trial. Do not change front tuning to test it.
+
+Post-audit candidate (UNINSTALLED and must be rebased/rebuilt after A's handback):
+slot SHA25638d0ab3da0312acde57bd45e71e5e2bc8962171e5aa5917d0e29592038e2cb83;
+stripped kernel SHA2560723114933391c2e50d2c6a19b49a2dc93bc0d03934afd21fb691b96714a90f6.
+Earlier bdb512... candidate is superseded and preserved privately as pre-audit.

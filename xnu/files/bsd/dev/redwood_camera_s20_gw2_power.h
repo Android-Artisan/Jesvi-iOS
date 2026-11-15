@@ -15,7 +15,7 @@ static const struct cam_gw2_rail cam_gw2_rails[8]={
     {2,0x23,0xb0,0x7f,true,0},     /* VT IO1.8 */
     {2,0x24,0xb0,0x7f,false,100}   /* SUB IO1.8 */
 };
-struct cam_gw2_power {uint8_t before[8];unsigned touched;};
+struct cam_gw2_power {uint8_t before[8];unsigned touched;bool complete;};
 struct cam_gw2_io {
     void *context;
     bool (*read)(void *,uint8_t,uint8_t,uint8_t *);
@@ -24,16 +24,22 @@ struct cam_gw2_io {
 };
 static inline bool cam_gw2_power_restore(struct cam_gw2_power *s,struct cam_gw2_io io){
     bool ok=true;
-    while(s->touched){unsigned i=--s->touched;uint8_t after=0;
+    /* A successful transaction follows the board's NORMAL_OFF order, not the
+     * reverse ON order. Partial failures still roll back touched rails in reverse. */
+    static const unsigned off_order[8]={2,5,7,6,0,1,4,3};
+    unsigned count=s->touched;bool complete=s->complete;s->touched=0;s->complete=false;
+    for(unsigned step=0;step<count;step++){
+        unsigned i=complete?off_order[step]:count-1-step;uint8_t after=0;
         const struct cam_gw2_rail *r=&cam_gw2_rails[i];
         bool w=io.write(io.context,r->pmic,r->reg,s->before[i]);
         bool got=io.read(io.context,r->pmic,r->reg,&after);
         if(!w||!got||after!=s->before[i])ok=false;
+        if(complete&&step==0)io.pause(io.context,9); /* DT AF-off delay9us */
     }
     return ok;
 }
 static inline bool cam_gw2_power_begin(struct cam_gw2_power *s,struct cam_gw2_io io){
-    uint8_t v=0;s->touched=0;
+    uint8_t v=0;s->touched=0;s->complete=false;
     /* Existing parent supplies must already match the board's always-on setup. */
     if(!io.read(io.context,2,0x0b,&v)||(v&0xc0)!=0xc0||
        !io.read(io.context,2,0x0c,&v)||v!=0x90||
@@ -56,6 +62,6 @@ static inline bool cam_gw2_power_begin(struct cam_gw2_power *s,struct cam_gw2_io
            !io.read(io.context,r->pmic,r->reg,&after)||after!=want)return false;
         if(r->delay_us)io.pause(io.context,r->delay_us);
     }
-    return true;
+    s->complete=true;return true;
 }
 #endif

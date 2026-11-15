@@ -17,7 +17,8 @@ STRINGS = {'compatible', 'status', 'sensor_maker', 'sensor_name', 'setfile_name'
 ALLOWED = STRINGS | {'reg', 'id', 'sensor_id', 'position', 'active_width', 'active_height',
     'bitwidth', 'max_framerate', 'mclk_ch', 'sensor_i2c_ch', 'common', 'vc0', 'vc1',
     'vc2', 'vc3', 'gpio_mclk', 'gpio', 'pin', 'share', 'sensor_scenario',
-    'gpio_scenario', 'clock-frequency', 'sda-gpios', 'scl-gpios', 'phys', 'mux_reg',
+    'gpio_scenario', 'use_cphy', 'csi_ch', 'dma_ch', 'vc_ch', 'isolation',
+    'reset', 'owner', 'samsung,pmu-syscon', 'samsung,reset-sysreg', 'clock-frequency', 'sda-gpios', 'scl-gpios', 'phys', 'mux_reg',
     'samsung,pin-function', 'gpios', 'regulator-min-microvolt',
     'regulator-max-microvolt', 'pinctrl-0', 'pinctrl-1', 'pinctrl-2', 'pinctrl-3'}
 
@@ -54,6 +55,14 @@ def inventory(base_blob, overlay_blob):
     for root in roots:
         selected.add('/' + root.split('/')[1])
         selected.add(root.rsplit('/', 1)[0])
+    # Board overlays override base CSIS/WDMA routes and PHY mode. Base-only
+    # inventories can silently choose the wrong DMA engine and D-/C-PHY mode.
+    for label in ('is_sensor2', 'is_sensor4'):
+        for location in strings(overlay.get('/__fixups__', {}).get(label, b'')):
+            if not location:
+                continue
+            fragment = location.rsplit(':', 2)[0]
+            selected.update(p for p in overlay if p == fragment or p.startswith(fragment + '/'))
     supplies = {strings(overlay[p]['pname'])[0] for p in selected
                 if 'pname' in overlay[p]}
     selected.update(p for p, v in overlay.items()

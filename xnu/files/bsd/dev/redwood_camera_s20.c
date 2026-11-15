@@ -2895,9 +2895,9 @@ cam_s20_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, si
 	    0x15c302c0U, "gpm22-0", 0);
 }
 
-/* Explicit one-shot 2LA identification. No setfile, stream, CSI/PHY or DMA writes.
- * GPIO route follows x1slte HSI2C45 gpm14-0/gpm15-0, reset gpm33-0,
- * CIS_CLK3 (logical mclk_ch3), gpc0-3 function2. No automatic bus scan. */
+/* Explicit bounded auxiliary probes. Identity paths never write setfiles.
+ * Only the separately requested A202 sensor-counter test writes ordinary2LA
+ * configuration and starts/stops the sensor. No CSI/PHY/DMA access or bus scan. */
 extern bool redwood_camera_aux_acquire(void);
 extern void redwood_camera_aux_release(bool clean);
 extern bool redwood_s2mpb02_2la_power(struct cam_aux_power *, bool, bool *);

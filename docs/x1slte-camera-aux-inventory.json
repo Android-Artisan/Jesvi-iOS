@@ -1,6 +1,56 @@
 [
   {
     "base_nodes": {
+      "/dcphy_m0s4s4s4s4s4s2_csi2@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386734848,
+          1280
+        ],
+        "reset": [
+          1
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/dcphy_m0s4s4s4s4s4s2_csi4@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386736896,
+          1280
+        ],
+        "reset": [
+          2
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
       "/hsi2c@10560000": {
         "compatible": [
           "samsung,exynos5-hsi2c"
@@ -316,6 +366,198 @@
         ],
         "status": [
           "okay"
+        ]
+      },
+      "/fragment@22": {
+        "target": [
+          {
+            "base_path": "/is_sensor2@17050000",
+            "symbol": "is_sensor2"
+          }
+        ]
+      },
+      "/fragment@22/__overlay__": {
+        "csi_ch": [
+          2
+        ],
+        "dma_ch": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "id": [
+          2
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi2@17020500",
+            "symbol": "mipi_phy_csis2_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3,
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode1": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@24": {
+        "target": [
+          {
+            "base_path": "/is_sensor4@17070000",
+            "symbol": "is_sensor4"
+          }
+        ]
+      },
+      "/fragment@24/__overlay__": {
+        "csi_ch": [
+          4
+        ],
+        "dma_ch": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "id": [
+          4
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi4@17020500",
+            "symbol": "mipi_phy_csis4_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@24/__overlay__/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
         ]
       },
       "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
@@ -2534,6 +2776,56 @@
   },
   {
     "base_nodes": {
+      "/dcphy_m0s4s4s4s4s4s2_csi2@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386734848,
+          1280
+        ],
+        "reset": [
+          1
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
+      "/dcphy_m0s4s4s4s4s4s2_csi4@17020500": {
+        "compatible": [
+          "samsung,mipi-phy-m0s4s4s4s4s4s2"
+        ],
+        "isolation": [
+          1840
+        ],
+        "owner": [
+          1
+        ],
+        "reg": [
+          0,
+          386736896,
+          1280
+        ],
+        "reset": [
+          2
+        ],
+        "samsung,pmu-syscon": [
+          234
+        ],
+        "samsung,reset-sysreg": [
+          264
+        ]
+      },
       "/hsi2c@10560000": {
         "compatible": [
           "samsung,exynos5-hsi2c"
@@ -2849,6 +3141,198 @@
         ],
         "status": [
           "okay"
+        ]
+      },
+      "/fragment@22": {
+        "target": [
+          {
+            "base_path": "/is_sensor2@17050000",
+            "symbol": "is_sensor2"
+          }
+        ]
+      },
+      "/fragment@22/__overlay__": {
+        "csi_ch": [
+          2
+        ],
+        "dma_ch": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "id": [
+          2
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi2@17020500",
+            "symbol": "mipi_phy_csis2_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386203648,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3,
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode0": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@22/__overlay__/sensor2-ch-mode1": {
+        "mux_reg": [
+          386008096,
+          4
+        ],
+        "reg": [
+          386678784,
+          256,
+          386679808,
+          256,
+          386679040,
+          256,
+          386679808,
+          256,
+          386679296,
+          256,
+          386679808,
+          256,
+          386679552,
+          256,
+          386679808,
+          256
+        ]
+      },
+      "/fragment@24": {
+        "target": [
+          {
+            "base_path": "/is_sensor4@17070000",
+            "symbol": "is_sensor4"
+          }
+        ]
+      },
+      "/fragment@24/__overlay__": {
+        "csi_ch": [
+          4
+        ],
+        "dma_ch": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "id": [
+          4
+        ],
+        "phy-names": [
+          "csis_dphy"
+        ],
+        "phys": [
+          {
+            "base_path": "/dcphy_m0s4s4s4s4s4s2_csi4@17020500",
+            "symbol": "mipi_phy_csis4_m0s4s4s4s4s4s2"
+          },
+          0
+        ],
+        "reg": [
+          0,
+          386334720,
+          4096,
+          0,
+          386727936,
+          65536
+        ],
+        "reg-names": [
+          "csi",
+          "phy"
+        ],
+        "status": [
+          "okay"
+        ],
+        "use_cphy": [
+          1
+        ],
+        "vc_ch": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "/fragment@24/__overlay__/sensor4-ch-mode0": {
+        "mux_reg": [
+          386008084,
+          4
+        ],
+        "reg": [
+          386666496,
+          256,
+          386667520,
+          256,
+          386666752,
+          256,
+          386667520,
+          256,
+          386667008,
+          256,
+          386667520,
+          256,
+          386667264,
+          256,
+          386667520,
+          256
         ]
       },
       "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
