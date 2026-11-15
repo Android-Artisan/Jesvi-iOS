@@ -1,4 +1,46 @@
-# Native AOD appearance test — software only
+# S20 Always-On Display (AOD)
+
+## Final state (15 November 2026, A) — read this first
+
+Native iOS 16.5 Always-On Display on the SM-G980F, user-verified. Settings → Always-On Display (row under Display & Brightness):
+(**default off**, wallpaper in AOD **default off**). In x1slte/main (6b629ecd and later); the sections further down are
+the history of how it got here.
+
+| Part | Where | What it does |
+|---|---|---|
+| AOD service + Settings | `tools/aod/alwayson.m`, `settings.m` → `/redwood/lib/libredwood-alwayson.dylib` (clean image, `prepare-root.py`); on the current phone also `/var/jb/usr/lib/TweakInject/RedwoodAlwaysOn.dylib` | Lets iOS's own AOD run (S20 support, Apple's pseudo-flipbook live composition instead of the missing CAFlipBook backend); applies the saved settings; revokes authentication on InactiveOn (passcode still asked) |
+| Panel dimming | kernel `kern.redwood.display_aod` (`MiniIOMobileFramebuffer.cpp` `redwood_fb_aod`, `aodLevel`; sysctl in `redwood_dbgport.c`) | iOS's AOD brightness never reaches the driver (AOD stayed at 40-55 nits). The service sets 1 on InactiveOn: 30 % of CoreBrightness's level, 2..12 nits, 600 ms fade in, 200 ms out, exact level back on wake. Boot args `fb_aod_pct`, `fb_aod_max`; values 2..60 = fixed ceiling in nits |
+| Black fade on lock | `alwayson.m` `wallpaperForAOD` | With the AOD wallpaper off, locking from the home screen/an app fades a black layer (0.35 s) over the lock screen's wallpaper (`SBCoverSheetPanelBackgroundContainerView`), under the clock; removed on wake. Locking from the lock screen keeps iOS's own fade (user's choice) |
+| Lift to wake from AOD | `userland/src/motion_wake.m` (redwood-motiond, root image) | AOD keeps DisplayOn/displayStatus set; the daemon reads the AOD status notification (`tools/aod/state.h`) and treats requested+completed InactiveOn as asleep |
+| Low Power Mode | `alwayson.m`, `motion_wake.m` | AOD and raise-to-wake are suspended while Low Power Mode is on; the saved setting is kept and comes back after |
+| Idle timer | `userland/src/inject.c` | No lock-button presses while AOD shows (in source and clean images; the phone's current root still has the older libredwood) |
+| Framebuffer fixes | `MiniIOMobileFramebuffer.cpp` | Fade state read under the DSIM lock (no stale fade-out after a wake); swap signal/cancel never reach panel power |
+
+Status/diagnostics: `ssh s20 /var/jb/redwood/bin/aod-preview status` (requested/completed backlight state,
+saved settings), `sysctl kern.redwood.display_aod`, SpringBoard log lines `RedwoodAOD: will N / did N`
+(0 off, 1 AOD, 2 awake). Tests: `python3 tools/aod/test_*.py` (root assembly, swap dispatch, fade/wake races,
+engine init), `tools/aod/test_state.c`, `tools/aod/panel/test_alpm.c`.
+
+How it behaves (researched with logs, all expected):
+- ~2-6 s into AOD iOS ends live rendering: backboardd "Set Blanked: YES / Display 1 power off" (DCS 28). The panel
+  keeps showing the AOD picture from its own memory, so AOD stays visible at no cost; minute updates re-render briefly.
+- Waking after that point plays iOS's fade-in-from-black (performWake's fade-in is hard-coded on): a short black
+  moment, button or tap alike. The only fix is keeping live rendering on through AOD (battery): left by choice.
+- A tap in AOD wakes through the port's tap-to-wake (inject.c injects a side-button press).
+
+Traps:
+- Never hook SpringBoard from a plain /var/jb dylib outside TweakInject; the clean image carries the root-image copy
+  with a shared duplicate guard (both may load; only one installs).
+- `sync` on the phone after installing to /var before any flash/reboot: x1slte-auto.sh's cold restart drops unsynced
+  writes.
+- main is reset to x1slte by other sessions' workflow: land AOD work in x1slte.
+
+Open (not started): Samsung's panel AOD mode (ALPM/HLPM, `tools/aod/panel/`, inactive prototype; keep 120 Hz when
+awake per the user), a deeper AOD refresh drop (the mode switch is one-way per boot today).
+
+---
+
+## History: native AOD appearance test — software only
 
 User request: test the iPhone14Pro-style AOD display with a SpringBoard refresh,
 without panel/kernel changes or a hardware reboot. The user explicitly authorized
