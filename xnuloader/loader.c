@@ -4821,7 +4821,7 @@ menu_draw(int selected, const char *banner, int countdown)
 
 	menu_fill(0, 0, w, (int)SCREEN.height, 0x000000, 0);
 	menu_text_center(300, "HackiOS", 10, 0xffffff);
-	menu_text_center(500, "Galaxy S20+  -  iOS 16.5", 3, 0x8e8e93);
+	menu_text_center(500, "Galaxy S20  -  iOS 16.5  -  Jesvi", 3, 0x8e8e93);
 	if (banner != NULL && banner[0] != 0) {
 		menu_text_center(640, banner, 3, 0xffd60a);
 	}
@@ -5324,8 +5324,8 @@ log_access(void)
 		return 0;
 	}
 	/* (the last log is read from the flash when the host asks for it: oem lastlog) */
-	menu_status("Log access (USB)", "Connect the phone to the Mac, then:", "./y2s.sh ulog    the last log",
-	    "./y2s.sh uflash  a new build", "./y2s.sh uboot   boot iOS");
+	menu_status("Log access (USB)", "Connect the phone to the Mac, then:", "./x1slte.sh ulog    the last log",
+	    "./x1slte.sh uflash  a new build", "./x1slte.sh uboot   boot iOS");
 	ufn_leave = 0;
 	usb_boot_asked = 0;
 	while (!ufn_leave && !usb_boot_asked) {
