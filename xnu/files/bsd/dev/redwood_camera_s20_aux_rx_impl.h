@@ -113,8 +113,8 @@ static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,bool gw2)
     AXW(AX_DMA,0x1404,~0U,0x01111110);
     AXW(AX_DMA,0x1004,0x7fU,packed?7U:6U);
     AXW(AX_DMA,0x1008,~0U,0);AXW(AX_DMA,0x100c,~0U,0);AXW(AX_DMA,0x10a4,~0U,width);
-    for(unsigned i=0;i<32;i++)AXW(AX_DMA,0x1010+i*4,~0U,(uint32_t)(x->phys+guard+((packed&&(i&1))?x->bytes+guard:0)));
-    AXW(AX_DMA,0x10b0,~0U,~0U);
+    for(unsigned i=0;i<(gw2?16U:32U);i++)AXW(AX_DMA,0x1010+i*4,~0U,(uint32_t)(x->phys+guard+((packed&&(i&1))?x->bytes+guard:0)));
+    AXW(AX_DMA,0x10b0,~0U,gw2?0xffffU:~0U);
     AXW(AX_DMA,0x24,~0U,0x00804640);AXW(AX_DMA,0x28,~0U,(height<<16)|width);AXW(AX_DMA,0x20,~0U,0x400fffff);
     void *cached=packed?redwood_camera_dma_cached():NULL;
     x->cached=cached!=NULL;x->read_base=cached?cached:x->buffer;

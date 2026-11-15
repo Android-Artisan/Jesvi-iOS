@@ -37,6 +37,7 @@ static void *cam_s20_io_map(vm_offset_t p,vm_size_t n){(void)n;
  if(p==0x17050000){testing_gw2=true;return regs[AX_CSI];}
  if(p==0x170d1b00)return regs[AX_PHY];if(p==0x17020420)return regs[AX_MUX];for(unsigned i=0;i<AX_REGIONS;i++)if(p==physical[i])return regs[i];return NULL;}
 static uint32_t cam_s20_rd(volatile uint8_t *p,uint32_t off){uint32_t v=*(volatile uint32_t *)(p+off);
+ if(testing_gw2&&p==(volatile uint8_t*)regs[AX_DMA]&&off>=0x4050&&off<0x4090)return 0xdeadc0deU;
  if(p==(volatile uint8_t *)regs[AX_CSI]&&off==0x1c){
   v&=~7U;if(regs[AX_CSI][0x24/4])v|=4;if(regs[AX_CSI][0x2c/4])v|=2;if(regs[AX_CSI][0x634/4])v|=1;
  }
@@ -94,7 +95,7 @@ static void gw2_test(void){
  assert(regs[AX_CMU][0x3068/4]==2&&regs[AX_CMU][0x3070/4]==0);
  assert((regs[AX_PHY][0x130/4]&0xff)==1);
  assert(regs[AX_DMA][0x1000/4]==0&&regs[AX_DMA][0x4000/4]==3);
- assert(regs[AX_MUX][0]==2);assert(regs[AX_SYS][0]==6);frame(&x);assert(ax_receiver_end(&x)&&x.exported&&releases==1);
+ assert(regs[AX_DMA][0x40b0/4]==0xffff);assert(regs[AX_DMA][0x4050/4]==0);assert(regs[AX_MUX][0]==2);assert(regs[AX_SYS][0]==6);frame(&x);assert(ax_receiver_end(&x)&&x.exported&&releases==1);
  assert(regs[AX_SYS][0]==4&&regs[AX_CMU][0x3068/4]==0);
  initial();x=(struct ax_receiver){0};assert(ax_receiver_begin_sensor(&x,true,true));
  bool failed=true;regs[AX_DMA][0x4408/4]=0x100;regs[AX_DMA][0x4090/4]=4;
