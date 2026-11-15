@@ -1,3 +1,8 @@
+## 2026-11-15 (11:05, A) — AOD well visible on a bright screen
+- AOD cap raised 12 -> 60 nits: the same 30 % of the brightness at AOD start everywhere (10 nits -> 3, 40 -> 12,
+  80 -> 24, 120 -> 36, 200+ -> 60). User-verified at 40-50 % brightness: "well visible". Dark-room hold unchanged.
+  Kernel e8499142 flashed 11:00 (kernel slot only, phone's loader/root kept). Boot arg `fb_aod_max` still overrides.
+
 ## 2026-11-15 (10:58, A) — AOD brightness held (no dark-room fluctuation)
 - Kernel: the AOD level is 30 % of the brightness at the moment AOD starts (2..12 nits), then held; auto-brightness
   changes during AOD are kept for the wake but do not move it; only a 2x or 1/2 change of light re-takes it.
