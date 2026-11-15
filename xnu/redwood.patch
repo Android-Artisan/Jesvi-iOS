@@ -3873,6 +3873,25 @@ index 384ef23fe0e1..d5ab6db0edbc 100644
  uint64_t
  thread_last_run_time(thread_t th)
  {
+diff --git a/osfmk/kern/thread_call.c b/osfmk/kern/thread_call.c
+index d59996f89223..ea0bed00775b 100644
+--- a/osfmk/kern/thread_call.c
++++ b/osfmk/kern/thread_call.c
+@@ -2032,6 +2032,14 @@ thread_call_delayed_timer(timer_call_param_t p0, timer_call_param_t p1)
+ 			break;
+ 		}
+ 
++#if defined(GENERIC_PSCI_SMP)
++		{
++			extern void redwood_wake_timer(void *func, void *param0);
++
++			/* (A, 2026-11-15) which thread call's deadline woke the core, not just "thread_call_delayed_timer" */
++			redwood_wake_timer((void *)call->tc_func, NULL);
++		}
++#endif
+ 		if (THREAD_CALL_SIGNAL & call->tc_flags) {
+ 			__assert_only queue_head_t *old_queue;
+ 			old_queue = thread_call_dequeue(call);
 diff --git a/osfmk/kern/timer_call.c b/osfmk/kern/timer_call.c
 index f8c81800d173..ece345be4977 100644
 --- a/osfmk/kern/timer_call.c

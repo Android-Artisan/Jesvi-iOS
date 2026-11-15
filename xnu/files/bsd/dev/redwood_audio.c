@@ -232,6 +232,10 @@ audio_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unus
 	return 0;
 }
 
+/* (A, 2026-11-15) the last time sound that is not silence was written: redwood_exynos_acpm.c keeps every core in use
+ * with the screen off while something plays (music, a call's voice) */
+uint64_t redwood_audio_active_at;
+
 static int
 audio_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 {
@@ -248,6 +252,12 @@ audio_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		error = uiomove((caddr_t)frames, (int)bytes, uio);
 		if (error) {
 			break;
+		}
+		for (uint32_t i = 0; i < (uint32_t)(bytes / sizeof(frames[0])); i += 16) {
+			if (frames[i] != 0) {
+				redwood_audio_active_at = mach_absolute_time();
+				break;
+			}
 		}
 		audio_play(frames, (uint32_t)(bytes / REDWOOD_AUDIO_FRAME));
 	}
