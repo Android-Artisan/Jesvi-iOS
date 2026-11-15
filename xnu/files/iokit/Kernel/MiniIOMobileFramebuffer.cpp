@@ -833,30 +833,48 @@ static IOMobileFramebuffer * gFramebuffer;      /* the one there is (redwood_fb_
 static volatile uint32_t gBLThermalCap;
 /*
  * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
- * InactiveOn transition. The panel then runs at a fraction of what CoreBrightness asks (iOS's own AOD brightness curve
- * never reaches this driver), faded in and out, and CoreBrightness's level comes back exactly on wake.
- * 0 off; 1 the default (30 %, between 2 and 12 nits, never above what is asked); 2..60 a fixed ceiling in nits.
+ * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here:
+ * a percentage of the brightness at the moment AOD began (default 30 %, between 2 and 12 nits, never above it),
+ * then HELD. Auto-brightness keeps sending small changes during AOD (in a dark room the sensor wobbles, and at the
+ * panel's 1-nit bottom steps each one showed): those are kept for the wake but do not move the AOD picture. Only a
+ * big change of light (CoreBrightness asking 2x or 1/2 of the level AOD started from: a walk outside, a lamp on)
+ * takes the level again. Faded in and out; CoreBrightness's exact level comes back on wake.
+ * 0 off; 1 the default; 2..60 a fixed ceiling in nits.
  */
 static volatile uint32_t gAODDim;
+static uint32_t gAODBase, gAODLevel;    /* (fBLLock) nits 16.16 AOD started from, and the level held */
 static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
 static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 12);
 
 static uint32_t
+aodFrom(uint32_t base)
+{
+	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 12) << 16, level;
+
+	level = (uint32_t) ((uint64_t) base * (gAODPct ? gAODPct : 30) / 100);
+	level = level < lo ? lo : level > hi ? hi : level;
+	return level < base ? level : base;
+}
+
+/* (fBLLock held) */
+static uint32_t
 aodLevel(uint32_t target)
 {
-	uint32_t mode = gAODDim, level, lo = 2u << 16, hi;
+	uint32_t mode = gAODDim;
 
 	if (mode == 0 || target == 0) {
 		return target;
 	}
 	if (mode >= 2) {
-		hi = mode << 16;
+		uint32_t hi = mode << 16;
+
 		return target < hi ? target : hi;
 	}
-	hi = (gAODMaxNits ? gAODMaxNits : 12) << 16;
-	level = (uint32_t) ((uint64_t) target * (gAODPct ? gAODPct : 30) / 100);
-	level = level < lo ? lo : level > hi ? hi : level;
-	return level < target ? level : target;
+	if (gAODBase == 0 || (uint64_t) target >= 2ull * gAODBase || 2ull * target <= gAODBase) {
+		gAODBase = target;              /* (the first request, or a real change of light) */
+		gAODLevel = aodFrom(target);
+	}
+	return gAODLevel < target ? gAODLevel : target;
 }
 /* the window server's refresh notifications (kFBNotifyVSync): asked for, sent, not sent (no port, or closed) */
 static volatile UInt32 gVSyncAsked, gVSyncSent, gVSyncStopped;         /* nits in 16.16 the panel is held under while the chip is hot; 0: none */
@@ -4423,6 +4441,8 @@ redwood_fb_aod(int value)
 	IOLockLock(fb->fDsimLock);
 	IOLockLock(fb->fBLLock);
 	gAODDim = (uint32_t) value;
+	gAODBase = value == 1 ? fb->fBLTarget : 0;     /* entering: the brightness right now */
+	gAODLevel = gAODBase ? aodFrom(gAODBase) : 0;
 	if (fb->fBLTarget != 0 && fb->fBLWrites != 0) {
 		uint64_t len;
 
@@ -5122,9 +5142,12 @@ dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap)
 		else if (v[0] == 0 && gFactoryEnabled) { gFactoryEnabled = false; gFactoryRestore = true; }
 		fb->fBLValid = false;
 	}
-	snprintf(out, cap, "factory %s; loaded %u; checksums normal %#x / 120 HS %#x; target %u.%03u nominal nits\n",
+	snprintf(out, cap, "factory %s; loaded %u; checksums normal %#x / 120 HS %#x; target %u.%03u nominal nits; "
+	    "AOD %u, held %u.%03u nits (from %u.%03u)\n",
 	    gFactoryEnabled ? "enabled" : "disabled", gFactoryReady, gFactoryChecksums[0], gFactoryChecksums[1],
-	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16));
+	    fb->fBLTarget >> 16, (unsigned)(((uint64_t)(fb->fBLTarget & 0xffff) * 1000) >> 16), gAODDim,
+	    gAODLevel >> 16, (unsigned)(((uint64_t)(gAODLevel & 0xffff) * 1000) >> 16),
+	    gAODBase >> 16, (unsigned)(((uint64_t)(gAODBase & 0xffff) * 1000) >> 16));
 	IOLockUnlock(fb->fDsimLock);
 	if (n && fb->fBLCall != NULL) thread_call_enter(fb->fBLCall);
 }
