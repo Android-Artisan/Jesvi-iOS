@@ -27,7 +27,7 @@ static bool ax_receiver_begin_mode(struct ax_receiver *x,bool packed){
     static const unsigned lengths[AX_REGIONS]={0x4000,0x8000,0x4000,4,0x1000,0x500,0x100,0x5000,0x100,0x100,4};
     const unsigned width=4032,height=3024,guard=16384;
     x->phase="receiver map";x->io=(struct ax_io){x,ax_read,ax_write};
-    for(unsigned i=0;i<AX_REGIONS;i++){x->bank[i]=(volatile uint8_t *)ml_io_map(physical[i],lengths[i]);if(!x->bank[i])return false;}
+    for(unsigned i=0;i<AX_REGIONS;i++){x->bank[i]=(volatile uint8_t *)cam_s20_io_map(physical[i],lengths[i]);if(!x->bank[i])return false;}
     x->phase="CSIS domain/PHY rail prerequisites";
     if(!(ax_rd(x,AX_PMU,0x1d84)&1U))return false;
     uint8_t rail5=0,rail6=0;

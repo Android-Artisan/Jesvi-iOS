@@ -14,7 +14,7 @@ typedef uintptr_t vm_offset_t;typedef size_t vm_size_t;
 #define SMC_PREPARE_PD_ONOFF 0x82000410ULL
 #define CSIS_NEED_SMC 0x17010204ULL
 #define NSEC_PER_USEC 1000
-static void *ml_io_map(vm_offset_t,vm_size_t);
+static void *cam_s20_io_map(vm_offset_t,vm_size_t);
 static uint32_t cam_s20_rd(volatile uint8_t *,uint32_t);
 static void cam_s20_wr(volatile uint8_t *,uint32_t,uint32_t);
 static int redwood_spmic_read(uint8_t,uint8_t,uint8_t*);
@@ -32,7 +32,7 @@ static void cam_s20_wait_ms(unsigned);
 static uint32_t regs[AX_REGIONS][0x8000/4];
 static bool abort_fail,bad_phy_readback;static unsigned releases,exports;static void *allocation;
 static const uint32_t physical[]={CMU_TOP_PHYS,CMU_CSIS_PHYS,PMU_PHYS,ISPPRE_SYSREG_PHYS,0x17070000,0x170d2300,0x170d1000,0x170c0000,0x17110000,0x17140000,0x17020414};
-static void *ml_io_map(vm_offset_t p,vm_size_t n){(void)n;for(unsigned i=0;i<AX_REGIONS;i++)if(p==physical[i])return regs[i];return NULL;}
+static void *cam_s20_io_map(vm_offset_t p,vm_size_t n){(void)n;for(unsigned i=0;i<AX_REGIONS;i++)if(p==physical[i])return regs[i];return NULL;}
 static uint32_t cam_s20_rd(volatile uint8_t *p,uint32_t off){uint32_t v=*(volatile uint32_t *)(p+off);
  if(p==(volatile uint8_t *)regs[AX_CSI]&&off==0x1c){
   v&=~7U;if(regs[AX_CSI][0x24/4])v|=4;if(regs[AX_CSI][0x2c/4])v|=2;if(regs[AX_CSI][0x634/4])v|=1;

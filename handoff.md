@@ -626,3 +626,36 @@ user retry. This is a proposed visual fix, not yet visually confirmed.
   confirm native0.6 and1x on rear plus front controls restoration. Use working
   overlay rollback if Camera becomes unstable. Recheck backend override remains
   enabled before interpreting a switch failure.
+
+## Native dial and mapping-exhaustion panic (2026-11-16)
+
+User confirmed native toggle AND dragging work, then reported glitches and a
+floor near0.9. Selection-only native mode was replaced with native dual-camera
+zoom mode. Front remains on original controls. Late CameraUI resolution fixed:
+resolve class/ABI inside timer, not once before CameraUI loads. Actual CameraUI
+isolated device tests pass toggle/drag file writes and front restoration.
+
+Phone entered Log access. Preserved private native-dual-crash.bin/.txt. Exact
+matching kernel UUID6FE55079-68BD-3E83-87B2-D2245CFAD2D1 symbolicates panic:
+kmem_alloc -> io_map -> ax_receiver_begin_mode -> cam_s20_aux_run -> stream.
+Receiver recreated permanent ml_io_map mappings on every restart. Added bounded,
+mutex-protected range cache shared by ALL S20 camera mapping callsites, including
+main/front helper mappings, avoiding repeated permanent allocations. Host test:
+10000 repeated requests use one underlying mapping; subranges, failed retry,
+overflow and capacity refusal pass. Actual receiver sanitizer tests still pass.
+Kernel rebuilt00:33. Previous slot read from device and matched29986a7f... exactly.
+New slot SHA782d77769322b9e4478f2943fac4bb43b93fd0e905a25ac63328d732323726c3;
+private map-cache-candidate.json records other hashes. Installation pending.
+
+User requests preferred previous-port0.9 ultra-wide view as default, labeled1x.
+Staged UI uses internal values unchanged, display scale /0.9. This means nominal
+minimum~0.67 and primary~1.1 on the custom scale. Samsung stock SM-G980F manual
+calls ultra-wide0.5, NOT our original nominal0.6. This is no optical calibration;
+do not blindly change RAW crop denominator to0.5 or it will crop full-wide frames.
+Manual mirror: https://device.report/m/0a837a65ad3f8b3d8da28aabaeef3a2b9ddd067d12a4f09b9317304bcf5cf848
+Scaled UI built but NOT transferred: SCP failed as phone entered Log access.
+Last installed UI is dual mode +0.9 default/floor correction with old labels.
+No debug probe dylib/plist remains in TweakInject. Camera injection runtime entry
+will need restoring after reboot, preserving all other entries. Next: kernel-only
+flash/readback under existing camera-test reboot authorization, then isolated
+scaled UI test, install and verify both preferred view and range with user.

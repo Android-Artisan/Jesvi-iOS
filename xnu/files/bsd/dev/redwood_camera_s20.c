@@ -29,6 +29,19 @@
 #include "redwood_camera_s20_2ld_ret.h"
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+#include "redwood_camera_s20_map_cache.h"
+static LCK_GRP_DECLARE(s20_map_group,"s20_camera_register_maps");
+static LCK_MTX_DECLARE(s20_map_lock,&s20_map_group);
+static struct s20_map_cache s20_register_maps;
+static uintptr_t s20_map_new(void *context,uint64_t physical,uint64_t bytes) {
+    (void)context;return (uintptr_t)ml_io_map((vm_offset_t)physical,(vm_size_t)bytes);
+}
+static vm_offset_t cam_s20_io_map(vm_offset_t physical,vm_size_t bytes) {
+    lck_mtx_lock(&s20_map_lock);
+    vm_offset_t address=(vm_offset_t)s20_map_get(&s20_register_maps,physical,bytes,s20_map_new,NULL);
+    lck_mtx_unlock(&s20_map_lock);return address;
+}
+
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
 extern bool redwood_s2mpb02_camera_bits(uint8_t reg, uint8_t mask, uint8_t value);
 extern bool redwood_s2mpb02_front_voltages(uint8_t saved[4], bool restore);
@@ -365,7 +378,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p02[3] = { 0 }, p03[3] = { 0 }, id[2] = { 0 }, rev[2] = { 0 };
 	uint32_t reset_con = cam_s20_rd(reset, REDWOOD_GPIO_CON), reset_dat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t reset_pud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mclk_con = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -578,12 +591,12 @@ read_id:
 			unsigned k, t;
 
 			(void)snprintf(stream_phase, sizeof(stream_phase), "receiver map");
-			rx_pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
-			rx_cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-			rx_csi = (volatile uint8_t *)ml_io_map(CSIS0_PHYS, 0x1000);
-			rx_phy = (volatile uint8_t *)ml_io_map(CSIS0_DCPHY_PHYS, 0x500);
-			rx_bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-			rx_sys = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+			rx_pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
+			rx_cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+			rx_csi = (volatile uint8_t *)cam_s20_io_map(CSIS0_PHYS, 0x1000);
+			rx_phy = (volatile uint8_t *)cam_s20_io_map(CSIS0_DCPHY_PHYS, 0x500);
+			rx_bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+			rx_sys = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 			if (rx_pmu == NULL || rx_cmu == NULL || rx_csi == NULL || rx_phy == NULL || rx_bias == NULL || rx_sys == NULL) goto stream_done;
 			(void)snprintf(stream_phase, sizeof(stream_phase), "CSIS domain off");
 			if (!(cam_s20_rd(rx_pmu, 0x1d84) & 1U)) goto stream_done;
@@ -867,7 +880,7 @@ redwood_camera_s20_rear_cool(void)
 {
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	const uint8_t *p02 = cam_s20_rear_cold.p02, *p03 = cam_s20_rear_cold.p03;
 	char report[160];
 
@@ -905,7 +918,7 @@ cam_s20_front_identify(__unused const uint64_t *v, __unused unsigned n, char *ou
 	struct redwood_bbi2c sensor_bus = { .name = "S20 front SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p[5] = { 0 }, id[2] = { 0 }, rev = 0;
 	uint32_t rcon = cam_s20_rd(reset, REDWOOD_GPIO_CON), rdat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t rpud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mcon = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -1192,10 +1205,10 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 		sensor_mode = 2;
 	}
 	if ((n > 0 && v[0] > 2) || sensor_mode > 14) { phase = "invalid test mode"; goto report; }
-	if (!pmu) pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	if (!pmu) pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	if (!pmu) goto report;
 	if (!(cam_s20_rd(pmu, 0x1d84) & 1U)) { phase = "CSIS domain off"; goto report; }
-	if (!cmu) cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+	if (!cmu) cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
 	if (!cmu) goto report;
 	/* Read SysMMU only with all its S1/S2 clock gates observed on. */
 	for (i = 0; i < 4; i++) {
@@ -1206,9 +1219,9 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2)) {
 		phase = "CSIS secure access"; goto report;
 	}
-	if (!mmu0) mmu0 = (volatile uint8_t *)ml_io_map(0x17110000, 0x100);
-	if (!mmu1) mmu1 = (volatile uint8_t *)ml_io_map(0x17140000, 0x100);
-	if (!dma) dma = (volatile uint8_t *)ml_io_map(0x170c0000, 0x5000);
+	if (!mmu0) mmu0 = (volatile uint8_t *)cam_s20_io_map(0x17110000, 0x100);
+	if (!mmu1) mmu1 = (volatile uint8_t *)cam_s20_io_map(0x17140000, 0x100);
+	if (!dma) dma = (volatile uint8_t *)cam_s20_io_map(0x170c0000, 0x5000);
 	if (!mmu0 || !mmu1 || !dma) goto report;
 	if (cam_s20_dma_quarantined) {
 		/* a stop that was not acknowledged in time may have ended since: looked at again instead of refusing until a reboot */
@@ -1239,7 +1252,7 @@ cam_s20_dma_pattern(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (!redwood_camera_dma_get(total, &phys, &buffer)) { phase = "no free low-memory slot"; goto report; }
 	allocated = true;
 	if (optical) {
-		route = (volatile uint8_t *)ml_io_map(rear ? 0x1702041c : 0x17020418, 4);
+		route = (volatile uint8_t *)cam_s20_io_map(rear ? 0x1702041c : 0x17020418, 4);
 		if (!route) { phase = "DMA input mux map"; goto release; }
 		route_saved = cam_s20_rd(route, 0);
 	}
@@ -1388,10 +1401,10 @@ report:
 static void
 cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *top = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x3000);
-	volatile uint8_t *csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
-	volatile uint8_t *vc0 = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_VC0_PHYS, 0x100);
-	volatile uint8_t *common = (volatile uint8_t *)ml_io_map(CSIS1_DMA1_COMMON_PHYS, 0x100);
+	volatile uint8_t *top = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x3000);
+	volatile uint8_t *csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
+	volatile uint8_t *vc0 = (volatile uint8_t *)cam_s20_io_map(CSIS1_DMA1_VC0_PHYS, 0x100);
+	volatile uint8_t *common = (volatile uint8_t *)cam_s20_io_map(CSIS1_DMA1_COMMON_PHYS, 0x100);
 	if (cap == 0) return;
 	if (top == NULL || csi == NULL || vc0 == NULL || common == NULL) {
 		(void)snprintf(out, cap, "{\"camera\":\"SAK3J1\",\"stage\":\"csis1-inventory\",\"result\":\"error\",\"phase\":\"map\"}\n");
@@ -1424,7 +1437,7 @@ cam_s20_csis_inventory(__unused const uint64_t *v, __unused unsigned n, char *ou
 static void
 cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL;
 	uint32_t conf = 0, status = 0, initial_status = 0, after = 0, regs[8] = { 0 }, i;
 	uint64_t smc = 0;
@@ -1450,7 +1463,7 @@ cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, ch
 			smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
 		}
 	}
-	if (status & 1U) cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
+	if (status & 1U) cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
 	map_ok = cmu != NULL;
 	if (map_ok) {
 		regs[0] = cam_s20_rd(cmu, 0x0600);
@@ -1492,7 +1505,7 @@ cam_s20_csis_power_inventory(__unused const uint64_t *v, __unused unsigned n, ch
 void
 cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL;
 	volatile uint8_t *csi = NULL;
 	uint32_t pd_status, cmu_before = 0, cmu_during = 0, cmu_after = 0;
@@ -1503,8 +1516,8 @@ cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *o
 		(void)snprintf(out, cap, "{\"stage\":\"csis1-gate\",\"result\":\"error\",\"phase\":\"CSIS power domain off\",\"write_sensor\":false}\n");
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
 	if (cmu == NULL || csi == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis1-gate\",\"result\":\"error\",\"phase\":\"map\",\"write_sensor\":false}\n");
 		return;
@@ -1550,7 +1563,7 @@ cam_s20_csis_gate_probe(__unused const uint64_t *v, __unused unsigned n, char *o
 static void
 cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL, *dphy = NULL, *isppre = NULL;
 	uint32_t qcmu = 0, qcmu_on = 0, qcmu_after = 0, qcsis = 0, qcsis_on = 0, qcsis_after = 0;
 	uint32_t iso = 0, iso_after = 0, reset_sysreg = 0, sc[8] = { 0 }, lane0[6] = { 0 };
@@ -1563,9 +1576,9 @@ cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-snapshot\",\"result\":\"error\",\"phase\":\"CSIS domain off\"}\n");
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (cmu == NULL || dphy == NULL || isppre == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-snapshot\",\"result\":\"error\",\"phase\":\"map\"}\n");
 		return;
@@ -1614,7 +1627,7 @@ cam_s20_csis_dphy_snapshot(__unused const uint64_t *v, __unused unsigned n, char
 static void
 cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *sysreg;
 	uint32_t status;
 	uint64_t smc;
@@ -1625,7 +1638,7 @@ cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char 
 	}
 	/* exynos9830.dts: pd-csis need_smc=0x17010204; Linux calls this on domain-on. */
 	smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
-	sysreg = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	sysreg = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (sysreg == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-secure\",\"result\":\"error\",\"phase\":\"sysreg map\",\"smc\":\"%#llx\"}\n", smc);
 		return;
@@ -1641,7 +1654,7 @@ cam_s20_csis_secure_probe(__unused const uint64_t *v, __unused unsigned n, char 
 static void
 cam_s20_csis_reset_probe(__unused const uint64_t *v, __unused unsigned n, char *out, size_t cap)
 {
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *sysreg;
 	uint32_t before, requested, during, after;
 	uint64_t smc;
@@ -1651,7 +1664,7 @@ cam_s20_csis_reset_probe(__unused const uint64_t *v, __unused unsigned n, char *
 		return;
 	}
 	smc = cam_s20_smc4(SMC_PREPARE_PD_ONOFF, 1, CSIS_NEED_SMC, 2);
-	sysreg = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	sysreg = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (sysreg == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-reset\",\"result\":\"error\",\"phase\":\"sysreg map\",\"smc\":\"%#llx\"}\n", smc);
 		return;
@@ -1694,7 +1707,7 @@ cam_s20_regdump(void)
 		volatile uint8_t *va = NULL;
 		for (p = 0; p < pages; p++) if (page_phys[p] == pa) { va = page_virt[p]; break; }
 		if (va == NULL && pages < 24) {
-			va = (volatile uint8_t *)ml_io_map(pa, 0x1000);
+			va = (volatile uint8_t *)cam_s20_io_map(pa, 0x1000);
 			page_phys[pages] = pa; page_virt[pages] = va; pages++;
 		}
 		cam_regdump_vals[i] = va ? cam_s20_rd(va, cam_regdump_addr[i] & 0xfff) : 0xdeadbeefU;
@@ -1772,7 +1785,7 @@ cam_s20_csis_dphy_config_probe(__unused const uint64_t *v, __unused unsigned n, 
 	static const uint32_t lane_base[] = { 0x0100, 0x0200, 0x0300, 0x0400 };
 	static const uint32_t lane_regs[] = { 0x0000, 0x0004, 0x0008, 0x000c, 0x0010, 0x0014, 0x0018, 0x0030, 0x0034, 0x0040, 0x0050 };
 	static const uint32_t bias_offs[] = { 0x0000, 0x0004, 0x0008, 0x0010 };
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
 	volatile uint8_t *cmu = NULL, *dphy = NULL, *bias = NULL, *isppre = NULL;
 	uint32_t sc_saved[8] = { 0 }, lane_saved[4][11] = { { 0 } }, bias_saved[3] = { 0 };
 	uint32_t qcmu = 0, qcsis = 0, iso = 0, reset = 0, qcmu_after = 0, qcsis_after = 0, iso_after = 0, reset_after = 0;
@@ -1794,10 +1807,10 @@ cam_s20_csis_dphy_config_probe(__unused const uint64_t *v, __unused unsigned n, 
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-config\",\"result\":\"error\",\"phase\":\"PHY rails off\",\"ldo5s\":\"%#x\",\"ldo6s\":\"%#x\"}\n", ldo5, ldo6);
 		return;
 	}
-	cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-	isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+	isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	if (cmu == NULL || dphy == NULL || bias == NULL || isppre == NULL) {
 		(void)snprintf(out, cap, "{\"stage\":\"csis-dphy-config\",\"result\":\"error\",\"phase\":\"map\"}\n");
 		return;
@@ -2097,7 +2110,7 @@ cam_s20_front_set_mode(__unused const uint64_t *v, __unused unsigned n, char *ou
 	struct redwood_bbi2c bus = { .name = "SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
 	uint8_t p[5] = { 0 };
 	uint32_t rcon = cam_s20_rd(reset, REDWOOD_GPIO_CON), rdat = cam_s20_rd(reset, REDWOOD_GPIO_DAT);
 	uint32_t rpud = cam_s20_rd(reset, REDWOOD_GPIO_PUD), mcon = cam_s20_rd(mclk, REDWOOD_GPIO_CON);
@@ -2198,13 +2211,13 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	static const uint32_t phy_bias_offs[] = { 0x0000, 0x0004, 0x0008 };
 	static const uint32_t csi_offs[] = { 0x0004, 0x0008, 0x000c, 0x0040, 0x0044, 0x0050, 0x0054, 0x0600, 0x0690, 0x0704 };
 	struct redwood_bbi2c bus = { .name = "SAK3J1 HSI2C1 gpp0-2/3", .scl = 2, .sda = 3, .half_us = 4 };
-	volatile uint8_t *pmu = (volatile uint8_t *)ml_io_map(PMU_PHYS, 0x4000);
-	volatile uint8_t *cmu_top = (volatile uint8_t *)ml_io_map(CMU_TOP_PHYS, 0x4000);
-	volatile uint8_t *cmu = (volatile uint8_t *)ml_io_map(CMU_CSIS_PHYS, 0x8000);
-	volatile uint8_t *csi = (volatile uint8_t *)ml_io_map(CSIS1_PHYS, 0x1000);
-	volatile uint8_t *dphy = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_PHYS, 0x500);
-	volatile uint8_t *bias = (volatile uint8_t *)ml_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
-	volatile uint8_t *isppre = (volatile uint8_t *)ml_io_map(ISPPRE_SYSREG_PHYS, 0x4);
+	volatile uint8_t *pmu = (volatile uint8_t *)cam_s20_io_map(PMU_PHYS, 0x4000);
+	volatile uint8_t *cmu_top = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
+	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_CSIS_PHYS, 0x8000);
+	volatile uint8_t *csi = (volatile uint8_t *)cam_s20_io_map(CSIS1_PHYS, 0x1000);
+	volatile uint8_t *dphy = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_PHYS, 0x500);
+	volatile uint8_t *bias = (volatile uint8_t *)cam_s20_io_map(CSIS1_DPHY_BIAS_PHYS, 0x100);
+	volatile uint8_t *isppre = (volatile uint8_t *)cam_s20_io_map(ISPPRE_SYSREG_PHYS, 0x4);
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM11);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
 	uint8_t voltage_saved[4] = { 0 };
@@ -2340,7 +2353,7 @@ cam_s20_front_stream_probe(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if ((csi_qch & qch_mask) != qch_value) { cam_s20_update_bits(cmu, 0x3064, qch_mask, qch_value); qch_changed = true; }
 	if (!(iso & 1U)) { cam_s20_update_bits(pmu, 0x0730, 1U, 1U); iso_changed = true; }
 	if (match_rest) {
-		isp_page = (volatile uint8_t *)ml_io_map(0x17020000, 0x1000);
+		isp_page = (volatile uint8_t *)cam_s20_io_map(0x17020000, 0x1000);
 		if (isp_page == NULL) { strlcpy(phase, "isppre page map", sizeof(phase)); goto cleanup; }
 		mux_saved = cam_s20_rd(isp_page, 0x418);
 		for (i = 0; i < 3; i++) ois_saved[i] = cam_s20_rd(cmu, ois_offs[i]);
@@ -2985,7 +2998,7 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
         offs[0]=CMU_CIS_CLK0_MUX;offs[1]=CMU_CIS_CLK0_DIV;
         offs[2]=CMU_CIS_CLK0_GATE;offs[3]=CMU_CIS_CLK0_QCH;
     }
-    cmu=(volatile uint8_t *)ml_io_map(CMU_TOP_PHYS,0x4000);
+    cmu=(volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS,0x4000);
     if(!reset||!mclk||!bus.bank||!bus.sda_bank||!cmu)goto cleanup;
     for(unsigned i=0;i<3;i++){r[i]=cam_s20_rd(reset,i*4);m[i]=cam_s20_rd(mclk,i*4);}
     pins=true;
