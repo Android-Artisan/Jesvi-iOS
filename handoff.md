@@ -584,3 +584,45 @@ while the overlay leaves graph-requested zoom at1, allowing graph to crop
 the ultra-wide back toward main FoV. Corrected metadata to per-lens ISP crop.
 Rebuilt and reinstalled media override, restarted Camera/mediaserverd; awaiting
 user retry. This is a proposed visual fix, not yet visually confirmed.
+
+## Native rear selector work paused (2026-11-16)
+
+- User confirmed prior overlay 0.6x/1x works, requested native Camera controls.
+- Phone remained on continuous kernel built Nov15 22:26:06. Restored Camera token
+  in existing runtime tweak-loader entry, preserving all other entries.
+- First method-hook candidate crashed Camera with SIGSEGV. Restored working
+  overlay immediately. Signed artifact had embedded CodeDirectory; signing was
+  not established as cause. Do not reinstall that candidate.
+- Replaced hooks with a delegate adapter on existing CAMZoomControl's
+  configureForSelectionOnlyWithDisplayZoomFactors:selectedIndex:compactPlatterLayout:animated:.
+  No extra UIWindow and no physical-camera graph descriptor changes. Original
+  delegate restored for front; all other callbacks forwarded. Native private ABI
+  checked before enabling. Selection animation disabled: isolated device test
+  exposed a native 'Cannot call before zoom dial is created' assertion with it.
+- Revised delegate candidate stayed open on phone; user reported only 1x visible.
+  Runtime probe proved CameraUI devicePosition=0 / 'Back' for Photo/BackWide.
+  Corrected source from AVCapture's assumed rear=1 to CameraUI rear=0. Front=1.
+  Corrected build is STAGED ONLY, not installed or visually verified.
+- tools/camera/lens-switch/test_native_selector.m compiles actual production
+  implementation against real CameraUI. Uses /var/root/native-lens-test-zoom,
+  never real lens control file. Passed selections, forwarding, front restoration
+  and rear re-entry before numeric-position correction; corrected version builds
+  but device rerun pending. Build/sign script and diff checks pass.
+- User reported possible overheating and said restarting. STOPPED ALL device
+  access; phone lock released. Wait for explicit user readiness before testing.
+  No thermal cause established; don't call native selector done yet.
+- Installed lens library is the revised delegate candidate BEFORE position fix,
+  so only1x expected. NativeZoomProbe.dylib is still installed (4s runtime dump
+  timer); REMOVE its dylib/plist first when device ready, keep private debug
+  backups outside TweakInject. Prior probe backup is /var/root/NativeZoomProbe-debug.dylib.
+- Working overlay rollback is /var/root/RedwoodCameraLenses-overlay-rollback.dylib.
+  Staged native build: workspace build/camera-aux-latest-20261115/native-lenses/.
+  No reboot required for installing lens UI; restart Camera only.
+- After restart runtime Camera tweak-loader entry may disappear. Read current
+  kern.exec_inject and append Camera ONLY to existing libredwood-tweaks entry;
+  do not overwrite other entries from backups. Root/system/loader untouched.
+- Next when ready: reacquire shared phone lock, disable debug probe, verify heat
+  settled/phone state, install corrected native library, isolated test rerun,
+  confirm native0.6 and1x on rear plus front controls restoration. Use working
+  overlay rollback if Camera becomes unstable. Recheck backend override remains
+  enabled before interpreting a switch failure.

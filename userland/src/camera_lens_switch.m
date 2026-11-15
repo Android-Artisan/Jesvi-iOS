@@ -1,64 +1,91 @@
-/* Camera-only auxiliary lens buttons. No sensor or brightness writes in UI. */
+/* Use Camera's existing lens selector. No overlay window or sensor writes here. */
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #include <objc/runtime.h>
-static NSString *const control=@"/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-rear-zoom";
-@interface RWCameraLensWindow:UIWindow @end
-@implementation RWCameraLensWindow
-- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
-    UIView *v=[super hitTest:p withEvent:e];
-    return [v isKindOfClass:UIButton.class]?v:nil;
+#include <objc/message.h>
+#include <string.h>
+#ifndef RW_LENS_CONTROL_PATH
+#define RW_LENS_CONTROL_PATH @"/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-rear-zoom"
+#endif
+static NSString *const control=RW_LENS_CONTROL_PATH;
+static char proxyKey;
+static SEL selectionSelector(void) {
+    return NSSelectorFromString(@"configureForSelectionOnlyWithDisplayZoomFactors:selectedIndex:compactPlatterLayout:animated:");
 }
-@end
-@interface RWCameraLensControls:NSObject
-@property(nonatomic,strong) RWCameraLensWindow *window;
-@property(nonatomic,strong) UIButton *wide;
-@property(nonatomic,strong) UIButton *main;
-- (void)refresh;
-@end
-@implementation RWCameraLensControls
-- (void)select:(UIButton *)sender {
-    NSString *value=sender.tag==6?@"0.6\n":@"1\n";
-    NSError *error=nil;
-    if(![value writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:&error]){NSLog(@"rear lens switch write failed: %@",error);return;}
-    self.wide.selected=sender.tag==6;self.main.selected=sender.tag!=6;
+static NSUInteger selectedIndex(void) {
+    double z=[NSString stringWithContentsOfFile:control encoding:NSUTF8StringEncoding error:nil].doubleValue;
+    return z>0&&z<1?0:1;
 }
-- (void)refresh {
-    UIApplication *app=UIApplication.sharedApplication;
-    if(app.applicationState!=UIApplicationStateActive){self.window.hidden=YES;return;}
-    UIWindowScene *scene=nil;
-    for(UIScene *s in app.connectedScenes)if([s isKindOfClass:UIWindowScene.class]&&s.activationState==UISceneActivationStateForegroundActive){scene=(UIWindowScene*)s;break;}
-    if(!scene)return;
-    if(!self.window || self.window.windowScene!=scene){
-        self.window=[[RWCameraLensWindow alloc]initWithWindowScene:scene];
-        self.window.rootViewController=[UIViewController new];
-        self.window.backgroundColor=UIColor.clearColor;self.window.windowLevel=UIWindowLevelNormal+1;
-        self.wide=[UIButton buttonWithType:UIButtonTypeSystem];self.main=[UIButton buttonWithType:UIButtonTypeSystem];
-        self.wide.tag=6;self.main.tag=10;
-        [self.wide setTitle:@"0.6×" forState:UIControlStateNormal];[self.main setTitle:@"1×" forState:UIControlStateNormal];
-        for(UIButton *b in @[self.wide,self.main]){
-            b.backgroundColor=[UIColor colorWithWhite:0 alpha:.65];b.layer.cornerRadius=21;
-            b.titleLabel.font=[UIFont boldSystemFontOfSize:17];
-            [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];[b setTitleColor:UIColor.systemYellowColor forState:UIControlStateSelected];
-            [b addTarget:self action:@selector(select:) forControlEvents:UIControlEventTouchUpInside];
-            [self.window.rootViewController.view addSubview:b];
-        }
+static void showSelection(id zoom,NSUInteger index,BOOL animated) {
+    ((void(*)(id,SEL,id,NSUInteger,BOOL,BOOL))objc_msgSend)(zoom,selectionSelector(),@[@0.6,@1.0],index,NO,animated);
+}
+@interface RWNativeLensDelegate:NSObject
+@property(nonatomic,weak) id original;
+@property(nonatomic,weak) id zoom;
+@property(nonatomic) BOOL rear;
+@property(nonatomic) NSUInteger index;
+@end
+@implementation RWNativeLensDelegate
+- (BOOL)respondsToSelector:(SEL)selector {
+    return [super respondsToSelector:selector]||[self.original respondsToSelector:selector];
+}
+- (id)forwardingTargetForSelector:(SEL)selector {return self.original;}
+- (void)zoomControl:(id)zoom didChangeSelectedButtonIndex:(NSUInteger)index displayZoomFactor:(double)factor {
+    if(!self.rear||index>1||(factor!=0.6&&factor!=1.0)) {
+        SEL s=_cmd;
+        if([self.original respondsToSelector:s])((void(*)(id,SEL,id,NSUInteger,double))objc_msgSend)(self.original,s,zoom,index,factor);
+        return;
     }
-    CGRect bounds=scene.coordinateSpace.bounds;self.window.frame=bounds;
-    CGFloat x=CGRectGetWidth(bounds)/2,y=CGRectGetHeight(bounds)-self.window.safeAreaInsets.bottom-235;
-    self.wide.frame=CGRectMake(x-64,y,56,42);self.main.frame=CGRectMake(x+8,y,56,42);
-    NSString *value=[NSString stringWithContentsOfFile:control encoding:NSUTF8StringEncoding error:nil];
-    self.wide.selected=value.floatValue>0&&value.floatValue<1;self.main.selected=!self.wide.selected;
-    self.window.hidden=NO;
+    NSError *error=nil;
+    if(![(index==0?@"0.6\n":@"1\n") writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        NSLog(@"redwood native lens write failed: %@",error);showSelection(zoom,selectedIndex(),NO);return;
+    }
+    self.index=index;showSelection(zoom,index,NO);
 }
 @end
-__attribute__((constructor))static void start(void){
-    @autoreleasepool{
+static void configureZoom(UIView *zoom) {
+    SEL getDelegate=NSSelectorFromString(@"delegate"),setDelegate=NSSelectorFromString(@"setDelegate:");
+    if(![zoom respondsToSelector:getDelegate]||![zoom respondsToSelector:setDelegate])return;
+    id delegate=((id(*)(id,SEL))objc_msgSend)(zoom,getDelegate);
+    RWNativeLensDelegate *proxy=objc_getAssociatedObject(zoom,&proxyKey);
+    id controller=delegate==proxy?proxy.original:delegate;
+    if(!controller)return;
+    id graph=nil;
+    @try {graph=[controller valueForKey:@"_currentGraphConfiguration"];}@catch(__unused NSException *e){return;}
+    SEL position=NSSelectorFromString(@"devicePosition");
+    if(![graph respondsToSelector:position])return;
+    /* CameraUI uses 0=Back, 1=Front (not AVCaptureDevicePosition). */
+    BOOL rear=((NSInteger(*)(id,SEL))objc_msgSend)(graph,position)==0;
+    if(!rear) {
+        if(delegate==proxy)((void(*)(id,SEL,id))objc_msgSend)(zoom,setDelegate,controller);
+        proxy.rear=NO;return;
+    }
+    if(!proxy){proxy=[RWNativeLensDelegate new];proxy.index=NSNotFound;proxy.zoom=zoom;objc_setAssociatedObject(zoom,&proxyKey,proxy,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+    proxy.original=controller;proxy.rear=YES;
+    if(delegate!=proxy)((void(*)(id,SEL,id))objc_msgSend)(zoom,setDelegate,proxy);
+    NSUInteger index=selectedIndex();
+    NSArray *factors=nil;
+    @try{factors=[zoom valueForKey:@"_displayZoomFactors"];}@catch(__unused NSException *e){}
+    if(proxy.index!=index||![factors isEqual:@[@0.6,@1.0]]){proxy.index=index;showSelection(zoom,index,NO);}
+}
+static void walk(UIView *view,Class cls) {
+    if([view isKindOfClass:cls]){configureZoom(view);return;}
+    for(UIView *child in view.subviews)walk(child,cls);
+}
+__attribute__((constructor))static void start(void) {
+    @autoreleasepool {
         if(![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.camera"])return;
         dispatch_async(dispatch_get_main_queue(),^{
-            static RWCameraLensControls *controls;controls=[RWCameraLensControls new];
-            NSTimer *timer=[NSTimer timerWithTimeInterval:.5 repeats:YES block:^(__unused NSTimer *t){[controls refresh];}];
-            [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];[controls refresh];
+            Class cls=NSClassFromString(@"CAMZoomControl");
+            Method method=class_getInstanceMethod(cls,selectionSelector());
+            if(!method||strcmp(method_getTypeEncoding(method),"v40@0:8@16Q24B32B36"))return;
+            NSTimer *timer=[NSTimer timerWithTimeInterval:.5 repeats:YES block:^(__unused NSTimer *t){
+                if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
+                for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+                    if([scene isKindOfClass:UIWindowScene.class]&&scene.activationState==UISceneActivationStateForegroundActive)
+                        for(UIWindow *window in ((UIWindowScene*)scene).windows)walk(window,cls);
+            }];
+            [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
         });
     }
 }
