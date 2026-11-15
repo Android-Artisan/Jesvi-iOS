@@ -53,6 +53,7 @@ void dbg_fb_fade(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_cal(const uint64_t * v, unsigned n, char * out, size_t cap);
 void dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap);
 void dbg_fb_warm(const uint64_t *v, unsigned n, char *out, size_t cap);
+void dbg_fb_aod(const uint64_t *v, unsigned n, char *out, size_t cap);
 }
 class IOMobileFramebuffer;
 static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.mode */
@@ -834,10 +835,10 @@ static volatile uint32_t gBLThermalCap;
 /*
  * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
  * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here, in
- * SLIDER terms: AOD sits at fb_aod_pct (default 35) % of the slider position the screen had when AOD began, on the
- * same slider -> nits curve as legacyToNits16 (2 + 418 s^2.2 nits). 100 % -> 35 %, 50 % -> 18 %, 25 % -> 9 %: about
- * 10 % of the light, which the eye sees as about half as bright, the same "a bit dimmer" step at every level (30 %
- * of the nits looked ~2/3 as bright: too close to the awake screen, the user found). Floor: the panel's 2 nits.
+ * SLIDER terms: AOD sits at fb_aod_pct (default 30; live: kern.redwood.poke "fb.aod PCT") % of the slider position the screen had when AOD began, on the
+ * same slider -> nits curve as legacyToNits16 (2 + 418 s^2.2 nits). 100 % -> 30 %, 50 % -> 15 %, 25 % -> 8 %: about
+ * 7 % of the light, clearly dimmer than the awake screen by the same step at every level (30 % of the NITS looked
+ * ~2/3 as bright, 35 % of the slider still too close: the user chose 3/10). Floor: the panel's 2 nits.
  * Then HELD: auto-brightness keeps sending small changes during AOD (a dark room's sensor wobble showed at the
  * panel's 1-nit bottom steps); those are kept for the wake but do not move the AOD picture. Only a big change of
  * light (CoreBrightness asking 2x or 1/2 of the level AOD started from) takes the level again. Faded in and out;
@@ -845,7 +846,8 @@ static volatile uint32_t gBLThermalCap;
  */
 static volatile uint32_t gAODDim;
 static uint32_t gAODBase, gAODLevel;    /* (fBLLock) nits 16.16 AOD started from, and the level held */
-static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 35);
+static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
+static volatile uint32_t gAODPctLive;    /* fb.aod PCT (0: the boot value) */
 static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 60);
 /* (p / 100)^2.2 in 1/65536 for p = 10, 15 .. 60: a slider fraction p of s is (p/100)^2.2 of the nits above 2 */
 static const uint32_t gAODSliderFactor[11] = { 414, 1009, 1900, 3104, 4636, 6508, 8730, 11312, 14263, 17590, 21302 };
@@ -853,7 +855,7 @@ static const uint32_t gAODSliderFactor[11] = { 414, 1009, 1900, 3104, 4636, 6508
 static uint32_t
 aodFrom(uint32_t base)
 {
-	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, pct = gAODPct, level;
+	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, pct = gAODPctLive ? gAODPctLive : gAODPct, level;
 
 	pct = pct < 10 ? 10 : pct > 60 ? 60 : pct;
 	if (base <= lo) {
@@ -1072,6 +1074,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	redwood_dbgport_add("fb.mode", "[1..4 [lpref]]: live mode (1=1080/120, 2=1080/60, 3=720/120, 4=720/60), "
 	    "with DECON's TE and frame counters over 100 ms before and after; no number: the counters now", dbg_fb_mode);
 	redwood_dbgport_add("fb.cal", "[address length]: read panel calibration SPI flash (JEDEC ID if no args; factory range 0xf0000..0xf8fff, max 128 bytes)", dbg_fb_cal);
+	redwood_dbgport_add("fb.aod", "[PCT]: Always-On Display level, PCT (10..60) % of the slider position, live", dbg_fb_aod);
 	redwood_dbgport_add("fb.warm", "[0|1]: optional mild software True Tone approximation, restore exact prior DQE state on disable", dbg_fb_warm);
 	redwood_dbgport_add("fb.factory", "[0|1]: factory gamma/AOR status, disable/restore, or load/enable verified normal and 120 Hz calibration", dbg_fb_factory);
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
@@ -5157,6 +5160,29 @@ dbg_fb_factory(const uint64_t *v, unsigned n, char *out, size_t cap)
 	    gAODBase >> 16, (unsigned)(((uint64_t)(gAODBase & 0xffff) * 1000) >> 16));
 	IOLockUnlock(fb->fDsimLock);
 	if (n && fb->fBLCall != NULL) thread_call_enter(fb->fBLCall);
+}
+
+/* fb.aod [PCT]: the AOD level as PCT (10..60, steps of 5) % of the slider position, live; then re-taken at once */
+extern "C" void
+dbg_fb_aod(const uint64_t * v, unsigned n, char * out, size_t cap)
+{
+	IOMobileFramebuffer *fb = gFramebuffer;
+
+	if (n > 0 && v[0] >= 10 && v[0] <= 60) {
+		gAODPctLive = (uint32_t) v[0];
+		if (fb != NULL && fb->fBLLock != NULL && fb->fBLCall != NULL) {
+			IOLockLock(fb->fBLLock);
+			if (gAODBase != 0) {
+				gAODLevel = aodFrom(gAODBase);
+			}
+			IOLockUnlock(fb->fBLLock);
+			thread_call_enter(fb->fBLCall);
+		}
+	}
+	snprintf(out, cap, "fb.aod: %u %% of the slider (boot %u); AOD %u, held %u.%03u nits from %u.%03u\n",
+	    gAODPctLive ? gAODPctLive : gAODPct, gAODPct, gAODDim, gAODLevel >> 16,
+	    (unsigned)(((uint64_t)(gAODLevel & 0xffff) * 1000) >> 16), gAODBase >> 16,
+	    (unsigned)(((uint64_t)(gAODBase & 0xffff) * 1000) >> 16));
 }
 
 extern "C" void
