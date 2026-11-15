@@ -25,6 +25,7 @@ ap.add_argument('--rsize', default='', help='hex size of the ramdisk')
 ap.add_argument('--rdpart', default='', help='GPT partition holding the resident root image (md0)')
 ap.add_argument('--rdoff', default='', help='hex byte offset of the resident image')
 ap.add_argument('--rdsize', default='', help='hex size of the resident image')
+ap.add_argument('--devmode', action='store_true', help='the loader shows its HackiOS menu, countdown and text (development)')
 ap.add_argument('items', nargs='*')
 args = ap.parse_args()
 
@@ -44,6 +45,8 @@ if args.rdres:
     add('rdres', args.rdres.lower().replace('0x', '').encode() + b'\0')
 if args.usb:
     add('usb', b'1\0')
+if args.devmode:
+    add('devmode', b'1\0')
 if args.checkpoint:
     add('checkpoint', args.checkpoint.encode() + b'\0')
 if args.kpart:

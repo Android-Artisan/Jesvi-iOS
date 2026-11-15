@@ -2833,6 +2833,7 @@ struct payload_info {
 	uint64_t forced_base;
 	uint64_t resident_rd;           /* size of a root image the host put at the resident address */
 	int usb_mode;
+	int devmode;                    /* payload entry "devmode": the HackiOS menu, countdown and text (development) */
 	char kpart[32];                 /* where the kernel lives on storage, if not in the payload */
 	uint64_t koff;                  /* byte offset of the kernel inside that partition */
 	char rpart[32];                 /* same for the root ramdisk (md1) */
@@ -2891,6 +2892,8 @@ parse_payload(struct payload_info *pi, int verbose)
 			pi->checkpoint = parse_number(text, 10);  /* where the kernel should stop and come back */
 		} else if (str_eq(e->name, "usb")) {
 			pi->usb_mode = 1;                         /* stay in the loader and take commands over USB */
+		} else if (str_eq(e->name, "devmode")) {
+			pi->devmode = 1;                          /* the developer's boot screen (menu, countdown, text) */
 		} else if (str_eq(e->name, "kpart")) {
 			/* the kernel is not in the payload: it sits on a GPT partition */
 			unsigned k = 0;
@@ -4766,8 +4769,8 @@ menu_flush(void)
  * (ProgressUI apple-logo@3x, white on black, centered, the size it has once iOS runs) from the moment the loader
  * starts until iOS draws -- the same picture Samsung's bootloader shows from up_param (tools/bootlogo/mkbootlogo.py
  * makes both from YOUR iOS root; the artwork is never committed: without xnuloader/applelogo.h the screen is black).
- * A volume key pressed while the logo shows opens the menu. bootui=0 in the payload's cmdline: the loader's text and
- * the menu with its countdown, as before (development).
+ * A volume key pressed while the logo shows opens the menu. Dev mode (payload entry "devmode", x1slte.sh DEVMODE=1;
+ * or bootui=0 in the cmdline): the loader's text and the HackiOS menu with its countdown, as before.
  */
 #if __has_include("applelogo.h")
 #include "applelogo.h"
@@ -6221,6 +6224,10 @@ efi_main(efi_handle image, efi_system_table *st)
 			bootui = 0;
 			screen_quiet = 0;
 		}
+	}
+	if (have_payload && pi.devmode) {
+		bootui = 0;             /* dev mode (x1slte.sh DEVMODE=1): the HackiOS menu with its countdown, and the text */
+		screen_quiet = 0;
 	}
 	if (PLAT != &platform_y2s) {
 		screen_quiet = 0;       /* (QEMU and the rest: as before) */
