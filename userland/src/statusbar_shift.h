@@ -6,7 +6,9 @@
  * in every app, so this is included by libredwood-sb (inject_sb.c) and libredwood (inject.c).
  *   /var/jb/etc/redwood-statusbar.conf: "lead=N" (points; 0 = Apple's). Read at process start: respring / reopen apps.
  */
+#include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdbool.h>
@@ -16,7 +18,9 @@
 #include <unistd.h>
 
 struct sbs_insets { double top, leading, bottom, trailing; };   /* NSDirectionalEdgeInsets */
-static double sbs_lead = 0;      /* (off by default: user 2026-11-13 22:20, "go back to default"; was 3..20) */
+static double sbs_lead = 0;      /* Apple's place (the user, 2026-11-15: reset; "lead=N" in the conf moves the time N/2 pt left) */
+static double sbs_icons = 1.08;  /* "icons=F": the status bar icons (signal, Wi-Fi, battery) F times Apple's size (the user, 2026-11-15: "just a little big"); icons=1: Apple's */
+static int sbs_bolt = 0;         /* "bolt=1": keep the bolt's animation on island phones too (default: no animation; the island animates charging) */
 static struct sbs_insets (*sbs_orig)(id, SEL);
 
 static void
@@ -316,6 +320,157 @@ sbs_provider_hook(void *unused)
 	}
 }
 
+/*
+ * Island phones (A, 2026-11-15). The status bar keeps the iPhone X notch layout (Split1125, see above), and a notch
+ * layout shows background activity -- a call, the microphone recording, navigation -- as a coloured pill around the
+ * time. An iPhone with a Dynamic Island shows those in the island and leaves the time plain (user 2026-11-15: "when
+ * the dynamic island is present it should be regular time"; the pill is for phones without one). So when MobileGestalt
+ * says this is an island phone (ArtworkDeviceSubType 2556 or 2796, what island=1 sets in the device tree) the status
+ * bar's background-activity entry reads as disabled. Without the island (island=0, other devices) nothing is hooked
+ * and the pill stays, as on a notch iPhone. The island itself is SpringBoard's SystemAperture and is not touched.
+ * (Hooked on the entry's own class only; if that class has no isEnabled, the data's backgroundActivityEntry getter
+ * answers nil instead. Log: which one, in redwood-statusbar.log.)
+ */
+/* (2026-11-15) MobileGestalt answers ArtworkDeviceSubType to entitled processes only (nil in apps and SpringBoard's
+ * libraries here), so the device tree's /product artwork-device-subtype is read first -- the very property island=1
+ * sets (xnuloader/loader.c), readable by any process. MobileGestalt stays as a second opinion. */
+extern unsigned int IORegistryEntryFromPath(unsigned int, const char *);
+extern CFTypeRef IORegistryEntryCreateCFProperty(unsigned int, CFStringRef, CFAllocatorRef, unsigned int);
+extern int IOObjectRelease(unsigned int);
+static bool
+sbs_island_present(void)
+{
+	static int cached = -1;
+
+	if (cached < 0) {
+		int subtype = 0;
+		unsigned int e = IORegistryEntryFromPath(0, "IODeviceTree:/product");
+
+		if (e != 0) {
+			CFTypeRef v = IORegistryEntryCreateCFProperty(e, CFSTR("artwork-device-subtype"), NULL, 0);
+			if (v != NULL) {
+				if (CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) >= 4) {
+					const unsigned char *p = CFDataGetBytePtr((CFDataRef)v);
+					subtype = p[0] | p[1] << 8 | p[2] << 16 | p[3] << 24;
+				}
+				CFRelease(v);
+			}
+			IOObjectRelease(e);
+		}
+		if (subtype == 0) {
+			void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
+			CFTypeRef (*copy)(CFStringRef, CFDictionaryRef) = mg ? (CFTypeRef (*)(CFStringRef, CFDictionaryRef))dlsym(mg, "MGCopyAnswer") : NULL;
+			CFTypeRef v = copy ? copy(CFSTR("ArtworkDeviceSubType"), NULL) : NULL;
+			if (v != NULL) {
+				if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+					CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &subtype);
+				}
+				CFRelease(v);
+			}
+		}
+		cached = subtype == 2556 || subtype == 2796;
+		sbs_log("island: artwork subtype %.0f (island %.0f)", subtype, cached);
+	}
+	return cached == 1;
+}
+/*
+ * The bolt next to the battery (2026-11-15): with the percentage shown inside the battery, iOS 16 draws the charging
+ * bolt as a separate display item of _UIStatusBarBatteryItem (+chargingDisplayIdentifier), not through _UIBatteryView's
+ * _shouldShowBolt. The bolt is kept (the user: the symbol stays, only the animation is redundant with the island's):
+ * the animation iOS returns for that display item is dropped, so it appears and goes without animating.
+ */
+static id (*sbs_orig_battery_apply)(id, SEL, id, id);
+static id
+sbs_battery_apply(id self, SEL cmd, id update, id item)
+{
+	id r = sbs_orig_battery_apply(self, cmd, update, item);
+	static id charging_id;
+
+	if (charging_id == nil) {
+		charging_id = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("_UIStatusBarBatteryItem"), sel_registerName("chargingDisplayIdentifier"));
+	}
+	id ident = item != nil ? ((id (*)(id, SEL))objc_msgSend)(item, sel_registerName("identifier")) : nil;
+	if (charging_id != nil && ident != nil && ((bool (*)(id, SEL, id))objc_msgSend)(ident, sel_registerName("isEqual:"), charging_id)) {
+		return nil;     /* the bolt stays; only its appear/disappear animation goes (the island animates charging) */
+	}
+	return r;
+}
+static bool
+sbs_bg_disabled(id self, SEL cmd)
+{
+	(void)self; (void)cmd;
+	return false;
+}
+static id
+sbs_bg_none(id self, SEL cmd)
+{
+	(void)self; (void)cmd;
+	return nil;
+}
+static void
+sbs_island_hook(void *unused)
+{
+	static int done;
+	Class ec = objc_getClass("_UIStatusBarDataBackgroundActivityEntry");
+	SEL es = sel_registerName("isEnabled");
+	Method em = ec ? class_getInstanceMethod(ec, es) : NULL;
+
+	(void)unused;
+	if (done || !sbs_island_present()) {
+		return;
+	}
+	if (!sbs_bolt) {
+		/* the bolt beside the battery (every process: SpringBoard's status bar and apps') */
+		Class ic = objc_getClass("_UIStatusBarBatteryItem");
+		Method am = ic ? class_getInstanceMethod(ic, sel_registerName("applyUpdate:toDisplayItem:")) : NULL;
+		if (am != NULL && sbs_orig_battery_apply == NULL) {
+			sbs_orig_battery_apply = (id (*)(id, SEL, id, id))method_setImplementation(am, (IMP)sbs_battery_apply);
+			sbs_log("island: charging bolt animation off%.0f%.0f", 0, 0);
+		}
+	}
+	if (em != NULL) {
+		if (!class_addMethod(ec, es, (IMP)sbs_bg_disabled, method_getTypeEncoding(em))) {
+			method_setImplementation(em, (IMP)sbs_bg_disabled);         /* (the class's own method) */
+		}
+		done = 1;
+		sbs_log("island: background-activity pill off (entry isEnabled)%.0f%.0f", 0, 0);
+		return;
+	}
+	Class dc = objc_getClass("_UIStatusBarData");
+	SEL gs = sel_registerName("backgroundActivityEntry");
+	Method gm = dc ? class_getInstanceMethod(dc, gs) : NULL;
+	if (gm != NULL) {
+		method_setImplementation(gm, (IMP)sbs_bg_none);
+		done = 1;
+		sbs_log("island: background-activity pill off (data getter)%.0f%.0f", 0, 0);
+	}
+}
+
+/* the icons' size: the notch layout's normalIconScale times `icons` (Split1125's own instance method) */
+static double (*sbs_orig_icon_scale)(id, SEL);
+static double
+sbs_icon_scale(id self, SEL cmd)
+{
+	return sbs_orig_icon_scale(self, cmd) * sbs_icons;
+}
+static void
+sbs_icons_hook(void *unused)
+{
+	Class sc = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+	SEL s = sel_registerName("normalIconScale");
+	Method m = sc ? class_getInstanceMethod(sc, s) : NULL;
+
+	(void)unused;
+	if (m == NULL || sbs_orig_icon_scale != NULL || sbs_icons <= 0.5 || sbs_icons >= 2 || sbs_icons == 1) {
+		return;
+	}
+	sbs_orig_icon_scale = (double (*)(id, SEL))method_getImplementation(m);
+	if (!class_addMethod(sc, s, (IMP)sbs_icon_scale, method_getTypeEncoding(m))) {
+		method_setImplementation(m, (IMP)sbs_icon_scale);      /* (Split1125's own) */
+	}
+	sbs_log("icons: x%.2f (%.0f)", sbs_icons, 0);
+}
+
 static void
 statusbar_shift_start(void)
 {
@@ -341,11 +496,23 @@ statusbar_shift_start(void)
 		if (p != NULL) {
 			sbs_trail = atof(p + 6);
 		}
+		p = strstr(b, "icons=");
+		if (p != NULL) {
+			sbs_icons = atof(p + 6);
+		}
+		p = strstr(b, "bolt=");
+		if (p != NULL) {
+			sbs_bolt = atoi(p + 5);
+		}
 		p = strstr(b, "cut=");
 		if (p != NULL) {
 			sbs_cut = atof(p + 4);
 		}
 	}
+	sbs_icons_hook(NULL);                   /* every phone: the icons' size */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_icons_hook);
+	sbs_island_hook(NULL);                  /* island phones only: plain time and no bolt, the island shows those */
+	dispatch_async_f(dispatch_get_main_queue(), NULL, sbs_island_hook);
 	if (sbs_lead <= 0 && sbs_cut <= 0 && sbs_trail == 0 && sbs_notch <= 0) {
 		return;                         /* the default: Apple's status bar, nothing hooked */
 	}

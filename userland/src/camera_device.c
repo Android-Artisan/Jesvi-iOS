@@ -51,6 +51,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "camera_isp.h"
+#include "camera_s20_zoom.h"
 
 static const char *tuning_dir(void);
 static const char *rw_path(const char *leaf, char *buf, size_t size);
@@ -286,7 +287,7 @@ static const struct prop stream_props[] = {
 	{ "PortType", "String", "ReadOnly" }, { "UniqueID", "String", "ReadOnly" }, { "NonLocalizedName", "String", "ReadOnly" },
 	{ "SupportedFormatsArray", "Collection", "ReadOnly" }, { "FocalLength", "Number", "ReadOnly" },
 	{ "LensFNumber", "Number", "ReadOnly" }, { "PixelSize", "Number", "ReadOnly" },
-	{ "MaxZoomFactor", "Number", "ReadOnly" }, { "SupportedColorSpaces", "Collection", "ReadOnly" },
+	{ "MinZoomFactor", "Number", "ReadOnly" }, { "MaxZoomFactor", "Number", "ReadOnly" }, { "SupportedColorSpaces", "Collection", "ReadOnly" },
 	{ "HasAutoFocusPositionSensor", "Boolean", "ReadOnly" }, { "Clock", "Clock", "ReadOnly" },
 	{ "FormatIndex", "Number", "ReadWrite" }, { "MinimumFrameRate", "Number", "ReadWrite" }, { "MaximumFrameRate", "Number", "ReadWrite" },
 	{ "MaximumAllowedFrameRate", "Number", "ReadWrite" }, { "VideoOutputConfigurations", "Collection", "ReadWrite" },
@@ -582,6 +583,8 @@ stream_copy_property(CMBaseObjectRef o, CFStringRef key, CFAllocatorRef allocato
 		 * (0, 100) is accepted.
 		 */
 		value = number_f(s->camera->pixel_size);
+	} else if (key_is(key, "MinZoomFactor")) {
+        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.5f:1.0f);
 	} else if (key_is(key, "MaxZoomFactor")) {
 		value = number_f(MAX_ZOOM);
 	} else if (key_is(key, "ZoomFactor")) {
@@ -686,7 +689,7 @@ stream_set_property(CMBaseObjectRef o, CFStringRef key, CFTypeRef value)
 		if (value != NULL && CFGetTypeID(value) == CFNumberGetTypeID()) {
 			CFNumberGetValue(value, kCFNumberDoubleType, &zoom);
 		}
-		zoom = zoom < 1 ? 1 : zoom > MAX_ZOOM ? MAX_ZOOM : zoom;
+		zoom=s20_zoom_clamp((float)zoom,s->camera->sensor==1,access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0);
 		if (fabs(zoom - s->zoom) >= 0.25 || (zoom == 1) != (s->zoom == 1)) {
 			say("stream: zoom %.2fx", zoom);
 		}
@@ -1042,6 +1045,8 @@ frame_metadata(const struct isp *isp, const struct redwood_camera_frame *f, cons
 	 * (-[BWMultiStreamCameraSourceNode _ispAppliedZoomFactorFromSampleBufferMetadataDictionary:outputIndex:])
 	 * and would make up the rest of what was asked for itself; without it, a zoomed preview stood still.
 	 */
+	/* Overlay lens selection leaves the graph request at1x. Report the
+     * crop applied within the selected physical lens, not its nominal UI label. */
 	md_put(m, MD_ZOOM, number_f(isp->zoom));
 	return m;
 }
@@ -1296,7 +1301,7 @@ af_go(int device, struct af *af, uint32_t target)
 }
 
 static void
-af_frame(int device, struct af *af, const struct redwood_camera_frame *f, const uint8_t *raw, const float window[4], bool locked)
+af_frame(int device, struct af *af, const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, const float window[4], bool locked)
 {
 	float level, sharpness;
 	unsigned needed = f->gain >= 16 * f->gain_unity ? 2 : 1;      /* (in the dark, two frames to a measurement) */
@@ -1315,7 +1320,7 @@ af_frame(int device, struct af *af, const struct redwood_camera_frame *f, const 
 		af_go(device, af, af->target);          /* (the next step of a longer way) */
 		return;
 	}
-	sharpness = isp_sharpness(f, raw, window[0], window[1], window[2], window[3], &level);
+	sharpness = isp_sharpness(isp, f, raw, window[0], window[1], window[2], window[3], &level);
 	af->sum_sharpness += sharpness;
 	af->sum_level += level;
 	if (++af->measured < needed) {
@@ -1443,7 +1448,7 @@ af_frame(int device, struct af *af, const struct redwood_camera_frame *f, const 
 static void
 load_tuning(struct isp *isp, uint32_t sensor)
 {
-	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k4h7" };
+	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k2la" };
 	char path[96];
 
 	if (sensor >= sizeof(names) / sizeof(names[0])) {
@@ -1612,7 +1617,7 @@ write_tuning(const char *name, const float ccm[9])
 static void
 tune_on_phone(struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw)
 {
-	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k4h7" };
+	static const char *const names[] = { "ov02b10", "s5khm2sd", "ov16a1q", "s5k2la" };
 	const char *name = f->sensor < 4 ? names[f->sensor] : NULL;
 	char cap_p[160], rel_p[160];
 	bool capture = access(rw_path("redwood-lsc-capture", cap_p, sizeof(cap_p)), F_OK) == 0,
@@ -1787,6 +1792,7 @@ worker_body(void *context)
 	struct stream *s = stream_of(o);
 	struct redwood_camera_frame head;
 	struct isp isp;
+	struct isp_black_calibration rear_dark;
 	struct isp_stats st;
 	uint8_t *buffer = NULL, *buffers[2] = { NULL, NULL };
 	size_t bytes = 0;
@@ -1797,6 +1803,8 @@ worker_body(void *context)
 	unsigned skipped_other = 0;
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
+    bool aux_enabled=access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0;
+    unsigned rear_mode=~0U;
 	float lux = -1, cct = -1;
 	struct af af = { 0 };
 	int device = open(REDWOOD_CAMERA_DEVICE, O_RDWR), failures = 0;
@@ -1822,12 +1830,17 @@ worker_body(void *context)
 		bool want_rear = s->camera->sensor == 1;
 		bool binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
 		struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
-			.b = want_rear ? 2 : binned ? 1 : 0 };
+			.b = want_rear ? s20_zoom_mode(s->zoom,aux_enabled) : binned ? 1 : 0 };
 
 		(void)write(device, &rc, sizeof(rc));
 		say("the %s asked for before the first frame", want_rear ? "rear main" : "front sensor");
 	}
 	isp_init(&isp);
+	memset(&rear_dark, 0, sizeof(rear_dark));
+	if (s->camera->sensor == 1 && isp_load_black_calibration(&rear_dark,
+	    rw_path("redwood-rear-dark-grid", (char[160]){0}, 160))) {
+		say("rear dark-grid loaded: %u gains, exact exposure %u lines", rear_dark.profiles, rear_dark.exposure_lines);
+	}
 	{
 		/* the tone curve's contrast (redwood-contrast in the tuning directory, 0 to 1; 0.35 if absent) */
 		FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");
@@ -1852,7 +1865,24 @@ worker_body(void *context)
 		isp.awb_fast = 12;
 	}
 	while (s->running && failures < 5) {
-		ssize_t n;
+        float requested_zoom=s->zoom;
+        if(aux_enabled&&s->camera->sensor==1){
+            /* Development override exercises the SAME route as ZoomFactor until
+             * the stock Camera UI advertises fractional zoom on its D22 profile. */
+            FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");
+            if(lf){float z;if(fscanf(lf,"%f",&z)==1)requested_zoom=s20_zoom_clamp(z,true,true);fclose(lf);}
+            unsigned next=s20_zoom_mode(requested_zoom,true);
+            if(rear_mode!=next){
+                if(drawer_up)render_wait(h);
+                free(buffers[0]);free(buffers[1]);buffers[0]=buffers[1]=buffer=NULL;bytes=0;next_buffer=0;
+                struct redwood_camera_command lc={.command=REDWOOD_CAMERA_SENSOR,.a=next==5?3:1,.b=next};
+                if(write(device,&lc,sizeof(lc))!=sizeof(lc)){say("rear lens request failed: %s",strerror(errno));break;}
+                rear_mode=next;asked_sensor=false;skipped_other=0;tuned_for=~0U;lux=cct=-1;
+                isp.awb_fast=12;isp.wb[0]=isp.wb[1]=isp.wb[2]=1;
+                say("rear lens requested: %s",next==5?"2LA ultra-wide":"2LD main");
+            }
+        }
+        ssize_t n;
 
 		if (buffer == NULL) {
 			n = read(device, &head, sizeof(head));
@@ -1882,6 +1912,7 @@ worker_body(void *context)
 			 */
 			if (one_sensor > 0 && !asked_binned && access(rw_path("redwood-rear-off", (char[160]){0}, 160), F_OK) != 0) {
 				bool rear_frames = head.width == 2016 || head.width == 4032, want_rear = s->camera->sensor == 1;
+                if(aux_enabled&&want_rear&&((head.sensor==3)!=(rear_mode==5)))continue;
 
 				if (rear_frames != want_rear) {
 					struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
@@ -1924,7 +1955,7 @@ worker_body(void *context)
 			 */
 			/* (the user, 2026-11-12: binned looked much worse and stuttered: the full mode, unless redwood-binned-stream) */
 			bool want_binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
-			if (one_sensor > 0 && !asked_binned && (head.width > 2000) == want_binned) {
+			if (s->camera->sensor!=1 && one_sensor > 0 && !asked_binned && (head.width > 2000) == want_binned) {
 				struct redwood_camera_command mc = { .command = REDWOOD_CAMERA_SENSOR, .a = head.sensor, .b = want_binned ? 1 : 0 };
 
 				asked_binned = true;
@@ -2005,7 +2036,7 @@ worker_body(void *context)
 			struct redwood_camera_frame *fw = (void *)buffer;
 			int black = 64;
 
-			if (fw->width == 2016 || fw->width == 4032) {
+			if (fw->sensor!=3 && (fw->width == 2016 || fw->width == 4032)) {
 				static int rear_black = -1;
 				static uint64_t looked;
 
@@ -2021,12 +2052,11 @@ worker_body(void *context)
 				}
 				black = rear_black;
 			}
-			isp_black = black;
 			fw->black = (uint32_t)black;
 			for (int k = 0; k < 4; k++) {
-				isp_black4[k] = black;
+				isp.black.site[k] = black;
 			}
-			if (fw->width == 2016 && fw->gain_unity > 0) {
+			if (fw->sensor!=3 && fw->width == 2016 && fw->gain_unity > 0) {
 				/*
 				 * The S5K2LD's black level per site against the analog gain, measured on dark frames (2 lines of
 				 * exposure, cam.s20.dma.test 2 N, 2026-11-12): Gr sinks from 63.5 at 1x to 30.4 at 16x while R, B and
@@ -2051,7 +2081,7 @@ worker_body(void *context)
 
 				t = t < 0 ? 0 : t > 1 ? 1 : t;
 				for (int k = 0; k < 4; k++) {
-					isp_black4[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
+					isp.black.site[k] = (int)(level[k][seg] + t * (level[k][seg + 1] - level[k][seg]) + 0.5f);
 				}
 			}
 		}
@@ -2064,7 +2094,7 @@ worker_body(void *context)
 			 */
 			struct redwood_camera_frame *fb = (void *)buffer;
 
-			if (fb->width == 4032) {
+			if (fb->sensor!=3 && fb->width == 4032) {
 				static int rear_bayer = -1;
 				static uint64_t looked_b;
 
@@ -2111,8 +2141,8 @@ worker_body(void *context)
 			 */
 			struct redwood_camera_frame *fd = (void *)buffer;
 
-			isp_band_row = 0;
-			if (fd->width == 4032 && fd->gain_unity > 0) {
+			isp.black.band_row = 0;
+			if (fd->sensor!=3 && fd->width == 4032 && fd->gain_unity > 0) {
 				static float dark[12][9];
 				static int dark_n = -1, band = 1914;
 				static uint64_t dark_looked;
@@ -2170,20 +2200,14 @@ worker_body(void *context)
 							for (int i = 0; i < 1024; i++) total += hist[bnd][k][i];
 							for (v = 0; v < 1023 && acc + hist[bnd][k][v] < total * 3 / 1000 + 1; v++) acc += hist[bnd][k][v];
 							v = v > 64 ? 64 : v;
-							if (bnd == 0) isp_black4[k] = v; else isp_black4_low[k] = v;
+							if (bnd == 0) isp.black.site[k] = v; else isp.black.low[k] = v;
 						}
 					}
-					for (int k = 0; k < 2; k++) {
-						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
-
-						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
-						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
-					}
-					isp_band_row = band;
+					isp.black.band_row = band;
 					if (++dark_looked % 60 == 1) {
-						say("rear black measured: above %d %d %d %d, below %d %d %d %d", isp_black4[0], isp_black4[1],
-						    isp_black4[2], isp_black4[3], isp_black4_low[0], isp_black4_low[1], isp_black4_low[2],
-						    isp_black4_low[3]);
+						say("rear black measured: above %d %d %d %d, below %d %d %d %d", isp.black.site[0], isp.black.site[1],
+						    isp.black.site[2], isp.black.site[3], isp.black.low[0], isp.black.low[1], isp.black.low[2],
+						    isp.black.low[3]);
 					}
 				}
 				if (dark_n > 0) {
@@ -2196,21 +2220,17 @@ worker_body(void *context)
 
 					t = t < 0 ? 0 : t > 1 ? 1 : t;
 					for (int k = 0; k < 4; k++) {
-						isp_black4[k] = (int)(dark[a][1 + k] + t * (dark[b][1 + k] - dark[a][1 + k]) + 0.5f);
-						isp_black4_low[k] = (int)(dark[a][5 + k] + t * (dark[b][5 + k] - dark[a][5 + k]) + 0.5f);
+						isp.black.site[k] = (int)(dark[a][1 + k] + t * (dark[b][1 + k] - dark[a][1 + k]) + 0.5f);
+						isp.black.low[k] = (int)(dark[a][5 + k] + t * (dark[b][5 + k] - dark[a][5 + k]) + 0.5f);
 					}
-					for (int k = 0; k < 2; k++) {
-						const uint8_t *r0 = buffers[k] != NULL ? buffers[k] + fd->header_bytes : NULL;
-
-						isp_band[k][0] = r0 != NULL ? r0 + (size_t)band * fd->stride : NULL;
-						isp_band[k][1] = r0 != NULL ? r0 + (size_t)fd->stride * fd->height : NULL;
-					}
-					isp_band_row = band;
+					isp.black.band_row = band;
 				}
 			}
 		}
 		const struct redwood_camera_frame *f = (const void *)buffer;
 		const uint8_t *raw = buffer + f->header_bytes;
+		bool spatial_black = isp_apply_black_calibration(&isp, &rear_dark, f);
+		if (spatial_black && s->frames % 60 == 0) say("rear dark-grid active: gain %u, exposure %u", f->gain, f->exposure_lines);
 		struct redwood_camera_command c;
 
 		uint64_t t_stats = mach_absolute_time();
@@ -2240,7 +2260,7 @@ worker_body(void *context)
 		lux = lux < 0 ? lux_index(&isp, f) : lux * 0.9f + lux_index(&isp, f) * 0.1f;
 		cct = cct < 0 ? colour_temperature(&isp) : cct * 0.97f + colour_temperature(&isp) * 0.03f;
 		isp_tune(&isp, lux, cct);
-		isp.zoom = s->zoom;
+		isp.zoom = s20_zoom_crop(requested_zoom,f->sensor==3);
 		isp.turned = s->camera->turned;
 		{
 			/* the kernel's say (kern.redwood.camera_turn, the S20): bit 0 turns the front camera's pictures half round */
@@ -2286,7 +2306,13 @@ worker_body(void *context)
 			uint32_t cw = f->width / 2, chh = f->height / 2, n = 0;
 			double sum = 0;
 
-			if (tapped) {
+			if (tapped && (f->width == 2016 || f->width == 4032)) {
+				double green;
+				uint32_t cells = isp_window_green(&isp, f, raw, s->af_window[0], s->af_window[1],
+				    s->af_window[2], s->af_window[3], &green);
+
+				if (cells > 16) st.mean[1] = 0.75 * green + 0.25 * st.mean[1];
+			} else if (tapped) {
 				uint32_t x0 = (uint32_t)(s->af_window[0] * cw), x1 = (uint32_t)(s->af_window[2] * cw);
 				uint32_t y0 = (uint32_t)(s->af_window[1] * chh), y1 = (uint32_t)(s->af_window[3] * chh);
 				int r_at = (int)(f->bayer & 3), b_at = 3 - (int)(f->bayer & 3);   /* (as camera_isp.c's cell_places) */
@@ -2360,7 +2386,7 @@ ae_done:;
 			af.now = true;
 			af.sweep = true;
 		}
-		af_frame(device, &af, f, raw, s->af_window, s->af_locked);
+		af_frame(device, &af, &isp, f, raw, s->af_window, s->af_locked);
 		s->stats_ticks += mach_absolute_time() - t_stats;
 		s->frames++;
 

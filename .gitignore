@@ -6,6 +6,7 @@
 !/README.md
 !/CONTRIBUTING.md
 !/AGENTS.md
+!/handoff.md
 !/ci/
 !/.github/
 !/.editorconfig
@@ -67,6 +68,7 @@ __pycache__/
 !/userland/src/
 !/userland/libmini/
 !/userland/var/
+!/userland/defaults/
 
 /sysimage/*
 !/sysimage/fetch.sh

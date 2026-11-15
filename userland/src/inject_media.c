@@ -1205,7 +1205,7 @@ redwood_media_init(void)
 		Dl_info me;
 
 		/* (the development copy itself is built with -DREDWOOD_DEV: dyld names it /private/var/..., 2026-11-12) */
-#ifndef REDWOOD_DEV
+#if !defined(REDWOOD_DEV) && !defined(REDWOOD_MEDIA_BUILTIN)
 		if (dladdr((const void *)redwood_media_init, &me) != 0 && me.dli_fname != NULL && strstr(me.dli_fname, dev) == NULL &&
 		    access(dev, R_OK) == 0) {
 #else

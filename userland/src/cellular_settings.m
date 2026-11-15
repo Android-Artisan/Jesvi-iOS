@@ -2,6 +2,7 @@
  * Loaded only in Preferences by the port's existing tweak loader. Shows the live state that
  * redwood-cellulard publishes (/var/tmp/redwood-cell/state) and drives mobile data through its pipe.
  */
+#include <sys/stat.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -81,6 +82,13 @@ static PSSpecifier *value_row(NSString *name, id target, SEL get)
     return [PSSpecifier preferenceSpecifierNamed:name target:target set:NULL get:get detail:Nil cell:4 edit:Nil];
 }
 
+static int ims_state(void);
+static BOOL provider_alive(void);
+static NSString *page_signature(NSDictionary *st)
+{
+    return [NSString stringWithFormat:@"%@|%d|%d", [st description], ims_state(), provider_alive()];
+}
+
 @implementation RWCellularSettingsController
 {
     NSTimer *refresh;
@@ -92,7 +100,7 @@ static PSSpecifier *value_row(NSString *name, id target, SEL get)
     dispatch_once(&page_once, ^{ diagnostic("cellular-page-opened"); });
     BOOL fresh = NO;
     NSDictionary *st = cell_state(&fresh);
-    last = [st description];
+    last = page_signature(st);
 
     PSSpecifier *top = [PSSpecifier preferenceSpecifierNamed:nil target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
     [top setProperty:fresh ? @"Mobile data uses the S20's own modem (LTE). Turning it off keeps the signal but stops internet over cellular."
@@ -105,7 +113,7 @@ static PSSpecifier *value_row(NSString *name, id target, SEL get)
     PSSpecifier *netg = [PSSpecifier preferenceSpecifierNamed:@"NETWORK" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
     PSSpecifier *simg = [PSSpecifier preferenceSpecifierNamed:@"SIM" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
     PSSpecifier *svcg = [PSSpecifier preferenceSpecifierNamed:@"SERVICES" target:nil set:NULL get:NULL detail:Nil cell:0 edit:Nil];
-    [svcg setProperty:@"Calls and text messages on Jio go over VoLTE (IMS). That part is still being built." forKey:@"footerText"];
+    [svcg setProperty:@"Calls and text messages go over VoLTE (IMS), through the S20's own modem." forKey:@"footerText"];
 
     NSArray *items = @[top, data,
         netg, value_row(@"Network", self, @selector(network:)), value_row(@"Signal", self, @selector(signal:)),
@@ -126,7 +134,7 @@ static PSSpecifier *value_row(NSString *name, id target, SEL get)
     refresh = [NSTimer scheduledTimerWithTimeInterval:3 repeats:YES block:^(NSTimer *t) {
         (void)t;
         typeof(self) me = weak;
-        if (me && ![[cell_state(NULL) description] isEqualToString:me->last]) [me reloadSpecifiers];
+        if (me && ![page_signature(cell_state(NULL)) isEqualToString:me->last]) [me reloadSpecifiers];
     }];
 }
 - (void)viewWillDisappear:(BOOL)animated
@@ -200,20 +208,43 @@ static PSSpecifier *value_row(NSString *name, id target, SEL get)
     if (!fresh || p.length < 5) return @"—";
     return [NSString stringWithFormat:@"%@ %@", [p substringToIndex:3], [p substringFromIndex:3]];
 }
+/* VoLTE state from the call engine itself (redwood-ims rewrites call-ui/calls at least every 2 s: "ims PID TIME
+ * registered 0|1"), not from a marker file that outlives a stopped engine. 0 = no engine, 1 = up, not registered,
+ * 2 = registered. Calls also need the phone's telephony provider (redwood-telephonyd touches call-ui/alive). */
+static int ims_state(void)
+{
+    FILE *f = fopen("/var/tmp/redwood-cell/call-ui/calls", "r");
+    long pid = 0, t = 0; int reg = 0;
+    if (!f) return 0;
+    int n = fscanf(f, "ims %ld %ld registered %d", &pid, &t, &reg);
+    fclose(f);
+    if (n != 3 || time(NULL) - t > 15) return 0;
+    return reg ? 2 : 1;
+}
+static BOOL provider_alive(void)
+{
+    struct stat st;
+    return !stat("/var/tmp/redwood-cell/call-ui/alive", &st) && time(NULL) - st.st_mtime < 20;
+}
 - (NSString *)volte:(PSSpecifier *)specifier
 {
     (void)specifier;
-    return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/tmp/redwood-cell/ims-registered"] ? @"Registered" : @"Not registered yet";
+    switch (ims_state()) {
+    case 2: return @"Registered";
+    case 1: return @"Registering…";
+    default: return @"Off";
+    }
 }
 - (NSString *)calls:(PSSpecifier *)specifier
 {
     (void)specifier;
-    return @"Not available yet";
+    if (ims_state() != 2) return @"Not available";
+    return provider_alive() ? @"Available (VoLTE)" : @"Starting…";
 }
 - (NSString *)sms:(PSSpecifier *)specifier
 {
     (void)specifier;
-    return @"Not available yet";
+    return ims_state() == 2 ? @"Available (over IMS)" : @"Not available";
 }
 @end
 

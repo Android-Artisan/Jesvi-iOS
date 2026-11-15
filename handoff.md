@@ -1,0 +1,778 @@
+# Latest LIVE: native2LA12MP RAW received; exposure/cleanup fix next
+
+User explicitly authorized camera-test reboots for THIS SESSION (standing approval,
+not later sessions). Phone lock codex-camera-aux. Latest installed kernel source
+295a2162, build21:58:02IST; slota1f28ed5..., loader readback verified. Protected
+AKS1 observed before first unlock on this boot. No loader/root/system/data rewrite.
+
+2LA4032×3024 RAW transport PASSED:12,192,768 words changed, DMA error0, guards0,
+C-PHY error masks0, abort/stream-off verified, cleanuptrue, no retained buffer.
+RWCAM001 packed export15,245,056bytes incl4096 header, labelS5K2LA, stride5040.
+First scene was essentially black pedestal58..69. User positioned toward light;
+a second accepted frame has60..204 and recognizable monitor/room, but badly
+underexposed and uncalibrated. Host previews shown to user; no app lens yet.
+
+Repeat initially refused idle guard because aggregate CSIS SRC1 stayed6. Found
+stock ISR clears CHILD FS_INT_SRC0x24/FE_INT_SRC0x2c (and LINE_END0x634) as well.
+After documented idle checks, manually acknowledged VC0 child bits; SRC1 cleared
+and lit capture passed. Fix automatic cleanup before more repeated captures.
+Current receiver frame count reads wrong0x100; correct v5.3 offset0x500 identified.
+JSON link_errors currently reports RAW SRC1=6 (normal FS/FE), not actual errors;
+next revision must distinguish raw IRQ from masked error bits.
+
+Next: controlled raw-only exposure/gain with stock limits/read-back, correct
+child-source cleanup/counter offset and actual-driver repeat regression test.
+Default front/main pipeline remains original. GW2 ID0972/a300 verified, no GW2
+stream or RAW yet. Camera app still only front/main. Save RAWs/images ONLY outside
+git in build/camera-aux-latest-20261115; ensure export succeeded before downloading.
+--black64 host preview is explicit pedestal development, not a calibrated ISP fix.
+
+---
+
+# Latest: native2LA RAW receiver built and host-tested (not installed)
+
+Working phone kernel21:17:15 has both IDs and2LA sensor streaming verified;
+source/progress commit5f58969a (pushed). User confirms front/main/passcode work.
+New command `cam.s20.2la.raw` adds bounded C-PHY4/CSIS4/WDMA0 native12MP RAW with
+pre-reset configuration journal, guarded low DMA memory and abort-ack-before-free.
+Host tests compile actual receiver implementation; all pass. GICv2 build passes.
+See docs/x1slte-camera-2la-raw.md for details and exact stop/rollback semantics.
+
+Candidate kernel-slot-2la-raw.bin SHAa1f28ed505feb3c27f201d1061f887bd4cecdee3ba84b1f07ab0a00839a59d2e.
+UNINSTALLED; next kernel iteration requires reboot authorization. Current15d996b7...
+is working rollback. New receiver must not be represented as hardware-verified.
+No app auxiliary lens or smooth zoom yet. User gave this session control; phone
+lock codex-camera-aux, check actual state before any deployment.
+
+---
+
+# Latest LIVE milestone: both auxiliary sensors identified;2LA sensor streams
+
+User approved latest merged kernel install/reboot and full camera work. Wrote
+ONLY kernel slot via loader, written/read-back verified, then booted once.
+Running kernel21:17:15IST; candidate slot15d996b7...; source baseline45820593.
+Loader/logos/devmode/root/system/data preserved. Backup in camera-aux-latest-20261115.
+
+2LA20ca/a202: native4032×3024 mode output registers verified,11 counter changes
+in12 polls, stream-off counter verified, complete cleanuptrue. This proves SENSOR
+streaming, not CSI/DMA image reception. GW20972/a300: identity and cleanuptrue;
+S2MPB02 full map unchanged across GW2 probe. No GW2 streaming or auxiliary RAW yet.
+User confirms front/main and repeat locking/unlocking still work. First host
+keybag read was4 (protected but already unlocked); before-first-unlock lock state
+was not observed for this boot, so do not claim it was. No auth changes made.
+
+Machine-readable milestone: docs/x1slte-camera-aux-live-status.json. Next implement
+bounded2LA C-PHY/CSIS4/WDMA0 RAW capture; sensor-counter/ID commands remain working.
+GW2 C-PHY/CSIS2/WDMA3 follows after TNP/global/mode and calibration handling.
+No app auxiliary lens controls or smooth zoom yet. Additional kernel reboots must
+be authorized; do not assume the completed one-boot approval covers another.
+Phone currently held codex-camera-aux; check actual lock before changes.
+
+---
+
+# Latest checkpoint: merged, rebuilt and pushed; reboot approval pending
+
+2026-11-15 evening: source/image audit committed88fbc0f5 after master mergebbc8e510.
+Push to https://github.com/jesvi-eulah/Jesvi-iOS.git feature branch SUCCEEDED;
+earlier upstream403 notes below are historical. Main/master remain45820593.
+No installation/reboot during this integration checkpoint. New explicit one-boot
+approval question is pending; user must approve before hardware testing.
+Phone lock released after preparation. Reacquire and recheck live baseline before
+using the current backed-up image/candidate, in case another agent changes it.
+See docs/x1slte-camera-latest-integration.md for exact hashes and timestamps.
+
+---
+
+# Latest accepted source/image integration — 2026-11-15 evening
+
+User resumed and requested latest main/master/system BEFORE hardware tests.
+Merged actual master45820593 via bbc8e510; freshly fetched private
+jesvi-eulah/Jesvi-iOS main/master also45820593. Both ancestry checks pass.
+Source includes logo/menu/dev-release flag, AOD, battery/sleep optimizations and
+telephonyd packaging guard. Main/master refs unchanged by our work.
+
+Authoritative integration record: docs/x1slte-camera-latest-integration.md.
+Exact times: main/master16:57:59IST; candidate kernel21:17:15IST. All301 tracked
+XNU overlay files match build tree; entire redwood.patch reverse-check passes.
+Correction: wake-tracing hook was ALREADY present in nested tree from11:46; five
+other idle drivers needed refresh. Do not repeat earlier missing-hook claim.
+
+Fresh complete recovery backup; actual root matches staged root exactly.
+Live loader code/settings match latest staged loader except PE timestamp2bytes.
+Base-system superblock/SystemVersion and Camera/SpringBoard/keybagd hashes match.
+Full-device system hash NOT completed: slow raw scan stopped, partial checksum
+labeled INCOMPLETE. Original front media library retained. No device writes yet.
+
+Merged candidate slot hash15d996b7e22abd719c79e3daa5b7a65ed64ac06a7601e56a4c45a5c1e4f747dd.
+Rollback-current kernel hash e5ec842f99a017e1891986de5021b96ab12c9bd42ad73ee56768927a29220c6f.
+All artifacts/backup in build/camera-aux-latest-20261115 OUTSIDE git. Old uninstalled
+candidates below are superseded. Kernel/AOD/passcode/camera host checks pass.
+
+Phone lock codex-camera-aux. Next: explicit fresh permission for one kernel-only
+install/reboot, then bounded2LA stream counter and GW2 ID with cleanup gates.
+Preserve PHONE loader/root/system/data. Last confirmed auxiliary hardware success
+remains2LA20ca/a202 ID twice; no auxiliary RAW capture yet.
+
+---
+
+# PAUSED DEVICE ACCESS — wait for user's explicit handback
+
+User says another session has the phone; wait for readiness notification, not a
+20-minute timer. A holds the phone for idle-power kernel work. No second reboot
+approval was given. NO more SSH, capture, flash, restart or sensor commands until
+handback and successful lock acquisition. The first approved boot completed.
+
+Offline audit completed: corrected both auxiliary receivers to C-PHY3trios;
+GW2 board overlay selects WDMA3, not base-tree WDMA0; active GW2 I2C is gpp0-2/3,
+not recovery-gpio gpc0. Reproducible receiver-plan JSON/tool and regression tests
+added. GW2 successful rail restoration now follows stock NORMAL_OFF order with
+AF-off9us; partial failures still reverse their touched writes. Source-level main
+rear voltage-selector gap documented for later LIVE measurement, not called a
+noise fix. See latest docs/x1slte-camera-aux.md section for complete findings.
+
+**Last verified hardware success:**2LA ID20ca/a202 twice, successful cleanup,
+unchanged PMIC map across repeat. User confirms front/main and repeat unlocking.
+No auxiliary RAW image or new app lens. GW2 has not been powered/probed yet.
+2LA counter-stream and GW2 ID source prepared; post-audit kernel builds/tests pass.
+
+Our previously installed kernel may ALREADY BE REPLACED by A. An in-flight slot
+read mismatched during their takeover: saved unverified-concurrent-slot-read.bin;
+DO NOT USE THAT FILE FOR ROLLBACK. Freshly identify/backup current kernel once
+A releases, integrate their latest accepted work, rebuild, obtain explicit NEW
+reboot approval. Current local main/master8eaa52cf may advance. Do not flash our
+pre-idle-power candidate over A's newer kernel. Previous current candidate hashes
+below are historical. New UNINSTALLED post-audit slot hash38d0ab3d... (artifact-next.json).
+
+All work stays feat/s20-rear-aux; main/master unchanged by this session. Push
+remains unavailable (upstream403). Keep original front and accepted brightness.
+
+---
+
+# Latest live sensor progress — 2026-11-15
+
+Installed source8b39c494 after ONE explicit user-approved install/reboot. Loader
+verified the kernel-slot write/readback. Running11:17:58IST. Protected bag flags1
+before first unlock and after probe; user confirms front/main and repeat unlocking
+work. Original front media baseline remains active; brightness tweak loads on boot.
+
+**2LA positively identified twice: model20ca, revisiona202, cleanup_ok=true.**
+Complete PMIC map unchanged across repeat. No RAW capture/auxiliary app lens yet.
+Private evidence and exact rollback slot: build/camera-aux-20261115 outside git.
+First approved reboot is consumed; no further reboot permission implied.
+
+The next source/candidate now adds revision-gated2LA native12MP sensor-counter
+stream test and GW2 identity probe with two-PMIC rollback. Host sanitizer/fault
+and catalogue tests, passcode integration and GICv2 build pass. NOT installed.
+See docs/x1slte-camera-aux.md for commands, hashes, rail values and runtime gates.
+Read the CORRECTION: GW2 active I2C pinctrl is gpp0-2/3; gpc0 recovery-GPIO metadata
+must not be used as active I2C routing. Previous suspected MCLK pin conflict was
+based on that metadata and is superseded for the native bus route.
+
+Next candidate slot SHA256bdb51280424393a8abbee7f8a9e979c1811e0782d09095a58a031a9bb876a7b9.
+Current running rollback candidate is kernel-slot-2la-id.bin (SHA14f70dab...);
+pre-session AOD kernel backup SHA256b686b63aae218f958e6212ee5bce95f44b2c5e92a4357a6bea0a8b858b17d266.
+Do not confuse these. Phone lock currently codex-camera-aux; verify before action.
+Main/master remain accepted8eaa52cf; all research stays feat/s20-rear-aux.
+
+---
+
+# Latest: 2LA identity probe built, awaiting approved hardware boot
+
+Branch feat/s20-rear-aux now integrates camera-quality and accepted master8eaa52cf
+through merge commits08fc65d3/3fa430b3. Main/master unchanged. The accepted
+brightness tweak remains installed, original front default preserved.
+
+New root-only `cam.s20.2la.id` implements cold/idle-only model/revision reads and
+transactional power/clock/pin cleanup. No auto probe or streaming. Dedicated core
+rail needs selector0x24=1.05V, not baseline0x20=1.0V. Do not attribute this aux
+finding to main-rear grain. See docs/x1slte-camera-aux.md for exact design, guards,
+hashes, tests and limits. Host fault tests, four inventory tests, passcode checks
+and full GICv2 kernel build pass. Tracked/build overlay sources match.
+
+Candidate: build/camera-aux-20261115/kernel-slot-2la-id.bin (outside git), SHA256
+14f70dab3b2d63d0bf09e22b138f2d03c4cd7d9fd15609918262a5957da19700.
+NOT installed. No auxiliary sensor has been identified or streamed. No smooth
+zoom/lens switching implemented. GW2 probe still pending its separate power plan.
+
+Phone is now held by codex-camera-aux after A released it; check actual lock.
+During an earlier acquisition race, acquisition failed but one read-only uname/
+PMIC snapshot command ran because the shell sequence lacked fail-fast guarding;
+no rail/system writes occurred. Subsequent commands stopped until lock was free.
+Use set -e / explicit successful lock checks for every dependent device action.
+
+Next: obtain explicit approval for ONE diagnostic-kernel install/reboot, then
+back up current AOD kernel slot, verify write/readback, preserve passcode chain,
+ask user to unlock on-device, close Camera/wait20s and invoke identity command.
+Never treat previous camera reboot approval or elapsed time as new approval.
+Successful ID is a gate to revision-correct setfiles and bounded RAW capture,
+not proof of a functioning auxiliary Camera lens. Preserve all private logs and
+backups outside git; no firmware or personal captures should enter commits.
+
+---
+
+> Push status (2026-11-15): local commits complete, remote push blocked.
+> Both feature-branch pushes to configured upstream
+> https://github.com/oosexgang/hakios-xnu-kernel.git returned HTTP403:
+> authenticated user jesvi-eulah lacks write access. No existing fork found at
+> jesvi-eulah/hakios-xnu-kernel. No branches were published. Retry after access
+> is granted or a writable remote is provided. Do not claim a successful push.
+
+# Next agent: continue rear camera implementation — 2026-11-15
+
+User accepted current Camera brightness behaviour (“all good”) and requested
+handover for the remaining camera issues and two additional rear cameras.
+Latest camera-quality acceptance/handoff commit: `f7d505e2` on
+`feat/s20-camera-quality`. Integrate that branch here before implementation;
+the live brightness change42b1dd4d is not yet integrated into this aux branch.
+Also explicitly integrate accepted main/master before full image/kernel builds.
+
+Start with docs/x1slte-camera-aux.md and the metadata-only inventory. Two saved
+overlays agree; three fixup tests pass. No auxiliary sensor has been powered,
+identified or streamed by this work. Bring up one sensor at a time with bounded
+model/revision reads, revision-correct tables, shared pin/rail rollback, then RAW
+packing/CFA/VC validation. Do not expose lens controls until capture and switching
+work. Preserve original front default and accepted display rule. Main-rear
+noise/tint and native12MP remain separate unresolved tasks. Rejected dark-grid
+trial must stay disabled. Native/diagnostic kernel candidate remains uninstalled.
+
+Authoritative installed-device state and rollback: camera-improve/handoff.md.
+Phone ownership was released. Read workspace NEXT.md/TASKS.md and acquire the
+phone lock before device changes. Never reboot without asking the user.
+Private captures/firmware/calibration/backups must remain outside git.
+
+
+---
+
+> Push status (2026-11-15): local commits complete, remote push blocked.
+> Both feature-branch pushes to configured upstream
+> https://github.com/oosexgang/hakios-xnu-kernel.git returned HTTP403:
+> authenticated user jesvi-eulah lacks write access. No existing fork found at
+> jesvi-eulah/hakios-xnu-kernel. No branches were published. Retry after access
+> is granted or a writable remote is provided. Do not claim a successful push.
+
+# User acceptance and next-agent handover — 2026-11-15
+
+User reports “all good” after the Camera-only brightness installation and asks
+for commit/push and handover. Treat this as user acceptance of current behaviour;
+separate instrumented entry/exit/manual/lock tests and reboot persistence were
+not performed by this agent. No reboot approval is implied.
+
+Next agent: keep the accepted brightness rule and original front-camera path.
+Continue remaining main-rear grain/gradient/red-green/tint investigation and
+bring up the two additional rear cameras on `feat/s20-rear-aux` in
+`work/hackios-camera-aux`. Read docs/x1slte-camera-aux.md and its generated
+inventory before hardware writes. That branch contains offline wiring evidence,
+not a functioning auxiliary driver. First integrate this latest camera-quality
+branch and accepted main/master explicitly; preserve unrelated accepted work.
+
+For main rear, compare bounded unpacked16-bit format6 against packed format7,
+then validate native12MP separately from upscaled JPEG dimensions. Existing
+native-mode/diagnostic kernel candidates remain uninstalled; any reboot needs
+user approval. For auxiliary sensors, read model/revision before selecting
+revision-dependent tables, activate one sensor at a time, and restore shared
+pins/rails/routes. Do not copy front-camera configuration or promise every
+stock resolution/FPS before live validation. Phone lock is released; check
+workspace NEXT.md, TASKS.md and lock status before taking it.
+
+Current installed brightness artifact/rollback details follow. Private captures,
+firmware and device backups remain outside git. No push changes main/master.
+
+---
+
+# Start here: live Camera brightness installation (latest checkpoint)
+
+Worktree: `/Users/jesvi/ios-port-research/work/hackios-camera-improve`, branch
+`feat/s20-camera-quality`. Separate aux inventory is on `feat/s20-rear-aux`,
+commit22256e72, in `work/hackios-camera-aux`; read docs/x1slte-camera-aux.md.
+
+## Installed now
+
+- `/var/jb/usr/lib/TweakInject/RedwoodCameraBrightness.dylib` and matching filter.
+  Signed arm64 SHA25684f57fa867544e048c22ff078d830848709375b662c8c73c2724409decd289fe;
+  downloaded readback matches byte-for-byte. SpringBoard resprung and loader log
+  confirms it opened this exact named tweak. No kernel flash or reboot performed.
+- Revised rule reads SpringBoard `_accessibilityFrontMostApplication` identity;
+  known API/nil app yields Camera=false, unknown shape falls back to heartbeat.
+  This removes dependence on adding Camera injection to the existing read-only
+  image. Remount attempt failed before system-file/tweak mutation; injection
+  config and runtime list remain unchanged. Original front media path untouched.
+- Initial live state outside Camera: native auto1, raw30241/65536 (UI45.94%).
+  After activation it remains auto1 at the same level; foreground log Camera=0.
+  Camera has not launched yet after respring: requested user unlock/open it.
+  Do not claim entry/exit/manual/lock or reboot tests passed without fresh evidence.
+- Phone lock held by codex-camera-quality during this installation. Always check
+  tools/phone-lock.sh status before touching it; never reboot without permission.
+
+## Complete validation / rollback
+
+1. User unlocks and opens Camera. `/var/root/set-display-70 --status` should show
+   auto0, raw45220/65536 (UI70%). Check foreground Camera=1/hold log and recovery
+   record at `/var/mobile/Library/Preferences/com.redwood.camera-brightness.restore.plist`.
+2. Leave Camera for Settings/Home: auto must return to prior1; journal removed.
+   Check manual slider change is retained while Camera stays open. Repeat with
+   auto initially off and confirm exit leaves it off. Restore user's normal auto1.
+3. Check Control Center, Camera termination and display off/wake, then request
+   explicit approval before any reboot persistence test. No such approval yet.
+4. Emergency release: create `/var/jb/etc/redwood-camera-brightness.disabled`;
+   wait for restoration and verify status, then remove dylib+filter and respring
+   only if uninstalling. Keep rule loaded until recovery completes. If UI cannot
+   be used, restore auto via `/var/root/set-display-70 --auto-on` after disabling.
+5. Private backups/artifacts: build/camera-device-20261114/brightness-install;
+   device `/var/root/camera-brightness-rollback`. Backed up injection lists were
+   never replaced. Diagnostic helper supports --status, --auto-on, --auto-off,
+   --slider 0..1, --set70 (last is GLOBAL, not lifecycle behaviour).
+
+Host sanitizer policy tests, strict signed iOS builds and passcode integration
+checks pass. Runtime foreground API inside SpringBoard still needs Camera-entry
+validation. Accepted master02636ecf must be explicitly integrated before future
+full image/kernel builds; do not flash old staged rear candidates over it.
+Main rear grain/tint is unresolved, native12MP and auxiliary bring-up remain
+uninstalled. Front stays original; optional experimental profile stays uninstalled.
+
+---
+
+# S20 camera deployment handoff
+
+## Current state
+
+- Branch: `feat/s20-camera-quality`; camera implementation `e917479d`.
+- User explicitly handed over the device and authorized camera flash/testing and the test boot.
+- Phone lock transferred from `codex-fingerprint` to `codex-camera-quality` after verifying no running flashing process.
+- Live baseline: kernel built 2026-11-14 20:38:33 IST; fingerprint status `exchange-v2`, no active command; native MKB unlocked, AKS flags 0x4.
+- No camera binary installed or kernel flashed at this checkpoint.
+
+## Progress
+
+1. Checked interruption state, workspace NEXT/TASKS, phone lock and live device.
+2. Confirmed the standalone camera kernel would omit newer fingerprint work. Integrated committed fingerprint lineage through `7e8181fe` into the camera branch, preserving the installed exchange-v2 capability. The fingerprint worktree's later uncommitted experiments are untouched and excluded.
+3. Retained both camera and fingerprint shipping notes while resolving their documentation-only merge conflict.
+
+## Next
+
+- Back up current camera library and exact current recovery kernel slot locally; keep private artifacts outside git.
+- Mirror combined tracked kernel sources/build-list change into the isolated build tree; build and validate passcode/camera guards.
+- Install only the recovery kernel slot with read-back verification, preserving loader, boot profile, root/system/data and fingerprint calibration/templates.
+- Install signed development camera library with a reversible fallback. Boot once, verify locked protected keybag, exchange-v2 and camera timings; ask the user to unlock on-device without sharing the code.
+- Test rear/front repeat capture, switching, exposure and still output. Record evidence and limitations and commit this file after each meaningful checkpoint.
+
+## Safety and rollback
+
+- Preserve `softpasscode=1`, `autounlock=0`, native keybagd, fail-closed restore and repeat-lock bridge.
+- No fingerprint commands, enrollment, template/calibration changes or authentication bypass.
+- Current user authorization covers this camera installation/test reboot; do not inherit unrelated fingerprint reboot approvals.
+- Exact backup paths/hashes will be recorded before writing. Stop on unverified writes. Do not publish binaries or private device material.
+
+## Checkpoint: exact rollback slot saved; ready to write
+
+- Combined GICv2 build passes; passcode integration and eight fingerprint exchange host tests pass. Combined sources/build mirrors match.
+- Unstripped kernel was 17484464 bytes and failed the slot-size assertion. No kernel write occurred. Applied standard `strip -x` to the local candidate copy, then validated slot size and camera/exchange-v2 markers.
+- System media library backed up locally (881040 bytes). No prior dev override existed. Signed development library uploaded/read back byte-identically, then activated for the next mediaserverd launch.
+- Phone is in Log access. Exact current 16777216-byte recovery kernel slot saved locally as `build/camera-device-20261114/kernel-slot-before.bin`.
+- Backup SHA-256: `58f5543786af33e8480a777a1a61679e42f99afea78a335d75233ec0950e6f58`. It matches the previously installed exchange-v2 slot byte-for-byte.
+- Candidate hashes/sizes: `build/camera-device-20261114/candidate.json`; backup verification: `backup.json`. Private binaries remain outside git.
+- Next: write ONLY recovery offset 0x2000000; verify loader readback plus independent full-slot readback; commit checkpoint, then use authorized test reboot.
+
+## Checkpoint: kernel written and independently verified
+
+- Wrote only recovery kernel offset 0x2000000. Loader reported written/read-back verified.
+- Independently read/downloaded the whole 16-MiB slot afterward and compared byte-for-byte with the padded candidate: identical.
+- Installed slot SHA-256: `dcc5b9e7e87ae854927fdddf79497ef7a90923bf95486f1f9014b1517ae233f8`.
+- Exact rollback slot is preserved. Loader/profile/root/system/userdata were not rewritten.
+- Next: execute the user-authorized test reboot, wait for SSH, verify protected/locked keybag before user unlock, fingerprint exchange-v2 status and camera device.
+
+## Checkpoint: combined kernel booted; live captures verified
+
+- Authorized test reboot completed. Live kernel build time: 2026-11-14 21:16:40 IST. Camera node present; fingerprint exchange-v2 preserved, TEEGRIS not started, no fingerprint commands issued.
+- Correction to earlier activation checkpoint: postboot inspection found the uploaded library still named `.camera-new`. It had not been activated. Renamed it live, verified the active file byte-for-byte against the signed build, restarted only mediaserverd. Its log confirms the development copy loaded. No second reboot.
+- Native MKB state is 0 / AKS 0x4 (unlocked). Repeat passcode locking is NOT verified; requested physical lock/unlock checks from the user without asking for their code.
+- Added bounded `tools/camera/s20_capture_probe.c`: explicit binned rear/front mode, EAGAIN startup handling, 36 headers per session, odd exposure requested after stream initialization. Commands before stream initialization are reset; an initial probe demonstrated this, so it was corrected rather than counted as a pass.
+- Rear/front/rear sessions pass (108 frames). Rear 2016x1512, line_ns 1468; requested 1001 lines settles to 1000. Kernel register readback at frame 31 independently reports exposure 1000, gain 0x20, frame length 22564 matching the request.
+- Production ISP host executable captures 40/40 rear frames, no skips, approximately 30 fps; renders 1008x756 NV12 in 21 ms. Register readback tracks AE requests (3374 lines).
+- Captured scene is nearly black (~1% samples above black+8). Exposure transport passes, but image quality cannot be accepted from this scene. Asked user whether lens is covered/dark and to provide a lit scene. Do not claim stock quality or visual validation.
+- Evidence is outside git: `/Users/jesvi/ios-port-research/build/camera-device-20261114/` (`rear-probe-2.txt`, `front-probe-1.txt`, `rear-probe-3.txt`, `rear-isp-test.txt`, `test-final-kernel.log`, active library readback). Earlier failed probe logs preserved too.
+- Remaining: physical repeat-lock confirmation, lit-scene RAW/preview inspection and app still/switch testing. Full-resolution rear remains disabled; stock GRAS/CCM/noise transplantation is not yet enabled.
+
+## Front-camera scope clarification
+
+- User requests preserving the existing front-camera values. No front sensor tables, clock/timing descriptors, exposure/gain limits, white-balance gains, colour matrix, shading, noise tuning or tap-metering formula were changed by the camera-quality implementation.
+- Shared ISP plumbing DID change: per-site black levels moved from global variables into each ISP instance; RAW decoding/statistics/rendering now consume that instance; preview cache invalidation includes frame/sensor/black metadata; sharpness receives that state. These apply to front as well as rear, preserving existing front calibration numbers but changing state ownership/cache behavior. Front visual parity is not yet demonstrated.
+- Live front probe temporarily requested 1001 exposure lines and gain register 32 in binned mode for 36 frames; this was a diagnostic command, not a saved front tuning change. Subsequent rear selection completed. Front was only checked for switching regression.
+- Keep front tuning values frozen during subsequent rear research. Any proposed front-specific numerical or processing change must be described to the user first.
+
+## Rear visual feedback and active tuning audit
+
+- User reports rear still has grain, gradient and tint, with fewer glitches. Treat this as a failed visual-quality acceptance, despite passing transport tests.
+- Read back active phone tuning files without modifying either camera. Rear uses the legacy alias `camera-s5khm2sd.isp` (actual hardware S5K2LD); front uses `camera-ov16a1q.isp` (actual SAK3J1). Names are inherited routing aliases, not proof that different sensors are installed.
+- Rear RWCISP02 is 3632 bytes: one CCM across all light/CCT ranges; all 884 shading floats (4 x 13 x 17) are exactly 1.0. Therefore its active map applies no spatial correction. This does not establish whether every observed gradient comes from lens shading; black offsets/readout still require isolation.
+- Rear CCM rows: [1.588,-0.342,-0.246], [-0.407,1.764,-0.357], [-0.437,-0.239,1.676]. These are existing local tuning values, not verified stock coefficients.
+- Live app logs show rear 8–16x analog gain and up to 2x digital gain. ISP source explicitly has no noise reduction stage; grain at those settings is unsurprising, but requires controlled RAW noise measurements to separate temporal, row and fixed-pattern components.
+- Existing binned rear black correction uses hand-measured gain/exposure tables; this and one fixed CCM can contribute to shadow casts. Do not substitute decoded Samsung GRAS or packed CCM9 coefficients blindly: mapping/calibration/composition remains unresolved.
+- Local evidence: `live-tuning-files.txt`, `rear-live.isp`, `front-live.isp`, `live-tuning-summary.json`, `quality-observation.log` in the private device artifact directory. Front values remain untouched.
+- Next controlled evidence: lit neutral/flat field plus covered-lens frames at identical rear exposure/gain, then separate additive black/row offsets from multiplicative colour shading. No new reboot required.
+
+## Latest photographs inspected (IMG_0205 / IMG_0206)
+
+- Copied the two latest JPEGs (21:35) read-only into the private device artifact directory and visually inspected both. IMG_0206 clearly shows dense coloured speckle plus a broad red-to-blue/green spatial cast; IMG_0205 shows a lit room/ceiling with pronounced coloured grain too. This is not only a completely dark test scene.
+- IMG_0206 is 4032x3024 JPEG output. Do NOT equate output dimensions with sensor readout: active rear capture is 2016x1512, and StillImage uses the software demosaic/rescale path. Enlarging a 3-MP stream to a 12-MP file does not restore sensor detail.
+- JPEG cannot establish whether the speckle is Bayer-phase/readout mismatch, channel-dependent offsets amplified by gain, or demosaic noise. No evidence yet supports calling this a Quad Bayer/four-in-one CFA mismatch. Need the current RAW buffer and header to distinguish them.
+- Armed existing rear-only `redwood-raw-dump` in the active mediaserverd tuning directory. It consumes one upcoming rear frame and overwrites the old private `redwood-raw.bin`; no colour/exposure/tuning values changed, no service restart or reboot. This is a nearby preview RAW, not guaranteed the exact JPEG exposure. Retrieve promptly after rear Camera is opened; record that limitation.
+- Optional JPEG band-stat script did not run because the default host Python lacks Pillow; visual inspections succeeded. No numerical JPEG statistics claimed.
+
+## Covered-lens RAW diagnosis, 21:47–21:51
+
+- User reports phone was restarting during previous transfer; no reboot issued by this session. Reconnected to same 21:16:40 kernel; development library persists. Partial RAW transfer excluded. Initial overlapping app/probe session excluded; all subsequent captures run with Camera closed.
+- User explicitly confirmed rear lens fully covered and Camera closed. Captured 1000 and 20000 lines at gains 32/128/256/512, plus AE's 20436 lines at gains 32/64/128/256/384/512. Independent gain-256/20436 holdout captured afterward.
+- Covered RAW confirms large channel/spatial pedestal errors, not merely JPEG tint: at 8x/1000 lines, tile means span roughly 15..95 depending on CFA site and location. At 20436 lines and 8x, per-site ranges are 14.9..47.8, 23.5..61.3, 12.0..50.4, 21.2..54.2. Existing four uniform inside-table offsets cannot remove these spatial biases. Short exposure has an additional row transition; do not extrapolate one calibration across that state change.
+- Building a rear-only additive dark-grid correction, gated by exact binned readout/exposure/frame timing and measured gain range. This is module calibration, not stock GRAS lens shading or proof of a Quad Bayer layout. Holdout evaluation required before deployment.
+
+## Dark-grid candidate validation failed; not deployed
+
+- Built a frame-owned 17x13 additive black-grid backend and exact-state private calibration loader; front rejected, no calibration file installed. Candidate library built locally, not copied to phone. Host sanitizer tests and iOS build pass.
+- Crucial holdout FAILED: corrected max tile bias 38.108 RAW counts, site mean biases [7.982,4.508,2.969,7.466]. Most lower rows repeat, upper region differs. Do not claim a fix or assume sensor sequencing alone; opaque coverage/capture timing must be ruled out too. Requested another covered repeat.
+- Detailed reproduction/format/limits: docs/x1slte-camera-dark-grid.md. Private candidate SHA-256 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b. Existing phone library remains the earlier verified implementation.
+- Samsung source explicitly does not list binned 2016x1512 as LN2-supported. Its full-mode LN2 writes/constraints cannot be applied to this mode as a one-register fix.
+
+- Additional source trace: Samsung module DT separates VC0 RAW10 image from VC1 tail-PDAF in both binned and full modes. Port selects VC0/0x2b and packed Android10. Source-level routing matches; this does not establish every RAW sample's correctness, but does not support blindly changing the CFA or treating PDAF rows as normal image pixels. Details in the dark-grid document.
+
+## Fresh covered repeats validate a partial correction; ready for userland-only trial
+
+- User confirmed opaque coverage again. Two independent 8x/20436-line captures agree. Existing inside-table maximum absolute tile bias ~23 counts becomes 1.618 / 1.633; per-site spatial-bias RMS ~8.8..11.9 becomes ~0.51..0.58 counts.
+- Additional 14.5x (interpolated gain 464) and 16x holdouts improve spatial-bias RMS from ~13..21 to ~1.55..2.24 counts, but maximum local bias remains 7..8 counts and random RMS remains high (~21..28 counts). Do NOT label this full noise reduction or stock-quality acceptance.
+- Earlier failed holdout retained, cause unresolved (coverage/state/timing). Fresh independent repeats provide substantially better evidence. Evaluator now uses the real gain-dependent original inside table at every gain; prior high-gain numbers incorrectly used an 8x comparison and are superseded.
+- Explicit partial-improvement gate: spatial-bias RMS reduced at least 50% at every CFA site and mean signed bias below 2 counts. All four fresh holdouts pass this gate. The earlier absolute <5 worst-tile gate is not claimed passed at high gain. Edge-slope extrapolation experiment did not help; rejected in favour of bounded interpolation.
+- Full host sanitizer/regression suites and signed iOS candidate build pass; loader/trailing-input and front/exposure/gain-gate tests added. Candidate library remains SHA-256 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b (verify build output before installation).
+- Next authorized action: back up active dev library, upload/read-back-check candidate and private module calibration, restart only mediaserverd, verify loaded/active logs and performance in app. No front tuning or kernel installation in this trial.
+- Separately built rear diagnostic kernel: root-only `camera_rear_diag` options snapshotted per session (bit0 stock no-hold sequence, bit1 cold sensor); default 0 retains existing behaviour. Host I2C fault tests and isolated GICv2 kernel build pass. Tracked/build overlay sources match. NOT installed; any future reboot requires user approval.
+
+## Live dark-grid trial rejected; original userland baseline restored
+
+- Uploaded/read-back-verified the candidate library and private 21288-byte profile; restarted mediaserverd only. Library hash 3afdae361482abb7b6c9ec62a2552bb91c841302de4ccd667b044a4e592e226b; profile c80546377e708f12ef65c7d559e12cb765ae077a51912f36d399f162ebeb5997.
+- User took IMG_0207.JPG and reports the rear still looks the same. Inspected saved image: pronounced coloured grain/tint remains. App logs confirm rear dark-grid ACTIVE, gain512, exposure20436, and StillImage1 delivered. This was a rear trial, although Camera defaults to front and must be switched explicitly in every app test.
+- Trial app ran ~13–14fps; stats ~47–54ms and render ~68–74ms. No matched thermal baseline, so cannot attribute all slowdown to the candidate, but it is not acceptable to retain the added work for an unsuccessful visual result. Rolled back candidate to earlier dev build first; profile renamed .disabled.
+- User then reports front dark-face/exposure regression despite unchanged numerical tuning. Restored the ORIGINAL system library by removing the dev override entirely, rather than assuming shared state changes are harmless. Active system bytes match the original backup: 881040 bytes, SHA-256 fcc5cef59533ad963aa05dfee622e554afb876bc20ed638c3e47d981a836a7ce. Dev override now .disabled-camera-quality; private dark profile .disabled. No new userland quality experiment active. Awaiting user check of front baseline.
+- Phone restarted again (live boot time22:22:25). This session issued no reboot then. Brief SSH refusal delayed rollback; restored after SSH returned. No second kernel has been flashed. Existing combined21:16:40 kernel remains.
+- User requests display fixed at70% whenever Camera is open; separate display-only task, not exposure/ISP tuning. Investigating reversible Camera lifecycle brightness hold with automatic-brightness restoration. Do not conflate display brightness with sensor exposure.
+- User emphasizes sensor/protocol/layout reused from front. Confirmed Samsung2LD bayer_order GR/BG; module DT image VC0 RAW10/PDAF VC1; port rear uses C-PHY3/CSIS0/WDMA2 and packed format7, unlike front D-PHY4/CSIS1/WDMA1. Continue checking actual readout and state, not just declared metadata. Diagnostic kernel prepared, NOT installed; reboot permission still required.
+
+## Front baseline confirmed; brightness request withdrawn
+
+- User confirms front camera is back to normal with original system library. Keep that as the default front path, not merely its numerical tuning values. User requests an opt-in flag for the newer experimental front profile, independently of rear research; do not mislabel it verified Samsung tuning.
+- Traced ALS/display path versus AE: inject_sensors uses automatic_lux/DisplayBrightnessAuto/DisplayNitsKey; camera AE uses RAW statistics, exposure/gain and frame timing. No direct ALS-to-AE dependency found. Screen light can indirectly illuminate a front scene; preview/display changes must still be distinguished experimentally.
+- User withdrew the70%-brightness/auto-brightness-pause request after this explanation. No brightness override, notifier, daemon or setting was installed/changed. Read-only --probe ran only. Uninstalled prototype sources/builds retained privately under build/camera-device-20261114/brightness, removed from working source. Leave normal display behaviour alone.
+
+## Front opt-in switch prepared offline; device pause respected
+
+- User says wait and will announce readiness before installation/reboot. Do not treat elapsed time as permission. Pending question for ONE diagnostic-kernel installation/reboot is unanswered.
+- Built dual-profile source dispatcher retaining ORIGINAL front worker+ISP by default and independent experimental rear worker. `redwood-front-profile=experimental` opts front into newer code for next stream; missing/other value uses original. Not labelled Samsung factory tuning.
+- Build rejects shared stream/output/camera/device ABI drift; original device lifecycle retains cross-camera exclusion. Separate ISP symbol namespaces prevent old front globals and new rear state interacting. Two host tests pass; signed library builds. NOT installed; needs visual front + rear switching regression before acceptance.
+- Reproduction and toggle commands: docs/x1slte-camera-front-profiles.md. Candidate sha ea002ab83015bab7bdcd3cf59e85971567b43918c881bb05d634b25e61b1fbd2.
+- Rear protocol audit continues: stock CSI hardware declares Android10 format7 as supported, but stock RAW10 DMA selects Samsung-packed4 or unpacked16-bit6 according to output format. Current live port chooses Android10/7, previously primarily validated on front. Need bounded rear format6 versus format7 captures to check the packed decoder independently; source-level support alone is insufficient. No such captures run during user pause.
+
+- Private live artifacts preserved separately from disposable build output at `/Users/jesvi/ios-port-research/discovery/s20-camera-quality/2026-11-14-live-rear/camera-device-20261114/` (mode700 parent). Contains raw measurements, JPEG inspections, failed and accepted host evaluations, logs, exact rollback binaries, and uninstalled candidates. Partial transfers/failed trials are retained as evidence, not validated inputs. Repo is clean after checkpoints; no private images/firmware/calibration blobs committed.
+
+## Priority: focus/object-dependent dimming; manual display70 verified
+
+- User renewed the request to disable display auto-brightness and make it70% before further camera work. This explicitly authorizes that display change; it does not authorize a reboot. Rear research/device experiments paused for this check.
+- Initial legacy BKS/UIScreen setter did NOT work: new-process readback stayed auto1 and raw30241/65536. Do not count those attempts as successful.
+- Native BrightnessSystemClient `setProperty:NO forKey:DisplayBrightnessAuto` succeeded. Explicit AppleARMBacklight legacy write uses the port's documented mapping raw=(.025+.95*UI)*max. With UI=.7, current raw45220/65536. Two immediate independent status reads confirm auto0 and requested UI70.00%; no looping override/daemon installed. User can still manually change the slider. This is currently a normal global manual setting for diagnosis, not an installed Camera-only lifecycle policy.
+- Reproducible helper: tools/camera/set-display-70.m, signed with display-control.entitlements. Default/--status read only; --set70 explicitly writes and verifies. Actual panel thermal protection is unchanged. UIScreen's client cache reported50% while raw driver request correctly represented70%; do not confuse cached framework data, requested brightness, and measured physical luminance.
+- Logs show genuine thermal display caps at83/88C in this session, independently of ALS; protection retained. The latest actual cap needs its own fresh status before attributing every dimming event to heat.
+- Separate direct source finding: Camera's focus-window tap changes AE metering: local mean gets75% weight, global mean25%, before isp_ae. This is camera auto-exposure, not ALS/display auto-brightness. Front original remains active and its AE/AF/tuning has NOT been changed for this diagnostic.
+- Asked user whether the unwanted change stopped, affects only preview, or affects the whole screen after auto-off/70. Await feedback before changing camera exposure behaviour.
+
+## Offline checkpoints prepared before brightness priority
+
+- Other-ports research: docs/x1slte-camera-other-linux-ports.md and source-comparison JSON. UbuntuTouch downstream2LD driver, set-A and CSIS-v5.3 files match our Samsung reference byte-for-byte; runtime trace retains DDK and hardware ISP. S20+ matrix status unknown; x1s/r8s/c1s camera marked working. No new sensor-layout/register workaround established. Research not deployed.
+- User requests native non-binned rear, all supported resolutions/FPS. Extracted17 stock mode slots with PLL/register cross-checks into docs/x1slte-camera-mode-catalogue.json. Full4032x3024 includes24/30/60 labels;4032x2268 includes24/30/60/120;3328x1872@120, plus binning/slow-motion entries. SSM slots are special capture machinery and one is empty; do not expose their labels as ordinary iOS FPS. Source inventory is not runtime capability verification.
+- Prepared explicit rear full/binned mode requests in the kernel for controlled next-session testing (sensor command b3 native4032x3024, b4 binned2016x1512, b2 existing boot-profile selection). Original front commands/defaults unchanged. New bounded probe accepts explicit rear mode and checks native2740ns line timing. Isolated kernel compile and exposure/passcode checks passed. NOT installed, no modes unlocked in the running iOS app, no new reboot approved. Pause retained while brightness issue is checked first.
+
+## Persistent Camera-only brightness rule written offline
+
+- User clarified precise scope again: hold70% with ALS-driven display auto paused only in Camera; resume auto on exit ONLY if it was enabled beforehand. Confirmed other agent still uses phone and explicitly requested writing/committing offline. No SSH, phone writes, restart, respring or reboot in this implementation turn.
+- Added standalone Camera+SpringBoard tweak: Camera foreground heartbeat/explicit background release; SpringBoard owns verified native auto setter and legacy manual70 request. Two-second stale lease restores after Camera crash. Manual slider adjustments accepted. No camera AE/AF/ISP values or authentication hooks changed.
+- Atomic0600 recovery record precedes overrides. SpringBoard restart/reboot recovery restores prior auto/manual state, checks auto read-back before clearing. Display-off restoration avoids a nonzero panel request until awake. Duplicate-library registration guard, malformed-state rejection and persistent disabled-file release included.
+- Added Camera to tracked tweak-loader injection defaults for future image builds. Live installation must retain the same entry in persistent and current injection lists while preserving unrelated entries. Data-volume tweak alone is not sufficient if Camera never loads the tweak loader.
+- ASan/UBSan policy tests pass (entry/steady/manual/exit, auto-off preservation, display-off, rule disable, unknown service, expired/future lease). Signed arm64 iOS dylib builds with -Wall -Wextra -Werror; passcode build integration passes. Latest dylib SHA-256 e746a68f6a164e2675832bf7789cf1ed42d8d963659446f7aaac92091f254fad.
+- Documentation/install/rollback and unverified cases: docs/x1slte-camera-brightness-rule.md. NOT installed/device-verified. Restore the temporary diagnostic global-auto-off setting to the user's normal enabled mode before the eventual Camera-only trial, otherwise that diagnostic value would be saved as their prior preference.
+
+## Auxiliary-camera checkpoint: bounded exposure and repeat captures (2026-11-15)
+
+Branch: `feat/s20-rear-aux`, worktree `hackios-camera-aux`. User requests fast
+0.6x/1x rear lens switching, with concise updates. Do not advertise the
+one-shot diagnostic as a working Camera lens. Front settings remain unchanged.
+
+- Patch: native 2LA exposure/gain controls with stock bounds, fixed-mode guard,
+  before/after readback and fail-fast I2C handling. Diagnostic command:
+  `cam.s20.2la.raw [lines [again-code]]`; defaults 3000 lines / gain32 (1x),
+  permitted lines16..6636, gain32..512; unity digital gain, WDR/LTE disabled.
+- Repeat-capture fix: clear CSI per-VC frame-start/end/line children before
+  aggregate IRQ acknowledgement. Previously aggregate0x6 persisted after capture.
+  Frame counter corrected from offset0x100 to0x500. Raw normal IRQ flags now
+  reported separately from masked link errors.
+- Renderer: optional `tools/camraw.py --black 64` is diagnostic only, not
+  calibrated stock tuning. Latest shown preview is underexposed but contains
+  recognizable scene; no quality acceptance claimed.
+- Validation: both actual receiver and control helper host tests PASS under
+  ASan/UBSan, including consecutive captures and every control I2C fault.
+  Kernel build PASS (`raw-controls-build.log` in private artifact directory);
+  passcode build integration PASS. This new patch has NOT been flashed/tested live.
+- Currently installed kernel remains the previous 295a2162 RAW build, padded
+  slot SHA a1f28ed505feb3c27f201d1061f887bd4cecdee3ba84b1f07ab0a00839a59d2e.
+  Private build artifacts: `/Users/jesvi/ios-port-research/build/camera-aux-latest-20261115/`.
+- Next: package/flash kernel slot only under current session camera-test reboot
+  authorization; check workspace phone lock first (last owner codex-camera-aux).
+  Verify two consecutive RAW captures, controls_before/after, cleanup_ok, no
+  retained DMA, and improved exposure before proceeding. Preserve root/system/loader.
+- To add actual0.6x: implement persistent 2LA open/read/close and exposure updates
+  in kernel camera backend, then route rear zoom through `userland/src/camera_device.c`
+  (currently clamps zoom to1..16). Map ultra-wide sensor/crop metadata and ISP state
+  separately; switch at1x only after stream stop/drain. Current one-shot powers
+  down and exports one frame; calling it per preview frame is not a viable backend.
+  GW2 identity works, streaming remains unimplemented. Smooth transitions are later.
+
+## Continuous ultra-wide backend prepared (2026-11-15)
+
+Native 2LA stream now routes mode5 through `/dev/redwood-camera`, using two packed
+RAW10 DMA buffers with three guards, cached reads, fixed6652-line frame timing,
+5008ns line timing, identity sensor3 and no focus motor. Front/main mode paths
+retain existing settings. Main warm state is cooled before ultra-wide power-up.
+Cleanup failure poisons future camera opens; abort failure retains DMA memory.
+Host receiver sanitizer tests cover packed slot selection, frame errors, middle
+guard corruption and abort retention; kernel and passcode integration build pass.
+Device validation and Camera zoom UI are pending. Probe supports sensor3.
+
+## In-Camera lens switch installed (2026-11-15 22:40 IST)
+
+- Continuous native 2LA36-frame driver probe passed; subsequent main36, front36
+  and repeated ultra36 captures passed. Kernel f893d339 installed/readback verified,
+  build22:26:06; slot SHA29986a7f71cfb4b6d5ad2735fe76adcafdd6ef10c218867fce2f2f583f45b607.
+- Built and installed dual-worker development media library: original pinned
+  d5b02944 front AND primary workers, experimental worker only for ultra-wide.
+  Shared stream/object ABI checked; both ISP symbol sets isolated. Front profile
+  remains original unless user explicitly opts into experimental.
+- Camera-only RedwoodCameraLenses tweak adds0.6x/1x overlay buttons. Writes
+  redwood-rear-zoom in mediaserverd cache; backend feature flag
+  redwood-ultrawide-enable.1x selects original main worker/mode2;0.6x selects
+  ultra-wide worker/mode5. Workers close/drain on lens change. No smooth transition
+  promise, no calibrated stock2LA colour map yet. Buttons may appear on front UI
+  but do not change front processing; their selection controls rear only.
+- Paths: /var/redwood/libredwood-media-dev.dylib,
+  /var/jb/usr/lib/TweakInject/RedwoodCameraLenses.{dylib,plist}. Installed library
+  SHA67564b5a360f3d5abbface8a0e478c0184a85dfea2e62e6ebce3da82808fccb7.
+- Added Camera to existing live kern.exec_inject tweak-loader entry, preserving
+  all other entries. Current read-only root lacks Camera in that entry; this
+  runtime change DOES NOT persist reboot. Future build.sh already includes Camera.
+  After reboot restore only Camera token in existing tweak entry; never overwrite
+  entire injection config from a stale backup. No new reboot performed for UI.
+- Camera/mediaserverd restarted; file installation and injection config verified.
+  Waiting for user to reopen rear Camera and confirm buttons/live lens switching.
+  UI/backend integration NOT visually accepted yet.
+- Host zoom routing tests, original-source isolation tests, media and UI builds
+  pass. A read-only verification pipeline used rg on phone (unavailable); replaced
+  with installed grep. That error did not interrupt the earlier installation.
+- Rollback: remove development media override + lens tweak pair, restart Camera
+  and mediaserverd. Original image library remains untouched. Private artifacts and
+  original injection config are under build/camera-aux-latest-20261115.
+
+### UI first test and crop-metadata correction
+
+User sees buttons;0.6 appears ineffective,1x restores primary. Private
+ui-switch-kernel.log proves actual2LA sessions delivered871 and428 frames,
+with clean stops and PrimaryScaler frames accepted (~25fps first session).
+Suspected presentation issue: nominal0.6 label was reported as applied zoom
+while the overlay leaves graph-requested zoom at1, allowing graph to crop
+the ultra-wide back toward main FoV. Corrected metadata to per-lens ISP crop.
+Rebuilt and reinstalled media override, restarted Camera/mediaserverd; awaiting
+user retry. This is a proposed visual fix, not yet visually confirmed.
+
+## Native rear selector work paused (2026-11-16)
+
+- User confirmed prior overlay 0.6x/1x works, requested native Camera controls.
+- Phone remained on continuous kernel built Nov15 22:26:06. Restored Camera token
+  in existing runtime tweak-loader entry, preserving all other entries.
+- First method-hook candidate crashed Camera with SIGSEGV. Restored working
+  overlay immediately. Signed artifact had embedded CodeDirectory; signing was
+  not established as cause. Do not reinstall that candidate.
+- Replaced hooks with a delegate adapter on existing CAMZoomControl's
+  configureForSelectionOnlyWithDisplayZoomFactors:selectedIndex:compactPlatterLayout:animated:.
+  No extra UIWindow and no physical-camera graph descriptor changes. Original
+  delegate restored for front; all other callbacks forwarded. Native private ABI
+  checked before enabling. Selection animation disabled: isolated device test
+  exposed a native 'Cannot call before zoom dial is created' assertion with it.
+- Revised delegate candidate stayed open on phone; user reported only 1x visible.
+  Runtime probe proved CameraUI devicePosition=0 / 'Back' for Photo/BackWide.
+  Corrected source from AVCapture's assumed rear=1 to CameraUI rear=0. Front=1.
+  Corrected build is STAGED ONLY, not installed or visually verified.
+- tools/camera/lens-switch/test_native_selector.m compiles actual production
+  implementation against real CameraUI. Uses /var/root/native-lens-test-zoom,
+  never real lens control file. Passed selections, forwarding, front restoration
+  and rear re-entry before numeric-position correction; corrected version builds
+  but device rerun pending. Build/sign script and diff checks pass.
+- User reported possible overheating and said restarting. STOPPED ALL device
+  access; phone lock released. Wait for explicit user readiness before testing.
+  No thermal cause established; don't call native selector done yet.
+- Installed lens library is the revised delegate candidate BEFORE position fix,
+  so only1x expected. NativeZoomProbe.dylib is still installed (4s runtime dump
+  timer); REMOVE its dylib/plist first when device ready, keep private debug
+  backups outside TweakInject. Prior probe backup is /var/root/NativeZoomProbe-debug.dylib.
+- Working overlay rollback is /var/root/RedwoodCameraLenses-overlay-rollback.dylib.
+  Staged native build: workspace build/camera-aux-latest-20261115/native-lenses/.
+  No reboot required for installing lens UI; restart Camera only.
+- After restart runtime Camera tweak-loader entry may disappear. Read current
+  kern.exec_inject and append Camera ONLY to existing libredwood-tweaks entry;
+  do not overwrite other entries from backups. Root/system/loader untouched.
+- Next when ready: reacquire shared phone lock, disable debug probe, verify heat
+  settled/phone state, install corrected native library, isolated test rerun,
+  confirm native0.6 and1x on rear plus front controls restoration. Use working
+  overlay rollback if Camera becomes unstable. Recheck backend override remains
+  enabled before interpreting a switch failure.
+
+## Native dial and mapping-exhaustion panic (2026-11-16)
+
+User confirmed native toggle AND dragging work, then reported glitches and a
+floor near0.9. Selection-only native mode was replaced with native dual-camera
+zoom mode. Front remains on original controls. Late CameraUI resolution fixed:
+resolve class/ABI inside timer, not once before CameraUI loads. Actual CameraUI
+isolated device tests pass toggle/drag file writes and front restoration.
+
+Phone entered Log access. Preserved private native-dual-crash.bin/.txt. Exact
+matching kernel UUID6FE55079-68BD-3E83-87B2-D2245CFAD2D1 symbolicates panic:
+kmem_alloc -> io_map -> ax_receiver_begin_mode -> cam_s20_aux_run -> stream.
+Receiver recreated permanent ml_io_map mappings on every restart. Added bounded,
+mutex-protected range cache shared by ALL S20 camera mapping callsites, including
+main/front helper mappings, avoiding repeated permanent allocations. Host test:
+10000 repeated requests use one underlying mapping; subranges, failed retry,
+overflow and capacity refusal pass. Actual receiver sanitizer tests still pass.
+Kernel rebuilt00:33. Previous slot read from device and matched29986a7f... exactly.
+New slot SHA782d77769322b9e4478f2943fac4bb43b93fd0e905a25ac63328d732323726c3;
+private map-cache-candidate.json records other hashes. Installation pending.
+
+User requests preferred previous-port0.9 ultra-wide view as default, labeled1x.
+Staged UI uses internal values unchanged, display scale /0.9. This means nominal
+minimum~0.67 and primary~1.1 on the custom scale. Samsung stock SM-G980F manual
+calls ultra-wide0.5, NOT our original nominal0.6. This is no optical calibration;
+do not blindly change RAW crop denominator to0.5 or it will crop full-wide frames.
+Manual mirror: https://device.report/m/0a837a65ad3f8b3d8da28aabaeef3a2b9ddd067d12a4f09b9317304bcf5cf848
+Scaled UI built but NOT transferred: SCP failed as phone entered Log access.
+Last installed UI is dual mode +0.9 default/floor correction with old labels.
+No debug probe dylib/plist remains in TweakInject. Camera injection runtime entry
+will need restoring after reboot, preserving all other entries. Next: kernel-only
+flash/readback under existing camera-test reboot authorization, then isolated
+scaled UI test, install and verify both preferred view and range with user.
+
+## Native controls accepted; primary audit in progress (2026-11-16)
+
+Mapping-cache kernel installed and independently read back; running00:33:05.
+Four alternating driver captures3/1/3/1 passed36 frames each (~1.8–2.0s ultra,
+~4.6s primary INCLUDING36frames). User confirmed native0.9 default, full0.5
+range, primary1x and dragging all work. They report1x->0.9 instant, reverse slow.
+Final request CANCELS fake1x labeling: stock-style0.5 ultra minimum/crop denominator,
+0.9 default (just below switch),1x physical primary. Updated UI+media installed.
+Default route written before Camera graph starts to avoid redundant main startup.
+Native delegate forwards graph zoom only on target change, restores fractional
+range/dial against primary graph's1x floor, resets old primary digital crop when
+crossing lenses. Existing front and UW colours accepted by user; preserve them.
+
+Source adds rear Photo startup preferences in native tweak and changes generic
+inject.c's OLD front-reset preference to rear for future full builds. Revised UI
+with explicit rear preference is built but not installed yet (keep user at1x for
+primary audit). Generic inject source not rebuilt/deployed. Runtime Camera tweak
+injection still requires root-image integration for reboot persistence.
+
+Primary audit: sensor1 RAW2016x1512/GRBG matches2LD; all3 tracked2LD tables exactly
+match Samsung source. Primary per-sensor CCM differs from front/UW; no copiedUW
+matrix found. Legacy filename camera-s5khm2sd.isp is an alias, not sensor identity.
+Live primary capture gain422/32 (~13.2x), exposure20436*1468ns (~30ms), private
+primary-audit/primary-live.raw/.json. Do NOT infer dark calibration from scene RAW.
+Phone logs show thermal throttling around72–75C and CPU ISP bottleneck. Don't
+raise thermal limits or keep other sensors streaming to improve FPS.
+
+CONFIRMED voltage mismatch: while user left rear1x active, cam.pmic1 dump at
+primary-audit/active-primary-pmic02-map.txt shows S2MPB02 LDO1 register1e=98:
+enabled, selector18 (0.9V). Board requirement is1.05V, selector24. Prior source
+audit also requires PMIC03 LDO2=selector1c and LDO5=selector2e. Main startup
+currently preserves selectors and only enables rails. Next primary-only patch
+must set fixed board voltages while OFF, snapshot/readback and restore them on
+failure/shutdown/warm-cool; leave all front/UW tuning untouched. Not yet a proven
+explanation for image quality. User permits primary1x as temporary test default.
+
+## Primary image fixed and accepted; full-resolution audit requested (Nov16)
+
+User explicitly wants complete primary audit/full native resolution, AF/tap,
+FPS, switching, permanent integration and private push. Preserve front/UW image
+processing, which user calls perfect. Native zoom labels MUST remain truthful:
+0.5 fullUW,0.9UW preferred default,1x physical primary. Primary test default1x
+is temporarily selected by cache/redwood-primary-test-default; remove at finish.
+
+Voltage-only first trial captured36 RAW frames but subsequent Camera was black.
+User explicitly said KEEP correct1.05V and diagnose rather than roll back. Found
+pre-existing cam_s20_pmic03_bits used saved before value: restore-to-off shortcut
+never actually disabled rails, and enable clobbered updated voltage selectors.
+Fixed it to read CURRENT state, preserve selectors, compare/write/readback actual
+state. Portable regression tests cover selectors + actual off + enable faults.
+Power-fix kernel b36734da built01:03:40 passed main->UW->main36frames each. User:
+'yessss!!!! ... color distortion ... gone'. This corrects all3 primary dedicated
+selectors: P02 LDO1 PHY1.05; P03 LDO2 core1.05; P03 LDO5 analog2.95.
+
+Covered-lens evidence after power fix: user confirmed opaque rear coverage,
+Camera closed. Eight captures:16 and20436 lines, gain32/128/256/512. Median all
+four sites64/64/65/66 respectively; std~0.45/1.0/1.5/2.4. Old primary gain/site
+black tables18..64 were UNDERPOWER workarounds and are invalid now. Disabled old
+BINNED table. User says 'very very much better'. Full-mode band/Bayer workarounds
+still require auditing; don't blindly apply them to native frames. Standard sRGB
+gamma kept; optional primary contrast override prepared, global/front/UW unchanged.
+Private covered/summary.json contains metadata, no calibration dumped into git.
+
+Current accepted media has primary-only AE/AWB samples every8 cells instead4:
+11970 vs47628; host gradient means differ<1%, front/UW stats bit-identical.
+Host stats CPU benchmark~2.7x faster, NOT a measured2.7x cameraFPS promise.
+Fresh-build corrected black64 is default; old table only with explicit
+redwood-primary-legacy-black. Previous live positive flag header-black removed.
+Camera data arrives at30fps; CPU rendering/thermals still constrain app FPS.
+
+Speed: added root-only bounded camera_rear_i2c=1/2 sysctl. Current running kernel
+3cc87db1, built01:09:08, default2 but set LIVE to1. Four cold trials forced diag2:
+2us4.700s,1us3.699s,2us4.692s,1us3.631s, all36frames (includes1.2s frames).
+Existing global-upload NACK fallback stays2 for remainder of boot. User confirmed
+'better speed', image good. A final kernel with default1 is BUILT, NOT installed:
+primary-audit/fast-default-build.log; source modified accordingly. Cold secondary
+sensor table upload still prevents instantaneous UW->primary; don't keep all
+sensors active. Native full4032x3024 primary RAW+36frames also PASSED at1us,
+primary-audit/native-full.raw/.json and native-full-probe.txt. Current Camera still
+uses2016x1512 RAW and advertises4032x3024 still output (upsampling): user explicitly
+wants to move to native primary, so full-path work is next.
+
+Video froze when zooming1x->5x, notUW range. Removed rear delegate forwarding to
+D22 graph and routed BOTH primary andUW digital crop through rear control file.
+Original primary worker now uses rear_requested_zoom(s), same as physical-route
+selector and applied-crop metadata. Graph remains fixed, prevents device changes
+mid-video. Front delegates continue forwarding/restoring normally. User confirmed
+'Zoom works without freezing'. Current installed files are fixed-graph-zoom media
+and newest native UI; backup pair in /var/root/*before-fixed-graph*. No debug probe
+remains active. Runtime Camera injection restored after each reboot; permanence
+requires adding Camera to live root etc/inject.conf (tracked build.sh already
+includes it). User NOW explicitly authorizes permanent integration; inspect current
+root image rather than stale staged tree. Root-swap doc describes13,467,648-byte
+root at recovery0x3400000; preserve entire live root except intended inject rule.
+
+Next full-primary audit: Samsung driver declares GRBG for2LD, all modes. Legacy
+full path forces RGGB and estimates dark band at row1914 due old bad-power scenes.
+Audit/disable those gated workarounds for a controlled full native trial, verify
+covered RAW full black levels and actual CFA with scene, thenAF/tap and saved JPEG
+resolution. Kernel full mode exists (.b=3); pinned original worker explicitly asks
+.b=2 in two places and must select3 for full trial. Source Photo format already
+4032x3024. User prefers native full primary; measureFPS/heat, don't fake resolution
+or call the current upsampled binned still native. Primary gamma0.35 S-curve remains
+with standard sRGB; don't remove gamma itself as a voltage workaround.
+
+## 2026-11-16 final close-focus test / approval gate
+
+See docs/x1slte-camera-wrapup.md. User confirms rear primary close focus now
+works (“10x better”). Corrected prepared AF cap from511 motor units to1022
+userland-scaled units; actual kernel shifts right1. Quantized-motor host tests,
+front preservation checks, zoom ROI and signed media build pass. Reversible test
+library installed, hash69621b4a...; previous library retained on phone and host.
+No image flash/reboot in this turn. Clean-install image integration and prebuilt
+artifacts prepared in working tree, NOT deployed/merged/pushed. Latest user
+requires final testing and explicit “OK, push it” before permanent deployment,
+local branch merges and remote push. This overrides earlier blanket merge request.

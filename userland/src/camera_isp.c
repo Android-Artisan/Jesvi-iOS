@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -25,6 +26,7 @@ isp_init(struct isp *isp)
 	isp->digital = 1;
 	isp->digital_next = 1;
 	isp->zoom = 1;
+	for (int i = 0; i < 4; i++) isp->black.site[i] = isp->black.low[i] = 64;
 	for (int i = 0; i < 3; i++) {
 		isp->ccm[i][i] = 1;
 	}
@@ -58,38 +60,100 @@ cell_places(uint32_t bayer, int *r, int *b)
 	*b = blue[bayer & 3];
 }
 
-/* the sensor's black level (the camera's pedestal): 64 for the front SAK3J1, lower for the rear S5K2LD (camera_device.c) */
-int isp_black = 64;
-int isp_black4[4] = { 64, 64, 64, 64 };     /* per site of the 2x2 cell (row 0 x0, x1, row 1 x0, x1) */
-/*
- * A second black for the lower band of the frame (the rear S5K2LD's 12 MP mode: rows from ~1914 down have a lower
- * black than the rows above, a hard line in every dark picture, 2026-11-12). isp_band[k] is the lower band of the
- * frame buffer k as a byte range of the raw data; isp_band_row the first row of it (0: no band).
- */
-int isp_black4_low[4] = { 64, 64, 64, 64 };
-const uint8_t *isp_band[2][2];
-int isp_band_row;
-
-/* the four values of the cell at cx of the pair of lines from `top' (above black, 0 and up) */
-static inline void
-cell(const uint8_t *top, size_t stride, uint32_t cx, int v[4])
+/* Private module dark calibration. Reject partial, nonfinite or mismatched profiles. */
+bool
+isp_load_black_calibration(struct isp_black_calibration *cal, const char *path)
 {
-	const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + stride;
-	unsigned o = (cx & 1) * 2;
-	const int *bl = isp_band_row > 0 && ((top >= isp_band[0][0] && top < isp_band[0][1]) ||
-	    (top >= isp_band[1][0] && top < isp_band[1][1])) ? isp_black4_low : isp_black4;
+    FILE *fp = fopen(path, "rb");
+    char magic[8];
+    memset(cal, 0, sizeof(*cal));
+    if (!fp) return false;
+    bool ok = fread(magic, 1, 8, fp) == 8 && memcmp(magic, "RWBLK001", 8) == 0 &&
+        fread(&cal->width, sizeof(uint32_t), 10, fp) == 10 &&
+        cal->width == 2016 && cal->height == 1512 && cal->bayer <= 3 &&
+        cal->line_ns == 1468 && cal->frame_lines == 22564 &&
+        cal->exposure_lines >= 16 && cal->exposure_lines <= 22524 &&
+        cal->profiles >= 2 && cal->profiles <= BLACK_PROFILES &&
+        cal->grid_w == BLACK_GRID_W && cal->grid_h == BLACK_GRID_H && cal->gain_unity == 32;
+    for (unsigned i = 0; ok && i < cal->profiles; i++) {
+        ok = fread(&cal->profile[i].gain, 4, 1, fp) == 1 &&
+            fread(cal->profile[i].grid, sizeof(cal->profile[i].grid), 1, fp) == 1 &&
+            cal->profile[i].gain >= 32 && cal->profile[i].gain <= 512 &&
+            (i == 0 || cal->profile[i].gain > cal->profile[i-1].gain);
+        for (unsigned k = 0; ok && k < 4; k++)
+            for (unsigned y = 0; ok && y < BLACK_GRID_H; y++)
+                for (unsigned x = 0; ok && x < BLACK_GRID_W; x++) {
+                    float v = cal->profile[i].grid[k][y][x];
+                    ok = isfinite(v) && v >= 0 && v <= 256;
+                }
+    }
+    if (ok) ok = fgetc(fp) == EOF && !ferror(fp);
+    fclose(fp);
+    if (!ok) memset(cal, 0, sizeof(*cal));
+    return ok;
+}
 
-	v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - bl[0];
-	v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - bl[1];
-	v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - bl[2];
-	v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - bl[3];
-	for (int i = 0; i < 4; i++) {
-		v[i] = v[i] < 0 ? 0 : v[i];
-	}
+bool
+isp_apply_black_calibration(struct isp *isp, const struct isp_black_calibration *cal,
+    const struct redwood_camera_frame *f)
+{
+    isp->black.spatial = false;
+    if (!cal || cal->profiles < 2 || cal->profiles > BLACK_PROFILES || f->sensor != 1 || f->format != 1 ||
+        f->width != cal->width || f->height != cal->height || f->bayer != cal->bayer ||
+        f->line_ns != cal->line_ns || f->frame_lines != cal->frame_lines ||
+        f->exposure_lines != cal->exposure_lines || f->gain_unity != cal->gain_unity ||
+        f->gain < cal->profile[0].gain || f->gain > cal->profile[cal->profiles-1].gain) return false;
+    unsigned a = 0;
+    while (a + 2 < cal->profiles && f->gain > cal->profile[a+1].gain) a++;
+    unsigned b = a + 1;
+    float t = (float)(f->gain - cal->profile[a].gain) / (cal->profile[b].gain - cal->profile[a].gain);
+    for (unsigned k = 0; k < 4; k++)
+        for (unsigned y = 0; y < BLACK_GRID_H; y++)
+            for (unsigned x = 0; x < BLACK_GRID_W; x++) {
+                float lo = cal->profile[a].grid[k][y][x], hi = cal->profile[b].grid[k][y][x];
+                isp->black.grid[k][y][x] = lo + t * (hi - lo);
+            }
+    isp->black.spatial = true;
+    return true;
+}
+
+/* Tile-centred coordinates, clamped at outer centres. No scene-derived black estimate. */
+static inline int
+black_at(const struct isp *isp, const struct redwood_camera_frame *f, unsigned x, unsigned y)
+{
+    if (!isp) return (int)f->black;
+    unsigned site = (y & 1) * 2 + (x & 1);
+    if (!isp->black.spatial)
+        return (isp->black.band_row && y >= isp->black.band_row ? isp->black.low : isp->black.site)[site];
+    float gx = ((float)x + 0.5f) * BLACK_GRID_W / f->width - 0.5f;
+    float gy = ((float)y + 0.5f) * BLACK_GRID_H / f->height - 0.5f;
+    gx = gx < 0 ? 0 : gx > BLACK_GRID_W-1 ? BLACK_GRID_W-1 : gx;
+    gy = gy < 0 ? 0 : gy > BLACK_GRID_H-1 ? BLACK_GRID_H-1 : gy;
+    unsigned ix = (unsigned)gx, iy = (unsigned)gy;
+    unsigned jx = ix+1 < BLACK_GRID_W ? ix+1 : ix, jy = iy+1 < BLACK_GRID_H ? iy+1 : iy;
+    float tx = gx-ix, ty = gy-iy;
+    const float (*g)[BLACK_GRID_W] = isp->black.grid[site];
+    float top = g[iy][ix] + tx*(g[iy][jx]-g[iy][ix]);
+    float bottom = g[jy][ix] + tx*(g[jy][jx]-g[jy][ix]);
+    return (int)(top + ty*(bottom-top) + 0.5f);
+}
+
+/* Decode a raw 2x2 cell using this frame's immutable black correction. */
+static inline void
+cell(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, uint32_t cy, uint32_t cx, int v[4])
+{
+    const uint8_t *top = raw + (size_t)cy * 2 * f->stride;
+    const uint8_t *g0 = top + (size_t)(cx >> 1) * 5, *g1 = g0 + f->stride;
+    unsigned o = (cx & 1) * 2;
+    v[0] = (g0[o] << 2 | (g0[4] >> (o * 2) & 3)) - black_at(isp, f, cx*2, cy*2);
+    v[1] = (g0[o + 1] << 2 | (g0[4] >> (o * 2 + 2) & 3)) - black_at(isp, f, cx*2+1, cy*2);
+    v[2] = (g1[o] << 2 | (g1[4] >> (o * 2) & 3)) - black_at(isp, f, cx*2, cy*2+1);
+    v[3] = (g1[o + 1] << 2 | (g1[4] >> (o * 2 + 2) & 3)) - black_at(isp, f, cx*2+1, cy*2+1);
+    for (int i = 0; i < 4; i++) v[i] = v[i] < 0 ? 0 : v[i];
 }
 
 float
-isp_sharpness(const struct redwood_camera_frame *f, const uint8_t *raw, float x0, float y0, float x1, float y1, float *level)
+isp_sharpness(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, float x0, float y0, float x1, float y1, float *level)
 {
 	enum { BLOCK = 4, MAX_BLOCKS = 512 };
 	uint32_t cells_w = f->width / 2, cells_h = f->height / 2;
@@ -116,12 +180,11 @@ isp_sharpness(const struct redwood_camera_frame *f, const uint8_t *raw, float x0
 			uint32_t g = 0;
 
 			for (uint32_t cy = by; cy < by + BLOCK; cy++) {
-				const uint8_t *top = raw + (size_t)cy * 2 * f->stride;
 
 				for (uint32_t cx = cx0 + bx * BLOCK; cx < cx0 + bx * BLOCK + BLOCK; cx++) {
 					int v[4];
 
-					cell(top, f->stride, cx, v);
+					cell(isp, f, raw, cy, cx, v);
 					for (int i = 0; i < 4; i++) {
 						g += i != r && i != b ? (uint32_t)v[i] : 0;
 					}
@@ -147,6 +210,29 @@ isp_sharpness(const struct redwood_camera_frame *f, const uint8_t *raw, float x0
 	return mean > 0 ? (float)(steps / n / (mean * mean)) : 0;
 }
 
+uint32_t
+isp_window_green(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw,
+    float x0, float y0, float x1, float y1, double *mean)
+{
+    uint32_t count = 0, cw = f->width / 2, ch = f->height / 2;
+    double sum = 0;
+    int r, b;
+
+    *mean = 0;
+    if (!(x0 >= 0 && y0 >= 0 && x1 <= 1 && y1 <= 1 && x0 < x1 && y0 < y1)) return 0;
+    cell_places(f->bayer, &r, &b);
+    for (uint32_t cy = (uint32_t)(y0 * ch); cy < (uint32_t)(y1 * ch); cy += 6) {
+        for (uint32_t cx = (uint32_t)(x0 * cw); cx < (uint32_t)(x1 * cw); cx += 6) {
+            int v[4];
+            cell(isp, f, raw, cy, cx, v);
+            for (int k = 0; k < 4; k++) if (k != r && k != b) sum += v[k] / 2.0;
+            count++;
+        }
+    }
+    if (count) *mean = sum / count;
+    return count;
+}
+
 static inline void lsc_at(const struct isp *isp, float u, float v, float g[3]);
 
 void
@@ -160,13 +246,12 @@ isp_measure(const struct isp *isp, const struct redwood_camera_frame *f, const u
 	memset(s, 0, sizeof(*s));
 	cell_places(f->bayer, &r, &b);
 	for (uint32_t cy = 0; cy < cells_h; cy += 4) {
-		const uint8_t *top = raw + (size_t)cy * 2 * f->stride;
 		float v_pos = cells_h > 1 ? (float)cy / (cells_h - 1) : 0;
 
 		for (uint32_t cx = 0; cx < cells_w; cx += 4) {
 			int v[4], g = 0, top_v = 0;
 
-			cell(top, f->stride, cx, v);
+			cell(isp, f, raw, cy, cx, v);
 			for (int i = 0; i < 4; i++) {
 				g += i != r && i != b ? v[i] : 0;
 				top_v = v[i] > top_v ? v[i] : top_v;
@@ -568,7 +653,6 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		cy1 = cy0 + 1 > cells_h - 1 ? cells_h - 1 : cy0 + 1;
 		ty = fy < (float)cy0 ? 0 : fy - cy0;
 		v_at = cells_h > 1 ? (float)cy0 / (cells_h - 1) : 0;
-		const uint8_t *t0 = raw + (size_t)cy0 * 2 * f->stride, *t1 = raw + (size_t)cy1 * 2 * f->stride;
 		float gains[3] = { 1, 1, 1 };
 		/*
 		 * The two rows of cells this line is between, decoded once into R, G (the two greens' mean), B (2026-11-12:
@@ -578,7 +662,9 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		static __thread float *rows_rgb[2];
 		static __thread uint32_t rows_cap, rows_cy[2] = { ~0u, ~0u };
 		static __thread const uint8_t *rows_raw;
-		static __thread uint64_t rows_seq;
+		static __thread uint64_t rows_seq, rows_time;
+		static __thread struct isp_black_levels rows_black;
+		static __thread uint32_t rows_bayer, rows_stride, rows_width, rows_height, rows_sensor;
 
 		if (cells_w > rows_cap) {
 			for (int k = 0; k < 2; k++) {
@@ -588,12 +674,20 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			rows_cap = cells_w;
 			rows_cy[0] = rows_cy[1] = ~0u;
 		}
-		if (rows_raw != raw || rows_seq != f->sequence) {
+		if (rows_raw != raw || rows_seq != f->sequence || rows_time != f->time || rows_bayer != f->bayer ||
+		    rows_stride != f->stride || rows_width != f->width || rows_height != f->height || rows_sensor != f->sensor || memcmp(&rows_black, &isp->black, sizeof(rows_black)) != 0) {
+			rows_black = isp->black;
+			rows_bayer = f->bayer;
+			rows_stride = f->stride;
+			rows_width = f->width;
+			rows_height = f->height;
+			rows_sensor = f->sensor;
+			rows_time = f->time;
 			rows_raw = raw;
 			rows_seq = f->sequence;
 			rows_cy[0] = rows_cy[1] = ~0u;
 		}
-		for (int k = 0; k < 2 && rows_rgb[1] != NULL; k++) {
+		for (int k = 0; k < 2 && rows_rgb[0] != NULL && rows_rgb[1] != NULL; k++) {
 			uint32_t want = k ? cy1 : cy0;
 
 			if (rows_cy[k] == want) {
@@ -608,13 +702,12 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 				rows_cy[k] = want;
 				continue;
 			}
-			const uint8_t *top = raw + (size_t)want * 2 * f->stride;
 			float *o = rows_rgb[k];
 
 			for (uint32_t cx = 0; cx < cells_w; cx++, o += 3) {
 				int v[4], g = 0;
 
-				cell(top, f->stride, cx, v);
+				cell(isp, f, raw, want, cx, v);
 				for (int j = 0; j < 4; j++) {
 					g += j != r && j != b ? v[j] : 0;
 				}
@@ -624,8 +717,6 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			}
 			rows_cy[k] = want;
 		}
-		(void)t0;
-		(void)t1;
 
 		for (uint32_t x = 0; x < width; x++) {
 			float fx = x0 + (x + 0.5f) * cw / width - 0.5f, tx, c[3] = { 0, 0, 0 };
@@ -634,7 +725,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 			cx0 = cx0 > cells_w - 1 ? cells_w - 1 : cx0;
 			cx1 = cx0 + 1 > cells_w - 1 ? cells_w - 1 : cx0 + 1;
 			tx = fx < (float)cx0 ? 0 : fx - cx0;
-			if (rows_rgb[1] != NULL) {
+			if (rows_rgb[0] != NULL && rows_rgb[1] != NULL) {
 				const float *a0 = rows_rgb[0] + 3 * cx0, *a1 = rows_rgb[0] + 3 * cx1;
 				const float *b0 = rows_rgb[1] + 3 * cx0, *b1 = rows_rgb[1] + 3 * cx1;
 				float w00 = (1 - tx) * (1 - ty), w01 = tx * (1 - ty), w10 = (1 - tx) * ty, w11 = tx * ty;
@@ -646,7 +737,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 				int v[4];
 				float w = (k & 1 ? tx : 1 - tx) * (k & 2 ? ty : 1 - ty);
 
-				cell(k & 2 ? t1 : t0, f->stride, k & 1 ? cx1 : cx0, v);
+				cell(isp, f, raw, k & 2 ? cy1 : cy0, k & 1 ? cx1 : cx0, v);
 				c[0] += w * v[r];
 				c[2] += w * v[b];
 				for (int j = 0; j < 4; j++) {
@@ -661,7 +752,6 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		return;
 	}
 	uint32_t cy = y0 + (uint32_t)((uint64_t)row * ch / height);
-	const uint8_t *top = raw + (size_t)cy * 2 * f->stride;
 	uint64_t step = ((uint64_t)cw << 16) / width, at = (uint64_t)x0 << 16;
 	float v_pos = cells_h > 1 ? (float)cy / (cells_h - 1) : 0, gains[3] = { 1, 1, 1 };
 
@@ -669,7 +759,7 @@ render_line(const struct isp *isp, const struct redwood_camera_frame *f, const u
 		uint32_t cx = (uint32_t)(at >> 16);
 		int v[4], g = 0;
 
-		cell(top, f->stride, cx, v);
+		cell(isp, f, raw, cy, cx, v);
 		for (int j = 0; j < 4; j++) {
 			g += j != r && j != b ? v[j] : 0;
 		}
@@ -778,17 +868,16 @@ cfa(uint32_t bayer, int colour[4])
 
 /* line y of the frame as values above black (y clamped into the frame) */
 static void
-unpack_line(const struct redwood_camera_frame *f, const uint8_t *raw, int y, int *out)
+unpack_line(const struct isp *isp, const struct redwood_camera_frame *f, const uint8_t *raw, int y, int *out)
 {
 	y = y < 0 ? 0 : y >= (int)f->height ? (int)f->height - 1 : y;
 	const uint8_t *line = raw + (size_t)y * f->stride;
-	const int *bl = isp_band_row > 0 && y >= isp_band_row && f->width == 4032 ? isp_black4_low : isp_black4;
 
 	for (uint32_t x = 0; x + 3 < f->width + 3 && x < f->width; x += 4) {
 		const uint8_t *g = line + (x >> 2) * 5;
 
 		for (int i = 0; i < 4 && x + i < f->width; i++) {
-			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - bl[(y & 1) * 2 + ((x + i) & 1)];
+			int v = (g[i] << 2 | (g[4] >> (i * 2) & 3)) - black_at(isp, f, x + i, (unsigned)y);
 
 			out[x + i] = v < 0 ? 0 : v;
 		}
@@ -860,7 +949,7 @@ isp_render_full_nv12(const struct isp *isp, const struct redwood_camera_frame *f
 	pipe_init(isp, &p);
 	for (uint32_t row = first_row & ~1u; row < end_row && row < f->height; row += 2) {
 		for (int i = 0; i < 4; i++) {
-			unpack_line(f, raw, (int)row - 1 + i, lines[i]);
+			unpack_line(isp, f, raw, (int)row - 1 + i, lines[i]);
 		}
 		const int *const above[3] = { lines[0], lines[1], lines[2] }, *const below[3] = { lines[1], lines[2], lines[3] };
 
@@ -879,7 +968,7 @@ demosaic_row(const struct isp *isp, const struct redwood_camera_frame *f, const 
     const struct pipe *p, int *const l[3], uint8_t *rgb)
 {
 	for (int i = 0; i < 3; i++) {
-		unpack_line(f, raw, (int)row - 1 + i, l[i]);
+		unpack_line(isp, f, raw, (int)row - 1 + i, l[i]);
 	}
 	full_line(isp, f, (const int *const *)l, row, colour, p, rgb);
 }
@@ -996,7 +1085,7 @@ isp_lsc_from_flat(struct isp *isp, const struct redwood_camera_frame *f, const u
 					if (cx < 0 || cy < 0 || cx >= (int)cells_w || cy >= (int)cells_h) {
 						continue;
 					}
-					cell(raw + (size_t)cy * 2 * f->stride, f->stride, (uint32_t)cx, v);
+					cell(isp, f, raw, (uint32_t)cy, (uint32_t)cx, v);
 					sum[0] += v[r];
 					sum[2] += v[b];
 					for (int j = 0; j < 4; j++) {

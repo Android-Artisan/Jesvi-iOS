@@ -64,6 +64,11 @@ $DYN -framework CoreFoundation -framework IOKit -o obj/metal_props src/metal_pro
 # whenever it changes -- /menu (hand back to the loader) lives in it
 $DYN -o obj/rwlogd src/rwlogd.c
 cp obj/rwlogd ../prebuilt/userland/rwlogd   # the macOS path copies prebuilt/* into obj/, so that is where it must land
+# The macOS image path uses PREBUILT=1 below: refresh AOD's own tracked inputs
+# too, so a fresh root never depends on an older data-volume tweak.
+bash ../tools/aod/build.sh
+cp ../out/aod/libredwood-alwayson.dylib ../prebuilt/userland/libredwood-alwayson.dylib
+cp ../out/aod/aod-preview ../prebuilt/userland/aod-preview
 # mali2metal's marker for scripts (src/m2m_mark.c; the tour, m2m.tour, uses it)
 $DYN -o obj/m2m_mark src/m2m_mark.c
 # preferences without Settings' UI (x1slte: WebKit's VP9/VP8 software decoders; src/prefset.c)

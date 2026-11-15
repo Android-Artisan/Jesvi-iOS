@@ -124,10 +124,24 @@ count_fingers(uint32_t type, uint32_t finger)
 uint64_t redwood_touch_down_at, redwood_touch_last_at;
 extern int redwood_gov_wake;            /* the clock governor's wake-up (redwood_exynos_acpm.c) */
 
+/* the touch panel's fingers right now (bit per slot) and the last one's place, 0-65535: the fingerprint sensor's
+ * finger-on-display trigger (bsd/dev/redwood_teegris.c fp_run) */
+volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
+
 static void
 touch_post(uint32_t type, uint32_t finger, uint32_t x, uint32_t y, bool from_driver)
 {
 	struct redwood_touch *t;
+
+	if (from_driver && finger < 32) {
+		if (type == REDWOOD_TOUCH_DOWN || type == REDWOOD_TOUCH_MOVE) {
+			redwood_touch_x = x;
+			redwood_touch_y = y;
+			redwood_touch_mask |= 1u << finger;
+		} else if (type == REDWOOD_TOUCH_UP) {
+			redwood_touch_mask &= ~(1u << finger);
+		}
+	}
 
 	lck_mtx_lock(&touch_lock);
 	if (touch_tail - touch_head == TOUCH_QUEUE) {

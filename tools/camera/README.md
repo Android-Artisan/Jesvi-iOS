@@ -1,5 +1,15 @@
 # Galaxy S20 camera bring-up tools
 
+Implementation status and host-only build/test commands: [primary camera quality fixes](../../docs/x1slte-camera-implementation.md).
+
+Research preservation and complete handoff: [S20 camera research archive](../../docs/x1slte-camera-research-handoff.md).
+
+Current offline stock-versus-port quality investigation: [x1slte-camera-quality](../../docs/x1slte-camera-quality.md).
+Typed stock tuning decoder and reproduction commands: [ISV8 format report](../../docs/x1slte-camera-tuning-format.md).
+Latest: [configuration audit and verified colour-helper reconstruction](../../docs/x1slte-camera-config-audit.md).
+The dated bring-up status below is historical; physical rear capture now works.
+
+
 The S20 is Exynos 990. Keep its camera diagnostics separate from `cam=` and
 `bsd/dev/redwood_camera.c`, which target the Qualcomm POCO X5 Pro. Bring-up priority is **front SAK3J1 first**, because the rear main S5K2LD currently does not ACK on its documented bus; switch back to rear main after the front CSI path is proven. Secondary rear modules follow.
 

@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/event.h>
 #include <notify.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -241,6 +242,7 @@ static int bound(int type,int port)
     if (bind(s,(struct sockaddr *)&l,sizeof(l))) {close(s);return -1;}
     return s;
 }
+
 static const char *hdr(const char *msg,const char *name,char *out,size_t cap)
 {   /* one header's value, folded lines joined */
     size_t L=strlen(name);out[0]=0;
@@ -275,6 +277,39 @@ static int recv_pending(int s)
 {
     for (int i=0;i<16;i++) if (recv_left[i].fd==s+1 && recv_left[i].n) return 1;
     return 0;
+}
+/* a connection is gone: drop what was kept of it (the next socket can get the same number) */
+static void recv_forget(int s)
+{
+    for (int i=0;i<16;i++) if (recv_left[i].fd==s+1) {recv_left[i].n=0;recv_left[i].fd=0;}
+}
+/* The network closes our registration connection now and then (minutes after a text, 2026-11-15 08:07). The
+ * registration itself (contact = our port-s, the IPsec SAs) is still good: open the connection again from port-c to
+ * the P-CSCF's protected port instead of throwing the registration away. A full restart took 10-90 s, and texts that
+ * came in meanwhile waited for the SMSC's next try (minutes): "receiving is unpredictable".
+ * The connect has a 3 s limit: if the network dropped the SAs too, the SYN goes nowhere, and a blocking connect would
+ * stall calls and texts for over a minute. Then the caller starts afresh. */
+static int reg_reopen(int old,const struct sockaddr_in6 *to,int portc)
+{
+    if (old>=0) {recv_forget(old);close(old);}
+    for (int t=0;t<2;t++) {
+        int s=bound(SOCK_STREAM,portc);if (s<0) {usleep(300000);continue;}
+        int fl=fcntl(s,F_GETFL,0),ok=0;fcntl(s,F_SETFL,fl|O_NONBLOCK);
+        if (!connect(s,(const struct sockaddr *)to,sizeof(*to))) ok=1;
+        else if (errno==EINPROGRESS) {
+            struct pollfd w={s,POLLOUT,0};int err=0;socklen_t el=sizeof(err);
+            if (poll(&w,1,3000)==1 && !getsockopt(s,SOL_SOCKET,SO_ERROR,&err,&el) && !err) ok=1;
+        }
+        if (ok) {
+            fcntl(s,F_SETFL,fl);
+            int on=1,idle=30,intvl=10,cnt=3;setsockopt(s,SOL_SOCKET,SO_KEEPALIVE,&on,sizeof(on));
+            setsockopt(s,IPPROTO_TCP,TCP_KEEPALIVE,&idle,sizeof(idle));setsockopt(s,IPPROTO_TCP,TCP_KEEPINTVL,&intvl,sizeof(intvl));
+            setsockopt(s,IPPROTO_TCP,TCP_KEEPCNT,&cnt,sizeof(cnt));
+            return s;
+        }
+        close(s);
+    }
+    return -1;
 }
 static int recv_msg(int s,char *b,size_t cap,int secs)
 {   /* one SIP message from a stream (headers + Content-Length), or a datagram */
@@ -371,6 +406,53 @@ static void sms_cat_add(const char *from,unsigned ref,unsigned total,unsigned se
     for (unsigned k=0;k<total;k++) if (!sms_cat[i].part[k]) return;
     sms_cat_flush(i,1);
 }
+/* RP-ACK {0x02, ref, 0x41, 2, SMS-DELIVER-REPORT 00 00} in a MESSAGE of our own to TARGET. When it went to the SMSC
+ * (P-Asserted-Identity) and the network refuses it, it goes once more to ALT (the From URI, the old way), so the SMSC
+ * is never left without an answer (it would deliver the text again) (A, 2026-11-15). */
+static struct {uint32_t cid;uint8_t ref;char alt[300],inrep[200];time_t t;} sms_acks[8];
+static void sms_rpack(int sock,int portc,const char *target,int tlen,unsigned ref,const char *inrep,const char *alt)
+{
+    uint8_t ack[6]={0x02,(uint8_t)ref,0x41,0x02,0x00,0x00};uint32_t cid=arc4random();
+    char m[4000];int o=snprintf(m,sizeof(m),
+        "MESSAGE %.*s SIP/2.0\r\n"
+        "Via: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+        "Max-Forwards: 70\r\n"
+        "%s"
+        "From: <%s>;tag=%08x\r\n"
+        "To: <%.*s>\r\n"
+        "Call-ID: %08x@[%s]\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+        "In-Reply-To: %s\r\n"
+        "Request-Disposition: no-fork\r\n"
+        "Accept-Contact: *;+g.3gpp.smsip\r\n"
+        "Content-Type: application/vnd.3gpp.sms\r\n"
+        "Content-Length: %zu\r\n\r\n",
+        tlen,target,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
+        tlen,target,cid,cfg.ip6,inrep,sizeof(ack));
+    if (o<0 || (size_t)o+sizeof(ack)>sizeof(m)) return;
+    memcpy(m+o,ack,sizeof(ack));
+    ssize_t w=send(sock,m,(size_t)o+sizeof(ack),0);
+    printf("--> RP-ACK (ref %u) to the %s %s\n",ref,alt?"SMSC":"sender",w>0?"sent":"NOT sent");fflush(stdout);
+    if (alt && alt[0]) {   /* remember it until its answer (or 60 s) */
+        int k=0;for (int i=0;i<8;i++) if (!sms_acks[i].cid || time(NULL)-sms_acks[i].t>60) {k=i;break;}
+        sms_acks[k].cid=cid;sms_acks[k].ref=(uint8_t)ref;sms_acks[k].t=time(NULL);
+        snprintf(sms_acks[k].alt,sizeof(sms_acks[k].alt),"%s",alt);snprintf(sms_acks[k].inrep,sizeof(sms_acks[k].inrep),"%s",inrep);
+    }
+}
+/* the answer to one of our RP-ACKs: 2xx done; an error -> once more to the From URI. 1 = it was ours. */
+static int sms_ack_answer(int sock,const char *r,int portc)
+{
+    char ci[200];if (!hdr(r,"Call-ID",ci,sizeof(ci))) return 0;
+    uint32_t cid=(uint32_t)strtoul(ci,NULL,16);
+    for (int i=0;i<8;i++) if (sms_acks[i].cid && sms_acks[i].cid==cid) {
+        int code=atoi(r+8);if (code<200) return 1;
+        sms_acks[i].cid=0;
+        if (code>=300) {printf("SMS: the SMSC address refused the RP-ACK (%d): sent to the sender instead\n",code);
+            sms_rpack(sock,portc,sms_acks[i].alt,(int)strlen(sms_acks[i].alt),sms_acks[i].ref,sms_acks[i].inrep,NULL);}
+        return 1;
+    }
+    return 0;
+}
 static int sms_incoming(int sock,const char *req,size_t len,int portc)
 {
     char ct[120],cl[24],fr[300],ci[200];
@@ -394,9 +476,24 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     if (i+ul<=n && ul<sizeof(pdu)-1) {pdu[0]=0;memcpy(pdu+1,b+i,ul);ok=!sms_decode(pdu,ul+1,from,sizeof(from),text,sizeof(text),when,sizeof(when));}
     printf("SMS (IMS) from %s at %s: %s\n",from,when,ok?text:"(undecoded TPDU)");fflush(stdout);
     if (ok) {
-        unsigned cr=0,ct=0,cs=0;
-        if (sms_concat_info(pdu,ul+1,&cr,&ct,&cs)) sms_cat_add(from,cr,ct,cs,text);
-        else sms_to_inbox(from,ref,text);
+        unsigned cr=0,ct=0,cs=0;int cat=sms_concat_info(pdu,ul+1,&cr,&ct,&cs);
+        /* the same text again (same sender, SMSC time stamp, part and text) is an SMSC retry: ACK it, do not show it twice */
+        /* (kept in a file too: redwood-ims restarts every ~110 min, and an SMSC retry can come after that) */
+        static struct {uint64_t h;time_t t;} seen[32];static unsigned seen_n;static int seen_loaded;
+        if (!seen_loaded) {seen_loaded=1;FILE *q=fopen("/var/root/ims-sms-seen","rb");
+            if (q) {if (fread(seen,sizeof(seen),1,q)!=1 || fread(&seen_n,sizeof(seen_n),1,q)!=1) {memset(seen,0,sizeof(seen));seen_n=0;}fclose(q);}}
+        uint64_t h=1469598103934665603ULL;const char *parts[3]={from,when,text};
+        for (int k=0;k<3;k++) {for (const char *c=parts[k];*c;c++) h=(h^(uint8_t)*c)*1099511628211ULL;h=(h^0xff)*1099511628211ULL;}
+        h=(h^(cr<<16|cs))*1099511628211ULL;
+        time_t now=time(NULL);int dup=0;
+        /* (single texts only: parts of a long one are put together per part in sms_cat_add, which keeps one copy of each;
+         * skipping a part here after a restart would leave that text incomplete) */
+        if (!cat) for (unsigned k=0;k<32;k++) if (seen[k].h==h && now-seen[k].t<86400) dup=1;
+        if (dup) {printf("SMS: repeat of a text already delivered (SMSC retry), not shown again\n");fflush(stdout);}
+        else if (cat) sms_cat_add(from,cr,ct,cs,text);
+        else {seen[seen_n%32].h=h;seen[seen_n%32].t=now;seen_n++;
+            {FILE *q=fopen("/var/root/ims-sms-seen","wb");if (q) {fchmod(fileno(q),0600);fwrite(seen,sizeof(seen),1,q);fwrite(&seen_n,sizeof(seen_n),1,q);fclose(q);}}
+            sms_to_inbox(from,ref,text);}
     }
     FILE *f=fopen("/var/root/cell-sms.txt","a");
     if (f) {fchmod(fileno(f),0600);fprintf(f,"%llu\t%s\t%s\t",(unsigned long long)time(NULL),from,when);
@@ -407,27 +504,14 @@ static int sms_incoming(int sock,const char *req,size_t len,int portc)
     const char *u1=strchr(fr,'<'),*u2=u1?strchr(u1,'>'):NULL;if (!u1 || !u2) return 1;
     if (u2-u1-1<(long)sizeof(sms_sc_uri)) snprintf(sms_sc_uri,sizeof(sms_sc_uri),"%.*s",(int)(u2-u1-1),u1+1);
     {FILE *q=fopen("/var/root/cell-smsc","w");if (q) {fchmod(fileno(q),0600);fprintf(q,"%s\n",sms_sc_uri);for (unsigned k=0;k<sms_scl;k++) fprintf(q,"%02x",sms_sc[k]);fputc('\n',q);fclose(q);}}
-    static const uint8_t ackbody_t[]={0x02,0,0x41,0x02,0x00,0x00};uint8_t ack[sizeof(ackbody_t)];memcpy(ack,ackbody_t,sizeof(ack));ack[1]=(uint8_t)ref;
-    char m[4000];int o=snprintf(m,sizeof(m),
-        "MESSAGE %.*s SIP/2.0\r\n"
-        "Via: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
-        "Max-Forwards: 70\r\n"
-        "%s"
-        "From: <%s>;tag=%08x\r\n"
-        "To: <%.*s>\r\n"
-        "Call-ID: %08x@[%s]\r\n"
-        "CSeq: 1 MESSAGE\r\n"
-        "In-Reply-To: %s\r\n"
-        "Request-Disposition: no-fork\r\n"
-        "Accept-Contact: *;+g.3gpp.smsip\r\n"
-        "Content-Type: application/vnd.3gpp.sms\r\n"
-        "Content-Length: %zu\r\n\r\n",
-        (int)(u2-u1-1),u1+1,cfg.ip6,portc,arc4random(),sms_route,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random(),
-        (int)(u2-u1-1),u1+1,arc4random(),cfg.ip6,ci,sizeof(ack));
-    if (o<0 || (size_t)o+sizeof(ack)>sizeof(m)) return 1;
-    memcpy(m+o,ack,sizeof(ack));
-    ssize_t w=send(sock,m,(size_t)o+sizeof(ack),0);
-    printf("--> RP-ACK (ref %u) %s\n",ref,w>0?"sent":"NOT sent");fflush(stdout);
+    /* The RP-ACK goes to the SMSC: the URI in P-Asserted-Identity of its MESSAGE (TS 24.341 5.3.2.4; Jio: sip:A2P@...).
+     * The From URI (the originator's number) is only the fallback: sent there, Jio sometimes answers 403 and the SMSC,
+     * never acknowledged, delivers the same text again after ~1 and ~5 min (A, 2026-11-15: triple texts). */
+    char pai[300];const char *t1=u1,*t2=u2;
+    if (hdr(req,"P-Asserted-Identity",pai,sizeof(pai))) {const char *p1=strchr(pai,'<'),*p2=p1?strchr(p1,'>'):NULL;
+        if (p1 && p2 && p2-p1>5 && !strncmp(p1+1,"sip:",4)) {t1=p1;t2=p2;}}
+    char alt[300]="";if (t1!=u1) snprintf(alt,sizeof(alt),"%.*s",(int)(u2-u1-1),u1+1);
+    sms_rpack(sock,portc,t1+1,(int)(t2-t1-1),ref,ci,t1!=u1?alt:NULL);
     return 1;
 }
 
@@ -455,7 +539,8 @@ static int sms_utf16(const char *t,uint16_t *u,int cap)
     return o;
 }
 /* the Messages app's pending sends: every part's RP ref points at a job; the job answers when all parts did */
-static struct {char id[80];int left,failed;} sms_job[32];
+static struct {char id[80];int left,failed,retried;time_t t;char body[1400];} sms_job[32];
+static int sms_conn_dead;   /* a text got no answer: the registration is dead (main loop starts afresh) */
 static unsigned char sms_ref_job[256];   /* RP ref -> job index + 1 */
 static void sms_job_result(unsigned ref,int ok)
 {
@@ -466,6 +551,33 @@ static void sms_job_result(unsigned ref,int ok)
     char fn[200];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.%s",sms_job[j].id,sms_job[j].failed?"fail":"ok");
     FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}
     sms_job[j].id[0]=0;
+}
+/* A text the SMSC has not confirmed in 20 s (normally 0.2 s): the registration looks alive but nothing gets through
+ * (seen 2026-11-15 08:17-08:20: 200 OK to the REGISTER, then no answer to anything, no texts in). The text goes back
+ * into sms-out as <id>.retry.msg and the main loop registers afresh; the new registration sends it once more. A retry
+ * that is not confirmed either fails (no second fresh start for it). Its refs are forgotten so a very late RP-ACK
+ * cannot count for the next text in that slot. (A, 2026-11-15) */
+static void sms_job_free(int j)
+{
+    for (int r=0;r<256;r++) if (sms_ref_job[r]==j+1) sms_ref_job[r]=0;
+    sms_job[j].id[0]=0;
+}
+static void sms_job_expire(void)
+{
+    time_t now=time(NULL);
+    for (int j=0;j<32;j++) if (sms_job[j].id[0] && now-sms_job[j].t>20) {
+        char fn[300],tmp[310];
+        if (!sms_job[j].retried && sms_job[j].body[0]) {
+            snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.retry.msg",sms_job[j].id);snprintf(tmp,sizeof(tmp),"%s.tmp",fn);
+            FILE *q=fopen(tmp,"w");if (q) {fputs(sms_job[j].body,q);fclose(q);chown(tmp,501,501);rename(tmp,fn);}
+            printf("SMS: no confirmation in 20 s: the text is queued again and the registration renewed\n");sms_conn_dead=1;
+        } else {
+            snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",sms_job[j].id);
+            FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}
+            printf("SMS: no confirmation for a send (retried): failed\n");
+        }
+        fflush(stdout);sms_job_free(j);
+    }
 }
 static int sms_send_tpdu(int sock,int portc,const uint8_t *tp,unsigned t)
 {   /* one TPDU in an RP-DATA to the SMSC: the RP ref, or -1 */
@@ -528,7 +640,7 @@ static int sms_send(int sock,int portc,const char *number,const char *text,const
     int j=-1;
     if (job_id) {for (int i=0;i<32;i++) if (!sms_job[i].id[0]) {j=i;break;}
         if (j<0) {printf("SMS: too many sends waiting\n");return -1;}
-        snprintf(sms_job[j].id,sizeof(sms_job[j].id),"%s",job_id);sms_job[j].left=parts;sms_job[j].failed=0;}
+        snprintf(sms_job[j].id,sizeof(sms_job[j].id),"%s",job_id);sms_job[j].left=parts;sms_job[j].failed=0;sms_job[j].t=time(NULL);}
     int pos=0,sent=0;
     for (int part=1;part<=parts;part++) {
         int len=parts==1?n:per;if (pos+len>n) len=n-pos;
@@ -558,6 +670,7 @@ static int sms_send(int sock,int portc,const char *number,const char *text,const
     if (j>=0 && sent==0) {sms_job[j].id[0]=0;return -1;}   /* nothing went out: the caller answers "failed" */
     return 0;                                               /* parts out: their RP-ACK/RP-ERROR answer the job */
 }
+static int sms_out_watched,sms_out_kick=1;   /* the main loop's kqueue on sms-out: set = read it now */
 static void sms_outbox(int sock,int portc)
 {   /* /var/tmp/redwood-cell/sms-out/<id>.msg from the Messages app: number on the first line, then the text */
     mkdir("/var/tmp/redwood-cell/sms-out",0700);chown("/var/tmp/redwood-cell/sms-out",501,501);
@@ -568,666 +681,29 @@ static void sms_outbox(int sock,int portc)
         char fn[300],body[1400];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s",e->d_name);
         FILE *q=fopen(fn,"r");if (!q) continue;size_t n=fread(body,1,sizeof(body)-1,q);fclose(q);body[n]=0;unlink(fn);
         char id[80];snprintf(id,sizeof(id),"%.*s",(int)(L-4),e->d_name);
+        int retried=0;size_t il=strlen(id);if (il>6 && !strcmp(id+il-6,".retry")) {id[il-6]=0;retried=1;}
+        char keep[1400];snprintf(keep,sizeof(keep),"%s",body);
         char *nl=strchr(body,'\n');int rc=-1;
         if (nl) {*nl=0;rc=sms_send(sock,portc,body,nl+1,id);}
+        if (rc>=0) for (int j=0;j<32;j++) if (sms_job[j].id[0] && !strcmp(sms_job[j].id,id)) {sms_job[j].retried=retried;snprintf(sms_job[j].body,sizeof(sms_job[j].body),"%s",keep);}
         if (rc<0) {snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",id);q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}}
     }
     closedir(d);
 }
 /* command pipe for the client: "sms NUMBER TEXT" (root only) */
 
-/*
- * Calls, step 1 (2026-11-13, A): answering at the SIP level, behind /var/root/cell-answer (absent: 486 Busy as
- * before). Jio's INVITE (docs/cellular-download-plan.md "Jio's INVITE") has no preconditions and 100rel is only
- * supported, so: 100 Trying, 180 Ringing, after CALL_ANSWER_S 200 OK with an SDP answer (AMR-NB PT 100, DTMF 101) ->
- * ACK; CANCEL -> 200 + 487; BYE -> 200; our own BYE after CALL_MAX_S. No media yet (the CP's CPVE comes next):
- * the caller hears silence. One call at a time; a second INVITE gets 486.
- */
-#define CALL_ANSWER_S 3
-#define CALL_MAX_S 3600
+/* Calls (2026-11-13/14 A, rewritten for several calls 2026-11-15 B): ims-media.h is the voice, ims-call.h the SIP side */
 #define CALL_RTP_PORT 50010
-#define IMS_PORT_C 50060              /* port-s is port-c + 2 */
-static struct {
-    int state;                          /* 0 none, 1 ringing, 2 answered (200 sent), 3 confirmed (ACK) */
-    int fd;                             /* the connection the INVITE came on */
-    time_t at, answered;
-    char via[1200], from[400], to[400], cid[200], cq[80], rr[600], contact[400], sdp_c[96], sdp_m[96];
-    unsigned bye_cseq;
-    int ui, answer_req;                 /* ui: the phone's call screen decides (RedwoodPhone); answer_req: it said answer */
-    unsigned id;                        /* this call's number, for the call screen */
-    int out;                            /* we called (state 10 dialling, then 2 alerting/answered, 3 up) */
-    char branch[40];unsigned rseq_acked;
-    char tag[80];                       /* the call screen's tag of an outgoing call (for an early cancel) */
-} call;
-/* call numbers unique across restarts (the call screen remembers ended numbers: after a restart "call 1" was taken
- * for an old one and an incoming call never rang, 2026-11-14 05:00) */
-static unsigned call_seq;
-static char call_ip6[64];
-static void call_media(int start);
-static void call_bye(void);
-static void call_ui_poll(void);
-static void call_cancel(int sock);
-static void call_sdp_from(const char *r);
-static int call_ports, call_sock = -1, call_portc;
-static const char *call_user;
-
-/*
- * Calls, step 4 (2026-11-14, A): the native call screen. RedwoodPhone.app (tools/cellular/RedwoodPhone) is the CallKit
- * provider; it and redwood-ims talk through /var/tmp/redwood-cell/call-ui/ (mobile's):
- *   state   (ours)    "ringing ID NUMBER", "connecting ID", "up ID", "ended ID REASON"
- *   alive   (theirs)  touched every few seconds while the app runs
- *   cmd.*   (theirs)  "answer ID" / "end ID", one per file, removed when read
- * With /var/root/cell-answer the old auto-answer stays (tests).
- */
-#define CALL_UI_DIR "/var/tmp/redwood-cell/call-ui"
-static int
-call_ui_alive(void)
-{
-    struct stat st;
-    return !stat(CALL_UI_DIR "/alive",&st) && time(NULL)-st.st_mtime<20;
-}
-static int
-call_auto(void)
-{
-    struct stat st;
-    return !stat("/var/root/cell-answer",&st);
-}
-static int
-call_enabled(void)
-{
-    return call_auto() || call_ui_alive();
-}
-/* the other party's number, for RedwoodPhone's own call screen (local only) */
-static void
-call_ui_number(const char *num)
-{
-    FILE *f=fopen(CALL_UI_DIR "/number","w");if (!f) return;
-    fprintf(f,"%s",num);fclose(f);chmod(CALL_UI_DIR "/number",0644);
-}
-static void
-call_ui_state(const char *fmt,...)
-{
-    char line[300];va_list ap;va_start(ap,fmt);vsnprintf(line,sizeof(line),fmt,ap);va_end(ap);
-    mkdir(CALL_UI_DIR,0755);chown(CALL_UI_DIR,501,501);
-    FILE *f=fopen(CALL_UI_DIR "/state.tmp","w");if (!f) return;
-    fprintf(f,"%s\n",line);fclose(f);chmod(CALL_UI_DIR "/state.tmp",0644);rename(CALL_UI_DIR "/state.tmp",CALL_UI_DIR "/state");
-    printf("%s call: screen <- %s\n",ts_now(),line);
-}
-/* the caller's number from From (sip:+91...@ or tel:+91...) */
-static void
-call_number(const char *from,char *out,size_t cap)
-{
-    const char *p=strstr(from,"sip:");if (!p) p=strstr(from,"tel:");
-    out[0]=0;if (!p) return;p+=4;
-    size_t o=0;while (*p && *p!='@' && *p!=';' && *p!='>' && o+1<cap) out[o++]=*p++;
-    out[o]=0;
-}
-
-static void
-call_copy_vias(const char *r,char *out,size_t cap)
-{
-    size_t o=0;out[0]=0;
-    for (const char *q=r;(q=strstr(q,"\r\nVia:"));) {
-        const char *e=strstr(q+2,"\r\n");if (!e) break;
-        o+=(size_t)snprintf(out+o,cap-o,"%.*s\r\n",(int)(e-q-2),q+2);if (o>=cap) {out[cap-1]=0;break;}
-        q=e;
-    }
-}
-
-static void
-call_copy_rr(const char *r,char *out,size_t cap)
-{
-    size_t o=0;out[0]=0;
-    for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:"));) {
-        const char *e=strstr(q+2,"\r\n");if (!e) break;
-        o+=(size_t)snprintf(out+o,cap-o,"%.*s\r\n",(int)(e-q-2),q+2);if (o>=cap) {out[cap-1]=0;break;}
-        q=e;
-    }
-}
-
-/* a response in the call's dialog; body may be NULL */
-static void
-call_respond(const char *status,const char *body)
-{
-    char m[4096];int o;
-    o=snprintf(m,sizeof(m),"SIP/2.0 %s\r\n%s%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n",
-        status,call.via,call.rr,call.from,call.to,call.cid,call.cq);
-    if (strncmp(status,"100",3)) {
-        o+=snprintf(m+o,sizeof(m)-(size_t)o,"Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n",
-            call_user,call_ip6,call_ports);
-        o+=snprintf(m+o,sizeof(m)-(size_t)o,"Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces\r\n");
-    }
-    if (body) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(body),body);
-    else o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-    if (send(call.fd,m,(size_t)o,0)<0) {
-        /* the P-CSCF's connection died under the call (2026-11-14 04:40: "Broken pipe", the caller kept ringing): the
-         * response goes to the same P-CSCF over our registration connection (port-c -> its port-s, which its Via names) */
-        printf("%s call: send %s failed (%s): sent on the registration connection instead\n",ts_now(),status,strerror(errno));
-        if (call_sock>=0 && send(call_sock,m,(size_t)o,0)>0) call.fd=call_sock;
-    } else printf("%s call: --> %s\n",ts_now(),status);
-}
-
-static void
-call_end(const char *why)
-{
-    printf("%s call: ended (%s) after %lds\n",ts_now(),why,(long)(time(NULL)-call.at));
-    if (call.ui) call_ui_state("ended %u %s",call.id,why);
-    call_media(0);
-    call.state=0;
-    unlink("/var/tmp/redwood-cell/call");
-}
-
-
-/*
- * Calls, step 2 (2026-11-13, A): the CP's own voice engine (CPVE) carries RTP and the codec. Commands go to the modem
- * through redwood-cellulard's command pipe ("fmt GRP IDX TYPE HEX", /var/tmp/redwood-cell/cmd), as Samsung's
- * libsec-ims sends them (docs/cellular-download-plan.md: 16/06 SetPdnIp, 16/01 SetChannel, 16/02 SetCodec,
- * 16/03 SetRtpMedia; every one acknowledged 0x8000 by this modem, tested without a call 2026-11-13 23:20).
- * Channel 0; AMR-NB 12.2 (PT 100) at 8 kHz, 20 ms. The remote address/port are the INVITE's SDP c=/m=.
- */
-static void
-call_cmd(const char *grp_idx_type,const uint8_t *p,size_t n)
-{
-    char line[600];size_t o=(size_t)snprintf(line,sizeof(line),"fmt %s ",grp_idx_type);
-    for (size_t i=0;i<n && o+3<sizeof(line);i++) o+=(size_t)snprintf(line+o,sizeof(line)-o,"%02x",p[i]);
-    line[o++]='\n';
-    int f=open("/var/tmp/redwood-cell/cmd",O_WRONLY|O_NONBLOCK);
-    if (f<0) {printf("%s call: media: the cellular command pipe: %s\n",ts_now(),strerror(errno));return;}
-    if (write(f,line,o)!=(ssize_t)o) printf("%s call: media: write: %s\n",ts_now(),strerror(errno));
-    close(f);
-    usleep(300000);                     /* (redwood-cellulard takes one line per poll) */
-}
-
-static void
-call_put16(uint8_t *p,unsigned v) {p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
-
-static int
-call_channel(int op,const char *remote,unsigned rport)
-{
-    uint8_t c[47]={0},loc[16],rem[16];
-    if (inet_pton(AF_INET6,call_ip6,loc)!=1 || inet_pton(AF_INET6,remote,rem)!=1) {printf("%s call: media: bad address\n",ts_now());return -1;}
-    c[0]=0;c[1]=(uint8_t)op;
-    call_put16(c+2,CALL_RTP_PORT+1);call_put16(c+4,rport+1);call_put16(c+6,CALL_RTP_PORT);call_put16(c+8,rport);
-    c[10]=2;memcpy(c+11,rem,16);c[27]=2;memcpy(c+28,loc,16);
-    call_cmd("16 01 03",c,sizeof(c));
-    return 0;
-}
-
 #include "ims-media.h"
+#include "ims-call.h"
 
-static int
-call_cpvoice(void)
-{
-    struct stat st;
-    return !stat("/var/root/cell-cpvoice",&st);   /* the CP's CPVE instead of the AP (it does not take the stream yet) */
-}
-
-static void
-call_media(int start)
-{
-    static int open;
-    unsigned rport=(unsigned)atoi(call.sdp_m);
-    if (!call_cpvoice()) {
-        if (start) {
-            if (!call.sdp_c[0] || !rport) {printf("%s call: media: no remote address in the SDP\n",ts_now());return;}
-            int s=bound(SOCK_DGRAM,CALL_RTP_PORT);
-            if (s<0) {printf("%s call: media: RTP socket: %s\n",ts_now(),strerror(errno));return;}
-            media_start(s,call.sdp_c,rport);
-        } else media_stop();
-        return;
-    }
-    if (start) {
-        if (!call.sdp_c[0] || !rport) {printf("%s call: media: no remote address in the SDP\n",ts_now());return;}
-        uint8_t pdn[38]={0},ip[16];
-        if (inet_pton(AF_INET6,call_ip6,ip)!=1) return;
-        pdn[0]=2;memcpy(pdn+1,ip,16);pdn[17]=6;memcpy(pdn+21,"rmnet1",6);
-        /* the CP's audio first (IPC group 9, as libsec-ril's IpcProtocol41Sound): the path (09/03 SET, 1 = handset)
-         * and the voice clock (09/09 EXEC, 1 = on). Without them 16/03 start answered 100 (2026-11-13 23:08). */
-        {uint8_t one=1;call_cmd("09 03 03",&one,1);call_cmd("09 09 01",&one,1);}
-        call_cmd("16 06 03",pdn,sizeof(pdn));
-        if (call_channel(1,call.sdp_c,rport)) return;
-        uint8_t c[58]={0};
-        c[0]=0;c[1]=1;                  /* channel 0; 1 codec */
-        c[5]=6;c[6]=100;call_put16(c+7,8000);
-        c[9]=0x00;c[10]=0x02;           /* 12.2 kbps: 0x200 (convertBitRateToIpc) */
-        c[13]=20;c[14]=80;c[15]=1;c[28]=100;
-        call_cmd("16 02 03",c,sizeof(c));
-        uint8_t m[4]={1,0,0,0};         /* SAE_StartFDSR: 1 start */
-        call_cmd("16 03 03",m,sizeof(m));
-        open=1;
-        printf("%s call: media: CP voice channel 0 up to [%s]:%u, AMR-NB 12.2\n",ts_now(),call.sdp_c,rport);
-    } else if (open) {
-        uint8_t m[4]={2,0,0,0};         /* SAE_StopFDSR: 2 stop */
-        call_cmd("16 03 03",m,sizeof(m));
-        call_channel(2,call.sdp_c[0]?call.sdp_c:"::1",rport?rport:9);
-        {uint8_t zero=0;call_cmd("09 09 01",&zero,1);}     /* voice clock off */
-        open=0;
-        printf("%s call: media: CP voice channel 0 closed\n",ts_now());
-    }
-}
-
-
-/*
- * A request in the call's dialog that may carry an SDP offer -- a re-INVITE or an UPDATE: the network refreshes the
- * session (session timers) or moves the media. Answered 200 with its own Via/From/To/CSeq and our SDP, the media
- * following a new remote address/port. (Before 2026-11-14 a re-INVITE was taken for the first INVITE again and
- * answered with the first INVITE's CSeq, an UPDATE got 200 without SDP: long calls would be dropped.)
- */
-static void call_sdp_answer(char *sdp,size_t cap)
-{
-    unsigned sid=arc4random();
-    snprintf(sdp,cap,
-        "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
-        "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
-        "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
-        "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
-        sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
-}
-static void call_reinvite(int fd,const char *r)
-{
-    char via[1200],fr[400],to[400],cq[80],ci[200],m[4096],sdp[700];
-    call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));hdr(r,"Call-ID",ci,sizeof(ci));
-    int offer=strstr(r,"\r\n\r\nv=0")!=NULL;
-    if (offer) {
-        char oc[96]="",om[96]="";snprintf(oc,sizeof(oc),"%s",call.sdp_c);snprintf(om,sizeof(om),"%s",call.sdp_m);
-        call_sdp_from(r);
-        if ((strcmp(oc,call.sdp_c) || strcmp(om,call.sdp_m)) && med.run) {   /* the media moved: follow it */
-            printf("%s call: media moves to [%s]:%s\n",ts_now(),call.sdp_c,call.sdp_m);
-            call_media(0);call_media(1);
-        }
-    }
-    call_sdp_answer(sdp,sizeof(sdp));
-    int o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\n"
-        "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
-        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces,timer\r\n",
-        via,fr,to,ci,cq,call_user,call_ip6,call_ports);
-    char se[80];
-    if (hdr(r,"Session-Expires",se,sizeof(se))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Session-Expires: %s\r\nRequire: timer\r\n",se);
-    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",strlen(sdp),sdp);
-    if (send(fd,m,(size_t)o,0)<0 && call_sock>=0) send(call_sock,m,(size_t)o,0);
-    printf("%s call: in-dialog %.*s answered 200 (with SDP)\n",ts_now(),(int)(strchr(r,' ')-r),r);
-}
-
-/* an INVITE; returns 1 when handled here (answer mode), 0 for the old busy path */
-static int
-call_invite(int fd,const char *r)
-{
-    if (!call_enabled()) return 0;
-    if (call.state) {
-        /* the P-CSCF drops and reopens its connection and resends the INVITE (2026-11-13 23:10: our 100/180 went
-         * into the closed one, "Broken pipe"): the same Call-ID moves the call to the new connection */
-        char ci[200],tt[300];
-        if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid) && call.state>=2 && hdr(r,"To",tt,sizeof(tt)) && strstr(tt,"tag=")) {
-            call_reinvite(fd,r);return 1;   /* a re-INVITE in the dialog (session refresh, media change) */
-        }
-        if (hdr(r,"Call-ID",ci,sizeof(ci)) && !strcmp(ci,call.cid)) {
-            call.fd=fd;printf("%s call: INVITE again on a new connection: carried on there\n",ts_now());
-            if (call.state==1) {call_respond("100 Trying",NULL);call_respond("180 Ringing",NULL);}
-            else call.state=1;          /* (answered already: answer again from call_tick) */
-            return 1;
-        }
-        return 0;                       /* (another call: the old path answers 486) */
-    }
-    memset(&call,0,sizeof(call));
-    call.fd=fd;call.at=time(NULL);call.state=1;call.bye_cseq=1;
-    call_copy_vias(r,call.via,sizeof(call.via));
-    call_copy_rr(r,call.rr,sizeof(call.rr));
-    hdr(r,"From",call.from,sizeof(call.from));
-    char to[300];hdr(r,"To",to,sizeof(to));
-    snprintf(call.to,sizeof(call.to),"%s%s",to,strstr(to,"tag=")?"":";tag=rwc1");
-    hdr(r,"Call-ID",call.cid,sizeof(call.cid));
-    hdr(r,"CSeq",call.cq,sizeof(call.cq));
-    hdr(r,"Contact",call.contact,sizeof(call.contact));
-    const char *b=strstr(r,"\r\n\r\n");
-    if (b) {
-        const char *c=strstr(b,"\nc=IN IP6 "),*mm=strstr(b,"\nm=audio ");
-        if (c) sscanf(c+10,"%95s",call.sdp_c);   /* (strlen("\nc=IN IP6 ") = 10: 11 dropped the first digit) */
-        if (mm) sscanf(mm+9,"%95s",call.sdp_m);
-    }
-    {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"ringing %ld\n",(long)call.at);fclose(f);}}
-    call.ui=!call_auto();call.id=++call_seq;
-    if (call.ui) {
-        char num[64];call_number(call.from,num,sizeof(num));
-        printf("%s call: INCOMING: remote media port %s; ringing on the call screen\n",ts_now(),call.sdp_m);
-        call_ui_number(num[0]?num:"Unknown");
-        call_ui_state("ringing %u %s",call.id,num[0]?num:"unknown");
-    } else printf("%s call: INCOMING (answer mode): remote media port %s; answering in %ds\n",ts_now(),call.sdp_m,CALL_ANSWER_S);
-    call_respond("100 Trying",NULL);
-    call_respond("180 Ringing",NULL);
-    return 1;
-}
-
-/* other requests of the call's dialog; returns 1 when it was ours */
-static int
-call_request(int fd,const char *r)
-{
-    char ci[200];
-    if (!call.state || !hdr(r,"Call-ID",ci,sizeof(ci)) || strcmp(ci,call.cid)) return 0;
-    if (!strncmp(r,"ACK ",4)) {
-        if (call.state==2) {call.state=3;printf("%s call: ACK -- the call is up\n",ts_now());fflush(stdout);if (!med.run) call_media(1);
-            if (call.ui) call_ui_state("up %u",call.id);fflush(stdout);}
-        return 1;
-    }
-    if (!strncmp(r,"UPDATE ",7)) {call_reinvite(fd,r);return 1;}
-    char m[2048],via[1200],fr[400],to[400],cq[80];int o;
-    call_copy_vias(r,via,sizeof(via));hdr(r,"From",fr,sizeof(fr));hdr(r,"To",to,sizeof(to));hdr(r,"CSeq",cq,sizeof(cq));
-    o=snprintf(m,sizeof(m),"SIP/2.0 200 OK\r\n%sFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
-        via,fr,to,ci,cq);
-    send(fd,m,(size_t)o,0);
-    if (!strncmp(r,"CANCEL ",7)) {
-        printf("%s call: the caller cancelled\n",ts_now());
-        if (call.state==1) call_respond("487 Request Terminated",NULL);
-        call_end("cancelled");
-    } else if (!strncmp(r,"BYE ",4)) {
-        call_end("the caller hung up");
-    } else {
-        printf("%s call: in-dialog request answered 200\n",ts_now());
-    }
-    return 1;
-}
-
-/* once a second from the main loop */
-static void
-call_tick(void)
-{
-    call_ui_poll();
-    if (call.out && call.state && call.state!=3 && time(NULL)-call.at>=75) {call_cancel(call_sock);call_end("no answer");return;}
-    if (call.state==1 && call.ui && !call.answer_req && time(NULL)-call.at>=60) {
-        call_respond("480 Temporarily Unavailable",NULL);call_end("not answered in 60 s");return;
-    }
-    if (!call.out && call.state==1 && (call.ui ? call.answer_req : time(NULL)-call.at>=CALL_ANSWER_S)) {
-        char sdp[700];
-        unsigned sid=arc4random();
-        snprintf(sdp,sizeof(sdp),
-            "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
-            "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
-            "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
-            "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
-            sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
-        call_respond("200 OK",sdp);
-        call.state=2;call.answered=time(NULL);
-        if (call.ui) call_ui_state("connecting %u",call.id);
-        if (!med.run) {call_media(1);fflush(stdout);}  /* media from our 200 OK on: the ACK can come late or not at all */
-        {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"answered %ld\n",(long)call.answered);fclose(f);}}
-    } else if (!call.out && call.state==2 && time(NULL)-call.answered>=30 && med.rx_pkts==0) {
-        /* answered but never confirmed (A, 2026-11-14 03:25: our 200 OK went unanswered, the call stayed "answered" and
-         * every new call got 486 Busy): give it up */
-        call_end("no ACK and no voice in 30 s after our 200 OK");
-    } else if (call.state>=2 && call.state!=10 && call.answered && time(NULL)-call.answered>=CALL_MAX_S) {
-        call_bye();
-        call_end("our BYE (an hour reached)");
-    }
-}
-
-/* our BYE: Route from Record-Route, to the remote Contact */
-static void
-call_bye(void)
-{
-    {
-        char m[3000],uri[400],route[700]="";int o;
-        const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
-        if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1); else snprintf(uri,sizeof(uri),"%s",call.contact);
-        for (const char *q=call.rr;(q=strstr(q,"Record-Route:"));q+=13) {
-            const char *v=q+13;while (*v==' ') v++;const char *le=strstr(v,"\r\n");
-            size_t L=strlen(route);snprintf(route+L,sizeof(route)-L,"Route: %.*s\r\n",(int)(le-v),v);
-        }
-        /* (a request of ours goes out on our own protected connection, port-c -> the P-CSCF's port-s, as REGISTER and
-         * MESSAGE do; sent back on the P-CSCF's connection to our port-s it was dropped silently, 2026-11-13 22:42) */
-        o=snprintf(m,sizeof(m),"BYE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
-            "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u BYE\r\nContent-Length: 0\r\n\r\n",
-            uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,call.bye_cseq++);
-        if (send(call_sock,m,(size_t)o,0)<0) printf("%s call: BYE send failed: %s\n",ts_now(),strerror(errno));
-        else printf("%s call: --> BYE (on the registration connection)\n",ts_now());
-    }
-}
-
-
-/*
- * Calls, step 5 (2026-11-14, A): calling out. The call screen (RedwoodPhone, from the Phone app's dial) writes
- * "dial TAG NUMBER"; we send the INVITE with our AMR offer on the registration connection (port-c, the Service-Route
- * as Route lines, as MESSAGE does), follow 1xx/2xx, ACK the answer (to its Contact, Record-Route reversed), PRACK a
- * reliable 18x, and start the voice on the first answer that has SDP (183 early media or the 200).
- */
-static void call_sdp_from(const char *r)
-{
-    const char *b=strstr(r,"\r\n\r\n");if (!b) return;
-    const char *c=strstr(b,"\nc=IN IP6 "),*mm=strstr(b,"\nm=audio ");
-    if (c) sscanf(c+10,"%95s",call.sdp_c);
-    if (mm) sscanf(mm+9,"%95s",call.sdp_m);
-}
-
-/* E.164 country code from the IMSI's MCC (its first three digits); NULL when unknown (then numbers go out as dialled) */
-static const char *mcc_country_code(const char *imsi)
-{
-    static const struct {int mcc;const char *cc;} t[]={
-        {404,"91"},{405,"91"},{406,"91"},{310,"1"},{311,"1"},{312,"1"},{313,"1"},{314,"1"},{315,"1"},{316,"1"},{302,"1"},
-        {234,"44"},{235,"44"},{262,"49"},{208,"33"},{222,"39"},{214,"34"},{505,"61"},{530,"64"},{440,"81"},{441,"81"},
-        {450,"82"},{460,"86"},{454,"852"},{525,"65"},{502,"60"},{510,"62"},{515,"63"},{520,"66"},{452,"84"},{470,"880"},
-        {410,"92"},{413,"94"},{429,"977"},{424,"971"},{420,"966"},{427,"974"},{419,"965"},{422,"968"},{426,"973"},
-        {602,"20"},{655,"27"},{621,"234"},{639,"254"},{724,"55"},{722,"54"},{334,"52"},{730,"56"},{732,"57"},{716,"51"},
-        {250,"7"},{255,"380"},{260,"48"},{286,"90"},{204,"31"},{206,"32"},{228,"41"},{232,"43"},{238,"45"},{240,"46"},
-        {242,"47"},{244,"358"},{268,"351"},{272,"353"},{202,"30"},{425,"972"},{416,"962"},{415,"961"},{418,"964"},{432,"98"}};
-    if (!imsi || strlen(imsi)<3) return NULL;
-    int mcc=(imsi[0]-'0')*100+(imsi[1]-'0')*10+(imsi[2]-'0');
-    for (size_t i=0;i<sizeof(t)/sizeof(t[0]);i++) if (t[i].mcc==mcc) return t[i].cc;
-    return NULL;
-}
-static void call_dial(int sock,const char *tag,const char *number)
-{
-    if (call.state) {call_ui_state("ended 0 busy %s",tag);return;}
-    char num[40];size_t n=0;
-    for (const char *q=number;*q && n+1<sizeof(num);q++) if ((*q>='0' && *q<='9') || (*q=='+' && !n) || *q=='*' || *q=='#') num[n++]=*q;
-    num[n]=0;
-    /* the number as the network wants it (A, 2026-11-14): no fixed country. The SIM's MCC gives the country code;
-     * 00... and +... are international already, a leading 0 is the national trunk prefix, a national number gets
-     * +CC, and short codes (under 7 digits, or * / #) stay local, in the SIM's own IMS domain (phone-context). */
-    char tel[96];const char *cc=mcc_country_code(cfg.imsi);
-    if (num[0]=='+') snprintf(tel,sizeof(tel),"tel:%s",num);
-    else if (!strncmp(num,"00",2) && n>4) snprintf(tel,sizeof(tel),"tel:+%s",num+2);
-    else if (n<7 || strchr(num,'*') || strchr(num,'#') || !cc) snprintf(tel,sizeof(tel),"tel:%s;phone-context=%s",num,cfg.realm);
-    else if (num[0]=='0') snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num+1);
-    else snprintf(tel,sizeof(tel),"tel:+%s%s",cc,num);
-    memset(&call,0,sizeof(call));
-    call.out=1;call.ui=1;call.id=++call_seq;call.state=10;call.at=time(NULL);call.bye_cseq=2;
-    snprintf(call.branch,sizeof(call.branch),"z9hG4bK%08x",arc4random());
-    snprintf(call.cid,sizeof(call.cid),"%08x%08x@[%s]",arc4random(),arc4random(),cfg.ip6);
-    snprintf(call.to,sizeof(call.to),"<%s>;tag=%08x",sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",arc4random());
-    snprintf(call.from,sizeof(call.from),"<%s>",tel);         /* (the far end: To of our requests, its tag added later) */
-    snprintf(call.contact,sizeof(call.contact),"<%s>",tel);
-    snprintf(call.tag,sizeof(call.tag),"%s",tag);
-    call_ui_number(num[0]?num:"Unknown");
-    call_ui_state("dialing %u %s",call.id,tag);
-    char sdp[700];unsigned sid=arc4random();
-    snprintf(sdp,sizeof(sdp),
-        "v=0\r\no=- %u %u IN IP6 %s\r\ns=-\r\nc=IN IP6 %s\r\nt=0 0\r\n"
-        "m=audio %d RTP/AVP 100 101\r\nb=AS:41\r\n"
-        "a=rtpmap:100 AMR/8000\r\na=fmtp:100 mode-change-capability=2;max-red=0\r\n"
-        "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-15\r\na=ptime:20\r\na=maxptime:80\r\na=sendrecv\r\n",
-        sid,sid,call_ip6,call_ip6,CALL_RTP_PORT);
-    char m[4000];int o=snprintf(m,sizeof(m),
-        "INVITE %s SIP/2.0\r\n"
-        "Via: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\n"
-        "Max-Forwards: 70\r\n%s"
-        "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 INVITE\r\n"
-        "Contact: <sip:%s@[%s]:%d;transport=tcp>;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
-        "Accept-Contact: *;+g.3gpp.icsi-ref=\"urn%%3Aurn-7%%3A3gpp-service.ims.icsi.mmtel\"\r\n"
-        "P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel\r\n"
-        "P-Preferred-Identity: <%s>\r\n"
-        "Allow: INVITE,ACK,CANCEL,BYE,UPDATE,PRACK,OPTIONS,MESSAGE\r\nSupported: replaces\r\n"
-        "Content-Type: application/sdp\r\nContent-Length: %zu\r\n\r\n%s",
-        tel,call_ip6,call_portc,call.branch,sms_route,call.to,call.from,call.cid,
-        call_user,call_ip6,call_ports,sms_impu[0]?sms_impu:"sip:anonymous@anonymous.invalid",strlen(sdp),sdp);
-    if (send(sock,m,(size_t)o,0)<0) {printf("%s call: INVITE send failed: %s\n",ts_now(),strerror(errno));call_end("could not send");return;}
-    printf("%s call: --> INVITE (outgoing call %u)\n",ts_now(),call.id);
-}
-/* the ACK (and PRACK) of ours, in the dialog: Route = Record-Route reversed (kept in call.rr already reversed) */
-static void call_out_request(int sock,const char *method,unsigned cseq,const char *extra)
-{
-    char m[3000],uri[400],route[700]="";int o;
-    const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
-    if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1); else snprintf(uri,sizeof(uri),"%s",call.contact);
-    for (const char *q=call.rr;(q=strstr(q,"Record-Route:"));q+=13) {
-        const char *v=q+13;while (*v==' ') v++;const char *le=strstr(v,"\r\n");
-        size_t L=strlen(route);snprintf(route+L,sizeof(route)-L,"Route: %.*s\r\n",(int)(le-v),v);
-    }
-    if (!route[0]) snprintf(route,sizeof(route),"%s",sms_route);
-    o=snprintf(m,sizeof(m),"%s %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%s"
-        "Max-Forwards: 70\r\nFrom: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %u %s\r\n%sContent-Length: 0\r\n\r\n",
-        method,uri,call_ip6,call_portc,arc4random(),route,call.to,call.from,call.cid,cseq,method,extra?extra:"");
-    if (send(sock,m,(size_t)o,0)<0) printf("%s call: %s send failed: %s\n",ts_now(),method,strerror(errno));
-    else printf("%s call: --> %s\n",ts_now(),method);
-}
-/* a response to our INVITE; returns 1 if it was one */
-static int call_out_response(int sock,const char *r)
-{
-    char ci[200],cq[80];
-    if (!hdr(r,"Call-ID",ci,sizeof(ci))) return 0;
-    if ((!call.out || !call.state || strcmp(ci,call.cid)) && !strncmp(r,"SIP/2.0 2",9) && hdr(r,"CSeq",cq,sizeof(cq)) && strstr(cq,"INVITE")) {
-        /* an answer to an INVITE of ours we have already given up (05:34: the callee picked up after we cancelled and
-         * the call ran in the background): ACK it and hang up at once */
-        char to[400],fr[400],ct[400],rr[600]="",uri[400]="";
-        hdr(r,"To",to,sizeof(to));hdr(r,"From",fr,sizeof(fr));
-        if (hdr(r,"Contact",ct,sizeof(ct))) {const char *a=strchr(ct,'<'),*e=a?strchr(a,'>'):NULL;if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1);}
-        const char *list[8];int nr=0;size_t L=0;
-        for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:")) && nr<8;q+=2) list[nr++]=q+2;
-        for (int k=nr-1;k>=0;k--) {const char *e=strstr(list[k],"\r\n");const char *v=list[k]+13;while (*v==' ') v++;L+=(size_t)snprintf(rr+L,sizeof(rr)-L,"Route: %.*s\r\n",(int)(e-v),v);}
-        if (!uri[0]) return 1;
-        char m[3000];
-        for (int k=0;k<2;k++) {
-            int o=snprintf(m,sizeof(m),"%s %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\n%sMax-Forwards: 70\r\n"
-                "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
-                k?"BYE":"ACK",uri,call_ip6,call_portc,arc4random(),rr[0]?rr:sms_route,fr,to,ci,k?"2 BYE":"1 ACK");
-            send(sock,m,(size_t)o,0);
-        }
-        printf("%s call: an answer to a call already ended: ACK + BYE\n",ts_now());
-        return 1;
-    }
-    if (!call.out || !call.state || strcmp(ci,call.cid)) return 0;
-    if (!hdr(r,"CSeq",cq,sizeof(cq))) return 1;
-    if (!strstr(cq,"INVITE")) {                             /* PRACK/BYE answers */
-        int c2=atoi(r+8);
-        if (c2==481 && call.state!=3) {                     /* the network lost the call: never stay on "calling" */
-            printf("%s call: <-- 481 to our %s: the call is gone\n",ts_now(),strstr(cq,"PRACK")?"PRACK":"request");
-            call_cancel(sock);call_end("the network lost the call");
-        }
-        return 1;
-    }
-    int code=atoi(r+8);
-    printf("%s call: <-- %d to our INVITE\n",ts_now(),code);
-    char to[400];
-    if (hdr(r,"To",to,sizeof(to)) && strstr(to,"tag=")) snprintf(call.from,sizeof(call.from),"%s",to);
-    if (code>=180 && code<300) {
-        char ct[400];if (hdr(r,"Contact",ct,sizeof(ct))) snprintf(call.contact,sizeof(call.contact),"%s",ct);
-        /* Record-Route reversed for our own requests */
-        char rr[600]="";size_t L=0;const char *list[8];int nr=0;
-        for (const char *q=r;(q=strstr(q,"\r\nRecord-Route:")) && nr<8;q+=2) list[nr++]=q+2;
-        for (int k=nr-1;k>=0;k--) {const char *e=strstr(list[k],"\r\n");L+=(size_t)snprintf(rr+L,sizeof(rr)-L,"%.*s\r\n",(int)(e-list[k]),list[k]);}
-        if (nr) snprintf(call.rr,sizeof(call.rr),"%s",rr);
-        if (strstr(r,"\r\n\r\nv=0")) {call_sdp_from(r);if (!med.run) call_media(1);}
-        char req[80],rs[40];
-        if (code<200 && hdr(r,"Require",req,sizeof(req)) && strstr(req,"100rel") && hdr(r,"RSeq",rs,sizeof(rs))) {
-            unsigned rseq=(unsigned)atoi(rs);
-            if (rseq>call.rseq_acked) {char x[80];snprintf(x,sizeof(x),"RAck: %u 1 INVITE\r\n",rseq);call_out_request(sock,"PRACK",call.bye_cseq++,x);call.rseq_acked=rseq;}
-        }
-    }
-    if (code>=180 && code<200 && call.state==10) {call.state=2;call_ui_state("alerting %u",call.id);}
-    else if (code>=200 && code<300) {
-        call_out_request(sock,"ACK",1,NULL);
-        if (call.state!=3) {call.state=3;call.answered=time(NULL);
-            {FILE *f=fopen("/var/tmp/redwood-cell/call","w");if (f) {fprintf(f,"up %ld\n",(long)call.answered);fclose(f);}}
-            if (!med.run) call_media(1);
-            call_ui_state("up %u",call.id);}
-    } else if (code>=300) {
-        /* the ACK of a failure goes to the P-CSCF hop with the INVITE's branch */
-        char m[1600];int o=snprintf(m,sizeof(m),"ACK %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\nMax-Forwards: 70\r\n%s"
-            "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n",
-            strchr(call.contact,'<')?"":call.contact,call_ip6,call_portc,call.branch,sms_route,call.to,call.from,call.cid);
-        {char uri[200];const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
-         if (a && e) {snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1);
-           o=snprintf(m,sizeof(m),"ACK %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\nMax-Forwards: 70\r\n%s"
-            "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n",
-            uri,call_ip6,call_portc,call.branch,sms_route,call.to,call.from,call.cid);}}
-        send(sock,m,(size_t)o,0);
-        char why[64];snprintf(why,sizeof(why),code==486||code==600?"busy":code==487?"cancelled":"failed %d",code);
-        call_end(why);
-    }
-    return 1;
-}
-/* our CANCEL of a call still ringing out (same branch as the INVITE) */
-static void call_cancel(int sock)
-{
-    char m[1600],uri[200];
-    const char *a=strchr(call.contact,'<'),*e=a?strchr(a,'>'):NULL;
-    if (a && e) snprintf(uri,sizeof(uri),"%.*s",(int)(e-a-1),a+1); else snprintf(uri,sizeof(uri),"%s",call.contact);
-    char to[400];snprintf(to,sizeof(to),"%s",call.from);char *t=strstr(to,";tag=");if (t) *t=0;
-    int o=snprintf(m,sizeof(m),"CANCEL %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=%s;rport\r\nMax-Forwards: 70\r\n%s"
-        "From: %s\r\nTo: %s\r\nCall-ID: %s\r\nCSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n",
-        uri,call_ip6,call_portc,call.branch,sms_route,call.to,to,call.cid);
-    send(sock,m,(size_t)o,0);printf("%s call: --> CANCEL\n",ts_now());
-}
-
-/* the call screen's commands */
-static void
-call_ui_poll(void)
-{
-    /* the call screen's Speaker button (libredwood in InCallService posts these) */
-    static int tsp=-1,tea=-1;
-    if (tsp<0) {notify_register_check("com.redwood.call.speaker",&tsp);notify_register_check("com.redwood.call.earpiece",&tea);}
-    int ch=0;
-    if (tsp>=0 && notify_check(tsp,&ch)==0 && ch && call.state) {med.route=0;printf("%s call: screen -> speaker\n",ts_now());}
-    ch=0;
-    if (tea>=0 && notify_check(tea,&ch)==0 && ch && call.state) {med.route=1;printf("%s call: screen -> earpiece\n",ts_now());}
-    DIR *d=opendir(CALL_UI_DIR);if (!d) return;
-    struct dirent *e;
-    while ((e=readdir(d))) {
-        if (strncmp(e->d_name,"cmd.",4)) continue;
-        char fn[300],line[100]="";unsigned id=0;struct stat cst;
-        snprintf(fn,sizeof(fn),CALL_UI_DIR "/%s",e->d_name);
-        int stale=!stat(fn,&cst) && time(NULL)-cst.st_mtime>10;
-        FILE *f=fopen(fn,"r");if (f) {if (!fgets(line,sizeof(line),f)) line[0]=0;fclose(f);}
-        unlink(fn);
-        if (stale && !strncmp(line,"dial ",5)) {   /* (a dial from before we could take it: the user has long given up) */
-            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> dial (stale, dropped)\n",ts_now());
-            call_ui_state("ended 0 stale %s",tg);continue;
-        }
-        if (!strncmp(line,"cancel ",7)) {           /* the user ended a call still being dialled */
-            char tg[80]="";sscanf(line,"%*s %79s",tg);printf("%s call: screen -> cancel\n",ts_now());
-            if (call.out && call.state && call.state!=3 && !strcmp(tg,call.tag)) {call_cancel(call_sock);call_end("cancelled here");}
-            else if (call.out && call.state==3 && !strcmp(tg,call.tag)) {call_bye();call_end("hung up here");}
-            continue;
-        }
-        char verb[20]="";if (sscanf(line,"%19s %u",verb,&id)<1) continue;
-        printf("%s call: screen -> %s\n",ts_now(),verb);
-        if (!strcmp(verb,"dial")) {char tag[80],num[64];if (sscanf(line,"%*s %79s %63s",tag,num)==2) call_dial(call_sock,tag,num);continue;}
-        if (!call.state || id!=call.id) continue;           /* (an old call's button) */
-        if (!strcmp(verb,"answer") && call.state==1) call.answer_req=1;
-        else if (!strcmp(verb,"route")) {char w[20]="";sscanf(line,"%*s %*u %19s",w);med.route=strcmp(w,"speaker")!=0;}
-        else if (!strcmp(verb,"mute")) {unsigned on=0;sscanf(line,"%*s %*u %u",&on);med.muted=(int)on;}
-        else if (!strcmp(verb,"end")) {
-            if (call.out && call.state!=3) {call_cancel(call_sock);call_end("cancelled here");}
-            else if (call.state==1) {call_respond("603 Decline",NULL);call_end("declined here");}
-            else {call_bye();call_end("hung up here");}
-        }
-    }
-    closedir(d);
-}
-
-
-/* leaving with a call up (the registration connection is gone): close it at the network as far as we still can, and
- * on the call screen, so neither side keeps a call nobody has (afterwards: "busy") */
-static void call_abort(const char *why)
-{
-    if (!call.state) return;
-    if (call.out && call.state!=3) call_cancel(call_sock);
-    else if (call.state==1) call_respond("480 Temporarily Unavailable",NULL);
-    else call_bye();
-    call_end(why);
-}
 static int ims_cmd_fd=-1;
 static void ims_cmd_poll(int sock,int portc)
 {
-    sms_outbox(sock,portc);
+    {static time_t last;time_t now=time(NULL);   /* only when the folder changed (or every 5 s; every turn without the watch) */
+     if (sms_out_kick || !sms_out_watched || now-last>=5) {sms_out_kick=0;last=now;sms_outbox(sock,portc);}}
     sms_cat_tick();
+    sms_job_expire();
     if (ims_cmd_fd<0) {
         unlink("/var/tmp/redwood-cell/ims-cmd");
         if (mkfifo("/var/tmp/redwood-cell/ims-cmd",0600)) return;
@@ -1245,13 +721,116 @@ static void ims_cmd_poll(int sock,int portc)
     if (have>=sizeof(buf)-1) have=0;
 }
 
+/* Signing off (A, 2026-11-15): a REGISTER with Expires 0 over the protected connection, built once we are registered
+ * and sent before every exit we choose (health check failed, a text not confirmed, the ~110 min refresh, SIGTERM).
+ * Without it the network kept the old registration: the P-CSCF we had been on stayed silent to the next start, and a
+ * registration through the other one could take 200 OK yet carry nothing (08:17, 08:39). */
+/*
+ * The registration's own state, kept for refreshing it in place (B, 2026-11-15). Until now the ~110 min refresh was
+ * a full restart (sign-off, new challenge, new SAs): 10-90 s without VoLTE, calls "not reachable", texts held at the
+ * SMSC. Now: a REGISTER on the same protected connection and SAs, same Call-ID, next CSeq, the digest with the next nc
+ * (RFC 2617: HA1 from the first challenge's RES stays valid for that nonce). If the network answers 200 the
+ * registration simply runs on; if it wants a new challenge (401) or does not answer, the old fresh start follows (not
+ * during a call: the current registration is still good until it expires).
+ */
+static struct {
+    char ha1[33],ha2[33],nonce[300],cnonce[20],user[128],uri[128],common[1400],secc[900],secs[900],cid[120];
+    const char *T;int port,ok;unsigned nc,cseq;
+} reg;
+static int reg_build(char *out,size_t cap,int expires)
+{
+    if (!reg.ok) return 0;
+    char c0[1400],resp[33],buf[600];
+    snprintf(c0,sizeof(c0),"%s",reg.common);
+    if (expires==0) {char *ex=strstr(c0,"Expires: 600000\r\n");if (ex) {ex[9]='0';memmove(ex+10,ex+15,strlen(ex+15)+1);}}
+    unsigned nc=++reg.nc,cseq=++reg.cseq;
+    {size_t L=(size_t)snprintf(buf,sizeof(buf),"%s:%s:%08x:%s:auth:%s",reg.ha1,reg.nonce,nc,reg.cnonce,reg.ha2);md5hex(buf,L,resp);}
+    int n=snprintf(out,cap,
+        "REGISTER %s SIP/2.0\r\n"
+        "Via: SIP/2.0/%s [%s]:%d;branch=z9hG4bK%08x;rport\r\n"
+        "CSeq: %u REGISTER\r\n"
+        "%s"
+        "Authorization: Digest username=\"%s\",realm=\"%s\",nonce=\"%s\",uri=\"%s\",response=\"%s\",algorithm=AKAv1-MD5,qop=auth,nc=%08x,cnonce=\"%s\"\r\n"
+        "Security-Client: %s\r\n"
+        "Security-Verify: %s\r\n"
+        "Content-Length: 0\r\n\r\n",reg.uri,reg.T,cfg.ip6,reg.port,arc4random(),cseq,c0,reg.user,cfg.realm,reg.nonce,reg.uri,resp,nc,reg.cnonce,reg.secc,reg.secs);
+    return n>0 && n<(int)cap?n:0;
+}
+/* the network's own word on our registration (RFC 3680 reg event, TS 24.229 5.1.1.3): a NOTIFY saying our contact
+ * was terminated (deactivated, rejected, expired, unregistered) means the network dropped us -- without it we noticed
+ * only at the next health check (minutes, texts held meanwhile); "shortened" asks for a refresh soon */
+static int reg_event_dead,reg_event_refresh,reg_refresh_failed;
+/* (B, 2026-11-15) a 504 carrying 3GPP "alternative-service: restoration / initial-registration" (TS 24.229
+ * 5.1.2A.1.6): the P-CSCF can no longer reach our S-CSCF ("PCSCF routing to the next hop failed") and tells us to
+ * register afresh. Jio sends it now and then (08:30, 09:03, 09:28, 10:01, 10:06 on 2026-11-15) and closes the
+ * connection ~3 min later; until then we looked registered but nothing reached us. Now: a fresh registration at once
+ * (not during a call). It came late to the health check (after its 10 s), so any response is looked at. */
+static int reg_restore;
+static char reg_sub_cid[64];
+static void reg_notify(const char *r)
+{
+    char ev[64];
+    if (!hdr(r,"Event",ev,sizeof(ev)) && !hdr(r,"o",ev,sizeof(ev))) return;
+    if (strncmp(ev,"reg",3) || (ev[3] && ev[3]!=';' && ev[3]!=' ')) return;
+    const char *b=strstr(r,"\r\n\r\n");if (!b) return;
+    char me[96];snprintf(me,sizeof(me),"[%s]:%d",cfg.ip6,reg.port);
+    int mine=0,term=0,shorter=0;
+    for (const char *c=b;(c=strstr(c,"<contact"));c+=8) {
+        const char *e=strstr(c,"</contact>");if (!e) break;
+        const char *u=strstr(c,"<uri>");
+        if (!u || u>e || !memmem(u,(size_t)(e-u),me,strlen(me))) continue;
+        mine=1;
+        const char *st=strstr(c,"state=\"terminated\"");if (st && st<e) term=1;
+        const char *sh=strstr(c,"event=\"shortened\"");if (sh && sh<e) shorter=1;
+    }
+    if (!mine) {const char *g=strstr(b,"<registration");if (g && strstr(g,"state=\"terminated\"")) term=1;}
+    printf("%s registration event: %s\n",ts_now(),term?"the network dropped us":shorter?"shortened (refresh soon)":"active");
+    if (term) reg_event_dead=1; else if (shorter) reg_event_refresh=1;
+}
+/* the granted lifetime of our contact in a 200 to REGISTER (expires=N on our Contact, else Expires), 0 if none */
+static int reg_granted(const char *r)
+{
+    char me[96];snprintf(me,sizeof(me),"[%s]:%d",cfg.ip6,reg.port);
+    for (const char *q=r;(q=strstr(q,"\r\nContact:"));q+=10) {
+        const char *e=strstr(q+2,"\r\n");if (!e) break;
+        const char *m=memmem(q,(size_t)(e-q),me,strlen(me)),*x=m?memmem(m,(size_t)(e-m),"expires=",8):NULL;
+        if (x) return atoi(x+8);
+    }
+    char ex[32];return hdr(r,"Expires",ex,sizeof(ex))?atoi(ex):0;
+}
+static time_t reg_refresh_after(int granted)
+{   /* half the lifetime, 10 min .. 1 h (Jio grants 7200 s) */
+    int h=granted>0?granted/2:3600;return h<600?600:h>3600?3600:h;
+}
+static void reg_subscribe(int s,int portc)
+{
+    if (!sms_impu[0]) return;
+    char m[3000];snprintf(reg_sub_cid,sizeof(reg_sub_cid),"%08x%08x@[%s]",arc4random(),arc4random(),cfg.ip6);
+    int n=snprintf(m,sizeof(m),
+        "SUBSCRIBE %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\nMax-Forwards: 70\r\n%s"
+        "From: <%s>;tag=%08x\r\nTo: <%s>\r\nCall-ID: %s\r\nCSeq: 1 SUBSCRIBE\r\n"
+        "Contact: <sip:%s@[%s]:%d;transport=tcp>\r\nP-Preferred-Identity: <%s>\r\n"
+        "Event: reg\r\nAccept: application/reginfo+xml\r\nExpires: 600000\r\nContent-Length: 0\r\n\r\n",
+        sms_impu,cfg.ip6,portc,arc4random(),sms_route,sms_impu,arc4random(),sms_impu,reg_sub_cid,cfg.imsi,cfg.ip6,reg.port,sms_impu);
+    if (n>0 && n<(int)sizeof(m) && send(s,m,(size_t)n,0)==n) printf("%s registration events: subscribed\n",ts_now());
+}
+static char dereg_msg[4000];static int dereg_len;
+static void ims_dereg(int wait)
+{
+    if (!dereg_len || call_sock<0) return;
+    dereg_len=0;
+    int n=reg_build(dereg_msg,sizeof(dereg_msg),0);if (!n) return;
+    int w=(int)send(call_sock,dereg_msg,(size_t)n,0);
+    if (!wait) {usleep(300000);return;}
+    char r[3000];int k=0;
+    if (w>0) do k=recv_msg(call_sock,r,sizeof(r),2); while (k>0 && strncmp(r,"SIP/2.0",7));
+    printf("signed off: %s\n",w<=0?"could not send":k>0?(strncmp(r,"SIP/2.0 2",9)?"refused":"done"):"no answer");fflush(stdout);
+}
 static void ims_stop(int sig)
 {   /* SIGTERM/SIGINT: our SAs and policies go with us (the next start makes its own). A call in progress is closed
      * first (A, 2026-11-14: a restart mid-call left it open on the network: every later call got "busy") */
     (void)sig;
-    if (call.state==1) call_respond("480 Temporarily Unavailable",NULL);
-    else if (call.state>=2) call_bye();
-    if (call.state && call.ui) call_ui_state("ended %u the phone service restarted",call.id);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
+    call_abort_all("the phone service restarted");ims_dereg(0);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();_exit(0);
 }
 
 int main(int argc,char **argv)
@@ -1355,7 +934,17 @@ int main(int argc,char **argv)
     do n=recv_msg(s,r,sizeof(r),8); while (n>0 && !strncmp(r,"SIP/2.0 1",9));
     if (n<=0) {   /* this P-CSCF is silent: the next start (redwood-cellulard, 30 s) tries the other */
         FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","w");if (q) {fprintf(q,"%d\n",(pci+1)%cfg.npc);fclose(q);}
-        printf("no answer from P-CSCF %d; the next start tries P-CSCF %d\n",pci,(pci+1)%cfg.npc);isim_close();return 1;}
+        printf("no answer from P-CSCF %d; the next start tries P-CSCF %d\n",pci,(pci+1)%cfg.npc);isim_close();
+        /* try the other one at once (A, 2026-11-15): waiting for redwood-cellulard's next start cost 30 s more, and
+         * texts sent to us meanwhile were held at the SMSC for minutes. Once per start: --pcscf-retried stops a loop. */
+        if (cfg.npc>1 && !flag(argc,argv,"--pcscf-retried") && argc<60) {
+            static char idx[12];snprintf(idx,sizeof(idx),"%d",(pci+1)%cfg.npc);
+            char *nv[64];int k=0;for (int i=0;i<argc;i++) {if (!strcmp(argv[i],"--pcscf") && i+1<argc) {i++;continue;} nv[k++]=argv[i];}
+            nv[k++]="--pcscf";nv[k++]=idx;nv[k++]="--pcscf-retried";nv[k]=NULL;
+            close(s);if (ls>=0) close(ls);close(us);if (pfk>=0) close(pfk);
+            printf("trying P-CSCF %s now\n",idx);fflush(stdout);execv(argv[0],nv);
+        }
+        return 1;}
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);
     if (strncmp(r,"SIP/2.0 401",11)) {show(r);isim_close();return 1;}
     char www[900],secs[900],nonce[300]={0};
@@ -1386,7 +975,16 @@ int main(int argc,char **argv)
     int p3=sp_add(&pc6,(int)pports,&me6,portc,IPSEC_DIR_INBOUND,0),p4=sp_add(&pc6,(int)pportc,&me6,ports,IPSEC_DIR_INBOUND,0);
     memset(ck,0,sizeof(ck));memset(ik,0,sizeof(ik));
     printf("    IPsec: SAs %d %d %d %d, policies %d %d %d %d (0 = accepted)\n",e1,e2,e3,e4,p1,p2,p3,p4);
-    if (e1 || e2 || e3 || e4 || p1 || p2 || p3 || p4) {ipsec_flush();return 1;}
+    if (e1 || e2 || e3 || e4 || p1 || p2 || p3 || p4) {ipsec_flush();
+        /* The two outbound SAs refused (EINVAL, "SAs 22 0 0 22"; seen after quick restarts): flushing and adding the
+         * same ones again never helped (3 of 3), but the next start's fresh challenge (new SPIs) always did. So a new
+         * challenge at once: re-exec once (--sa-retried), instead of redwood-cellulard's next start 30 s later. */
+        if (!flag(argc,argv,"--sa-retried") && argc<60) {
+            char *nv[64];int k=0;for (int i=0;i<argc;i++) nv[k++]=argv[i];nv[k++]="--sa-retried";nv[k]=NULL;
+            close(s);if (ls>=0) close(ls);close(us);if (pfk>=0) close(pfk);isim_close();
+            printf("    a new challenge at once\n");fflush(stdout);usleep(300000);execv(argv[0],nv);
+        }
+        return 1;}
 
     /* 4. the second REGISTER, protected: port-c -> the P-CSCF's port-s */
     char ha1[33],ha2[33],resp[33],buf[600],cnonce[20];
@@ -1394,6 +992,11 @@ int main(int argc,char **argv)
     {size_t L=(size_t)snprintf(buf,sizeof(buf),"REGISTER:%s",uri);md5hex(buf,L,ha2);}
     snprintf(cnonce,sizeof(cnonce),"%08x%08x",arc4random(),arc4random());
     {size_t L=(size_t)snprintf(buf,sizeof(buf),"%s:%s:00000001:%s:auth:%s",ha1,nonce,cnonce,ha2);md5hex(buf,L,resp);}
+    /* (kept for the in-place refresh and the sign-off: reg_build) */
+    memcpy(reg.ha1,ha1,33);memcpy(reg.ha2,ha2,33);snprintf(reg.nonce,sizeof(reg.nonce),"%s",nonce);snprintf(reg.cnonce,sizeof(reg.cnonce),"%s",cnonce);
+    snprintf(reg.user,sizeof(reg.user),"%s",user);snprintf(reg.uri,sizeof(reg.uri),"%s",uri);snprintf(reg.common,sizeof(reg.common),"%s",common);
+    snprintf(reg.secc,sizeof(reg.secc),"%s",secc);reg.T=T;reg.port=ports;reg.nc=1;reg.cseq=2;
+    snprintf(reg.cid,sizeof(reg.cid),"%08x@[%s]",cid,cfg.ip6);
     memset(ha1,0,sizeof(ha1));
     /* our previous contact, if it was another (address or port changed): removed in this same REGISTER (expires=0),
      * so the network never offers a call to a dead contact first ("busy", late rings) */
@@ -1425,38 +1028,120 @@ int main(int argc,char **argv)
     printf("<-- %.*s\n",(int)(strstr(r,"\r\n")-r),r);show(r);
     if (strncmp(r,"SIP/2.0 200",11)) {ipsec_flush();return 1;}
     printf("REGISTERED\n");
+    /* the registration is refreshable from here on (reg_build: refresh in place, sign-off). (The sign-off of 08:53 was
+     * prebuilt with REGISTER 2's digest response under nc=00000002 -- a wrong digest, so it was refused and the old
+     * registration lingered; it is now built when sent, with its own nc.) */
+    snprintf(reg.secs,sizeof(reg.secs),"%s",secs);reg.ok=1;dereg_len=1;
+    /* the next start goes to the OTHER P-CSCF first: the one we are on still holds this connection after we leave and
+     * stays silent to a new REGISTER from the same port-c for a while (seen at every restart 2026-11-15: 8 s lost) */
+    if (cfg.npc>1) {FILE *q=fopen("/var/tmp/redwood-cell/ims-pcscf","w");if (q) {fprintf(q,"%d\n",(pci+1)%cfg.npc);fclose(q);}}
     {FILE *q=fopen("/var/root/ims-last-contact","w");if (q) {fprintf(q,"%s\n",my_contact);fclose(q);chmod("/var/root/ims-last-contact",0600);}}
     {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)time(NULL));fclose(q);}}
     sms_keep_registration(r);
     if (flag(argc,argv,"--once")) return 0;
 
     /* 5. stay: show what the network sends, answer requests with 200 */
-    int cs[8];int ncs=0;time_t registered_at=time(NULL);
+    int cs[8];int ncs=0;time_t registered_at=time(NULL),reopened_at=0;
+    int granted=reg_granted(r);time_t refresh_at=registered_at+reg_refresh_after(granted),rereg_sent=0;unsigned rereg_cseq=0;int subscribed=0;
+    printf("registration lifetime %d s: refreshed in place after %ld s\n",granted,(long)(refresh_at-registered_at));
+    /* Health check (A, 2026-11-15): an OPTIONS to our own identity, 15 s after registering and then every 2 min when
+     * idle. It goes out through the P-CSCF and S-CSCF and comes back, so any answer (even an error) proves the
+     * registration carries traffic. No answer in 10 s = a dead registration that only looks alive (texts to us are
+     * then held at the SMSC for minutes): start afresh. */
+    /* Only a 2xx counts: it is our own 200 coming back. 408/480/504 = the network can send for us but not reach us
+     * (08:28:55: 504 while a text to us waited at the SMSC until the next registration, 3.5 min later). */
+    /* (08:42-08:45: checks 15 s after registering got no answer although the connection worked -- the sign-off was
+     * answered -- and each failure restarted the client: a loop. So: first check after 60 s, two failures in a row
+     * (30 s apart) before acting, and at most one restart from the check per 15 min, remembered across restarts.) */
+    uint32_t probe_cid=0;int probe_dead=0,probe_fails=0;time_t probe_at=0,next_probe=registered_at+60;
     snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
+    call_registered=1;calls_snapshot(1);   /* (a fresh start: the call screen ends any call it still shows from before) */
     for (;;) {
         /* a fresh registration well before the 7200 s expiry: leave cleanly, redwood-cellulard starts us again */
-        if (time(NULL)-registered_at>6600 && !call.state) {printf("re-registration due: leaving for a fresh start\n");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+        {   /* the in-place refresh (reg_build); no answer in 15 s or anything but 2xx -> the fresh start below, when no
+             * call is up (with a call: the current registration still holds until it expires; tried again in 5 min) */
+            time_t now=time(NULL);
+            if (!subscribed && now-registered_at>=3 && sms_impu[0]) {reg_subscribe(s,portc);subscribed=1;}
+            if (reg_event_refresh) {reg_event_refresh=0;if (refresh_at>now+5) refresh_at=now+5;}
+            if (!rereg_sent && now>=refresh_at) {
+                char rm[4000];int rn=reg_build(rm,sizeof(rm),600000);
+                if (rn && send(s,rm,(size_t)rn,0)==rn) {rereg_sent=now;rereg_cseq=reg.cseq;printf("%s registration: refreshing in place\n",ts_now());}
+                else refresh_at=now+60;
+            }
+            int failed=0;
+            if (rereg_sent && now-rereg_sent>15) {printf("%s registration refresh: no answer\n",ts_now());rereg_sent=0;failed=1;}
+            if (reg_refresh_failed) {reg_refresh_failed=0;failed=1;}
+            if (reg_event_dead) {reg_event_dead=0;failed=1;}
+            if (reg_restore) {reg_restore=0;failed=1;}
+            if (failed) {
+                if (calls_live()) {printf("    (a call is up: the fresh registration waits)\n");refresh_at=now+300;}
+                else {printf("a fresh registration\n");fflush(stdout);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+            }
+        }
+        if (time(NULL)-registered_at>6600 && !calls_live()) {printf("re-registration due: leaving for a fresh start\n");ims_dereg(1);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
         struct pollfd p[12];int k=0;p[k++]=(struct pollfd){s,POLLIN,0};p[k++]=(struct pollfd){us,POLLIN,0};if (ls>=0) p[k++]=(struct pollfd){ls,POLLIN,0};
         int base=k;for (int i=0;i<ncs;i++) p[k++]=(struct pollfd){cs[i],POLLIN,0};
         {int pend=0;for (int j=0;j<k;j++) if (j!=1 && j!=2 && recv_pending(p[j].fd)) pend=1;
-         if (poll(p,(nfds_t)k,pend?0:call.state?200:1000)<0) break;}
+         /* the outbox folder as one more poll entry (after k: the loop below never sees it): a text from Messages
+          * goes out the moment its file lands, not at the next 1 s tick (A, 2026-11-15) */
+         static int okq=-2,odfd=-1;
+         if (okq==-2) {okq=kqueue();int dfd=okq>=0?open("/var/tmp/redwood-cell/sms-out",O_EVTONLY):-1;
+             if (dfd<0) {if (okq>=0) close(okq);okq=-2;}   /* (no folder yet: sms_outbox makes it; try again next turn) */
+             else {struct kevent ev;EV_SET(&ev,dfd,EVFILT_VNODE,EV_ADD|EV_CLEAR,NOTE_WRITE|NOTE_EXTEND|NOTE_DELETE|NOTE_RENAME,0,NULL);
+                 if (kevent(okq,&ev,1,NULL,0,NULL)<0) {close(dfd);close(okq);okq=-1;} else {odfd=dfd;sms_out_kick=1;}}}
+         sms_out_watched=okq>=0;
+         int kn=k;if (okq>=0) p[kn++]=(struct pollfd){okq,POLLIN,0};
+         if (poll(p,(nfds_t)kn,pend?0:calls_live()?200:1000)<0) break;
+         if (okq>=0 && (p[k].revents&POLLIN)) {struct kevent ev;struct timespec z={0,0};int gone=0;
+             while (kevent(okq,NULL,0,&ev,1,&z)>0) {sms_out_kick=1;if (ev.fflags&(NOTE_DELETE|NOTE_RENAME)) gone=1;}
+             if (gone) {close(okq);close(odfd);odfd=-1;okq=-2;}}}   /* (the folder was replaced: watch the new one next turn) */
         {   /* keep the registration's connection open: a CRLF CRLF ping every 25 s (RFC 5626 3.5.1). Without it the
              * network dropped the idle TCP connection within minutes, and a text sent into it got no answer at all
              * ("send: failed", 2026-11-13 18:43 and 18:46). */
             static time_t ka;time_t t=time(NULL);
-            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}
+            if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));
+                int ns=-1;   /* (twice within a minute: something is really wrong; start afresh) */
+                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;next_probe=time(NULL)+3;probe_cid=0;printf("%s registration connection opened again (registration kept)\n",ts_now());}
+                else {printf("a fresh registration\n");call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}}
             /* (2026-11-14) the P-CSCF's own connections to our port-s, too: a dead one is closed at once, so the next
              * call comes on a fresh connection instead of waiting out a dead one (late rings, lost CANCELs) */
             static time_t kc;
             if (t-kc>=20) {kc=t;
                 for (int j=0;j<ncs;j++) if (send(cs[j],"\r\n\r\n",4,0)<0) {
                     printf("keep-alive: a P-CSCF connection is gone (%s): closed\n",strerror(errno));
-                    if (call.state && call.fd==cs[j]) call.fd=s;
+                    call_fd_closed(cs[j]);recv_forget(cs[j]);
                     close(cs[j]);cs[j]=cs[--ncs];j--;
                 }
             }
         }
         ims_cmd_poll(s,portc);
+        {time_t now=time(NULL);int dead=0;
+         int failed=0;
+         if (probe_dead) {failed=1;probe_dead=0;}
+         /* (no answer at all is NOT a failure: on Jio the OPTIONS to ourselves often goes unanswered on a registration
+          *  that works -- a call went through at 08:48 during such a check. Only an explicit error counts.) */
+         else if (probe_cid && now-probe_at>10) {printf("%s health check: no answer (not counted)\n",ts_now());probe_cid=0;}
+         if (failed && ++probe_fails<2) {next_probe=now+30;printf("    (checking again in 30 s)\n");}
+         else if (failed) {
+            probe_fails=0;time_t lastr=0;FILE *q=fopen("/var/tmp/redwood-cell/ims-health-restart","r");
+            if (q) {long long v=0;if (fscanf(q,"%lld",&v)==1) lastr=(time_t)v;fclose(q);}
+            if (now-lastr<900) printf("    (a restart from the check %lld s ago: not again yet)\n",(long long)(now-lastr));
+            else {q=fopen("/var/tmp/redwood-cell/ims-health-restart","w");if (q) {fprintf(q,"%lld\n",(long long)now);fclose(q);}dead=1;}
+         }
+         else if (!probe_cid && now>=next_probe && sms_impu[0] && !calls_live()) {
+            probe_cid=arc4random()|1;probe_at=now;if (now>=next_probe) next_probe=now+120;
+            char pm[2400];int po=snprintf(pm,sizeof(pm),
+                "OPTIONS %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\nMax-Forwards: 70\r\n%s"
+                "From: <%s>;tag=%08x\r\nTo: <%s>\r\nCall-ID: %08x@[%s]\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
+                sms_impu,cfg.ip6,portc,arc4random(),sms_route,sms_impu,arc4random(),sms_impu,probe_cid,cfg.ip6);
+            if (po>0 && po<(int)sizeof(pm) && send(s,pm,(size_t)po,0)<0) {printf("%s health check: cannot send (%s)\n",ts_now(),strerror(errno));dead=1;probe_cid=0;}
+         }
+         if (sms_conn_dead) {dead=1;sms_conn_dead=0;}
+         if (dead) {
+            if (calls_live()) printf("    (a call is up: kept for now)\n");
+            else {printf("the registration carries nothing: a fresh registration\n");fflush(stdout);ims_dereg(1);
+                unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+         }}
         call_tick();
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
@@ -1465,14 +1150,43 @@ int main(int argc,char **argv)
             struct sockaddr_in6 from;socklen_t fl=sizeof(from);ssize_t g;
             if (i==1) {g=recvfrom(us,r,sizeof(r)-1,0,(struct sockaddr *)&from,&fl);if (g>0) r[g]=0;}
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
-            if (g<=0) {if (i>=base) {if (call.state && call.fd==cs[i-base]) call.fd=s;close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("the registration connection closed\n");call_abort("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;} break;}
+            if (g<=0) {if (i>=base) {call_fd_closed(cs[i-base]);recv_forget(cs[i-base]);close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("%s the registration connection closed\n",ts_now());
+                int ns=-1;
+                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;next_probe=time(NULL)+3;probe_cid=0;printf("%s registration connection opened again (registration kept)\n",ts_now());}
+                else {call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}} break;}
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
-            if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) {
-                char fn[96];snprintf(fn,sizeof(fn),"/var/root/ims-invite-%ld.txt",(long)time(NULL));
-                int fd=open(fn,O_WRONLY|O_CREAT|O_TRUNC,0600);if (fd>=0) {(void)write(fd,r,(size_t)g);close(fd);}
-                continue;
+            if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) continue;
+            if (!strncmp(r,"SIP/2.0",7) && atoi(r+8)==504 && strstr(r,"<type>restoration</type>") && strstr(r,"initial-registration")) {
+                if (!reg_restore) printf("%s the network asks for a fresh registration (504 restoration)\n",ts_now());
+                reg_restore=1;
             }
-            if (!strncmp(r,"SIP/2.0",7) && call_out_response(s,r)) continue;
+            if (!strncmp(r,"SIP/2.0",7)) {   /* our refresh REGISTER's / SUBSCRIBE's answer */
+                char rci[200],rcq[80];
+                if (hdr(r,"Call-ID",rci,sizeof(rci)) && hdr(r,"CSeq",rcq,sizeof(rcq))) {
+                    if (rereg_sent && !strcmp(rci,reg.cid) && strstr(rcq,"REGISTER") && (unsigned)atoi(rcq)==rereg_cseq) {
+                        int code=atoi(r+8);if (code<200) continue;
+                        rereg_sent=0;
+                        if (code<300) {
+                            registered_at=time(NULL);granted=reg_granted(r);refresh_at=registered_at+reg_refresh_after(granted);
+                            {FILE *q=fopen("/var/tmp/redwood-cell/ims-registered","w");if (q) {fchmod(fileno(q),0644);fprintf(q,"%lld\n",(long long)registered_at);fclose(q);}}
+                            printf("%s registration refreshed in place (lifetime %d s, next in %ld s)\n",ts_now(),granted,(long)(refresh_at-registered_at));
+                            subscribed=0;   /* (the subscription is renewed with it) */
+                        } else {printf("%s registration refresh: %d%s\n",ts_now(),code,code==401?" (the network wants a new challenge)":"");reg_refresh_failed=1;}
+                        continue;
+                    }
+                    if (reg_sub_cid[0] && !strcmp(rci,reg_sub_cid) && strstr(rcq,"SUBSCRIBE")) {
+                        int code=atoi(r+8);if (code>=200) printf("%s registration events: %d\n",ts_now(),code);continue;
+                    }
+                }
+            }
+            if (!strncmp(r,"SIP/2.0",7) && probe_cid) {char pci_[200];   /* the health check's answer */
+                if (hdr(r,"Call-ID",pci_,sizeof(pci_)) && (uint32_t)strtoul(pci_,NULL,16)==probe_cid) {int code=atoi(r+8);
+                    if (code==408 || code==480 || code==503 || code==504) {printf("%s health check: %d -- the network cannot reach us\n",ts_now(),code);probe_dead=1;}
+                    if (code>=200 && code<300) probe_fails=0;
+                    if (code>=200) probe_cid=0;
+                    continue;}}
+            if (!strncmp(r,"SIP/2.0",7) && sms_ack_answer(s,r,portc)) continue;
+            if (!strncmp(r,"SIP/2.0",7) && call_response(r)) continue;
             if (strncmp(r,"SIP/2.0",7) && i!=1 && call_request(p[i].fd,r)) continue;
             if (strncmp(r,"SIP/2.0",7)) {      /* a request: 200 with its Via/From/To/Call-ID/CSeq */
                 /* An INVITE (a call to us) must NOT get a bare 200: the caller would be connected to silence, and
@@ -1488,24 +1202,25 @@ int main(int argc,char **argv)
                 char via[900],fr[300],to[300],ci[200],cq[80];int o=0;
                 if (invite) {
                     o=snprintf(m,sizeof(m),"SIP/2.0 100 Trying\r\n");
-                    const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
-                    if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
-                    if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s\r\n",to);
-                    if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
-                    if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
-                    o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-                    if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);
+                    const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");if (!e2) break;MSG_CAT(m,o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
+                    if (hdr(r,"From",fr,sizeof(fr))) MSG_CAT(m,o,"From: %s\r\n",fr);
+                    if (hdr(r,"To",to,sizeof(to))) MSG_CAT(m,o,"To: %s\r\n",to);
+                    if (hdr(r,"Call-ID",ci,sizeof(ci))) MSG_CAT(m,o,"Call-ID: %s\r\n",ci);
+                    if (hdr(r,"CSeq",cq,sizeof(cq))) MSG_CAT(m,o,"CSeq: %s\r\n",cq);
+                    MSG_CAT(m,o,"Content-Length: 0\r\n\r\n");
+                    if (MSG_FITS(m,o)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}
                 }
                 o=snprintf(m,sizeof(m),"SIP/2.0 %s\r\n",status);
-                const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");o+=snprintf(m+o,sizeof(m)-(size_t)o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
+                const char *q=r;while ((q=strstr(q,"\r\nVia:"))) {const char *e2=strstr(q+2,"\r\n");if (!e2) break;MSG_CAT(m,o,"%.*s\r\n",(int)(e2-q-2),q+2);q=e2;}
                 (void)via;
-                if (hdr(r,"From",fr,sizeof(fr))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"From: %s\r\n",fr);
-                if (hdr(r,"To",to,sizeof(to))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"To: %s%s\r\n",to,strstr(to,"tag=")?"":";tag=rw1");
+                if (hdr(r,"From",fr,sizeof(fr))) MSG_CAT(m,o,"From: %s\r\n",fr);
+                if (hdr(r,"To",to,sizeof(to))) MSG_CAT(m,o,"To: %s%s\r\n",to,strstr(to,"tag=")?"":";tag=rw1");
                 (void)status;
-                if (hdr(r,"Call-ID",ci,sizeof(ci))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"Call-ID: %s\r\n",ci);
-                if (hdr(r,"CSeq",cq,sizeof(cq))) o+=snprintf(m+o,sizeof(m)-(size_t)o,"CSeq: %s\r\n",cq);
-                o+=snprintf(m+o,sizeof(m)-(size_t)o,"Content-Length: 0\r\n\r\n");
-                if (strncmp(r,"ACK",3)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}
+                if (hdr(r,"Call-ID",ci,sizeof(ci))) MSG_CAT(m,o,"Call-ID: %s\r\n",ci);
+                if (hdr(r,"CSeq",cq,sizeof(cq))) MSG_CAT(m,o,"CSeq: %s\r\n",cq);
+                MSG_CAT(m,o,"Content-Length: 0\r\n\r\n");
+                if (strncmp(r,"ACK",3)) {if (MSG_FITS(m,o)) {if (i==1) sendto(us,m,(size_t)o,0,(struct sockaddr *)&from,fl); else send(p[i].fd,m,(size_t)o,0);}}
+                if (!strncmp(r,"NOTIFY ",7)) reg_notify(r);
                 sms_incoming(s,r,(size_t)g,portc);
             }
         }
