@@ -1,3 +1,31 @@
+# Latest live sensor progress — 2026-11-15
+
+Installed source8b39c494 after ONE explicit user-approved install/reboot. Loader
+verified the kernel-slot write/readback. Running11:17:58IST. Protected bag flags1
+before first unlock and after probe; user confirms front/main and repeat unlocking
+work. Original front media baseline remains active; brightness tweak loads on boot.
+
+**2LA positively identified twice: model20ca, revisiona202, cleanup_ok=true.**
+Complete PMIC map unchanged across repeat. No RAW capture/auxiliary app lens yet.
+Private evidence and exact rollback slot: build/camera-aux-20261115 outside git.
+First approved reboot is consumed; no further reboot permission implied.
+
+The next source/candidate now adds revision-gated2LA native12MP sensor-counter
+stream test and GW2 identity probe with two-PMIC rollback. Host sanitizer/fault
+and catalogue tests, passcode integration and GICv2 build pass. NOT installed.
+See docs/x1slte-camera-aux.md for commands, hashes, rail values and runtime gates.
+Read the CORRECTION: GW2 active I2C pinctrl is gpp0-2/3; gpc0 recovery-GPIO metadata
+must not be used as active I2C routing. Previous suspected MCLK pin conflict was
+based on that metadata and is superseded for the native bus route.
+
+Next candidate slot SHA256bdb51280424393a8abbee7f8a9e979c1811e0782d09095a58a031a9bb876a7b9.
+Current running rollback candidate is kernel-slot-2la-id.bin (SHA14f70dab...);
+pre-session AOD kernel backup SHA256b686b63aae218f958e6212ee5bce95f44b2c5e92a4357a6bea0a8b858b17d266.
+Do not confuse these. Phone lock currently codex-camera-aux; verify before action.
+Main/master remain accepted8eaa52cf; all research stays feat/s20-rear-aux.
+
+---
+
 # Latest: 2LA identity probe built, awaiting approved hardware boot
 
 Branch feat/s20-rear-aux now integrates camera-quality and accepted master8eaa52cf

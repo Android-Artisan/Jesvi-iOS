@@ -33,6 +33,7 @@
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include "redwood_camera_s20_aux_power.h"
+#include "redwood_camera_s20_gw2_power.h"
 
 #define BANK_GPP3               0x60U           /* PERIC0 */
 #define PMIC_ADDR               0x59U
@@ -157,6 +158,30 @@ bool redwood_s2mpb02_2la_power(struct cam_aux_power *saved, bool restore, bool *
         ok=cam_aux_power_begin(saved,io);
         if(!ok)*clean=cam_aux_power_restore(saved,io);
     }
+    if(!*clean)broken=true;
+    lck_mtx_unlock(&s2mpb02_lock);return ok;
+}
+
+struct gw2_adapter {
+    void *ctx;
+    bool (*read03)(void *,uint8_t,uint8_t *);
+    bool (*write03)(void *,uint8_t,uint8_t);
+};
+static bool gw2_read(void *p,uint8_t pmic,uint8_t reg,uint8_t *v){
+    struct gw2_adapter *a=p;return pmic==2?get_unlocked(reg,v):a->read03(a->ctx,reg,v);
+}
+static bool gw2_write(void *p,uint8_t pmic,uint8_t reg,uint8_t v){
+    struct gw2_adapter *a=p;return pmic==2?redwood_bbi2c_write_reg(&bus,PMIC_ADDR,reg,v):a->write03(a->ctx,reg,v);
+}
+static void gw2_pause(void *p,unsigned us){(void)p;delay_for_interval(us,NSEC_PER_USEC);}
+bool redwood_s2mpb02_gw2_power(struct cam_gw2_power *saved,bool restore,bool *clean,void *ctx,
+    bool (*read03)(void *,uint8_t,uint8_t *),bool (*write03)(void *,uint8_t,uint8_t)){
+    struct gw2_adapter adapter={ctx,read03,write03};
+    struct cam_gw2_io io={&adapter,gw2_read,gw2_write,gw2_pause};
+    bool ok=false;*clean=true;
+    lck_mtx_lock(&s2mpb02_lock);
+    if(restore){ok=cam_gw2_power_restore(saved,io);*clean=ok;}
+    else if(bus_ready&&!broken){ok=cam_gw2_power_begin(saved,io);if(!ok)*clean=cam_gw2_power_restore(saved,io);}
     if(!*clean)broken=true;
     lck_mtx_unlock(&s2mpb02_lock);return ok;
 }

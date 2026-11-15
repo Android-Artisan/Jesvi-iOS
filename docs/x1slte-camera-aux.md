@@ -32,9 +32,10 @@ identical selected camera nodes; separate checks establish the addresses below.
 
 GW2 module-node suffix `@5A` is not its CIS bus address. Linux sensor enums53/54
 are not hardware model IDs. Both channel-mode nodes declare WDMA0 at0x170c1000
-and a mux register at0x17020414; initial bring-up must be exclusive. The saved
-GW2 controller GPIO mapping includes gpc0-3, also used for 2LA MCLK. Restore pin
-ownership deliberately on sensor changes; do not activate both at once.
+and a mux register at0x17020414; initial bring-up must be exclusive. The GW2 controller recovery-GPIO metadata lists gpc0 pins, but its ACTIVE
+pinctrl resolves to hsi2c1-bus, gpp0-2/3. Use the active pinctrl for native sensor
+bus access; do not drive the clock pins as I2C based on recovery metadata.
+Restore pin ownership on sensor changes and keep initial tests exclusive.
 
 The source reference is ExtremeXT/android_kernel_samsung_exynos990 under
 `drivers/media/platform/exynos/camera/sensor/module_framework/`: module_dt and
@@ -125,3 +126,58 @@ Back up the CURRENT slot after acquiring exclusive ownership before deployment;
 old rollback slots predate AOD. No flash or reboot yet. Explicit reboot approval
 is required. GW2 still has no identity/stream implementation; its stock TNP and
 shared OIS sequence must be handled separately after the first sensor is verified.
+
+## Live result and next candidate (2026-11-15)
+
+User approved ONE install/reboot. Current16MiB slot was backed up before any
+writes: SHA256b686b63aae218f958e6212ee5bce95f44b2c5e92a4357a6bea0a8b858b17d266.
+iOS raw-device writes were rejected read-only before mutation. Used loader Log
+Access, staged only the padded kernel, `oem write recovery 2000000` reported
+“written and read back”, then issued the single approved cold reboot. Loader,
+root/system/data were not rewritten. Running kernel11:17:58IST, source8b39c494.
+Protected AKS flags0x1 confirmed before first unlock and after identity probing.
+User confirms front/main camera open and repeat lock/unlock work. Brightness
+rule's foreground log appears after reboot; detailed slider policy not retested.
+
+Two independent cold2LA ID transactions return model0x20ca/revision0xa202,
+cleanup_ok=true. The complete read-only S2MPB02 map matches byte-for-byte across
+the repeat. These establish sensor identity/power/I2C/MCLK, not image capture.
+They select Samsung's A202 initialization without Global_1.
+
+Next built candidate adds:
+
+- `cam.s20.2la.stream`: exact model20ca/revisiona202 gate; stock initial, Global_2,
+  native4032×3024@30 mode and single-sync tables; output-size readback; stream-on,
+ 12 polls over600ms checking frame counter0005 advances; stream-off and bounded
+  stop-counter check before power cleanup. No CSIS/PHY/DMA writes and no RAW
+  capture. Group hold stays unused as Samsung USE_GROUP_PARAM_HOLD=0. Register
+  settings only: no Global_1, OTP or GW2 TNP firmware exported into git.
+- `cam.s20.gw2.id`: active I2C1 gpp0-2/3 at0x2d, resetgpm32-0, MCLK0/gpc0-0;
+  eight-rail snapshot across both camera PMICs, stock order/delays, fixed voltage
+  selectors, shared live-rail voltage checks and reverse rollback. No setfiles or
+  streaming. Reject incorrect existing parent BUCK1/BB/LDO18 setup without writes.
+
+GW2 fixed rails in order: S2MPB03LDO6 analog2.8V, S2MPB03LDO1 core1.05V,
+S2MPB02LDO13 AF2.8V, S2MPB03LDO7 OIS2.8V, S2MPB02LDO10 OIS1.8V,
+S2MPB03LDO3 CAMIO1.8V, S2MPB02LDO6 VTIO1.8V, S2MPB02LDO7 SUBIO1.8V.
+S2MPB03 bit6 is reserved and preserved. Shared rails restore exact prior bytes;
+previously enabled dedicated rails prevent the probe. Both controller buses'
+pin functions/pulls are read-back checked after restoration.
+
+`catalogue-aux-setfiles.py` exports metadata/hashes only:9 2LA tables and14 GW2
+tables, with direct page4000 output dimensions cross-checked for all6/12 modes.
+The three catalogue tests include wrong-bank and mismatched-mode rejection.
+GW2 two-PMIC fault injection covers every transaction operation, reserved bits,
+parent/live/shared voltage guards, delay order and cleanup failures. A202 table
+executor validates all input before writing, excludes burst firmware operations
+and stops at every injected I2C failure. All sanitizer tests, inventory tests,
+passcode integration and the new GICv2 kernel build pass. Sources match overlay.
+
+Next candidate NOT installed. Private `kernel-slot-aux-next.bin`, SHA256
+bdb51280424393a8abbee7f8a9e979c1811e0782d09095a58a031a9bb876a7b9,
+stripped kernel15196112bytes, SHA256
+ ae78c9ce6d683233cf60059d029ae7bf77c43f51362851fbfa4505ebae408f92.
+Requires a NEW explicit install/reboot approval; the first approval is consumed.
+After boot run ID commands, then2LA stream only if ID/cleanup pass. Close Camera,
+wait20s, refuse busy rather than forcing ownership. Stop on failed cleanup; do
+not run additional experiments against an unknown power state.
