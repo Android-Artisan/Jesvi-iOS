@@ -21,6 +21,8 @@
 #include "redwood_camera_s20_controls.h"
 #include "redwood_camera_s20_aux_power.h"
 #include "redwood_camera_s20_gw2_power.h"
+#include "redwood_camera_s20_gw2.h"
+#include "redwood_camera_s20_gw2_table.h"
 #include "redwood_camera_s20_main_voltage.h"
 #include "redwood_camera_s20_aux_table.h"
 #include "redwood_camera_s20_2la.h"
@@ -2997,6 +2999,20 @@ static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
 }
 #include "redwood_camera_s20_aux_rx_impl.h"
 
+static bool aux_gw2_send(void *context,const uint8_t *bytes,unsigned count){
+    return redwood_bbi2c_xfer(context,0x2d,bytes,count,NULL,0);
+}
+static bool aux_gw2_tables(struct redwood_bbi2c *bus){
+    struct cam_gw2_table_io io={bus,aux_gw2_send,aux_sensor_pause};
+#define GW2_TABLE(t) cam_gw2_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
+    bool ok=GW2_TABLE(redwood_GW2_setfile_A_Tnp)&&GW2_TABLE(redwood_GW2_setfile_A_Global)&&
+        GW2_TABLE(redwood_gw2_dual_single_A_settings)&&GW2_TABLE(redwood_gw2_setfile_A_2432x1824_30fps);
+#undef GW2_TABLE
+    /* No unvalidated EEPROM data: stock driver's uncalibrated-module fallback.
+     * PDXTC/PDAF calibration and image quality remain separate qualification. */
+    return ok&&aux_sensor_write16(bus,0x6028,0x2000)&&aux_sensor_write16(bus,0x602a,0x55b0)&&
+        aux_sensor_write16(bus,0x6f12,0)&&aux_sensor_write16(bus,0xfcfc,0x4000);
+}
 static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, redwood_s20_frame_fn fn, bool session, char *out, size_t cap) {
     struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
     struct cam_aux_power rails={0};
@@ -3073,16 +3089,17 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
     if(ok&&(model[0]==0&&model[1]==0))ok=false;
     if(ok&&(model[0]==0xff&&model[1]==0xff))ok=false;
     if(stream){
-        if(!ok||gw2||model[0]!=0x20||model[1]!=0xca||revision[0]!=0xa2||revision[1]!=0x02){ok=false;phase="A202 model/revision gate";goto cleanup;}
-        phase="A202 initial/global2/mode/single-sync";
+        if(!ok||(gw2?(model[0]!=0x09||model[1]!=0x72||revision[0]!=0xa3||revision[1]!=0):
+            (model[0]!=0x20||model[1]!=0xca||revision[0]!=0xa2||revision[1]!=0x02))){ok=false;phase="A202 model/revision gate";goto cleanup;}
+        phase=gw2?"A300 TNP/global/single-sync/2432x1824 mode":"A202 initial/global2/mode/single-sync";
         struct cam_aux_table_io io={&bus,aux_sensor_write16,aux_sensor_pause};
 #define AUX_TABLE(t) cam_aux_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
-        ok=AUX_TABLE(redwood_2la_setfile_A_initial_setting)&&AUX_TABLE(redwood_2la_setfile_A_Global_2)&&
+        ok=gw2?aux_gw2_tables(&bus):AUX_TABLE(redwood_2la_setfile_A_initial_setting)&&AUX_TABLE(redwood_2la_setfile_A_Global_2)&&
            AUX_TABLE(redwood_2la_setfile_A_4032x3024_30fps)&&AUX_TABLE(redwood_2la_dual_single_A_settings);
 #undef AUX_TABLE
         if(!ok)goto cleanup;
         uint8_t size[4]={0};phase="mode output readback";
-        ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
+        ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==(gw2?0x09:0x0f)&&size[1]==(gw2?0x80:0xc0)&&size[2]==(gw2?0x07:0x0b)&&size[3]==(gw2?0x20:0xd0);
         if(!ok)goto cleanup;
         if(raw){
             phase="bounded exposure/gain readback";
@@ -3177,6 +3194,8 @@ static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
 static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,false,false,v,n,NULL,false,out,cap);}
 static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,false,false,v,n,NULL,false,out,cap);}
 
+static void cam_s20_gw2_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,true,false,v,n,NULL,false,out,cap);}
+
 static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,false,v,n,NULL,false,out,cap);}
 
 static void cam_s20_2la_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,true,v,n,NULL,false,out,cap);}
@@ -3188,6 +3207,7 @@ redwood_exynos_camera_s20_init(void)
 	 * over the existing root-only kern.redwood.poke interface instead. */
 	redwood_dbgport_add("cam.s20.2la.raw", ": [lines [again-code]]: A202 native12MP RAW; default3000 lines/1x; stock bounds/readback, guarded DMA", cam_s20_2la_raw);
 	redwood_dbgport_add("cam.s20.2la.stream", ": A202-only bounded native12MP sensor-counter test; no receiver/DMA; restores power and pins", cam_s20_2la_stream);
+	redwood_dbgport_add("cam.s20.gw2.stream", ": cold/idle-only A300 TNP and bounded frame-counter test; no receiver or Camera exposure", cam_s20_gw2_stream);
 	redwood_dbgport_add("cam.s20.gw2.id", ": cold/idle-only bounded GW2 identity read; both PMIC rail maps restored, no streaming", cam_s20_gw2_identify);
 	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
