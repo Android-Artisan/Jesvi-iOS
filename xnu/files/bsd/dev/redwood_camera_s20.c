@@ -3028,7 +3028,7 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
     unsigned mclk_pin=gw2?0:3;
     const char *sensor=gw2?"GW2":"2LA";
     uint32_t r[3]={0},m[3]={0},clock[4]={0};
-    uint8_t model[2]={0},revision[2]={0};
+    uint8_t model[2]={0},revision[2]={0};uint16_t mode_width=0,mode_height=0;
     bool pins=false,bus_saved=false,powered=false,clock_saved=false,clean=true,ok=false;
     const char *phase="busy";
     if(!cap)return false;
@@ -3099,14 +3099,19 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
 #undef AUX_TABLE
         if(!ok)goto cleanup;
         uint8_t size[4]={0};phase="mode output readback";
-        ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==(gw2?0x09:0x0f)&&size[1]==(gw2?0x80:0xc0)&&size[2]==(gw2?0x07:0x0b)&&size[3]==(gw2?0x20:0xd0);
+        if(gw2){
+            ok=aux_sensor_read16(&bus,0x034c,&mode_width)&&aux_sensor_read16(&bus,0x034e,&mode_height)&&mode_width==2432&&mode_height==1824;
+        }else{
+            ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
+            mode_width=(size[0]<<8)|size[1];mode_height=(size[2]<<8)|size[3];
+        }
         if(!ok)goto cleanup;
         if(raw){
             phase="bounded exposure/gain readback";
             struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
-            if(!ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls)){ok=false;goto cleanup;}
+            if(!(gw2?ax_gw2_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls):ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls))){ok=false;goto cleanup;}
         }
-        if(raw){receiver_started=true;if(!(fn?ax_receiver_begin_mode(&receiver,true):ax_receiver_begin(&receiver))){ok=false;phase=receiver.phase;goto cleanup;}}
+        if(raw){receiver_started=true;if(!ax_receiver_begin_sensor(&receiver,fn!=NULL,gw2)){ok=false;phase=receiver.phase;goto cleanup;}}
         phase=raw?"sensor and RAW receiver":"sensor frame counter (no receiver)";stream_sent=true;
         ok=aux_sensor_write16(&bus,0x0100,0x0100);
         if(!ok)goto cleanup;
@@ -3178,11 +3183,11 @@ cleanup:
     }
     redwood_camera_aux_release(clean);
 report:
-    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"mode_size\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
         receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0&0x00fff07fU,receiver.link1&0x78U,
         receiver.link0,receiver.link1,controls.applied?"true":"false",controls.before[0],controls.before[1],controls.before[2],
         controls.after[0],controls.after[1],controls.after[2],controls.frame_lines,controls.line_pck,receiver.guard_bad,
-        receiver.pixel_min,receiver.pixel_max,receiver.retained?"true":"false");
+        receiver.pixel_min,receiver.pixel_max,mode_width,mode_height,receiver.retained?"true":"false");
     return ok&&clean;
 }
 
@@ -3194,6 +3199,7 @@ static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
 static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,false,false,v,n,NULL,false,out,cap);}
 static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,false,false,v,n,NULL,false,out,cap);}
 
+static void cam_s20_gw2_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,true,true,v,n,NULL,false,out,cap);}
 static void cam_s20_gw2_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,true,false,v,n,NULL,false,out,cap);}
 
 static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,false,v,n,NULL,false,out,cap);}
@@ -3207,6 +3213,7 @@ redwood_exynos_camera_s20_init(void)
 	 * over the existing root-only kern.redwood.poke interface instead. */
 	redwood_dbgport_add("cam.s20.2la.raw", ": [lines [again-code]]: A202 native12MP RAW; default3000 lines/1x; stock bounds/readback, guarded DMA", cam_s20_2la_raw);
 	redwood_dbgport_add("cam.s20.2la.stream", ": A202-only bounded native12MP sensor-counter test; no receiver/DMA; restores power and pins", cam_s20_2la_stream);
+	redwood_dbgport_add("cam.s20.gw2.raw", ": [lines gain] A300 guarded2432x1824 RAW10 receiver test with mode/exposure readback", cam_s20_gw2_raw);
 	redwood_dbgport_add("cam.s20.gw2.stream", ": cold/idle-only A300 TNP and bounded frame-counter test; no receiver or Camera exposure", cam_s20_gw2_stream);
 	redwood_dbgport_add("cam.s20.gw2.id", ": cold/idle-only bounded GW2 identity read; both PMIC rail maps restored, no streaming", cam_s20_gw2_identify);
 	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);
