@@ -1,3 +1,15 @@
+## 2026-11-15 (11:50, A) — screen-off / AOD power: fast cores asleep, fewer wake-ups
+- Screen off or AOD: the scheduler runs on the four A55s only (`scroff_little=1`, live `kern.redwood.scroff_little`,
+  state `kern.redwood.scroff_little_now`); all 8 cores back the moment the display comes on (before the wake boost),
+  and while sound plays (music, a call's voice) plus 10 s. Measured in AOD: cores 4, 5, 7 asleep the whole 10 s with
+  zero wake-ups, core 6 once a second (was ~250 wake-ups a second on each fast core); SoC 60-61 C (was 68-70 C).
+  Audio gate verified live (sound -> all 8 at once, small cores again 10 s after).
+- Governor/thermal tick 500 ms with the screen off (`dvfs_scroff_tick=50` = as before); flashlight thread sleeps until
+  asked (was a 30 ms poll); Wi-Fi poll 100 ms when quiet with the screen off (`net_scroff_poll=0` = as before); USB
+  tick 250 ms with no host and the screen off (was 20 ms); Wi-Fi on the battery with the screen off: PM_MAX + every 3rd
+  DTIM (`wifi_scroff=0` = as before; not yet observed on battery: the test phone was on the cable); wake_stats names
+  each thread call. Details: proposals/idle-power/RESEARCH.md. Kernel flashed 11:35 (kernel slot only).
+
 ## 2026-11-14 — Camera correctness fixes staged on feat/s20-camera-quality (not deployed)
 - Frame-owned black/band correction and preview-cache identity remove reader/render global-state sharing.
 - Rear tap exposure uses the same correction as rendering; normal rear exposure rounds to even lines.
