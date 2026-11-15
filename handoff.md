@@ -1,3 +1,27 @@
+# Latest LIVE milestone: both auxiliary sensors identified;2LA sensor streams
+
+User approved latest merged kernel install/reboot and full camera work. Wrote
+ONLY kernel slot via loader, written/read-back verified, then booted once.
+Running kernel21:17:15IST; candidate slot15d996b7...; source baseline45820593.
+Loader/logos/devmode/root/system/data preserved. Backup in camera-aux-latest-20261115.
+
+2LA20ca/a202: native4032×3024 mode output registers verified,11 counter changes
+in12 polls, stream-off counter verified, complete cleanuptrue. This proves SENSOR
+streaming, not CSI/DMA image reception. GW20972/a300: identity and cleanuptrue;
+S2MPB02 full map unchanged across GW2 probe. No GW2 streaming or auxiliary RAW yet.
+User confirms front/main and repeat locking/unlocking still work. First host
+keybag read was4 (protected but already unlocked); before-first-unlock lock state
+was not observed for this boot, so do not claim it was. No auth changes made.
+
+Machine-readable milestone: docs/x1slte-camera-aux-live-status.json. Next implement
+bounded2LA C-PHY/CSIS4/WDMA0 RAW capture; sensor-counter/ID commands remain working.
+GW2 C-PHY/CSIS2/WDMA3 follows after TNP/global/mode and calibration handling.
+No app auxiliary lens controls or smooth zoom yet. Additional kernel reboots must
+be authorized; do not assume the completed one-boot approval covers another.
+Phone currently held codex-camera-aux; check actual lock before changes.
+
+---
+
 # Latest checkpoint: merged, rebuilt and pushed; reboot approval pending
 
 2026-11-15 evening: source/image audit committed88fbc0f5 after master mergebbc8e510.

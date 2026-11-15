@@ -91,3 +91,14 @@ and normal repeat locking. Close Camera and wait20seconds, run2LA ID, then its
 bounded A20212MP sensor-counter test, then GW2 ID only after successful cleanup.
 No auxiliary image/zoom controls are implemented yet. No further reboot is
 implied by old approvals. Update this document and handoff with actual outcomes.
+
+## Live test outcome after user approval
+
+Installed this exact candidate via loader kernel-only write/readback and one
+approved cold reboot. Running kernel21:17:15IST confirmed.2LA native4032×3024
+sensor-counter test passes (11 advances, stop verified, cleanuptrue). GW2 ID
+returns0972/a300 with cleanuptrue and unchanged S2MPB02 map. User confirms front,
+main rear and repeat passcode behavior. First host bag status4 was already
+unlocked/protected, so this boot's before-first-unlock state was not observed.
+No CSI/DMA RAW image from either auxiliary camera yet. Further implementation
+continues with bounded receiver capture before any lens controls/zoom UI.

@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-15",
+  "source_baseline": "45820593",
+  "candidate_slot_sha256": "15d996b7e22abd719c79e3daa5b7a65ed64ac06a7601e56a4c45a5c1e4f747dd",
+  "kernel_installed": true,
+  "sensors": {
+    "2la": {
+      "model": "0x20ca",
+      "revision": "0xa202",
+      "native_mode_width": 4032,
+      "native_mode_height": 3024,
+      "frame_counter_changes": 11,
+      "stream_off_verified": true,
+      "cleanup_ok": true,
+      "raw_capture_verified": false
+    },
+    "gw2": {
+      "model": "0x0972",
+      "revision": "0xa300",
+      "cleanup_ok": true,
+      "streaming_verified": false,
+      "raw_capture_verified": false
+    }
+  },
+  "user_confirmed_front_main_and_repeat_passcode": true,
+  "first_host_keybag_read": 4,
+  "before_first_unlock_state_observed": false,
+  "camera_aux_lenses_exposed": false
+}
