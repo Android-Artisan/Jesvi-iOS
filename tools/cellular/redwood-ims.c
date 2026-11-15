@@ -760,6 +760,12 @@ static int reg_build(char *out,size_t cap,int expires)
  * was terminated (deactivated, rejected, expired, unregistered) means the network dropped us -- without it we noticed
  * only at the next health check (minutes, texts held meanwhile); "shortened" asks for a refresh soon */
 static int reg_event_dead,reg_event_refresh,reg_refresh_failed;
+/* (B, 2026-11-15) a 504 carrying 3GPP "alternative-service: restoration / initial-registration" (TS 24.229
+ * 5.1.2A.1.6): the P-CSCF can no longer reach our S-CSCF ("PCSCF routing to the next hop failed") and tells us to
+ * register afresh. Jio sends it now and then (08:30, 09:03, 09:28, 10:01, 10:06 on 2026-11-15) and closes the
+ * connection ~3 min later; until then we looked registered but nothing reached us. Now: a fresh registration at once
+ * (not during a call). It came late to the health check (after its 10 s), so any response is looked at. */
+static int reg_restore;
 static char reg_sub_cid[64];
 static void reg_notify(const char *r)
 {
@@ -1066,6 +1072,7 @@ int main(int argc,char **argv)
             if (rereg_sent && now-rereg_sent>15) {printf("%s registration refresh: no answer\n",ts_now());rereg_sent=0;failed=1;}
             if (reg_refresh_failed) {reg_refresh_failed=0;failed=1;}
             if (reg_event_dead) {reg_event_dead=0;failed=1;}
+            if (reg_restore) {reg_restore=0;failed=1;}
             if (failed) {
                 if (calls_live()) {printf("    (a call is up: the fresh registration waits)\n");refresh_at=now+300;}
                 else {printf("a fresh registration\n");fflush(stdout);unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
@@ -1149,6 +1156,10 @@ int main(int argc,char **argv)
                 else {call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}} break;}
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) continue;
+            if (!strncmp(r,"SIP/2.0",7) && atoi(r+8)==504 && strstr(r,"<type>restoration</type>") && strstr(r,"initial-registration")) {
+                if (!reg_restore) printf("%s the network asks for a fresh registration (504 restoration)\n",ts_now());
+                reg_restore=1;
+            }
             if (!strncmp(r,"SIP/2.0",7)) {   /* our refresh REGISTER's / SUBSCRIBE's answer */
                 char rci[200],rcq[80];
                 if (hdr(r,"Call-ID",rci,sizeof(rci)) && hdr(r,"CSeq",rcq,sizeof(rcq))) {
