@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify default-off AOD ships in clean S20 root assembly with no data tweaks."""
+"""Verify AOD (default on, wallpaper off) ships in clean S20 root assembly with no data tweaks."""
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -35,4 +35,4 @@ assert b'RWAlwaysOnImageController' in binary and b'RWAlwaysOnController\0' not 
 assert b'redwoodAlwaysOnServiceInstalled' in binary
 build = (repo/'userland/build.sh').read_text()
 assert 'python3 ../tools/aod/prepare-root.py root --binaries obj' in build
-print('PASS: independent, idempotent S20 AOD root assembly, preserved injection rules, default-off, duplicate guard and distinct Settings class')
+print('PASS: independent, idempotent S20 AOD root assembly, preserved injection rules, no seeded preferences, duplicate guard and distinct Settings class')

@@ -3,7 +3,7 @@
 ## Final state (15 November 2026, A) — read this first
 
 Native iOS 16.5 Always-On Display on the SM-G980F, user-verified. Settings → Always-On Display (row under Display & Brightness):
-(**default off**, wallpaper in AOD **default off**). In x1slte/main (6b629ecd and later); the sections further down are
+(**default on** since 2026-11-15 10:10, wallpaper and notifications in AOD **default off**; a missing or unreadable preference file reads as these defaults, `tools/aod/config.h` `rw_aod_default`). In x1slte/main (6b629ecd and later); the sections further down are
 the history of how it got here.
 
 | Part | Where | What it does |
