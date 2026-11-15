@@ -47,14 +47,30 @@ in ringing/dialing/alerting/connecting/active (an `ended` line is not a live cal
 - Incoming AMR payload type is whatever the offer says (Jio uses 100 or 112; a fixed 100 made PT 112 calls silent).
 - Messages are built with `MSG_CAT` (never past the buffer) and not sent when they would not fit.
 
+## Texts (SMS over IMS) — how they stay reliable (A, 2026-11-15)
+
+- Pickup is instant both ways: redwood-ims watches `sms-out` (kqueue), RedwoodSMS watches `sms-in`/`sms-out` (vnode);
+  timers are only a fallback (5 s).
+- Registration connection closed by the network: opened again at once from port-c over the same SAs (3 s connect
+  limit); twice in a minute or no connect -> fresh registration. A silent P-CSCF: the other one at once (re-exec).
+- Health check: OPTIONS to our own identity 15 s after registering, every 5 min when idle and 3 s after a reopen.
+  No answer in 10 s -> fresh registration (not during a call). Catches a registration that only looks alive.
+- A sent text not confirmed (RP-ACK) in 20 s -> queued again as `<id>.retry.msg`, fresh registration, sent once
+  more; a retry that fails is reported failed. Messages waits up to 180 s for the result.
+- Incoming: RP-ACK to the SMSC (P-Asserted-Identity), From URI as fallback when refused; an SMSC retry of a single
+  text is not shown twice (`/var/root/ims-sms-seen`).
+- Known gap: the planned fresh start every ~110 min (re-registration) leaves a 10-90 s window; an in-place
+  re-REGISTER would close it.
+
 ## Open problems
 
-1. **Outgoing calls: ringing/answer arrive late, together** (6-20 s after `100 Trying`, then 183+180+200 within
-   200 ms). Not the phone: cellulard had nothing pending (`ring rear == done`) during the gap; the one prompt call
-   was made while another call was up. Suspects: the network waits for something during setup (QoS
-   preconditions: Jio phones send `Supported: precondition` with `a=curr/des` QoS lines; we do not), or an unhandled
-   modem IPC notice (group `0x16` index `0b`, 74 bytes, seen mid-gap). `100rel` added 2026-11-15; precondition and
-   the 0x16 message are the next steps.
+1. **Outgoing calls: ringing/answer sometimes arrive late, together** (6-20 s after `100 Trying`, then 183+180+200
+   within 200 ms). Not the phone: cellulard had nothing pending during the gap. Clean call 2026-11-15 07:52
+   (timestamped cellulard): INVITE +0, 100 +0.6 s, 183 +1.9 s, **voice bearer UP 33 ms after the 183**, 180 +2.1 s,
+   200 when answered, ACK at once. The network builds the voice bearer in answer to the 183, so we never wait on
+   it; the slow calls are the 183 itself coming late from the far side. If it comes back: compare
+   `grep "voice bearer" /var/tmp/redwood-cellular.log` with the 183 time in redwood-ims.log; only if the bearer
+   comes up well before a late 183 is precondition support (or the IPC 02/06 call list) worth trying.
 2. Missed-call notifications: callservicesd posts them for its own telephony provider; check now that telephonyd
    is that provider (see `proposals/notifications/README.md` for the rest of the notification analysis).
 3. Personal Hotspot: needs CommCenter (only the parked stand-in `tools/cellular/redwood-commcenter.m` exists; its
