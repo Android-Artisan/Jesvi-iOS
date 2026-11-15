@@ -36,7 +36,7 @@ LOGO_H = 300        # one size on every screen: the UEFI's logo slot is a 300 x 
 UEFI_LZMA = bytes.fromhex('98584eee143959429d6edc7bd79403cf')      # EFI_LZMA_CUSTOM_DECOMPRESS_GUID
 UEFI_BMP_SIZE = 91078                                                # SiliciumPkg BootLogo.bmp: 300x300, 8 bit
 UEFI_HINT = b'[Volume Up] Boot Manager'      # Mu-Silicium's line under its logo (its own boot menu)
-UEFI_TEXT = b'[JESVI]'                      # what it says instead (the string ends there: centered as its own length)
+UEFI_TEXT = b'- JESVI -'                      # what it says instead (the string ends there: centered as its own length)
 
 
 def find_rootfs():
