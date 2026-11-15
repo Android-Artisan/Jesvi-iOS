@@ -4820,7 +4820,7 @@ menu_draw(int selected, const char *banner, int countdown)
 	char line[64];
 
 	menu_fill(0, 0, w, (int)SCREEN.height, 0x000000, 0);
-	menu_text_center(300, "JesViOS", 10, 0xffffff);
+	menu_text_center(300, "JesviOS", 10, 0xffffff);
 	menu_text_center(500, "Galaxy S20  -  iOS 16.5", 3, 0x8e8e93);
 	if (banner != NULL && banner[0] != 0) {
 		menu_text_center(640, banner, 3, 0xffd60a);
@@ -4944,7 +4944,7 @@ menu_status(const char *title, const char *l1, const char *l2, const char *l3, c
 	const char *lines[4] = { l1, l2, l3, l4 };
 
 	menu_fill(0, 0, (int)SCREEN.width, (int)SCREEN.height, 0x000000, 0);
-	menu_text_center(300, "JesViOS", 10, 0xffffff);
+	menu_text_center(300, "JesviOS", 10, 0xffffff);
 	menu_text_center(700, title, 5, 0x0a84ff);
 	for (int i = 0; i < 4; i++) {
 		if (lines[i] != NULL) {
