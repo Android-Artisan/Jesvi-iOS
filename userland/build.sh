@@ -332,7 +332,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/libredwood-sb.dylib src/inject_sb.c src/inject_location.c
 		# Persistent native AOD: a root-image copy, independent of existing /var/jb tweaks.
 		$DYN -fobjc-arc -fblocks -DRW_ALWAYS_ON_ROOT_IMAGE -dynamiclib \
-			-install_name /redwood/lib/libredwood-alwayson.dylib -framework Foundation -framework UIKit \
+			-install_name /redwood/lib/libredwood-alwayson.dylib -framework Foundation -framework UIKit -framework QuartzCore \
 			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework Preferences \
 			-o obj/libredwood-alwayson.dylib ../tools/aod/alwayson.m ../tools/aod/settings.m
 		$DYN -fobjc-arc -fblocks -framework Foundation -framework IOKit \

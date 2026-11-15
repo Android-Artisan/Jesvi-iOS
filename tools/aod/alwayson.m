@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
 #include <stdatomic.h>
@@ -112,10 +113,56 @@ static void revokeForInactive(void){
     if(sig&&sig.numberOfArguments==3&&sig.methodReturnType[0]=='v'&&[sig getArgumentTypeAtIndex:2][0]=='@')
         ((void(*)(id,SEL,id))objc_msgSend)(auth,revoke,@"Redwood Always-On: locked display");
 }
+/* With the AOD wallpaper off, iOS keeps the lock screen wallpaper on screen until
+ * its slow AOD fade ends: a flash of wallpaper. The lock screen draws the wallpaper
+ * in SBCoverSheetPanelBackgroundContainerView (a portal of the wallpaper window);
+ * cover that with black at once (under the clock), take it away on wake. */
+static UIView *blackout;
+static NSArray *allWindows(void){
+    NSMutableArray *windows=[NSMutableArray array];
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+        if([scene isKindOfClass:UIWindowScene.class])[windows addObjectsFromArray:((UIWindowScene*)scene).windows];
+    return windows;
+}
+static UIView *findView(UIView *v,Class cls,int depth){
+    if([v isKindOfClass:cls])return v;
+    if(depth>6)return nil;
+    for(UIView *c in v.subviews){UIView *f=findView(c,cls,depth+1);if(f)return f;}
+    return nil;
+}
+/* Only when locking from the home screen or an app (the lock screen window was
+ * not showing yet): from the lock screen itself iOS's own wallpaper fade stays. */
+static BOOL lockScreenShowing(void){
+    for(UIWindow *w in allWindows())
+        if([NSStringFromClass(w.class) isEqualToString:@"SBCoverSheetWindow"])return !w.hidden&&w.alpha>0.01;
+    return YES;
+}
+static void wallpaperForAOD(BOOL aod){
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{wallpaperForAOD(aod);});return;}
+    if(!aod){[blackout.layer removeAllAnimations];[blackout removeFromSuperview];blackout=nil;return;}
+    if(blackout||rw_aod_value(rw_aod_config(),@"ShowWallpaper")||lockScreenShowing())return;
+    Class container=objc_getClass("SBCoverSheetPanelBackgroundContainerView");
+    if(!container)return;
+    for(UIWindow *w in allWindows()){
+        if(![NSStringFromClass(w.class) isEqualToString:@"SBCoverSheetWindow"])continue;
+        UIView *host=findView(w,container,0);
+        if(!host)continue;
+        blackout=[[UIView alloc]initWithFrame:host.bounds];
+        blackout.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        blackout.backgroundColor=UIColor.blackColor;blackout.userInteractionEnabled=NO;
+        blackout.alpha=0;[host addSubview:blackout];
+        /* the wallpaper fades to black with the panel's dimming (600 ms), a little ahead of it */
+        [UIView animateWithDuration:0.35 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{blackout.alpha=1;} completion:nil];
+        break;
+    }
+}
 static void backlightWillChange(id self,SEL cmd,id host,long long state,id event){
     lastState=state;requestObserved=YES;uint64_t generation=++transitionGeneration;
+    NSLog(@"RedwoodAOD: will %lld at %.3f event=%@",state,CACurrentMediaTime(),event);
     /* InactiveOn (1) is the AOD picture: dim the panel; awake states restore. */
     if(state==1)panelAOD(enabled);else if(state>=2)panelAOD(NO);
+    @try {if(state==1&&enabled)wallpaperForAOD(YES);else if(state>=2)wallpaperForAOD(NO);}
+    @catch(NSException *exception){(void)exception;}
     transitionOriginal(self,cmd,host,state,event);publish();
     /* InactiveOn is AOD, not an authenticated screen. Preserve the software
      * passcode policy even if displayStatus stays on in this native mode. */
@@ -127,6 +174,7 @@ static void backlightWillChange(id self,SEL cmd,id host,long long state,id event
 static void backlightCompleted(id self,SEL cmd,id backlight,long long state,id event){
     completeOriginal(self,cmd,backlight,state,event);
     completedState=state;completionObserved=YES;publish();
+    NSLog(@"RedwoodAOD: did %lld at %.3f",state,CACurrentMediaTime());
 }
 static BOOL pinned(Method method,const char *image,uintptr_t address,unsigned arguments,char result){
     if(!method||method_getNumberOfArguments(method)!=arguments)return NO;
