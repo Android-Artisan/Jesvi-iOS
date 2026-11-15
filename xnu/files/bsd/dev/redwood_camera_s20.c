@@ -323,6 +323,7 @@ cam_s20_af_down(void)
 /* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
  * the sensor's black level per site (2026-11-12) */
 static uint32_t cam_s20_rear_test_lines = 16384;
+static int cam_s20_rear_i2c_half_us=2;
 static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
 
 /*
@@ -391,7 +392,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	/* half_us 1 (2026-11-12; was 2, and 4 before): the 7354-record global table is ~180 000 bits, and the rear
 	 * still took ~3 s from a flip to its first frame at 2. The S5K2LD takes fast-mode I2C (400 kHz); the pin
 	 * writes themselves keep a half period well above the 0.6 us fast mode wants. cam_s20_rear_i2c=N sets it. */
-	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = 2 };
+	struct redwood_bbi2c sensor_bus = { .name = "S20 rear main HSI2C3 gpp0-6/7", .scl = 6, .sda = 7, .half_us = (uint32_t)__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED) };
 	volatile uint8_t *reset = redwood_gpio_bank(PINCTRL_CMGP_PHYS, PINCTRL_CMGP_GPM22);
 	volatile uint8_t *mclk = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, PINCTRL_PERIC1_GPC0);
 	volatile uint8_t *cmu = (volatile uint8_t *)cam_s20_io_map(CMU_TOP_PHYS, 0x4000);
@@ -1126,7 +1127,18 @@ cam_s20_rear_diag_sysctl(struct sysctl_oid *oidp, __unused void *arg1,
     return 0;
 }
 
+static int
+cam_s20_rear_i2c_sysctl(struct sysctl_oid *oidp,__unused void *arg1,__unused int arg2,struct sysctl_req *req) {
+    int value=__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED);
+    int error=sysctl_handle_int(oidp,&value,0,req);
+    if(error||!req->newptr)return error;
+    if(value!=1&&value!=2)return EINVAL;
+    __atomic_store_n(&cam_s20_rear_i2c_half_us,value,__ATOMIC_RELAXED);return 0;
+}
+
 SYSCTL_DECL(_kern_redwood);
+SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_rear_i2c, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    0,0,cam_s20_rear_i2c_sysctl,"I","Next primary setup I2C half-period:1 or2us; NACK fallback remains2");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_rear_diag, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
     0, 0, cam_s20_rear_diag_sysctl, "I", "Next rear session: bit0 no group hold; bit1 cold start");
 int redwood_camera_s20_turn;    /* kern.redwood.camera_turn: libredwood-media turns the front camera's pictures (bit 0) */
