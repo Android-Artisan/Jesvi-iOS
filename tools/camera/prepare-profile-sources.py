@@ -34,12 +34,36 @@ def declaration(source, name):
     return re.sub(r'\s+', '', text)
 
 
+def primary_stats_source():
+    source=original('camera_isp.c')
+    start=source.index('isp_measure(')
+    end=source.index('\nbool\nisp_ae(',start)
+    body=source[start:end]
+    # Only rear-main binned stats: 12k sample cells instead of48k. Pixel
+    # rendering, front and UW sampling are identical to the pinned source.
+    body=body.replace('for (uint32_t cy = 0; cy < cells_h; cy += 4)',
+        'const unsigned step=f->sensor==1 && f->width==2016 ? 8 : 4;\n\tfor (uint32_t cy = 0; cy < cells_h; cy += step)')
+    body=body.replace('cx += 4)', 'cx += step)')
+    if 'const unsigned step=' not in body:raise ValueError('primary stats loop changed')
+    return source[:start]+body+source[end:]
+
+
 def prepare(out):
     source = original('camera_device.c')
     source = source.replace('#include "camera_isp.h"', '#include "camera_isp.h"\n#include "camera_s20_zoom.h"')
     source = source.replace('{ "MaxZoomFactor", "Number", "ReadOnly" }', '{ "MinZoomFactor", "Number", "ReadOnly" }, { "MaxZoomFactor", "Number", "ReadOnly" }')
     source = source.replace('} else if (key_is(key, "MaxZoomFactor")) {', '} else if (key_is(key, "MinZoomFactor")) {\n        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.5f:1.0f);\n\t} else if (key_is(key, "MaxZoomFactor")) {')
     source = source.replace('zoom = zoom < 1 ? 1 : zoom > MAX_ZOOM ? MAX_ZOOM : zoom;', 'zoom=s20_zoom_clamp((float)zoom,s->camera->sensor==1,access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0);')
+    # Correctly powered primary dark frames are64..66 at1x..16x. Legacy
+    # undervoltage compensations are now opt-in, never a fresh-build default.
+    source=source.replace('while (s->running && failures < 5) {',
+        'bool primary_legacy_black=s->camera->sensor==1&&access(rw_path("redwood-primary-legacy-black",(char[160]){0},160),F_OK)==0;\n\twhile (s->running && failures < 5) {')
+    source=source.replace('if (fw->width == 2016 && fw->gain_unity > 0)',
+        'if (fw->sensor==1 && fw->width == 2016 && fw->gain_unity > 0 && primary_legacy_black)')
+    source=source.replace('if (fw->width == 2016 || fw->width == 4032)',
+        'if ((fw->width == 2016 || fw->width == 4032) && !(fw->sensor==1 && fw->width==2016 && !primary_legacy_black))')
+    source=source.replace('FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");',
+        'FILE *cf=s->camera->sensor==1?fopen(rw_path("redwood-primary-contrast",(char[160]){0},160),"r"):NULL;\n\t\tif(!cf)cf=fopen(rw_path("redwood-contrast",(char[160]){0},160),"r");')
     current = (ROOT/'userland/src/camera_device.c').read_text()
     shared = {}
     for name in ('stream', 'output', 'camera', 'device'):
@@ -57,12 +81,16 @@ static bool front_experimental_profile(void)
     bool enabled = fscanf(fp, "%31s", value) == 1 && strcmp(value, "experimental") == 0;
     fclose(fp); return enabled;
 }
+static float rear_requested_zoom(struct stream *s)
+{
+    float z=s->zoom;FILE *f=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");
+    if(f){float v;if(fscanf(f,"%f",&v)==1)z=v;fclose(f);}
+    return s20_zoom_clamp(z,true,true);
+}
 static bool rear_ultra_selected(struct stream *s)
 {
     if(s->camera->sensor!=1 || access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)!=0)return false;
-    float z=s->zoom;FILE *f=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");
-    if(f){float v;if(fscanf(f,"%f",&v)==1)z=v;fclose(f);}
-    return s20_zoom_mode(s20_zoom_clamp(z,true,true),true)==5;
+    return s20_zoom_mode(rear_requested_zoom(s),true)==5;
 }
 static void *worker_original_body(void *context);
 static void *worker_body(void *context)
@@ -83,6 +111,10 @@ static void *worker_body(void *context)
         raise ValueError('original worker changed')
     source = source.replace(marker, bridge+'\nstatic void *\nworker_original_body(void *context)\n{')
     source = source.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(rear_ultra_selected(s))break;')
+    # Keep the iOS graph fixed; our native rear control owns the physical route
+    # and digital crop. This avoids graph device reconfiguration while recording.
+    source=source.replace('isp.zoom = s->zoom;',
+        'isp.zoom=s->camera->sensor==1?rear_requested_zoom(s):s->zoom;')
     source = source.replace('if (n != (ssize_t)sizeof(head)) {', 'if(n==(ssize_t)sizeof(head)&&s->camera->sensor==1&&head.sensor==3)continue;\n            if (n != (ssize_t)sizeof(head)) {')
     current = current.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(s->camera->sensor==1){float z=s->zoom;FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");if(lf){float v;if(fscanf(lf,"%f",&v)==1)z=v;fclose(lf);}if(s20_zoom_mode(s20_zoom_clamp(z,true,true),true)!=5)break;}')
     out.mkdir(parents=True, exist_ok=True)
@@ -90,7 +122,7 @@ static void *worker_body(void *context)
     legacy.mkdir(exist_ok=True)
     (legacy/'camera_device.c').write_text(source)
     for name in ('camera_isp.c', 'camera_isp.h', 'redwood_camera.h'):
-        (legacy/name).write_text(original(name))
+        (legacy/name).write_text(primary_stats_source() if name=='camera_isp.c' else original(name))
     header = (ROOT/'userland/src/camera_isp.h').read_text()
     names = set(re.findall(r'\b(isp_\w+)\s*\(', header))
     names |= {'redwood_camera_device_create', 'redwood_camera_say'}

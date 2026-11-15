@@ -5,12 +5,19 @@
 #include <objc/message.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #ifndef RW_LENS_CONTROL_PATH
 #define RW_LENS_CONTROL_PATH @"/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-rear-zoom"
 #endif
 static NSString *const control=RW_LENS_CONTROL_PATH;
 static char proxyKey;
 static BOOL defaultRearApplied;
+#ifndef RW_LENS_PRIMARY_TEST_PATH
+#define RW_LENS_PRIMARY_TEST_PATH "/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-primary-test-default"
+#endif
+static NSString *defaultRearValue(void) {
+    return access(RW_LENS_PRIMARY_TEST_PATH,F_OK)==0?@"1\n":@"0.9\n";
+}
 static SEL configurationSelector(void) {
     return NSSelectorFromString(@"configureForDualDeviceWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:dualCameraSwitchOverZoomFactor:displayDualCameraSwitchOverZoomFactor:");
 }
@@ -30,7 +37,6 @@ static void showZoom(id zoom,double factor) {
 @property(nonatomic,weak) id original;
 @property(nonatomic) BOOL rear;
 @property(nonatomic) double factor;
-@property(nonatomic) double graphFactor;
 @end
 @implementation RWNativeLensDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
@@ -43,36 +49,27 @@ static void showZoom(id zoom,double factor) {
     if(![[NSString stringWithFormat:@"%.6f\n",factor] writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])return NO;
     self.factor=factor;return YES;
 }
-- (void)notifyGraphForZoom:(id)zoom interactionType:(NSInteger)type {
-    double target=fmax(1,self.factor);
-    if(fabs(self.graphFactor-target)<0.0001)return;
-    SEL sel=NSSelectorFromString(@"zoomControl:didChangeZoomFactor:interactionType:");
-    if([self.original respondsToSelector:sel]){
-        self.graphFactor=target;
-        ((void(*)(id,SEL,id,double,NSInteger))objc_msgSend)(self.original,sel,zoom,target,type);
-    }
-}
 - (void)zoomControl:(id)zoom didChangeSelectedButtonIndex:(NSUInteger)index displayZoomFactor:(double)factor {
     if(!self.rear){
         if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id,NSUInteger,double))objc_msgSend)(self.original,_cmd,zoom,index,factor);
         return;
     }
-    if([self writeZoom:factor*displayBase]){[self notifyGraphForZoom:zoom interactionType:0];showZoom(zoom,self.factor);}
+    if([self writeZoom:factor*displayBase]){showZoom(zoom,self.factor);}
 }
 - (BOOL)canToggleBetweenZoomFactorsForZoomControl:(id)zoom {
     if(self.rear)return YES;
     SEL sel=_cmd;return [self.original respondsToSelector:sel]?((BOOL(*)(id,SEL,id))objc_msgSend)(self.original,sel,zoom):NO;
 }
 - (void)toggleBetweenZoomFactorsForZoomControl:(id)zoom {
-    if(self.rear){if([self writeZoom:requestedZoom()<1?1:0.5]){[self notifyGraphForZoom:zoom interactionType:0];showZoom(zoom,self.factor);}return;}
+    if(self.rear){if([self writeZoom:requestedZoom()<1?1:0.5]){showZoom(zoom,self.factor);}return;}
     if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id))objc_msgSend)(self.original,_cmd,zoom);
 }
 - (void)zoomControl:(id)zoom didChangeZoomFactor:(double)factor interactionType:(NSInteger)type {
     if(self.rear){
         if(![self writeZoom:factor])return;
-        /* Reset any prior primary digital crop on crossing to ultra-wide,
-         * but send the graph's 1x floor only once so it cannot fight the dial. */
-        [self notifyGraphForZoom:zoom interactionType:type];return;
+        /* Backend crop and metadata follow this same value. Forwarding to the
+         * D22 graph can trigger a camera reconfiguration in the middle of video. */
+        return;
     }
     if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id,double,NSInteger))objc_msgSend)(self.original,_cmd,zoom,factor,type);
 }
@@ -96,7 +93,7 @@ static void configureZoom(UIView *zoom) {
         proxy.rear=NO;return;
     }
     if(!defaultRearApplied){
-        if([@"0.9\n" writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])defaultRearApplied=YES;
+        if([defaultRearValue() writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])defaultRearApplied=YES;
     }
     if(!proxy){proxy=[RWNativeLensDelegate new];proxy.factor=-1;objc_setAssociatedObject(zoom,&proxyKey,proxy,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
     proxy.original=controller;proxy.rear=YES;
@@ -128,7 +125,7 @@ __attribute__((constructor))static void start(void) {
         CFPreferencesAppSynchronize(app);
         /* Set preferred rear route before Camera starts its graph, avoiding a
          * primary cold start immediately followed by an ultra-wide cold start. */
-        defaultRearApplied=[@"0.9\n" writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        defaultRearApplied=[defaultRearValue() writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil];
         dispatch_async(dispatch_get_main_queue(),^{
             NSTimer *timer=[NSTimer timerWithTimeInterval:.5 repeats:YES block:^(__unused NSTimer *t){
                 if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;

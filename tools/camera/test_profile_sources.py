@@ -14,7 +14,7 @@ class ProfileSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out=Path(tmp); report=m.prepare(out)
             for name in ('camera_isp.c','camera_isp.h','redwood_camera.h'):
-                self.assertEqual((out/'original'/name).read_text(),m.original(name))
+                self.assertEqual((out/'original'/name).read_text(),m.primary_stats_source() if name=='camera_isp.c' else m.original(name))
             source=(out/'original/camera_device.c').read_text()
             self.assertIn('if (!fp) return false;',source)
             self.assertIn('if(ultra)redwood_camera_experimental_worker(context);else worker_original_body(context);',source)
@@ -22,6 +22,10 @@ class ProfileSourceTests(unittest.TestCase):
             self.assertEqual(report['default_front'],'original')
             self.assertIn('s20_zoom_clamp((float)zoom,s->camera->sensor==1',source)
             self.assertIn('redwood-ultrawide-enable',source)
+            self.assertIn('redwood-primary-legacy-black',source)
+            self.assertIn('fw->gain_unity > 0 && primary_legacy_black',source)
+            self.assertIn('redwood-primary-contrast',source)
+            self.assertIn('isp.zoom=s->camera->sensor==1?rear_requested_zoom(s):s->zoom;',source)
             # Old front's globals are confined to its original object; new ISP APIs use separate symbols.
             self.assertIn('extern int isp_black4[4]',(out/'original/camera_isp.h').read_text())
             self.assertIn('#define isp_measure experimental_isp_measure',(out/'experimental-symbols.h').read_text())

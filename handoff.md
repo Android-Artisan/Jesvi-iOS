@@ -695,3 +695,72 @@ currently preserves selectors and only enables rails. Next primary-only patch
 must set fixed board voltages while OFF, snapshot/readback and restore them on
 failure/shutdown/warm-cool; leave all front/UW tuning untouched. Not yet a proven
 explanation for image quality. User permits primary1x as temporary test default.
+
+## Primary image fixed and accepted; full-resolution audit requested (Nov16)
+
+User explicitly wants complete primary audit/full native resolution, AF/tap,
+FPS, switching, permanent integration and private push. Preserve front/UW image
+processing, which user calls perfect. Native zoom labels MUST remain truthful:
+0.5 fullUW,0.9UW preferred default,1x physical primary. Primary test default1x
+is temporarily selected by cache/redwood-primary-test-default; remove at finish.
+
+Voltage-only first trial captured36 RAW frames but subsequent Camera was black.
+User explicitly said KEEP correct1.05V and diagnose rather than roll back. Found
+pre-existing cam_s20_pmic03_bits used saved before value: restore-to-off shortcut
+never actually disabled rails, and enable clobbered updated voltage selectors.
+Fixed it to read CURRENT state, preserve selectors, compare/write/readback actual
+state. Portable regression tests cover selectors + actual off + enable faults.
+Power-fix kernel b36734da built01:03:40 passed main->UW->main36frames each. User:
+'yessss!!!! ... color distortion ... gone'. This corrects all3 primary dedicated
+selectors: P02 LDO1 PHY1.05; P03 LDO2 core1.05; P03 LDO5 analog2.95.
+
+Covered-lens evidence after power fix: user confirmed opaque rear coverage,
+Camera closed. Eight captures:16 and20436 lines, gain32/128/256/512. Median all
+four sites64/64/65/66 respectively; std~0.45/1.0/1.5/2.4. Old primary gain/site
+black tables18..64 were UNDERPOWER workarounds and are invalid now. Disabled old
+BINNED table. User says 'very very much better'. Full-mode band/Bayer workarounds
+still require auditing; don't blindly apply them to native frames. Standard sRGB
+gamma kept; optional primary contrast override prepared, global/front/UW unchanged.
+Private covered/summary.json contains metadata, no calibration dumped into git.
+
+Current accepted media has primary-only AE/AWB samples every8 cells instead4:
+11970 vs47628; host gradient means differ<1%, front/UW stats bit-identical.
+Host stats CPU benchmark~2.7x faster, NOT a measured2.7x cameraFPS promise.
+Fresh-build corrected black64 is default; old table only with explicit
+redwood-primary-legacy-black. Previous live positive flag header-black removed.
+Camera data arrives at30fps; CPU rendering/thermals still constrain app FPS.
+
+Speed: added root-only bounded camera_rear_i2c=1/2 sysctl. Current running kernel
+3cc87db1, built01:09:08, default2 but set LIVE to1. Four cold trials forced diag2:
+2us4.700s,1us3.699s,2us4.692s,1us3.631s, all36frames (includes1.2s frames).
+Existing global-upload NACK fallback stays2 for remainder of boot. User confirmed
+'better speed', image good. A final kernel with default1 is BUILT, NOT installed:
+primary-audit/fast-default-build.log; source modified accordingly. Cold secondary
+sensor table upload still prevents instantaneous UW->primary; don't keep all
+sensors active. Native full4032x3024 primary RAW+36frames also PASSED at1us,
+primary-audit/native-full.raw/.json and native-full-probe.txt. Current Camera still
+uses2016x1512 RAW and advertises4032x3024 still output (upsampling): user explicitly
+wants to move to native primary, so full-path work is next.
+
+Video froze when zooming1x->5x, notUW range. Removed rear delegate forwarding to
+D22 graph and routed BOTH primary andUW digital crop through rear control file.
+Original primary worker now uses rear_requested_zoom(s), same as physical-route
+selector and applied-crop metadata. Graph remains fixed, prevents device changes
+mid-video. Front delegates continue forwarding/restoring normally. User confirmed
+'Zoom works without freezing'. Current installed files are fixed-graph-zoom media
+and newest native UI; backup pair in /var/root/*before-fixed-graph*. No debug probe
+remains active. Runtime Camera injection restored after each reboot; permanence
+requires adding Camera to live root etc/inject.conf (tracked build.sh already
+includes it). User NOW explicitly authorizes permanent integration; inspect current
+root image rather than stale staged tree. Root-swap doc describes13,467,648-byte
+root at recovery0x3400000; preserve entire live root except intended inject rule.
+
+Next full-primary audit: Samsung driver declares GRBG for2LD, all modes. Legacy
+full path forces RGGB and estimates dark band at row1914 due old bad-power scenes.
+Audit/disable those gated workarounds for a controlled full native trial, verify
+covered RAW full black levels and actual CFA with scene, thenAF/tap and saved JPEG
+resolution. Kernel full mode exists (.b=3); pinned original worker explicitly asks
+.b=2 in two places and must select3 for full trial. Source Photo format already
+4032x3024. User prefers native full primary; measureFPS/heat, don't fake resolution
+or call the current upsampled binned still native. Primary gamma0.35 S-curve remains
+with standard sRGB; don't remove gamma itself as a voltage workaround.
