@@ -4609,6 +4609,43 @@ IOMobileFramebuffer::panelWriteAt(const uint8_t * bytes, uint32_t length, uint8_
 	return dsimPacket(length == 1 ? DSI_DCS_SHORT_WRITE : DSI_DCS_LONG_WRITE, bytes, length);
 }
 
+/*
+ * The boot logo across the panel's switch (A, 2026-11-15). The loader leaves its picture (iOS's boot logo, centered)
+ * at the native 1440x3200 in the boot framebuffer; fb_mode then cuts S-Boot's window to 1080x2400 (720x1600) of
+ * the same rows, so until iOS's first frame the panel showed that picture's top-left corner: the logo a third
+ * bigger and off to the lower right. While the switch has the trigger masked, the picture is scaled down in place
+ * (a box filter; each output pixel reads only pixels at or after its own place, so in-place is safe).
+ * Only before iOS's first frame. fb_bootpic=0: as before.
+ */
+static TUNABLE(uint32_t, gBootPic, "fb_bootpic", 1);
+static bool gBootPicDone;
+
+static void
+bootPictureScale(uint8_t * base, uint32_t rowBytes, uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
+{
+	for (uint32_t y = 0; y < dh; y++) {
+		uint32_t y0 = y * sh / dh, y1 = ((y + 1) * sh + dh - 1) / dh;
+		uint32_t * dst = (uint32_t *) (base + (size_t) y * rowBytes);
+
+		for (uint32_t x = 0; x < dw; x++) {
+			uint32_t x0 = x * sw / dw, x1 = ((x + 1) * sw + dw - 1) / dw, n = 0;
+			uint32_t c[4] = { 0, 0, 0, 0 };
+
+			for (uint32_t sy = y0; sy < y1 && sy < sh; sy++) {
+				const uint32_t * src = (const uint32_t *) (base + (size_t) sy * rowBytes);
+
+				for (uint32_t sx = x0; sx < x1 && sx < sw; sx++, n++) {
+					uint32_t p = src[sx];
+
+					c[0] += p & 0xff; c[1] += (p >> 8) & 0xff; c[2] += (p >> 16) & 0xff; c[3] += p >> 24;
+				}
+			}
+			n = n ? n : 1;
+			dst[x] = (c[0] / n) | ((c[1] / n) << 8) | ((c[2] / n) << 16) | ((c[3] / n) << 24);
+		}
+	}
+}
+
 bool
 IOMobileFramebuffer::modeSetFhd120(void)
 {
@@ -4768,6 +4805,30 @@ IOMobileFramebuffer::modeSetFhd120(void)
 	for (unsigned i = 0; i < sizeof(deconModeRegs) / sizeof(deconModeRegs[0]) && deconModeRegs[i].mask; i++) {
 		dpuWrite(fDecon, deconModeRegs[i].off,
 		    (dpuRead(fDecon, deconModeRegs[i].off) & ~deconModeRegs[i].mask) | ((hd ? deconHdValues[i] : deconModeRegs[i].fhd) & deconModeRegs[i].mask));
+	}
+	if (gBootPic && !gBootPicDone && !fScalerOn && fBase != NULL && fRowBytes >= 1440 * 4) {
+		/* (the trigger is masked: no frame goes out half scaled.) The boot framebuffer is uncached: read it out in one
+		 * block, scale in ordinary memory, write it back in one block -- a pixel-by-pixel pass over the framebuffer
+		 * took long enough to tear (user, 2026-11-15) */
+		size_t size = (size_t) fRowBytes * 3200;
+		uint8_t * copy = (uint8_t *) IOMallocData(size);
+		uint64_t t0 = mach_absolute_time(), t1, ns;
+
+		gBootPicDone = true;
+		if (copy != NULL) {
+			memcpy(copy, fBase, size);
+			bootPictureScale(copy, fRowBytes, 1440, 3200, width, height);
+			for (uint32_t y = 0; y < height; y++) {
+				memcpy(fBase + (size_t) y * fRowBytes, copy + (size_t) y * fRowBytes, (size_t) width * 4);
+			}
+			IOFreeData(copy, size);
+		} else {
+			bootPictureScale(fBase, fRowBytes, 1440, 3200, width, height);
+		}
+		t1 = mach_absolute_time();
+		absolutetime_to_nanoseconds(t1 - t0, &ns);
+		fbSay("fb_mode: the loader's picture scaled 1440x3200 -> %ux%u in %llu ms%s (the boot logo keeps its size and place)\n",
+		    width, height, ns / NSEC_PER_MSEC, copy != NULL ? "" : " (in place: no memory for a copy)");
 	}
 	dpuWrite(fDecon, 0x100C + 0x30 * (uint32_t) fWin, ((height - 1) << 16) | (width - 1));       /* WIN_END_POSITION */
 	/*

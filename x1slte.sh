@@ -102,6 +102,9 @@ cmd_payload() {
 	ROOT_UD_OFF_HEX=$(printf '%x' "$ROOT_OFF"); ROOT_UD_LEN_HEX=$(printf '%x' "$ROOT_LEN")
 	# the loader: super's real tail always; super+0..ROOT_SUPER_LEN when the conf has it (iOS only, 2026-11-06: the
 	# system volume where Android's system/vendor were); userdata only in system.img's extent while that is in use
+	# the boot logo (A, 2026-11-15): iOS's own, from the iOS root, into xnuloader/applelogo.h, the UEFI's logo slot and
+	# out/up_param-apple.img; git-ignored outputs (Apple artwork). No iOS root: the loader's screen stays black.
+	python3 -I tools/bootlogo/mkbootlogo.py || echo "payload: no boot logo (tools/bootlogo/mkbootlogo.py failed)"
 	# CELLULAR_RESERVE_CP=1 by default (2026-11-13: two flashes built without it left cellular with "IPC map refused":
 	# no LTE, no VoLTE). CELLULAR_RESERVE_CP= (empty) builds the loader without the CP reservation.
 	env GIC_V2=1 CELLULAR_RESERVE_CP="${CELLULAR_RESERVE_CP-1}" SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \
