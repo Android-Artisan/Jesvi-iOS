@@ -237,3 +237,11 @@ its own inactive/off passcode revocation and still retains the core passcode cha
 `python3 tools/aod/test_build_integration.py` and the required software-passcode
 assembly regression pass without firmware or an existing `/var/jb` tree. The
 complete multi-gigabyte image has not been rebuilt or flashed in this step.
+
+A portable, inactive ALPM protocol prototype and exhaustive transport-failure
+regression now live in `tools/aod/panel/`. It refuses mismatched panels,120Hz,
+off/pending display states and missing normal-settings backups; cleanup restores
+or latches a fault. It is not wired into the kernel and sends no live commands.
+Stock investigation additionally found distinct update-capable doze vs deeper
+host suspend and a VDDR1.8V→1.5V reference-board requirement; the panel README
+records exact source locations and remaining integration contracts.
