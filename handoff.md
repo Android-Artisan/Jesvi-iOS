@@ -28,16 +28,94 @@ Phone ownership was released. Read workspace NEXT.md/TASKS.md and acquire the
 phone lock before device changes. Never reboot without asking the user.
 Private captures/firmware/calibration/backups must remain outside git.
 
+
 ---
 
-# Latest live installation handoff (supersedes staged-only status below)
+> Push status (2026-11-15): local commits complete, remote push blocked.
+> Both feature-branch pushes to configured upstream
+> https://github.com/oosexgang/hakios-xnu-kernel.git returned HTTP403:
+> authenticated user jesvi-eulah lacks write access. No existing fork found at
+> jesvi-eulah/hakios-xnu-kernel. No branches were published. Retry after access
+> is granted or a writable remote is provided. Do not claim a successful push.
 
-Camera-only brightness was installed subsequently from `feat/s20-camera-quality`
-commit `42b1dd4d`. Read the authoritative latest device state and rollback in
-[/Users/jesvi/ios-port-research/work/hackios-camera-improve/handoff.md](/Users/jesvi/ios-port-research/work/hackios-camera-improve/handoff.md)
-before any phone operation. Installation/readback/SpringBoard loading confirmed;
-Camera entry/exit/manual/lock and reboot validation still pending. No reboot or
-system-image write. This aux branch retains independent offline sensor research.
+# User acceptance and next-agent handover — 2026-11-15
+
+User reports “all good” after the Camera-only brightness installation and asks
+for commit/push and handover. Treat this as user acceptance of current behaviour;
+separate instrumented entry/exit/manual/lock tests and reboot persistence were
+not performed by this agent. No reboot approval is implied.
+
+Next agent: keep the accepted brightness rule and original front-camera path.
+Continue remaining main-rear grain/gradient/red-green/tint investigation and
+bring up the two additional rear cameras on `feat/s20-rear-aux` in
+`work/hackios-camera-aux`. Read docs/x1slte-camera-aux.md and its generated
+inventory before hardware writes. That branch contains offline wiring evidence,
+not a functioning auxiliary driver. First integrate this latest camera-quality
+branch and accepted main/master explicitly; preserve unrelated accepted work.
+
+For main rear, compare bounded unpacked16-bit format6 against packed format7,
+then validate native12MP separately from upscaled JPEG dimensions. Existing
+native-mode/diagnostic kernel candidates remain uninstalled; any reboot needs
+user approval. For auxiliary sensors, read model/revision before selecting
+revision-dependent tables, activate one sensor at a time, and restore shared
+pins/rails/routes. Do not copy front-camera configuration or promise every
+stock resolution/FPS before live validation. Phone lock is released; check
+workspace NEXT.md, TASKS.md and lock status before taking it.
+
+Current installed brightness artifact/rollback details follow. Private captures,
+firmware and device backups remain outside git. No push changes main/master.
+
+---
+
+# Start here: live Camera brightness installation (latest checkpoint)
+
+Worktree: `/Users/jesvi/ios-port-research/work/hackios-camera-improve`, branch
+`feat/s20-camera-quality`. Separate aux inventory is on `feat/s20-rear-aux`,
+commit22256e72, in `work/hackios-camera-aux`; read docs/x1slte-camera-aux.md.
+
+## Installed now
+
+- `/var/jb/usr/lib/TweakInject/RedwoodCameraBrightness.dylib` and matching filter.
+  Signed arm64 SHA25684f57fa867544e048c22ff078d830848709375b662c8c73c2724409decd289fe;
+  downloaded readback matches byte-for-byte. SpringBoard resprung and loader log
+  confirms it opened this exact named tweak. No kernel flash or reboot performed.
+- Revised rule reads SpringBoard `_accessibilityFrontMostApplication` identity;
+  known API/nil app yields Camera=false, unknown shape falls back to heartbeat.
+  This removes dependence on adding Camera injection to the existing read-only
+  image. Remount attempt failed before system-file/tweak mutation; injection
+  config and runtime list remain unchanged. Original front media path untouched.
+- Initial live state outside Camera: native auto1, raw30241/65536 (UI45.94%).
+  After activation it remains auto1 at the same level; foreground log Camera=0.
+  Camera has not launched yet after respring: requested user unlock/open it.
+  Do not claim entry/exit/manual/lock or reboot tests passed without fresh evidence.
+- Phone lock held by codex-camera-quality during this installation. Always check
+  tools/phone-lock.sh status before touching it; never reboot without permission.
+
+## Complete validation / rollback
+
+1. User unlocks and opens Camera. `/var/root/set-display-70 --status` should show
+   auto0, raw45220/65536 (UI70%). Check foreground Camera=1/hold log and recovery
+   record at `/var/mobile/Library/Preferences/com.redwood.camera-brightness.restore.plist`.
+2. Leave Camera for Settings/Home: auto must return to prior1; journal removed.
+   Check manual slider change is retained while Camera stays open. Repeat with
+   auto initially off and confirm exit leaves it off. Restore user's normal auto1.
+3. Check Control Center, Camera termination and display off/wake, then request
+   explicit approval before any reboot persistence test. No such approval yet.
+4. Emergency release: create `/var/jb/etc/redwood-camera-brightness.disabled`;
+   wait for restoration and verify status, then remove dylib+filter and respring
+   only if uninstalling. Keep rule loaded until recovery completes. If UI cannot
+   be used, restore auto via `/var/root/set-display-70 --auto-on` after disabling.
+5. Private backups/artifacts: build/camera-device-20261114/brightness-install;
+   device `/var/root/camera-brightness-rollback`. Backed up injection lists were
+   never replaced. Diagnostic helper supports --status, --auto-on, --auto-off,
+   --slider 0..1, --set70 (last is GLOBAL, not lifecycle behaviour).
+
+Host sanitizer policy tests, strict signed iOS builds and passcode integration
+checks pass. Runtime foreground API inside SpringBoard still needs Camera-entry
+validation. Accepted master02636ecf must be explicitly integrated before future
+full image/kernel builds; do not flash old staged rear candidates over it.
+Main rear grain/tint is unresolved, native12MP and auxiliary bring-up remain
+uninstalled. Front stays original; optional experimental profile stays uninstalled.
 
 ---
 
@@ -204,25 +282,3 @@ system-image write. This aux branch retains independent offline sensor research.
 - Added Camera to tracked tweak-loader injection defaults for future image builds. Live installation must retain the same entry in persistent and current injection lists while preserving unrelated entries. Data-volume tweak alone is not sufficient if Camera never loads the tweak loader.
 - ASan/UBSan policy tests pass (entry/steady/manual/exit, auto-off preservation, display-off, rule disable, unknown service, expired/future lease). Signed arm64 iOS dylib builds with -Wall -Wextra -Werror; passcode build integration passes. Latest dylib SHA-256 e746a68f6a164e2675832bf7789cf1ed42d8d963659446f7aaac92091f254fad.
 - Documentation/install/rollback and unverified cases: docs/x1slte-camera-brightness-rule.md. NOT installed/device-verified. Restore the temporary diagnostic global-auto-off setting to the user's normal enabled mode before the eventual Camera-only trial, otherwise that diagnostic value would be saved as their prior preference.
-
-## Auxiliary rear inventory checkpoint; system rechecked
-
-- Separate branch feat/s20-rear-aux now contains reproducible aux-inventory.py,
-  metadata-only JSON and docs/x1slte-camera-aux.md. Both saved phone overlays
-  agree. CIS2LA and GW2 both use address0x2d, on different I2C controllers;
-  GW2 module@5A is not its bus address. Shared WDMA route and a GPIO/MCLK pin
-  overlap require exclusive activation and deliberate restoration.
-- Three host fixup safety tests pass; cached-input assertions confirm matching
-  camera nodes, separate bus targets and both seven-bit addresses. No sensor
-  powered/probed and no auxiliary camera claimed working. Revision-gated2LA
-  initialization and GW2 TNP/Global remain prerequisites, not copied blindly.
-- Phone lock acquired after other agent explicitly released it. Read-only SSH
-  confirms kernel21:16:40 remains; new system injection list still lacks Camera
-  on libredwood-tweaks. No live brightness installation, respring, flash or reboot
-  in this checkpoint. Persistent brightness source commit3cfacd02 remains staged.
-- Before installing brightness, restore normal auto-on outside Camera, preserve
-  current persistent/runtime injection entries, install matching tweak/filter,
-  and verify live lifecycle/manual-slider/lock tests. Reboot validation requires
-  explicit user permission. Front original remains the required default.
-- Accepted master has advanced to02636ecf; integrate it explicitly before any new
-  full image/kernel build. No accepted work was overwritten by this checkpoint.
