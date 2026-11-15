@@ -1,3 +1,16 @@
+# Latest checkpoint: merged, rebuilt and pushed; reboot approval pending
+
+2026-11-15 evening: source/image audit committed88fbc0f5 after master mergebbc8e510.
+Push to https://github.com/jesvi-eulah/Jesvi-iOS.git feature branch SUCCEEDED;
+earlier upstream403 notes below are historical. Main/master remain45820593.
+No installation/reboot during this integration checkpoint. New explicit one-boot
+approval question is pending; user must approve before hardware testing.
+Phone lock released after preparation. Reacquire and recheck live baseline before
+using the current backed-up image/candidate, in case another agent changes it.
+See docs/x1slte-camera-latest-integration.md for exact hashes and timestamps.
+
+---
+
 # Latest accepted source/image integration — 2026-11-15 evening
 
 User resumed and requested latest main/master/system BEFORE hardware tests.
