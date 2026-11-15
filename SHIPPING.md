@@ -2,8 +2,11 @@
 - Locking from the home screen or an app no longer shows the lock screen wallpaper before AOD: a black layer fades in
   over it (0.35 s, under the clock) and goes on wake. From the lock screen itself iOS's own fade stays (user's choice).
   Commit 1295706d (tools/aod/alwayson.m; QuartzCore added to the AOD dylib's build lines). User-verified ("perfecto").
-- Open: touch wake from AOD can show a blank moment. Seen in the kernel log: a swap with no layers turns the panel off
-  (DCS 28) about 1 s after entering AOD; the touch wake then has to turn it back on first. Not fixed yet.
+- Researched, left as is (user: not worth battery/complexity): a short black moment when waking from AOD after ~2-6 s.
+  iOS ends AOD live rendering ("live-rendering assertion released", backboardd "Set Blanked: YES / Display 1 power
+  off"; the panel keeps showing the AOD picture from its own memory, so AOD stays visible at no cost), then wakes with
+  its fade-in-from-black animation (performWake: fade-in hard-coded on). Same for button and tap; quick wakes before
+  the blank are smooth. Only fix: keep iOS live-rendering through AOD (battery).
 
 ## 2026-11-15 (09:35, A) — Always-On Display: panel dimming, lift-to-wake from AOD, Low Power Mode, permanent in x1slte
 - AOD (native iOS Always-On, default off, wallpaper off) merged from feat/s20-aod-preview (codex-aod's work, finished by A).
