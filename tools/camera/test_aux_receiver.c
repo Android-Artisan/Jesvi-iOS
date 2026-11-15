@@ -61,7 +61,7 @@ static uint64_t cam_s20_smc4(uint64_t a,uint64_t b,uint64_t c,uint64_t d){(void)
 static bool redwood_camera_dma_get(uint64_t n,uint64_t*p,void**v){allocation=malloc(n);*v=allocation;*p=0x90000000;return allocation!=NULL;}
 static void *redwood_camera_dma_cached(void){return NULL;}
 static void redwood_camera_dma_put(void){releases++;free(allocation);allocation=NULL;}
-static bool cam_s20_save_frame_named(const volatile uint16_t*p,uint32_t w,uint32_t h,bool optical,const char*name){assert(p[0]==256&&w==(testing_gw2?2432U:4032U)&&h==(testing_gw2?1824U:3024U)&&optical&&!strcmp(name,testing_gw2?"S5KGW2":"S5K2LA"));exports++;return true;}
+static bool cam_s20_save_frame_named(const volatile uint16_t*p,uint32_t w,uint32_t h,bool optical,const char*name){assert(p[0]==256&&(testing_gw2?((w==2432&&h==1824)||(w==4864&&h==3648)):(w==4032&&h==3024))&&optical&&!strcmp(name,testing_gw2?"S5KGW2":"S5K2LA"));exports++;return true;}
 static void delay_for_interval(unsigned a,unsigned b){(void)a;(void)b;}
 static void cam_s20_wait_ms(unsigned a){(void)a;}
 static void initial(void){testing_gw2=false;memset(regs,0,sizeof(regs));abort_fail=bad_phy_readback=false;releases=exports=0;allocation=NULL;
@@ -95,14 +95,21 @@ static void gw2_test(void){
  assert(regs[AX_CMU][0x3068/4]==2&&regs[AX_CMU][0x3070/4]==0);
  assert((regs[AX_PHY][0x130/4]&0xff)==1);
  assert(regs[AX_DMA][0x1000/4]==0&&regs[AX_DMA][0x4000/4]==3);
- assert(regs[AX_DMA][0x40b0/4]==0xffff);assert(regs[AX_DMA][0x4050/4]==0);assert(regs[AX_MUX][0]==2);assert(regs[AX_SYS][0]==6);frame(&x);assert(ax_receiver_end(&x)&&x.exported&&releases==1);
+ assert(regs[AX_DMA][0x40b0/4]==0xffff);assert(regs[AX_DMA][0x4050/4]==0);assert(regs[AX_CSI][0x54/4]==((904U<<16)|608U));assert(regs[AX_MUX][0]==2);assert(regs[AX_SYS][0]==6);frame(&x);assert(ax_receiver_end(&x)&&x.exported&&releases==1);
  assert(regs[AX_SYS][0]==4&&regs[AX_CMU][0x3068/4]==0);
  initial();x=(struct ax_receiver){0};assert(ax_receiver_begin_sensor(&x,true,true));
  bool failed=true;regs[AX_DMA][0x4408/4]=0x100;regs[AX_DMA][0x4090/4]=4;
  assert(ax_receiver_next(&x,&failed)==(uint8_t*)x.buffer+32768+x.bytes&&!failed);
  assert(ax_receiver_end(&x)&&releases==1);
 }
-int main(void){gw2_test();packed_test();struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
+static void gw2_full_test(void){
+ initial();struct ax_receiver x={0};assert(ax_receiver_begin_sensor(&x,true,2));
+ assert(x.width==4864&&x.height==3648&&x.bytes==6080*3648&&x.total<48U*1024*1024);
+ assert(ax_receiver_end(&x)&&releases==1);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin_sensor(&x,false,2));frame(&x);
+ assert(ax_receiver_end(&x)&&x.exported&&releases==1);
+}
+int main(void){gw2_full_test();gw2_test();packed_test();struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
  assert(x.frames==12&&cam_s20_rd((volatile uint8_t*)regs[AX_CSI],0x1c)==0);
  struct ax_receiver repeated={0};assert(ax_receiver_begin(&repeated));frame(&repeated);assert(ax_receiver_end(&repeated));assert(repeated.exported&&releases==2);
  assert(regs[AX_CSI][0x40/4]==0x3456&&regs[AX_CSI][0x44/4]==0x11223344);assert(regs[AX_PHY][0x104/4]==0x777&&regs[AX_SYS][0]==4&&regs[AX_BIAS][0]==0x99);assert(regs[AX_TOP][0x104c/4]==2&&regs[AX_TOP][0x1848/4]==5);

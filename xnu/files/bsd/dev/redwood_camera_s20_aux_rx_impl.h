@@ -25,12 +25,13 @@ static uint32_t ax_rd(struct ax_receiver *x,unsigned r,unsigned off){return cam_
 static bool ax_wait_clock(struct ax_receiver *x,unsigned off){
     for(unsigned i=0;i<1000;i++){if(!(ax_rd(x,AX_TOP,off)&(1U<<16)))return true;delay_for_interval(1,NSEC_PER_USEC);}return false;
 }
-static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,bool gw2){
+static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,unsigned profile){
+    if(profile>2)return false;bool gw2=profile!=0,full=profile==2;
     x->packed=packed;x->gw2=gw2;
     static const uint32_t physical[AX_REGIONS]={CMU_TOP_PHYS,CMU_CSIS_PHYS,PMU_PHYS,ISPPRE_SYSREG_PHYS,
         0x17070000,0x170d2300,0x170d1000,0x170c0000,0x17110000,0x17140000,0x17020414};
     static const unsigned lengths[AX_REGIONS]={0x4000,0x8000,0x4000,4,0x1000,0x500,0x100,0x5000,0x100,0x100,4};
-    const unsigned width=gw2?2432:4032,height=gw2?1824:3024,guard=16384;
+    const unsigned width=full?4864:gw2?2432:4032,height=full?3648:gw2?1824:3024,guard=16384;
     const unsigned phy_reset=1U<<(gw2?1:2);x->width=width;x->height=height;
     x->phase="receiver map";x->io=(struct ax_io){x,ax_read,ax_write};
     for(unsigned i=0;i<AX_REGIONS;i++){x->bank[i]=(volatile uint8_t *)cam_s20_io_map(gw2&&i==AX_CSI?0x17050000:gw2&&i==AX_PHY?0x170d1b00:gw2&&i==AX_MUX?0x17020420:physical[i],lengths[i]);if(!x->bank[i])return false;}
@@ -99,8 +100,10 @@ static bool ax_receiver_begin_sensor(struct ax_receiver *x,bool packed,bool gw2)
     AXW(AX_CSI,8,1U<<4,1U<<4);
     AXW(AX_CSI,0x704,0x1fU,0x1eU);
     for(unsigned vc=0;vc<4;vc++){
-        AXW(AX_CSI,0x40+vc*0x10,~0U,(vc<<16)|(2U<<12)|(vc?0:0x2bU<<2));
-        AXW(AX_CSI,0x44+vc*0x10,~0U,vc?0:(height<<16)|width);
+        unsigned vc_width=vc==0?width:gw2&&vc==1?608:0;
+        unsigned vc_height=vc==0?height:gw2&&vc==1?904:0;
+        AXW(AX_CSI,0x40+vc*0x10,~0U,(vc<<16)|(2U<<12)|(vc_width?0x2bU<<2:0));
+        AXW(AX_CSI,0x44+vc*0x10,~0U,(vc_height<<16)|vc_width);
     }
     AXW(AX_CSI,0x600,1U<<31,0); /* 2LA DT LRTE_DISABLE */
     AXW(AX_CSI,0x690,1U<<23,1U<<23);
