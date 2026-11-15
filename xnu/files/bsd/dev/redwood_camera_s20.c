@@ -21,6 +21,7 @@
 #include "redwood_camera_s20_controls.h"
 #include "redwood_camera_s20_aux_power.h"
 #include "redwood_camera_s20_gw2_power.h"
+#include "redwood_camera_s20_main_voltage.h"
 #include "redwood_camera_s20_aux_table.h"
 #include "redwood_camera_s20_2la.h"
 #include "redwood_camera_s20_2la_controls.h"
@@ -45,6 +46,8 @@ static vm_offset_t cam_s20_io_map(vm_offset_t physical,vm_size_t bytes) {
 extern bool redwood_s2mpb02_camera_read(uint8_t reg, uint8_t *value);
 extern bool redwood_s2mpb02_camera_bits(uint8_t reg, uint8_t mask, uint8_t value);
 extern bool redwood_s2mpb02_front_voltages(uint8_t saved[4], bool restore);
+extern bool redwood_s2mpb02_main_voltages(struct cam_main_voltage *,bool,bool *,void *,
+    bool(*)(void *,uint8_t,uint8_t *),bool(*)(void *,uint8_t,uint8_t));
 extern int redwood_spmic_read(uint8_t type, uint8_t reg, uint8_t *value);
 
 #define PINCTRL_PERIC1_GPC0       0x0a0U
@@ -128,6 +131,19 @@ static void
 cam_s20_wait_ms(unsigned ms)
 {
 	delay_for_interval(ms, NSEC_PER_MSEC);
+}
+
+static bool main_voltage_read03(void *ctx,uint8_t reg,uint8_t *value) {
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO5)&&cam_s20_pmic03_read(reg,value);
+}
+static bool main_voltage_write03(void *ctx,uint8_t reg,uint8_t value) {
+    (void)ctx;return (reg==CAM_S2MPB03_LDO2||reg==CAM_S2MPB03_LDO5)&&
+        redwood_bbi2c_write_reg(&cam_pmic03_bus,CAM_S2MPB03_ADDR,reg,value);
+}
+static bool main_voltages(struct cam_main_voltage *saved,bool restore) {
+    bool clean=true,ok=redwood_s2mpb02_main_voltages(saved,restore,&clean,NULL,main_voltage_read03,main_voltage_write03);
+    if(!clean)printf("camera: primary voltage rollback failed; PMIC access blocked\n");
+    return ok&&clean;
 }
 
 static uint64_t
@@ -323,6 +339,7 @@ void redwood_camera_s20_rear_cool(void);
 static bool cam_s20_rear_warm;
 static struct {
 	uint8_t p02[3], p03[3];
+    struct cam_main_voltage voltage;
 	uint32_t reset_con, reset_dat, reset_pud, mclk_con, mclk_dat, mclk_pud, clock[4];
 } cam_s20_rear_cold;
 bool redwood_camera_s20_rear_is_warm(void) { return cam_s20_rear_warm; }
@@ -388,6 +405,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	char acked[96] = "";
 	bool pmic03_ready = false, sensor_ready = false, clock_ready = false, rails02 = false, rails03 = false;
 	bool ok = false, sensor_ack = false, warm_start = false, cold_again = false;
+    struct cam_main_voltage voltage={0};
 	unsigned diag = (unsigned)__atomic_load_n(&cam_s20_rear_diag, __ATOMIC_RELAXED);
 	uint32_t clock_offsets[4] = { CMU_CIS_CLK0_MUX, CMU_CIS_CLK0_DIV, CMU_CIS_CLK0_GATE, CMU_CIS_CLK0_QCH };
 	unsigned i;
@@ -421,6 +439,7 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 	if (cam_s20_rear_warm) {
 		/* what was there before the rear was first powered: what the real power-down goes back to */
 		memcpy(p02, cam_s20_rear_cold.p02, sizeof(p02));
+        voltage=cam_s20_rear_cold.voltage;
 		memcpy(p03, cam_s20_rear_cold.p03, sizeof(p03));
 		reset_con = cam_s20_rear_cold.reset_con; reset_dat = cam_s20_rear_cold.reset_dat; reset_pud = cam_s20_rear_cold.reset_pud;
 		mclk_con = cam_s20_rear_cold.mclk_con; mclk_dat = cam_s20_rear_cold.mclk_dat; mclk_pud = cam_s20_rear_cold.mclk_pud;
@@ -429,6 +448,8 @@ cam_s20_identify(const uint64_t *v, unsigned n, char *out, size_t cap)
 		goto warm_bus;
 	}
 cold_start:
+    (void)snprintf(phase,sizeof(phase),"primary board voltages");
+    if(!main_voltages(&voltage,false))goto cleanup;
 	/* x1slte's per-module power sequence: shared 1.3 V first, reset low, then VDDIO/analog/PHY/core. */
 	(void)redwood_gpio_set(reset, 0, 0);
 	redwood_gpio_func(reset, 0, REDWOOD_GPIO_OUTPUT);
@@ -823,6 +844,7 @@ cleanup:
 			/* kept warm: the sensor in standby (stream off above), everything else as it is */
 			if (!cam_s20_rear_warm) {
 				memcpy(cam_s20_rear_cold.p02, p02, sizeof(p02));
+                cam_s20_rear_cold.voltage=voltage;
 				memcpy(cam_s20_rear_cold.p03, p03, sizeof(p03));
 				cam_s20_rear_cold.reset_con = reset_con; cam_s20_rear_cold.reset_dat = reset_dat; cam_s20_rear_cold.reset_pud = reset_pud;
 				cam_s20_rear_cold.mclk_con = mclk_con; cam_s20_rear_cold.mclk_dat = mclk_dat; cam_s20_rear_cold.mclk_pud = mclk_pud;
@@ -861,6 +883,7 @@ cleanup:
 	}
 	if (rails02)
 		(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+    if(voltage.changed&&!main_voltages(&voltage,true)){ok=false;cam_s20_stream_exposure_failed=true;}
 	/* Use the GPIO helpers so register updates keep the shared pinctrl-bank lock. */
 	redwood_gpio_restore(reset, 0, reset_con & mask_reset, reset_pud & mask_reset, reset_dat & 1U);
 	redwood_gpio_restore(mclk, 0, mclk_con & mask_mclk, mclk_pud & mask_mclk, mclk_dat & 1U);
@@ -905,6 +928,7 @@ redwood_camera_s20_rear_cool(void)
 	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO5, p03[2], p03[2] & 0x80);
 	(void)cam_s20_pmic03_bits(CAM_S2MPB03_LDO3, p03[1], p03[1] & 0x80);
 	(void)redwood_s2mpb02_camera_bits(CAM_S2MPB02_BUCK2, 0xc0, p02[0] & 0xc0);
+    if(cam_s20_rear_cold.voltage.changed&&!main_voltages(&cam_s20_rear_cold.voltage,true))cam_s20_stream_exposure_failed=true;
 	redwood_gpio_restore(reset, 0, cam_s20_rear_cold.reset_con & 0xfU, cam_s20_rear_cold.reset_pud & 0xfU, cam_s20_rear_cold.reset_dat & 1U);
 	redwood_gpio_restore(mclk, 0, cam_s20_rear_cold.mclk_con & 0xfU, cam_s20_rear_cold.mclk_pud & 0xfU, cam_s20_rear_cold.mclk_dat & 1U);
 	redwood_bbi2c_restore(&cam_pmic03_bus);

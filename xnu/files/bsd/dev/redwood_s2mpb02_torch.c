@@ -187,6 +187,19 @@ bool redwood_s2mpb02_gw2_power(struct cam_gw2_power *saved,bool restore,bool *cl
     lck_mtx_unlock(&s2mpb02_lock);return ok;
 }
 
+#include "redwood_camera_s20_main_voltage.h"
+bool redwood_s2mpb02_main_voltages(struct cam_main_voltage *saved,bool restore,bool *clean,
+    void *ctx,bool(*read03)(void *,uint8_t,uint8_t *),bool(*write03)(void *,uint8_t,uint8_t)) {
+    struct gw2_adapter adapter={ctx,read03,write03};
+    struct cam_main_voltage_io io={&adapter,gw2_read,gw2_write};
+    bool ok=false;*clean=true;
+    lck_mtx_lock(&s2mpb02_lock);
+    if(restore){ok=cam_main_voltage_restore(saved,io);*clean=ok;}
+    else if(bus_ready&&!broken){ok=cam_main_voltage_begin(saved,io);if(!ok)*clean=cam_main_voltage_restore(saved,io);}
+    if(!*clean)broken=true;
+    lck_mtx_unlock(&s2mpb02_lock);return ok;
+}
+
 /* x1slte dtbo.0: VT core 1.05 V, IO 1.8 V, analog 2.95 V, AF 2.8 V.
  * LDO5 uses 12.5 mV steps from 0.6 V; the other three use 25 mV steps.
  * A cold PMIC reset leaves core at 1.2 V and analog at 2.8 V. Save/restore
