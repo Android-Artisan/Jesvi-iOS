@@ -1,3 +1,16 @@
+## 2026-11-15 (08:10, A) — texts react at once; outgoing-call delay measured; cellulard timing
+- Texts: redwood-ims sends a text the moment Messages drops it in sms-out (kqueue), RedwoodSMS picks up received
+  texts and send results the moment they land (vnode watch); the 1 s / 2 s polls are now only a fallback. RP-ACK goes
+  to the SMSC (P-Asserted-Identity), and an SMSC retry of the same text is acknowledged but not shown twice.
+  On the phone: /var/root/redwood-ims (active from its next restart, at the latest the ~110 min re-registration),
+  /var/jb/usr/lib/TweakInject/RedwoodSMS.dylib (from the next imagent start). Backups: *.pre-sms, *.pre-watch.
+  Copies: prebuilt/userland/redwood-ims, prebuilt/userland/RedwoodSMS.dylib. Not yet timed on the phone.
+- cellulard: ms wall-time stamps on IPC lines and a decoded line for the IMS voice bearer (16/0b). It runs as
+  /var/root/redwood-cellulard (the /redwood/bin copy re-execs it). A timed call showed no delay on our side: the
+  bearer comes up 33 ms after the 183. Details: docs/x1slte-native-calls.md "Open problems".
+- RCS: not in iOS 16 Messages; Jio has its own RCS config server (config.rcs.mnc869.mcc405...). Next step if wanted:
+  check whether it provisions a non-Google client before building anything.
+
 ## 2026-11-15 (02:16, A) — native calls permanent; status bar on island phones; Cellular settings live
 - Calls: native only, on at boot. `feat/native-calls` merged into x1slte (ad93a151); redwood-telephonyd starts from the
   boot image and registers as `com.apple.coretelephony telephony=1`; RedwoodPhone no longer shipped. Engine review
