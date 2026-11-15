@@ -49,12 +49,13 @@ in ringing/dialing/alerting/connecting/active (an `ended` line is not a live cal
 
 ## Open problems
 
-1. **Outgoing calls: ringing/answer arrive late, together** (6-20 s after `100 Trying`, then 183+180+200 within
-   200 ms). Not the phone: cellulard had nothing pending (`ring rear == done`) during the gap; the one prompt call
-   was made while another call was up. Suspects: the network waits for something during setup (QoS
-   preconditions: Jio phones send `Supported: precondition` with `a=curr/des` QoS lines; we do not), or an unhandled
-   modem IPC notice (group `0x16` index `0b`, 74 bytes, seen mid-gap). `100rel` added 2026-11-15; precondition and
-   the 0x16 message are the next steps.
+1. **Outgoing calls: ringing/answer sometimes arrive late, together** (6-20 s after `100 Trying`, then 183+180+200
+   within 200 ms). Not the phone: cellulard had nothing pending during the gap. Clean call 2026-11-15 07:52
+   (timestamped cellulard): INVITE +0, 100 +0.6 s, 183 +1.9 s, **voice bearer UP 33 ms after the 183**, 180 +2.1 s,
+   200 when answered, ACK at once. The network builds the voice bearer in answer to the 183, so we never wait on
+   it; the slow calls are the 183 itself coming late from the far side. If it comes back: compare
+   `grep "voice bearer" /var/tmp/redwood-cellular.log` with the 183 time in redwood-ims.log; only if the bearer
+   comes up well before a late 183 is precondition support (or the IPC 02/06 call list) worth trying.
 2. Missed-call notifications: callservicesd posts them for its own telephony provider; check now that telephonyd
    is that provider (see `proposals/notifications/README.md` for the rest of the notification analysis).
 3. Personal Hotspot: needs CommCenter (only the parked stand-in `tools/cellular/redwood-commcenter.m` exists; its
