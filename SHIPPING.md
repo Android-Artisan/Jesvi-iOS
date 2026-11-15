@@ -1,3 +1,8 @@
+## 2026-11-15 (17:10, A) — boot screen: no UEFI hint for end users; menu subtitle "... - Jesvi"
+- End-user builds blank Mu-Silicium's "[Volume Up] Boot Manager" line under the UEFI logo (dev mode keeps it); the
+  UEFI volume is always remade from the untouched image. Menu subtitle "Galaxy S20  -  iOS 16.5  -  Jesvi" (was "S20+");
+  Log access screen names ./x1slte.sh. Dev-mode build flashed 17:08.
+
 ## 2026-11-15 (16:55, A) — dev mode: the HackiOS menu back for development
 - `DEVMODE=1` (common/devices/x1slte.local.conf or env) builds the loader with a `devmode` payload entry: text and the
   HackiOS menu with its countdown, as before. Default off (iOS's logo, no menu); release builds force it off. On for
