@@ -1037,7 +1037,7 @@ static size_t cam_frame_size;
 /* Export a CPU-owned copy, so DMA memory can be released before a host download.
  * RWCAM001 is the existing tools/camraw.py format: one packed MIPI RAW10 frame. */
 static bool
-cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t height, bool optical)
+cam_s20_save_frame_named(const volatile uint16_t *pixels, uint32_t width, uint32_t height, bool optical, const char *label)
 {
 	uint32_t stride = width * 5 / 4, bytes = stride * height;
 	size_t size = 4096 + bytes;
@@ -1046,7 +1046,7 @@ cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t hei
 	memcpy(copy, "RWCAM001", 8);
 	uint32_t header[] = { width, height, stride, 1, 1, 1, bytes, optical ? 1U : 0U };
 	memcpy(copy + 8, header, sizeof(header));
-	strlcpy((char *)copy + 40, optical ? "SAK3J1" : "S20 DMA TPG", 16);
+	strlcpy((char *)copy + 40, label, 16);
 	for (uint32_t i = 0, o = 4096; i < width * height; i += 4, o += 5) {
 		uint16_t a = pixels[i], b = pixels[i+1], c = pixels[i+2], d = pixels[i+3];
 		copy[o] = a >> 2; copy[o+1] = b >> 2; copy[o+2] = c >> 2; copy[o+3] = d >> 2;
@@ -1057,6 +1057,11 @@ cam_s20_save_frame(const volatile uint16_t *pixels, uint32_t width, uint32_t hei
 	cam_frame_copy = copy; cam_frame_size = size;
 	lck_mtx_unlock(&cam_frame_lock);
 	return true;
+}
+
+static bool
+cam_s20_save_frame(const volatile uint16_t *pixels,uint32_t width,uint32_t height,bool optical){
+    return cam_s20_save_frame_named(pixels,width,height,optical,optical?"SAK3J1":"S20 DMA TPG");
 }
 
 static int
@@ -2926,10 +2931,13 @@ static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
         ((cam_s20_rd(sb,REDWOOD_GPIO_CON)^(sb==bus->bank?bus->saved_con:bus->saved_sda_con))&sd)||
         ((cam_s20_rd(sb,REDWOOD_GPIO_PUD)^(sb==bus->bank?bus->saved_pud:bus->saved_sda_pud))&sd));
 }
-static void cam_s20_aux_identify(bool gw2, bool stream, unsigned n, char *out, size_t cap) {
+#include "redwood_camera_s20_aux_rx_impl.h"
+
+static void cam_s20_aux_identify(bool gw2, bool stream, bool raw, unsigned n, char *out, size_t cap) {
     struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
     struct cam_aux_power rails={0};
     struct cam_gw2_power gw2_rails={0};
+    struct ax_receiver receiver={0};bool receiver_started=false;
     bool pmic03_saved=false,stream_sent=false,stream_stop=false;
     unsigned counter_changes=0;uint8_t last_counter=0xff;
     volatile uint8_t *reset=NULL,*mclk=NULL,*cmu=NULL;
@@ -2943,6 +2951,11 @@ static void cam_s20_aux_identify(bool gw2, bool stream, unsigned n, char *out, s
     if(!cap)return;
     if(n){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return;}
     if(!redwood_camera_aux_acquire())goto report;
+    if(raw){
+        lck_mtx_lock(&cam_frame_lock);
+        if(cam_frame_copy)kfree_data(cam_frame_copy,cam_frame_size);
+        cam_frame_copy=NULL;cam_frame_size=0;lck_mtx_unlock(&cam_frame_lock);
+    }
     phase="map";
     reset=redwood_gpio_bank(PINCTRL_CMGP_PHYS,gw2?0x400:0x420);
     mclk=redwood_gpio_bank(PINCTRL_PERIC1_PHYS,PINCTRL_PERIC1_GPC0);
@@ -3004,7 +3017,8 @@ static void cam_s20_aux_identify(bool gw2, bool stream, unsigned n, char *out, s
         uint8_t size[4]={0};phase="mode output readback";
         ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
         if(!ok)goto cleanup;
-        phase="sensor frame counter (no receiver)";stream_sent=true;
+        if(raw){receiver_started=true;if(!ax_receiver_begin(&receiver)){ok=false;phase=receiver.phase;goto cleanup;}}
+        phase=raw?"sensor and RAW receiver":"sensor frame counter (no receiver)";stream_sent=true;
         ok=aux_sensor_write16(&bus,0x0100,0x0100);
         if(!ok)goto cleanup;
         for(unsigned i=0;i<12;i++){
@@ -3023,6 +3037,11 @@ cleanup:
             if(counter==0xff){stream_stop=true;break;}
         }
         if(!stream_stop)ok=false;
+    }
+    if(receiver_started){
+        if(!ax_receiver_end(&receiver))clean=false;
+        if(!receiver.exported)ok=false;
+        phase=receiver.phase;
     }
     if(pins){redwood_gpio_set(reset,0,0);redwood_gpio_set(mclk,mclk_pin,0);redwood_gpio_func(mclk,mclk_pin,REDWOOD_GPIO_OUTPUT);}
     if(clock_saved){
@@ -3052,19 +3071,24 @@ cleanup:
     }
     redwood_camera_aux_release(clean);
 report:
-    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s}\n",sensor,ok&&clean?(stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false");
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+        receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0,receiver.link1,receiver.guard_bad,
+        receiver.pixel_min,receiver.pixel_max,receiver.retained?"true":"false");
 }
 
-static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,false,n,out,cap);}
-static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(true,false,n,out,cap);}
+static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,false,false,n,out,cap);}
+static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(true,false,false,n,out,cap);}
 
-static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,true,n,out,cap);}
+static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,true,false,n,out,cap);}
+
+static void cam_s20_2la_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_identify(false,true,true,n,out,cap);}
 
 void
 redwood_exynos_camera_s20_init(void)
 {
 	/* printf is not included in the phone's HTTP /log stream. Return snapshots
 	 * over the existing root-only kern.redwood.poke interface instead. */
+	redwood_dbgport_add("cam.s20.2la.raw", ": bounded A202 native12MP C-PHY/CSIS4/WDMA0 RAW capture; guard/drain checks; root frame export", cam_s20_2la_raw);
 	redwood_dbgport_add("cam.s20.2la.stream", ": A202-only bounded native12MP sensor-counter test; no receiver/DMA; restores power and pins", cam_s20_2la_stream);
 	redwood_dbgport_add("cam.s20.gw2.id", ": cold/idle-only bounded GW2 identity read; both PMIC rail maps restored, no streaming", cam_s20_gw2_identify);
 	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);

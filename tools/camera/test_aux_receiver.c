@@ -1,0 +1,74 @@
+/* Compile the ACTUAL receiver implementation with a simulated MMIO/allocator.
+ * Verify captured-frame gating, pre-reset snapshots and no-free-on-abort-timeout. */
+#include <assert.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+typedef uintptr_t vm_offset_t;typedef size_t vm_size_t;
+#define CMU_TOP_PHYS 0x1a330000U
+#define CMU_CSIS_PHYS 0x17000000U
+#define PMU_PHYS 0x15860000U
+#define ISPPRE_SYSREG_PHYS 0x17020500U
+#define SMC_PREPARE_PD_ONOFF 0x82000410ULL
+#define CSIS_NEED_SMC 0x17010204ULL
+#define NSEC_PER_USEC 1000
+static void *ml_io_map(vm_offset_t,vm_size_t);
+static uint32_t cam_s20_rd(volatile uint8_t *,uint32_t);
+static void cam_s20_wr(volatile uint8_t *,uint32_t,uint32_t);
+static int redwood_spmic_read(uint8_t,uint8_t,uint8_t*);
+static uint64_t cam_s20_smc4(uint64_t,uint64_t,uint64_t,uint64_t);
+static bool redwood_camera_dma_get(uint64_t,uint64_t*,void**);
+static void redwood_camera_dma_put(void);
+static bool cam_s20_save_frame_named(const volatile uint16_t*,uint32_t,uint32_t,bool,const char*);
+static void delay_for_interval(unsigned,unsigned);
+static void cam_s20_wait_ms(unsigned);
+/* Kernel-only barriers are tested by hardware; replace only those instructions. */
+#define __asm__(...) ((void)0)
+#include "../../xnu/files/bsd/dev/redwood_camera_s20_aux_rx_impl.h"
+#undef __asm__
+static uint32_t regs[AX_REGIONS][0x8000/4];
+static bool abort_fail,bad_phy_readback;static unsigned releases,exports;static void *allocation;
+static const uint32_t physical[]={CMU_TOP_PHYS,CMU_CSIS_PHYS,PMU_PHYS,ISPPRE_SYSREG_PHYS,0x17070000,0x170d2300,0x170d1000,0x170c0000,0x17110000,0x17140000,0x17020414};
+static void *ml_io_map(vm_offset_t p,vm_size_t n){(void)n;for(unsigned i=0;i<AX_REGIONS;i++)if(p==physical[i])return regs[i];return NULL;}
+static uint32_t cam_s20_rd(volatile uint8_t *p,uint32_t off){uint32_t v=*(volatile uint32_t *)(p+off);
+ if(p==(volatile uint8_t *)regs[AX_CSI]&&off==4&&(v&2U)){v&=~2U;*(volatile uint32_t *)(p+off)=v;}
+ if(bad_phy_readback&&p==(volatile uint8_t *)regs[AX_PHY]&&off==0x104&&v==0x1450){bad_phy_readback=false;return v^1;}
+ return v;}
+static void cam_s20_wr(volatile uint8_t *p,uint32_t off,uint32_t v){
+ if(p==(volatile uint8_t *)regs[AX_CSI]&&(off==0x14||off==0x1c)){*(volatile uint32_t *)(p+off)&=~v;return;}
+ if(p==(volatile uint8_t *)regs[AX_DMA]&&off==0x1408){regs[AX_DMA][off/4]&=~v;return;}
+ *(volatile uint32_t *)(p+off)=v;
+ if(p==(volatile uint8_t *)regs[AX_SYS]&&off==0&&!(v&4U))memset(regs[AX_PHY],0,sizeof(regs[AX_PHY]));
+ if(p==(volatile uint8_t *)regs[AX_CSI]&&off==4&&(v&2U)){
+  /* Real reset can wipe ALL writable VC fields. Their pre-reset values must survive rollback. */
+  for(unsigned vc=0;vc<4;vc++){regs[AX_CSI][(0x40+vc*16)/4]=0;regs[AX_CSI][(0x44+vc*16)/4]=0;}
+ }
+ if(p==(volatile uint8_t *)regs[AX_DMA]&&off==0x1000&&(v&1))regs[AX_DMA][0x1090/4]=1;
+ if(p==(volatile uint8_t *)regs[AX_DMA]&&off==0x1414&&(v&1)&&!abort_fail){regs[AX_DMA][0x1408/4]|=1U<<16;regs[AX_DMA][0x1090/4]=0;}
+}
+static int redwood_spmic_read(uint8_t a,uint8_t b,uint8_t*v){(void)a;(void)b;*v=0xc0;return 0;}
+static uint64_t cam_s20_smc4(uint64_t a,uint64_t b,uint64_t c,uint64_t d){(void)a;(void)b;(void)c;(void)d;return 0;}
+static bool redwood_camera_dma_get(uint64_t n,uint64_t*p,void**v){allocation=malloc(n);*v=allocation;*p=0x90000000;return allocation!=NULL;}
+static void redwood_camera_dma_put(void){releases++;free(allocation);allocation=NULL;}
+static bool cam_s20_save_frame_named(const volatile uint16_t*p,uint32_t w,uint32_t h,bool optical,const char*name){assert(p[0]==256&&w==4032&&h==3024&&optical&&!strcmp(name,"S5K2LA"));exports++;return true;}
+static void delay_for_interval(unsigned a,unsigned b){(void)a;(void)b;}
+static void cam_s20_wait_ms(unsigned a){(void)a;}
+static void initial(void){memset(regs,0,sizeof(regs));abort_fail=bad_phy_readback=false;releases=exports=0;allocation=NULL;
+ regs[AX_PMU][0x1d84/4]=1;regs[AX_MMU0][0x34/4]=regs[AX_MMU1][0x34/4]=7U<<28;
+ const unsigned g[]={0x20e4,0x20e8,0x20ec,0x20f0};for(unsigned i=0;i<4;i++)regs[AX_CMU][g[i]/4]=1U<<21;
+ regs[AX_SYS][0]=4;regs[AX_PHY][0x104/4]=0x777;regs[AX_BIAS][0]=0x99;
+ regs[AX_CSI][0x40/4]=0x3456;regs[AX_CSI][0x44/4]=0x11223344;
+ regs[AX_TOP][0x104c/4]=2;regs[AX_TOP][0x1848/4]=5;
+}
+static void frame(struct ax_receiver*x){uint16_t*p=(uint16_t*)((uint8_t*)x->buffer+16384);for(unsigned i=0;i<x->bytes/2;i++)p[i]=256;regs[AX_DMA][0x1408/4]|=1U<<8;regs[AX_CSI][0x100/4]=12;}
+int main(void){struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
+ assert(regs[AX_CSI][0x40/4]==0x3456&&regs[AX_CSI][0x44/4]==0x11223344);assert(regs[AX_PHY][0x104/4]==0x777&&regs[AX_SYS][0]==4&&regs[AX_BIAS][0]==0x99);assert(regs[AX_TOP][0x104c/4]==2&&regs[AX_TOP][0x1848/4]==5);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);((uint8_t*)x.buffer)[0]=0;assert(ax_receiver_end(&x));assert(!x.exported&&x.guard_bad==1&&releases==1);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);((uint16_t*)((uint8_t*)x.buffer+16384))[1]=4095;assert(ax_receiver_end(&x));assert(!x.exported&&x.pixel_max==4095&&releases==1);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);regs[AX_CSI][0x14/4]=1;assert(ax_receiver_end(&x));assert(!x.exported&&releases==1);
+ initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);abort_fail=true;assert(!ax_receiver_end(&x));assert(x.retained&&releases==0&&allocation!=NULL);free(allocation);allocation=NULL;
+ initial();x=(struct ax_receiver){0};bad_phy_readback=true;assert(!ax_receiver_begin(&x));assert(ax_receiver_end(&x));assert(releases==1&&!x.armed);assert(regs[AX_CSI][0x44/4]==0x11223344);
+ initial();x=(struct ax_receiver){0};regs[AX_MMU0][0]=1;assert(!ax_receiver_begin(&x));assert(ax_receiver_end(&x));assert(releases==0&&!allocation);
+ puts("PASS: actual receiver export/guards, pre-reset rollback, abort-timeout retention and live-MMU refusal");}

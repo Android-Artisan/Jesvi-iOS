@@ -1,3 +1,20 @@
+# Latest: native2LA RAW receiver built and host-tested (not installed)
+
+Working phone kernel21:17:15 has both IDs and2LA sensor streaming verified;
+source/progress commit5f58969a (pushed). User confirms front/main/passcode work.
+New command `cam.s20.2la.raw` adds bounded C-PHY4/CSIS4/WDMA0 native12MP RAW with
+pre-reset configuration journal, guarded low DMA memory and abort-ack-before-free.
+Host tests compile actual receiver implementation; all pass. GICv2 build passes.
+See docs/x1slte-camera-2la-raw.md for details and exact stop/rollback semantics.
+
+Candidate kernel-slot-2la-raw.bin SHAa1f28ed505feb3c27f201d1061f887bd4cecdee3ba84b1f07ab0a00839a59d2e.
+UNINSTALLED; next kernel iteration requires reboot authorization. Current15d996b7...
+is working rollback. New receiver must not be represented as hardware-verified.
+No app auxiliary lens or smooth zoom yet. User gave this session control; phone
+lock codex-camera-aux, check actual state before any deployment.
+
+---
+
 # Latest LIVE milestone: both auxiliary sensors identified;2LA sensor streams
 
 User approved latest merged kernel install/reboot and full camera work. Wrote
