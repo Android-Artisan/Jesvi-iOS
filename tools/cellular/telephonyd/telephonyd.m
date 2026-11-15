@@ -235,7 +235,8 @@ static CXCallEndedReason ended_reason(RWCall *c)
         if (!c.outgoing && [c.state isEqualToString:@"ringing"]) {
             u = [NSUUID UUID];
             self.uuids[k] = u;
-            tlog(@"call %u: incoming%@", c.cid, self.uuids.count > 1 ? @" (call waiting)" : @"");
+            NSUInteger live = 0; for (NSUUID *x in self.uuids.allValues) if (![self.finished containsObject:x]) live++;
+            tlog(@"call %u: incoming%@", c.cid, live > 1 ? @" (call waiting)" : @"");
             unsigned cid = c.cid;
             [self.provider reportNewIncomingCallWithUUID:u update:[self updateFor:c] completion:^(NSError *e) {
                 if (!e) return;

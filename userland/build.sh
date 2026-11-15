@@ -429,6 +429,25 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	[ -f ../prebuilt/userland/redwood-cellulard ] && cp ../prebuilt/userland/redwood-cellulard root/bin/
+	# The phone's call and text pieces that run from the data volume (B, 2026-11-15): put in place by init on a data
+	# volume that has none (src/init.c seed_phone; a newer one put there by hand is kept). Without this a fresh or wiped
+	# phone booted with the jobs (com.redwood.telephonyd, callservicesd) but not their programs: no calls, no texts.
+	# callservicesd (5 MB, too big for this image) comes from the system image (/System/Library/Redwood/Phone).
+	mkdir -p root/seed; : > root/etc/seed.list
+	for x in redwood-ims:755:/private/var/root/redwood-ims \
+	         redwood-telephonyd:755:/private/var/jb/redwood/bin/redwood-telephonyd \
+	         libredwood-calls.dylib:755:/private/var/jb/redwood/lib/libredwood-calls.dylib \
+	         RedwoodSMS.dylib:755:/private/var/jb/usr/lib/TweakInject/RedwoodSMS.dylib \
+	         RedwoodCellular.dylib:644:/private/var/jb/usr/lib/TweakInject/RedwoodCellular.dylib; do
+		f=${x%%:*}; rest=${x#*:}; mode=${rest%%:*}; dst=${rest#*:}
+		if [ -f ../prebuilt/userland/$f ]; then cp ../prebuilt/userland/$f root/seed/$f; printf '%s\t0\t0\t%s\t/seed/%s\n' $mode $dst $f >> root/etc/seed.list
+		else echo "build.sh: prebuilt/userland/$f missing: a fresh phone will have no calls/texts piece $dst" >&2; fi
+	done
+	for x in RedwoodSMS RedwoodCellular; do
+		[ -f ../tools/cellular/$x.plist ] && cp ../tools/cellular/$x.plist root/seed/$x.plist &&
+			printf '644\t0\t0\t/private/var/jb/usr/lib/TweakInject/%s.plist\t/seed/%s.plist\n' $x $x >> root/etc/seed.list
+	done
+	printf '755\t0\t0\t/private/var/jb/redwood/callservicesd\t/System/Library/Redwood/Phone/callservicesd\n' >> root/etc/seed.list
 	[ -f obj/lpmd ] && cp obj/lpmd root/bin/
 	[ -f obj/softkeybag-init ] && cp obj/softkeybag-init root/bin/
 	[ -f obj/redwood-motiond ] && cp obj/redwood-motiond root/bin/
@@ -914,6 +933,11 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		find sysroot/System/Library/Redwood/DefaultWallpaper -type d -exec chmod 0777 {} +
 		find sysroot/System/Library/Redwood/DefaultWallpaper -type f -exec chmod 0644 {} +
 	fi
+	# callservicesd for the data volume (B, 2026-11-15): init copies it to /var/jb/redwood where its job runs it
+	# (src/init.c seed_phone); select-system.py leaves framework executables out of the image, so it is added here
+	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+	if [ -f $IOS/rootfs/$CSD ]; then mkdir -p sysroot/System/Library/Redwood/Phone; cp $IOS/rootfs/$CSD sysroot/System/Library/Redwood/Phone/callservicesd; chmod 755 sysroot/System/Library/Redwood/Phone/callservicesd
+	else echo "build.sh: no $CSD in the iOS root: a fresh phone will have no callservicesd" >&2; fi
 	# where the kernel mounts the iOS root container off the phone's flash (boot-arg apfs_volume=):
 	# iOS has no /System/Volumes, and nothing can make a directory in this image once it is built
 	mkdir -p sysroot/System/Volumes/iOS

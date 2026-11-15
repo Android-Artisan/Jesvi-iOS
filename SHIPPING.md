@@ -1,3 +1,22 @@
+## 2026-11-15 (09:30, B) — calls/VoLTE/texts wrap-up: registration never drops for a refresh; everything in the image
+- Registration refreshed in place at half its lifetime (Jio: 3600 of 7200 s) on the same connection and SAs: the ~110
+  min full restart (10-90 s without calls or texts, the main cause of late texts) is now only the fallback (401 or no
+  answer, never during a call). Subscribed to the reg event: a network-side deregistration starts a fresh registration
+  at once instead of at the next health check. Granted lifetime read from the 200.
+- Sign-off fixed: it carried REGISTER 2's digest under nc=00000002 (wrong digest, refused, old registration lingered);
+  now built when sent with its own nc.
+- Permanent by default: a fresh or wiped data volume now gets every call/text piece from the images at boot
+  (userland/src/init.c seed_phone, /etc/seed.list from build.sh): /var/root/redwood-ims, /var/jb/redwood/bin/
+  redwood-telephonyd, /var/jb/redwood/callservicesd (system image: /System/Library/Redwood/Phone), libredwood-calls,
+  RedwoodSMS + RedwoodCellular (dylib + plist). Copied only where missing; a newer one deployed by hand is kept.
+  Before, the jobs were in the image but these programs were only on this phone's data volume.
+- Prebuilts refreshed: redwood-ims, redwood-telephonyd, libredwood-calls.dylib.
+- Verified: engine and init build clean. Not yet verified on the phone: the first in-place refresh (log line
+  "registration refreshed in place"), seeding (needs a fresh image + wiped data volume to see "put in place").
+- Open: missed-call banner/badge (callservicesd sees the missed call and sets the badge count; iOS's notification
+  delivery for Phone shows nothing -- not the call stack); avconferenced is denied (mkjobs) and callservicesd /
+  InCallService retry it every 2 s; RCS needs a client of our own.
+
 ## 2026-11-15 (08:10, A) — texts react at once; outgoing-call delay measured; cellulard timing
 - Texts: redwood-ims sends a text the moment Messages drops it in sms-out (kqueue), RedwoodSMS picks up received
   texts and send results the moment they land (vnode watch); the 1 s / 2 s polls are now only a fallback. RP-ACK goes

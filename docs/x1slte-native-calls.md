@@ -59,8 +59,17 @@ in ringing/dialing/alerting/connecting/active (an `ended` line is not a live cal
   more; a retry that fails is reported failed. Messages waits up to 180 s for the result.
 - Incoming: RP-ACK to the SMSC (P-Asserted-Identity), From URI as fallback when refused; an SMSC retry of a single
   text is not shown twice (`/var/root/ims-sms-seen`).
-- Known gap: the planned fresh start every ~110 min (re-registration) leaves a 10-90 s window; an in-place
-  re-REGISTER would close it.
+- Refresh in place (B, 2026-11-15): at half the granted lifetime a REGISTER on the same connection and SAs (next
+  CSeq, digest with the next nc). 200 -> the registration runs on ("registration refreshed in place"); 401 / no answer
+  -> the old fresh start, never during a call. Reg-event subscription: a NOTIFY with our contact terminated -> fresh
+  registration at once. The ~110 min restart remains only as a last fallback.
+
+## On a fresh phone
+
+Every piece that runs from the data volume is in the images and put in place by init when missing
+(`userland/src/init.c` seed_phone, `/etc/seed.list` written by `userland/build.sh`): redwood-ims, redwood-telephonyd,
+callservicesd (from the system image, `/System/Library/Redwood/Phone`), libredwood-calls, RedwoodSMS, RedwoodCellular.
+Update the copies in `prebuilt/userland/` when any of them changes, or a fresh install gets the old one.
 
 ## Open problems
 

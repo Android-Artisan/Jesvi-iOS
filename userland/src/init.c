@@ -1427,6 +1427,70 @@ chown_tree(const char *path, int uid, int gid)
  * (any store there, even an empty one) is left exactly as it is. After restore_var, so a var_store volume
  * is judged by what it brought back.
  */
+/*
+ * The phone's call and text pieces that live on the data volume (B, 2026-11-15): redwood-ims, redwood-telephonyd,
+ * callservicesd, the call-screen hook, RedwoodSMS/RedwoodCellular. They used to be put there by hand, so a fresh or
+ * wiped data volume booted with the launchd jobs but without their programs: no calls, no texts, nothing said.
+ * build.sh lists them in /etc/seed.list (mode, owner, group, destination, source; a source starting with "/System"
+ * is in the system image, any other in this boot image). Each is copied only where there is none -- a newer one
+ * put on the phone by hand (tools/cellular/telephonyd/deploy-native-calls.sh) is never replaced.
+ */
+static void
+mkdir_parents(const char *path)
+{
+	char d[512];
+
+	if (strlen(path) >= sizeof(d)) {
+		return;
+	}
+	strcpy(d, path);
+	for (char *p = d + 1; *p; p++) {
+		if (*p == '/') {
+			*p = 0;
+			mkdir(d, 0755);
+			*p = '/';
+		}
+	}
+}
+static void
+seed_phone(void)
+{
+	static char list[4096];
+	int copied = 0, kept = 0, failed = 0;
+
+	if (read_whole(in_image("/etc/seed.list"), list, sizeof(list)) <= 0) {
+		return;
+	}
+	for (char *line = list; *line;) {
+		char *end = strchr(line, '\n'), *f[6];
+		struct stat had;
+
+		if (end) {
+			*end = 0;
+		}
+		if (split_tabs(line, f, 6) == 5) {
+			const char *from = strncmp(f[4], "/System/", 8) == 0 ? f[4] : in_image(f[4]);
+
+			if (lstat(f[3], &had) == 0) {
+				kept++;
+			} else {
+				mkdir_parents(f[3]);
+				if (copy_file(from, f[3], (int)parse_number(f[0], 8), (int)parse_number(f[1], 10), (int)parse_number(f[2], 10))) {
+					copied++;
+				} else {
+					printf("  seed %s: %s\n", f[3], strerror(errno));
+					failed++;
+				}
+			}
+		}
+		if (!end) {
+			break;
+		}
+		line = end + 1;
+	}
+	printf("  phone pieces on the data volume: %d put in place, %d already there, %d failed\n", copied, kept, failed);
+}
+
 static void
 default_wallpaper(void)
 {
@@ -1892,6 +1956,7 @@ main(int argc, char **argv, char **envp)
 	mount_writable();
 	restore_var();
 	default_wallpaper();
+	seed_phone();
 	test_files();
 	test_writable();
 	test_memory();
