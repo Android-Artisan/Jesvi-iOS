@@ -47,6 +47,21 @@ in ringing/dialing/alerting/connecting/active (an `ended` line is not a live cal
 - Incoming AMR payload type is whatever the offer says (Jio uses 100 or 112; a fixed 100 made PT 112 calls silent).
 - Messages are built with `MSG_CAT` (never past the buffer) and not sent when they would not fit.
 
+## Texts (SMS over IMS) — how they stay reliable (A, 2026-11-15)
+
+- Pickup is instant both ways: redwood-ims watches `sms-out` (kqueue), RedwoodSMS watches `sms-in`/`sms-out` (vnode);
+  timers are only a fallback (5 s).
+- Registration connection closed by the network: opened again at once from port-c over the same SAs (3 s connect
+  limit); twice in a minute or no connect -> fresh registration. A silent P-CSCF: the other one at once (re-exec).
+- Health check: OPTIONS to our own identity 15 s after registering, every 5 min when idle and 3 s after a reopen.
+  No answer in 10 s -> fresh registration (not during a call). Catches a registration that only looks alive.
+- A sent text not confirmed (RP-ACK) in 20 s -> queued again as `<id>.retry.msg`, fresh registration, sent once
+  more; a retry that fails is reported failed. Messages waits up to 180 s for the result.
+- Incoming: RP-ACK to the SMSC (P-Asserted-Identity), From URI as fallback when refused; an SMSC retry of a single
+  text is not shown twice (`/var/root/ims-sms-seen`).
+- Known gap: the planned fresh start every ~110 min (re-registration) leaves a 10-90 s window; an in-place
+  re-REGISTER would close it.
+
 ## Open problems
 
 1. **Outgoing calls: ringing/answer sometimes arrive late, together** (6-20 s after `100 Trying`, then 183+180+200

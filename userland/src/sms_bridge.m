@@ -280,7 +280,7 @@ static void rw_check_results(void)
         NSString *ok = [RWOut stringByAppendingPathComponent:[guid stringByAppendingString:@".ok"]];
         NSString *fail = [RWOut stringByAppendingPathComponent:[guid stringByAppendingString:@".fail"]];
         BOOL sent = [[NSFileManager defaultManager] fileExistsAtPath:ok];
-        BOOL failed = [[NSFileManager defaultManager] fileExistsAtPath:fail] || -[p[4] timeIntervalSinceNow] > 90;
+        BOOL failed = [[NSFileManager defaultManager] fileExistsAtPath:fail] || -[p[4] timeIntervalSinceNow] > 180;   /* (redwood-ims renews a dead registration and sends once more: up to ~100 s) */
         if (!sent && !failed) continue;
         id session = p[0], item = p[1];
         if (sent) {

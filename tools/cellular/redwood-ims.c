@@ -539,7 +539,8 @@ static int sms_utf16(const char *t,uint16_t *u,int cap)
     return o;
 }
 /* the Messages app's pending sends: every part's RP ref points at a job; the job answers when all parts did */
-static struct {char id[80];int left,failed;time_t t;} sms_job[32];
+static struct {char id[80];int left,failed,retried;time_t t;char body[1400];} sms_job[32];
+static int sms_conn_dead;   /* a text got no answer: the registration is dead (main loop starts afresh) */
 static unsigned char sms_ref_job[256];   /* RP ref -> job index + 1 */
 static void sms_job_result(unsigned ref,int ok)
 {
@@ -551,15 +552,31 @@ static void sms_job_result(unsigned ref,int ok)
     FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}
     sms_job[j].id[0]=0;
 }
-/* a send the SMSC never confirmed: free its slot after 2 min (Messages gives up at 90 s), and forget its refs so a very
- * late RP-ACK cannot be counted for the next text in that slot (A, 2026-11-15: 32 such and every send failed) */
+/* A text the SMSC has not confirmed in 20 s (normally 0.2 s): the registration looks alive but nothing gets through
+ * (seen 2026-11-15 08:17-08:20: 200 OK to the REGISTER, then no answer to anything, no texts in). The text goes back
+ * into sms-out as <id>.retry.msg and the main loop registers afresh; the new registration sends it once more. A retry
+ * that is not confirmed either fails (no second fresh start for it). Its refs are forgotten so a very late RP-ACK
+ * cannot count for the next text in that slot. (A, 2026-11-15) */
+static void sms_job_free(int j)
+{
+    for (int r=0;r<256;r++) if (sms_ref_job[r]==j+1) sms_ref_job[r]=0;
+    sms_job[j].id[0]=0;
+}
 static void sms_job_expire(void)
 {
     time_t now=time(NULL);
-    for (int j=0;j<32;j++) if (sms_job[j].id[0] && now-sms_job[j].t>120) {
-        for (int r=0;r<256;r++) if (sms_ref_job[r]==j+1) sms_ref_job[r]=0;
-        printf("SMS: no confirmation for a send after 2 min: given up\n");fflush(stdout);
-        sms_job[j].id[0]=0;
+    for (int j=0;j<32;j++) if (sms_job[j].id[0] && now-sms_job[j].t>20) {
+        char fn[300],tmp[310];
+        if (!sms_job[j].retried && sms_job[j].body[0]) {
+            snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.retry.msg",sms_job[j].id);snprintf(tmp,sizeof(tmp),"%s.tmp",fn);
+            FILE *q=fopen(tmp,"w");if (q) {fputs(sms_job[j].body,q);fclose(q);chown(tmp,501,501);rename(tmp,fn);}
+            printf("SMS: no confirmation in 20 s: the text is queued again and the registration renewed\n");sms_conn_dead=1;
+        } else {
+            snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",sms_job[j].id);
+            FILE *q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}
+            printf("SMS: no confirmation for a send (retried): failed\n");
+        }
+        fflush(stdout);sms_job_free(j);
     }
 }
 static int sms_send_tpdu(int sock,int portc,const uint8_t *tp,unsigned t)
@@ -664,8 +681,11 @@ static void sms_outbox(int sock,int portc)
         char fn[300],body[1400];snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s",e->d_name);
         FILE *q=fopen(fn,"r");if (!q) continue;size_t n=fread(body,1,sizeof(body)-1,q);fclose(q);body[n]=0;unlink(fn);
         char id[80];snprintf(id,sizeof(id),"%.*s",(int)(L-4),e->d_name);
+        int retried=0;size_t il=strlen(id);if (il>6 && !strcmp(id+il-6,".retry")) {id[il-6]=0;retried=1;}
+        char keep[1400];snprintf(keep,sizeof(keep),"%s",body);
         char *nl=strchr(body,'\n');int rc=-1;
         if (nl) {*nl=0;rc=sms_send(sock,portc,body,nl+1,id);}
+        if (rc>=0) for (int j=0;j<32;j++) if (sms_job[j].id[0] && !strcmp(sms_job[j].id,id)) {sms_job[j].retried=retried;snprintf(sms_job[j].body,sizeof(sms_job[j].body),"%s",keep);}
         if (rc<0) {snprintf(fn,sizeof(fn),"/var/tmp/redwood-cell/sms-out/%s.fail",id);q=fopen(fn,"w");if (q) {fclose(q);chown(fn,501,501);}}
     }
     closedir(d);
@@ -896,6 +916,11 @@ int main(int argc,char **argv)
 
     /* 5. stay: show what the network sends, answer requests with 200 */
     int cs[8];int ncs=0;time_t registered_at=time(NULL),reopened_at=0;
+    /* Health check (A, 2026-11-15): an OPTIONS to our own identity, 15 s after registering and then every 5 min when
+     * idle. It goes out through the P-CSCF and S-CSCF and comes back, so any answer (even an error) proves the
+     * registration carries traffic. No answer in 10 s = a dead registration that only looks alive (texts to us are
+     * then held at the SMSC for minutes): start afresh. */
+    uint32_t probe_cid=0;time_t probe_at=0,next_probe=registered_at+15;
     snprintf(call_ip6,sizeof(call_ip6),"%s",cfg.ip6);call_ports=ports;call_user=cfg.imsi;call_sock=s;call_portc=portc;
     call_registered=1;calls_snapshot(1);   /* (a fresh start: the call screen ends any call it still shows from before) */
     for (;;) {
@@ -923,7 +948,7 @@ int main(int argc,char **argv)
             static time_t ka;time_t t=time(NULL);
             if (t-ka>=25) {ka=t;if (send(s,"\r\n\r\n",4,0)<0) {printf("keep-alive: the registration connection is gone (%s)\n",strerror(errno));
                 int ns=-1;   /* (twice within a minute: something is really wrong; start afresh) */
-                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;printf("%s registration connection opened again (registration kept)\n",ts_now());}
+                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;next_probe=time(NULL)+3;probe_cid=0;printf("%s registration connection opened again (registration kept)\n",ts_now());}
                 else {printf("a fresh registration\n");call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}}}
             /* (2026-11-14) the P-CSCF's own connections to our port-s, too: a dead one is closed at once, so the next
              * call comes on a fresh connection instead of waiting out a dead one (late rings, lost CANCELs) */
@@ -937,6 +962,22 @@ int main(int argc,char **argv)
             }
         }
         ims_cmd_poll(s,portc);
+        {time_t now=time(NULL);int dead=0;
+         if (probe_cid && now-probe_at>10) {printf("%s health check: no answer in 10 s\n",ts_now());dead=1;probe_cid=0;}
+         else if (!probe_cid && now>=next_probe && sms_impu[0] && !calls_live()) {
+            probe_cid=arc4random()|1;probe_at=now;next_probe=now+300;
+            char pm[2400];int po=snprintf(pm,sizeof(pm),
+                "OPTIONS %s SIP/2.0\r\nVia: SIP/2.0/TCP [%s]:%d;branch=z9hG4bK%08x;rport\r\nMax-Forwards: 70\r\n%s"
+                "From: <%s>;tag=%08x\r\nTo: <%s>\r\nCall-ID: %08x@[%s]\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
+                sms_impu,cfg.ip6,portc,arc4random(),sms_route,sms_impu,arc4random(),sms_impu,probe_cid,cfg.ip6);
+            if (po>0 && po<(int)sizeof(pm) && send(s,pm,(size_t)po,0)<0) {printf("%s health check: cannot send (%s)\n",ts_now(),strerror(errno));dead=1;probe_cid=0;}
+         }
+         if (sms_conn_dead) {dead=1;sms_conn_dead=0;}
+         if (dead) {
+            if (calls_live()) printf("    (a call is up: kept for now)\n");
+            else {printf("the registration carries nothing: a fresh registration\n");fflush(stdout);
+                unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}
+         }}
         call_tick();
         if (ls>=0 && (p[2].revents&POLLIN) && ncs<8) {int c=accept(ls,NULL,NULL);if (c>=0) {cs[ncs++]=c;printf("the P-CSCF connected to port-s\n");}}
         for (int i=0;i<k;i++) {
@@ -947,10 +988,12 @@ int main(int argc,char **argv)
             else g=recv_msg(p[i].fd,r,sizeof(r),2);
             if (g<=0) {if (i>=base) {call_fd_closed(cs[i-base]);recv_forget(cs[i-base]);close(cs[i-base]);cs[i-base]=cs[--ncs];} else if (i==0) {printf("%s the registration connection closed\n",ts_now());
                 int ns=-1;
-                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;printf("%s registration connection opened again (registration kept)\n",ts_now());}
+                if (tcp && time(NULL)-reopened_at>=60 && (ns=reg_reopen(s,&a,portc))>=0) {reopened_at=time(NULL);s=ns;call_sock=s;next_probe=time(NULL)+3;probe_cid=0;printf("%s registration connection opened again (registration kept)\n",ts_now());}
                 else {call_abort_all("connection lost");unlink("/var/tmp/redwood-cell/ims-registered");ipsec_flush();return 0;}} break;}
             printf("%s <-- %zd bytes\n",ts_now(),g);show(r);printf("\n");
             if (strncmp(r,"SIP/2.0",7) && !strncmp(r,"INVITE ",7) && i!=1 && call_invite(p[i].fd,r)) continue;
+            if (!strncmp(r,"SIP/2.0",7) && probe_cid) {char pci_[200];   /* the health check's answer */
+                if (hdr(r,"Call-ID",pci_,sizeof(pci_)) && (uint32_t)strtoul(pci_,NULL,16)==probe_cid) {if (atoi(r+8)>=200) probe_cid=0;continue;}}
             if (!strncmp(r,"SIP/2.0",7) && sms_ack_answer(s,r,portc)) continue;
             if (!strncmp(r,"SIP/2.0",7) && call_response(r)) continue;
             if (strncmp(r,"SIP/2.0",7) && i!=1 && call_request(p[i].fd,r)) continue;
