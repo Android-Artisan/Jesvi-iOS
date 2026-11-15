@@ -33,11 +33,14 @@ static bool abort_fail,bad_phy_readback;static unsigned releases,exports;static 
 static const uint32_t physical[]={CMU_TOP_PHYS,CMU_CSIS_PHYS,PMU_PHYS,ISPPRE_SYSREG_PHYS,0x17070000,0x170d2300,0x170d1000,0x170c0000,0x17110000,0x17140000,0x17020414};
 static void *ml_io_map(vm_offset_t p,vm_size_t n){(void)n;for(unsigned i=0;i<AX_REGIONS;i++)if(p==physical[i])return regs[i];return NULL;}
 static uint32_t cam_s20_rd(volatile uint8_t *p,uint32_t off){uint32_t v=*(volatile uint32_t *)(p+off);
+ if(p==(volatile uint8_t *)regs[AX_CSI]&&off==0x1c){
+  v&=~7U;if(regs[AX_CSI][0x24/4])v|=4;if(regs[AX_CSI][0x2c/4])v|=2;if(regs[AX_CSI][0x634/4])v|=1;
+ }
  if(p==(volatile uint8_t *)regs[AX_CSI]&&off==4&&(v&2U)){v&=~2U;*(volatile uint32_t *)(p+off)=v;}
  if(bad_phy_readback&&p==(volatile uint8_t *)regs[AX_PHY]&&off==0x104&&v==0x1450){bad_phy_readback=false;return v^1;}
  return v;}
 static void cam_s20_wr(volatile uint8_t *p,uint32_t off,uint32_t v){
- if(p==(volatile uint8_t *)regs[AX_CSI]&&(off==0x14||off==0x1c)){*(volatile uint32_t *)(p+off)&=~v;return;}
+ if(p==(volatile uint8_t *)regs[AX_CSI]&&(off==0x14||off==0x1c||off==0x24||off==0x2c||off==0x634)){*(volatile uint32_t *)(p+off)&=~v;return;}
  if(p==(volatile uint8_t *)regs[AX_DMA]&&off==0x1408){regs[AX_DMA][off/4]&=~v;return;}
  *(volatile uint32_t *)(p+off)=v;
  if(p==(volatile uint8_t *)regs[AX_SYS]&&off==0&&!(v&4U))memset(regs[AX_PHY],0,sizeof(regs[AX_PHY]));
@@ -62,8 +65,10 @@ static void initial(void){memset(regs,0,sizeof(regs));abort_fail=bad_phy_readbac
  regs[AX_CSI][0x40/4]=0x3456;regs[AX_CSI][0x44/4]=0x11223344;
  regs[AX_TOP][0x104c/4]=2;regs[AX_TOP][0x1848/4]=5;
 }
-static void frame(struct ax_receiver*x){uint16_t*p=(uint16_t*)((uint8_t*)x->buffer+16384);for(unsigned i=0;i<x->bytes/2;i++)p[i]=256;regs[AX_DMA][0x1408/4]|=1U<<8;regs[AX_CSI][0x100/4]=12;}
+static void frame(struct ax_receiver*x){uint16_t*p=(uint16_t*)((uint8_t*)x->buffer+16384);for(unsigned i=0;i<x->bytes/2;i++)p[i]=256;regs[AX_DMA][0x1408/4]|=1U<<8;regs[AX_CSI][0x500/4]=12;regs[AX_CSI][0x24/4]=1;regs[AX_CSI][0x2c/4]=1;regs[AX_CSI][0x634/4]=1;}
 int main(void){struct ax_receiver x={0};initial();assert(ax_receiver_begin(&x));frame(&x);assert(ax_receiver_end(&x));assert(x.exported&&exports==1&&releases==1&&!x.retained);
+ assert(x.frames==12&&cam_s20_rd((volatile uint8_t*)regs[AX_CSI],0x1c)==0);
+ struct ax_receiver repeated={0};assert(ax_receiver_begin(&repeated));frame(&repeated);assert(ax_receiver_end(&repeated));assert(repeated.exported&&releases==2);
  assert(regs[AX_CSI][0x40/4]==0x3456&&regs[AX_CSI][0x44/4]==0x11223344);assert(regs[AX_PHY][0x104/4]==0x777&&regs[AX_SYS][0]==4&&regs[AX_BIAS][0]==0x99);assert(regs[AX_TOP][0x104c/4]==2&&regs[AX_TOP][0x1848/4]==5);
  initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);((uint8_t*)x.buffer)[0]=0;assert(ax_receiver_end(&x));assert(!x.exported&&x.guard_bad==1&&releases==1);
  initial();x=(struct ax_receiver){0};assert(ax_receiver_begin(&x));frame(&x);((uint16_t*)((uint8_t*)x.buffer+16384))[1]=4095;assert(ax_receiver_end(&x));assert(!x.exported&&x.pixel_max==4095&&releases==1);

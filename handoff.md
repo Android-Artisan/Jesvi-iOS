@@ -494,3 +494,38 @@ uninstalled. Front stays original; optional experimental profile stays uninstall
 - Added Camera to tracked tweak-loader injection defaults for future image builds. Live installation must retain the same entry in persistent and current injection lists while preserving unrelated entries. Data-volume tweak alone is not sufficient if Camera never loads the tweak loader.
 - ASan/UBSan policy tests pass (entry/steady/manual/exit, auto-off preservation, display-off, rule disable, unknown service, expired/future lease). Signed arm64 iOS dylib builds with -Wall -Wextra -Werror; passcode build integration passes. Latest dylib SHA-256 e746a68f6a164e2675832bf7789cf1ed42d8d963659446f7aaac92091f254fad.
 - Documentation/install/rollback and unverified cases: docs/x1slte-camera-brightness-rule.md. NOT installed/device-verified. Restore the temporary diagnostic global-auto-off setting to the user's normal enabled mode before the eventual Camera-only trial, otherwise that diagnostic value would be saved as their prior preference.
+
+## Auxiliary-camera checkpoint: bounded exposure and repeat captures (2026-11-15)
+
+Branch: `feat/s20-rear-aux`, worktree `hackios-camera-aux`. User requests fast
+0.6x/1x rear lens switching, with concise updates. Do not advertise the
+one-shot diagnostic as a working Camera lens. Front settings remain unchanged.
+
+- Patch: native 2LA exposure/gain controls with stock bounds, fixed-mode guard,
+  before/after readback and fail-fast I2C handling. Diagnostic command:
+  `cam.s20.2la.raw [lines [again-code]]`; defaults 3000 lines / gain32 (1x),
+  permitted lines16..6636, gain32..512; unity digital gain, WDR/LTE disabled.
+- Repeat-capture fix: clear CSI per-VC frame-start/end/line children before
+  aggregate IRQ acknowledgement. Previously aggregate0x6 persisted after capture.
+  Frame counter corrected from offset0x100 to0x500. Raw normal IRQ flags now
+  reported separately from masked link errors.
+- Renderer: optional `tools/camraw.py --black 64` is diagnostic only, not
+  calibrated stock tuning. Latest shown preview is underexposed but contains
+  recognizable scene; no quality acceptance claimed.
+- Validation: both actual receiver and control helper host tests PASS under
+  ASan/UBSan, including consecutive captures and every control I2C fault.
+  Kernel build PASS (`raw-controls-build.log` in private artifact directory);
+  passcode build integration PASS. This new patch has NOT been flashed/tested live.
+- Currently installed kernel remains the previous 295a2162 RAW build, padded
+  slot SHA a1f28ed505feb3c27f201d1061f887bd4cecdee3ba84b1f07ab0a00839a59d2e.
+  Private build artifacts: `/Users/jesvi/ios-port-research/build/camera-aux-latest-20261115/`.
+- Next: package/flash kernel slot only under current session camera-test reboot
+  authorization; check workspace phone lock first (last owner codex-camera-aux).
+  Verify two consecutive RAW captures, controls_before/after, cleanup_ok, no
+  retained DMA, and improved exposure before proceeding. Preserve root/system/loader.
+- To add actual0.6x: implement persistent 2LA open/read/close and exposure updates
+  in kernel camera backend, then route rear zoom through `userland/src/camera_device.c`
+  (currently clamps zoom to1..16). Map ultra-wide sensor/crop metadata and ISP state
+  separately; switch at1x only after stream stop/drain. Current one-shot powers
+  down and exports one frame; calling it per preview frame is not a viable backend.
+  GW2 identity works, streaming remains unimplemented. Smooth transitions are later.

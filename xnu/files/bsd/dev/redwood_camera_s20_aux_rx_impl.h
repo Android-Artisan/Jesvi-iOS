@@ -115,11 +115,18 @@ static bool ax_receiver_begin(struct ax_receiver *x){
     x->ready=true;x->phase="receiver armed";return true;
 #undef AXW
 }
+static void ax_clear_frame_sources(struct ax_receiver *x){
+    /* Aggregate FRAMESTART/END remain asserted until per-VC children clear. */
+    static const unsigned child[3]={0x24,0x2c,0x634};
+    for(unsigned i=0;i<3;i++)cam_s20_wr(x->bank[AX_CSI],child[i],ax_rd(x,AX_CSI,child[i]));
+    cam_s20_wr(x->bank[AX_CSI],0x14,ax_rd(x,AX_CSI,0x14));
+    cam_s20_wr(x->bank[AX_CSI],0x1c,ax_rd(x,AX_CSI,0x1c));
+}
 static bool ax_receiver_end(struct ax_receiver *x){
     bool clean=true,stopped=!x->armed;
     if(x->armed){
         x->irq=ax_rd(x,AX_DMA,0x1408);x->error=ax_rd(x,AX_DMA,0x1418);
-        x->link0=ax_rd(x,AX_CSI,0x14);x->link1=ax_rd(x,AX_CSI,0x1c);x->frames=ax_rd(x,AX_CSI,0x100);
+        x->link0=ax_rd(x,AX_CSI,0x14);x->link1=ax_rd(x,AX_CSI,0x1c);x->frames=ax_rd(x,AX_CSI,0x500);
         cam_s20_wr(x->bank[AX_CSI],4,ax_rd(x,AX_CSI,4)&~1U);
         cam_s20_wr(x->bank[AX_DMA],0x1000,ax_rd(x,AX_DMA,0x1000)&~1U);
         cam_s20_wr(x->bank[AX_DMA],0x1414,ax_rd(x,AX_DMA,0x1414)|1U);
@@ -146,8 +153,7 @@ static bool ax_receiver_end(struct ax_receiver *x){
     }
     if(x->armed){
         cam_s20_wr(x->bank[AX_DMA],0x1408,ax_rd(x,AX_DMA,0x1408));
-        cam_s20_wr(x->bank[AX_CSI],0x14,ax_rd(x,AX_CSI,0x14));
-        cam_s20_wr(x->bank[AX_CSI],0x1c,ax_rd(x,AX_CSI,0x1c));
+        ax_clear_frame_sources(x);
     }
     if(x->phy_touched)cam_s20_wr(x->bank[AX_SYS],0,ax_rd(x,AX_SYS,0)&~(1U<<2));
     if(!ax_jrestore(&x->journal,x->io))clean=false;
