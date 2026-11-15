@@ -29,7 +29,7 @@ static inline NSDictionary *rw_aod_config(void){
 }
 static inline BOOL rw_aod_value(NSDictionary *d,NSString *key){
     id v=d[key];if([v isKindOfClass:NSNumber.class])return [v boolValue];
-    return [key isEqual:@"ShowWallpaper"];
+    return NO;
 }
 static inline BOOL rw_aod_set(NSString *key,BOOL value){
     if(![@[@"Enabled",@"ShowWallpaper",@"ShowNotifications"] containsObject:key])return NO;

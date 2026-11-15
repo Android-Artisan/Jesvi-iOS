@@ -12,9 +12,11 @@ int main(void){@autoreleasepool{
     char dir[]="/tmp/redwood-aod-test.XXXXXX";assert(mkdtemp(dir));
     snprintf(configPath,sizeof(configPath),"%s/config.plist",dir);
     assert(!rw_aod_value(rw_aod_config(),@"Enabled"));
-    assert(rw_aod_value(rw_aod_config(),@"ShowWallpaper"));
+    assert(!rw_aod_value(rw_aod_config(),@"ShowWallpaper"));
     assert(!rw_aod_value(rw_aod_config(),@"ShowNotifications"));
     save(@{@"Enabled":@YES});assert(rw_aod_value(rw_aod_config(),@"Enabled"));
+    assert(!rw_aod_value(rw_aod_config(),@"ShowWallpaper"));
+    save(@{@"ShowWallpaper":@YES});assert(rw_aod_value(rw_aod_config(),@"ShowWallpaper"));
     assert(!chmod(configPath,0666));assert(!rw_aod_value(rw_aod_config(),@"Enabled"));
     save(@{@"Enabled":@"yes"});assert(!rw_aod_value(rw_aod_config(),@"Enabled"));
     save(@[@YES]);assert(!rw_aod_value(rw_aod_config(),@"Enabled"));

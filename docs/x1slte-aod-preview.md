@@ -245,3 +245,11 @@ or latches a fault. It is not wired into the kernel and sends no live commands.
 Stock investigation additionally found distinct update-capable doze vs deeper
 host suspend and a VDDR1.8V→1.5V reference-board requirement; the panel README
 records exact source locations and remaining integration contracts.
+
+### Defaults correction
+
+Both **Always-On Display** and **Show Wallpaper** default off. Missing or invalid
+preferences leave both off; either can be explicitly enabled in Settings. The
+user also requested both off on the current phone: saved values and settled
+native policy were verified off without a refresh or reboot. Updated tracked
+prebuilts carry these defaults into clean builds.

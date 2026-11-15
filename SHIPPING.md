@@ -1,3 +1,10 @@
+## 2026-11-15 — AOD and AOD wallpaper default off
+
+Show Wallpaper now defaults off as well as AOD. Updated source, tracked clean-build
+prebuilts and helper; explicit user opt-in still works. Both saved settings and
+settled native AOD policy verified off on the current phone without refresh/reboot.
+Config and AOD/passcode assembly regressions pass.
+
 ## 2026-11-15 — AOD clean-image inclusion
 
 S20 root assembly now includes native AOD and its helper from tracked prebuilts,
