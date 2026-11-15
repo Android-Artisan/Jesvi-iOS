@@ -1,3 +1,16 @@
+## 2026-11-15 — native AOD service (feature branch)
+
+Settings-controlled native Always-On Display, default off, pinned to this S20 /
+iOS16.5 cache. Adapt native capability providers and use Apple's pseudo-flipbook
+live-composition backend: CAFlipBook returned no frame and trapped SpringBoard at
+BacklightServicesHost0x1eebbd068 (`renderedFrame != nil`). The fallback avoids that
+unsupported capture path without bypassing assertions. User confirmed persistent
+AOD with no restart; native state1 and unchanged SpringBoard PID independently
+observed. Repeat passcode/AOD-cycle confirmation remains pending. No kernel reboot
+or panel ALPM activation. Build, config/token regressions, package allowlist and
+hash checks pass. Standalone installer/package prepared; clean image integration
+still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
+
 ## 2026-11-15 (02:16, A) — native calls permanent; status bar on island phones; Cellular settings live
 - Calls: native only, on at boot. `feat/native-calls` merged into x1slte (ad93a151); redwood-telephonyd starts from the
   boot image and registers as `com.apple.coretelephony telephony=1`; RedwoodPhone no longer shipped. Engine review

@@ -139,3 +139,83 @@ These are operational diagnostics, never authentication or proof of rendering.
 Deployment uses explicit-file SCP because the phone's tar could not find gzip.
 Updates were staged separately and atomically renamed before refreshing so mapped
 executables were not overwritten in place.
+
+## Persistent native AOD and restart fix (15 November, 08:30)
+
+The manual native appearance preview was subsequently visually confirmed. A
+separate `RedwoodAlwaysOn` module now integrates Settings and native SpringBoard
+Always-On policy on this exact iOS 16.5 cache/S20 profile. It is default **off**.
+The installed preference persists in
+`/var/mobile/Library/Preferences/com.redwood.alwayson.plist`; no enabled preference
+is shipped. Settings exposes Enabled, wallpaper and notification switches.
+
+The module adapts two iPhone capability checks: SpringBoard's platform provider
+and BacklightServicesHost's OS-interface provider. Original OS support remains
+reported separately from the effective port capability. Method addresses and ABI
+are pinned; unsupported versions decline installation. This is not a global
+MobileGestalt override. The native policy owns lock/timeout, wake, suppression
+and appearance. Native authentication is revoked on inactive/off transitions,
+preserving the existing software-passcode bridge; no authentication-success stub
+or keybag mutation is introduced.
+
+Initially enabling the missing OS capability entered `InactiveOn` (native state
+1) but repeatedly crashed SpringBoard with SIGTRAP. A temporary diagnostic
+captured PC `0x1eebbd068` in BacklightServicesHost, inside
+`BLSHEngineRenderFlipbookSession`'s completion path. Local cache disassembly
+identifies the fatal condition as `renderedFrame != nil`. CAFlipBook had supplied
+no rendered frame. Do not bypass this assertion or fabricate a successful frame.
+
+The fix selects Apple's existing `BLSHPseudoFlipbook` live-composition path using
+`BLSHAlwaysOnPresentationEngine setUsePseudoFlipbook:` after native initialization,
+and preserves that selection on later setters. Apple's own frame/presentation
+machinery remains in use. The user confirmed AOD stayed visible without a restart
+on the next test. Telemetry independently showed native policy enabled, state1,
+the same SpringBoard PID4270 across observations, and no additional diagnostic
+trap record. Repeat unlock/lock validation is tracked separately in the handover.
+The temporary signal diagnostic is excluded from the normal build.
+
+Build with `bash tools/aod/build.sh`, package with `python3 tools/aod/package.py`.
+`out/aod/alwayson-bundle.tar.gz` contains only the module, filter, root helper,
+installer, documentation and a SHA-256 manifest. The installer requires the
+existing passcode/relock bridge and explicitly disables AOD before installation.
+It does not refresh SpringBoard or reboot. This standalone bundle is not yet
+integrated into clean root-image assembly or the final TWRP release package.
+
+To disable immediately: `/var/jb/redwood/bin/aod-preview disable` over root SSH.
+For removal, disable first, remove only `RedwoodAlwaysOn.dylib` and its matching
+filter from the tweak directory, then refresh SpringBoard when phone ownership
+and call state allow. Keep the existing software-passcode tweak intact.
+
+Validation: iOS build with warnings as errors; host config regression
+(`test_config.m`) checks default-off and rejection of malformed, world-writable,
+symlink and FIFO inputs. Token lifetime tests remain separate. A visible change
+in animation or brightness is **not** a refresh-rate or power measurement.
+
+## Samsung panel low-power follow-up
+
+Panel ALPM is **not implemented or tested** by this module. Live composition can
+retain native AOD while still spending normal compositor/display power. The
+current framebuffer has binary `displayPower(bool)` and no distinct retained
+AOD mode. Do not route AOD through its existing display-off path: that masks
+frames and changes clocks for a fully off screen.
+
+Samsung's locally available GPL source at commit `69515fbb7`,
+`drivers/video/fbdev/exynos/panel/s6e3hab/s6e3hab_hubble1_a3_s0_panel.h`, defines
+`hubble1_a3_s0_alpm_enter_cmdtbl` (line3148) and exit (line3175). Entry programs
+LPM AOR, gamma update, a60Hz-frame delay, mapped low-nit parameters, ISC, AVS,
+LPM mode and AVC2 with level2/3 keys. The driver enforces the panel-specific
+minimum delay from panel-on before entering ALPM (the table specifies124ms),
+switches the brightness subdevice, changes regulator voltage and optionally enters
+the panel AOD engine. Exit restores
+LPM-off nit, ASWIRE, AVC2 and normal display control. Packet parameter offsets
+(e.g. AVS0x28, ASWIRE0x53, AVC2 offset0x09) must be respected; simply sending their
+payload bytes is insufficient. Brightness table mappings and panel revision must
+match the actual device; other Exynos990 panels need their own profiles.
+
+Next implementation needs a serialized active/AOD/off framebuffer state machine,
+verified mode/timing handling from120Hz, retained valid content and clock policy,
+then full normal gamma/brightness/refresh restoration before the first wake frame.
+Disable/revert, touch/button wake, repeated transitions and charging must be tested.
+Measure actual refresh/panel power separately. No DSI writes, kernel flash or
+hardware reboot were performed for the native-service fix. A kernel installation
+and reboot require fresh explicit user authorization.

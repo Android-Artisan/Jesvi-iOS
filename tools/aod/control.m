@@ -7,7 +7,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "preview_token.h"
+#include "config.h"
 int main(int argc,char **argv){@autoreleasepool{
+    if(getuid()==0&&argc==2&&(!strcmp(argv[1],"enable")||!strcmp(argv[1],"disable")))
+        return rw_aod_set(@"Enabled",!strcmp(argv[1],"enable"))?0:1;
     if(getuid()==0 && argc==2 && !strcmp(argv[1],"status")){
         void *framework=dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag",RTLD_NOW);
         int (*state)(CFDictionaryRef)=framework?dlsym(framework,"MKBGetDeviceLockState"):NULL;
@@ -30,6 +33,11 @@ int main(int argc,char **argv){@autoreleasepool{
         if(notify_register_check(RW_AOD_STATUS,&token)==NOTIFY_STATUS_OK){notify_get_state(token,&value);notify_cancel(token);}
         const char *names[]={"not-loaded","ready","unsupported-native-method","appearance-requested","normal-appearance-requested","declined-lockscreen-state","exception"};
         printf("preview_status=%s\n",value<sizeof(names)/sizeof(names[0])?names[value]:"unknown");
+        token=-1;value=0;
+        if(notify_register_check(RW_AOD_SERVICE_STATUS,&token)==NOTIFY_STATUS_OK){notify_get_state(token,&value);notify_cancel(token);}
+        printf("native_service_ready=%u configured_enabled=%u native_policy_enabled=%u backlight_state=%u os_support=%u os_native_support=%u os_observed=%u\n",
+            (unsigned)(value&1),(unsigned)((value>>1)&1),(unsigned)((value>>2)&1),(unsigned)((value>>8)&15),(unsigned)((value>>4)&1),(unsigned)((value>>5)&1),(unsigned)((value>>6)&1));
+        printf("saved_enabled=%u\n",rw_aod_value(rw_aod_config(),@"Enabled")?1:0);
         return state?0:1;
     }
     if(getuid()!=0||argc!=2||(strcmp(argv[1],"begin")&&strcmp(argv[1],"end"))){fprintf(stderr,"usage (root): aod-preview begin|end|status\n");return 1;}
