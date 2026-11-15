@@ -42,14 +42,40 @@ def primary_stats_source():
     # Only rear-main binned stats: 12k sample cells instead of48k. Pixel
     # rendering, front and UW sampling are identical to the pinned source.
     body=body.replace('for (uint32_t cy = 0; cy < cells_h; cy += 4)',
-        'const unsigned step=f->sensor==1 && f->width==2016 ? 8 : 4;\n\tfor (uint32_t cy = 0; cy < cells_h; cy += step)')
+        'const unsigned step=f->sensor==1 ? (f->width==4032 ? 16 : f->width==2016 ? 8 : 4) : 4;\n\tfor (uint32_t cy = 0; cy < cells_h; cy += step)')
     body=body.replace('cx += 4)', 'cx += step)')
     if 'const unsigned step=' not in body:raise ValueError('primary stats loop changed')
     return source[:start]+body+source[end:]
 
 
+def primary_af_source(source):
+    # The kernel converts userland0..1022 to the AK737x motor0..511.
+    # Keep this scaled ABI; a511 cap would prevent reaching close focus.
+    source=source.replace('struct af {\n','struct af {\n\tuint32_t primary_limit, primary_watch;\n',1)
+    a=source.index('static void\naf_go(')
+    b=source.index("/* the sensor's colour tuning",a)
+    body=source[a:b].replace('AF_FAR','af_limit(af)').replace('AF_NEAR','af_minimum(af)')
+    for op in ('>','<=','<','>='):
+        body=body.replace('next '+op+' af_limit(af)','next '+op+' (int)af_limit(af)')
+        body=body.replace('next '+op+' af_minimum(af)','next '+op+' (int)af_minimum(af)')
+        body=body.replace('af->way * AF_STEP '+op+' af_limit(af)','af->way * AF_STEP '+op+' (int)af_limit(af)')
+        body=body.replace('af->way * AF_STEP '+op+' af_minimum(af)','af->way * AF_STEP '+op+' (int)af_minimum(af)')
+    body=body.replace('unsigned needed = f->gain >= 16 * f->gain_unity ? 2 : 1;',
+        'unsigned needed = f->sensor==1 ? 1 : f->gain >= 16 * f->gain_unity ? 2 : 1;')
+    begin=body.index('if (f->focus == REDWOOD_CAMERA_NO_FOCUS)')
+    body=body[:begin]+'if(f->sensor==1){\n        af->primary_limit=1022;\n        if(locked && f->focus!=REDWOOD_CAMERA_NO_FOCUS){af->state=AF_WATCH;af->at=af->target=f->focus;af->wait=0;af->now=af->sweep=false;return;}\n        if(!locked && af->state==AF_WATCH && af->at==af->target && (++af->primary_watch&1))return;\n    }\n    '+body[begin:]
+    body=body.replace('++af->unlike < 30','++af->unlike < (f->sensor==1?3:30)')
+    body=body.replace('af->steady < 10','af->steady < (f->sensor==1?3:10)')
+    marker='if (af->worse < 2 && (int)af->at + af->way * AF_STEP'
+    assert marker in body
+    body=body.replace(marker,'if(f->sensor==1){\n            int next=(int)af->at+af->way*AF_STEP;\n            next=next<(int)af_minimum(af)?(int)af_minimum(af):next>(int)af_limit(af)?(int)af_limit(af):next;\n            if((uint32_t)next!=af->at){af_go(device,af,(uint32_t)next);return;}\n        }\n        if (f->sensor!=1 && af->worse < 2 && (int)af->at + af->way * AF_STEP')
+    helpers='static uint32_t af_limit(const struct af *af){return af->primary_limit?af->primary_limit:AF_FAR;}\n'
+    helpers+='static uint32_t af_minimum(const struct af *af){return af->primary_limit?0:AF_NEAR;}\n\n'
+    return source[:a]+helpers+body+source[b:]
+
+
 def prepare(out):
-    source = original('camera_device.c')
+    source = primary_af_source(original('camera_device.c'))
     source = source.replace('#include "camera_isp.h"', '#include "camera_isp.h"\n#include "camera_s20_zoom.h"')
     source = source.replace('{ "MaxZoomFactor", "Number", "ReadOnly" }', '{ "MinZoomFactor", "Number", "ReadOnly" }, { "MaxZoomFactor", "Number", "ReadOnly" }')
     source = source.replace('} else if (key_is(key, "MaxZoomFactor")) {', '} else if (key_is(key, "MinZoomFactor")) {\n        value=number_f(s->camera->sensor==1&&access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0?0.5f:1.0f);\n\t} else if (key_is(key, "MaxZoomFactor")) {')
@@ -61,7 +87,13 @@ def prepare(out):
     source=source.replace('if (fw->width == 2016 && fw->gain_unity > 0)',
         'if (fw->sensor==1 && fw->width == 2016 && fw->gain_unity > 0 && primary_legacy_black)')
     source=source.replace('if (fw->width == 2016 || fw->width == 4032)',
-        'if ((fw->width == 2016 || fw->width == 4032) && !(fw->sensor==1 && fw->width==2016 && !primary_legacy_black))')
+        'if ((fw->width == 2016 || fw->width == 4032) && !(fw->sensor==1 && !primary_legacy_black))')
+    source=source.replace('if (fb->width == 4032) {',
+        'if (fb->width == 4032 && primary_legacy_black) {')
+    source=source.replace('if (fd->width == 4032 && fd->gain_unity > 0)',
+        'if (fd->width == 4032 && fd->gain_unity > 0 && primary_legacy_black)')
+    source=source.replace('.b = want_rear ? 2 :',
+        '.b = want_rear ? (access(rw_path("redwood-primary-full",(char[160]){0},160),F_OK)==0?3:2) :')
     source=source.replace('FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");',
         'FILE *cf=s->camera->sensor==1?fopen(rw_path("redwood-primary-contrast",(char[160]){0},160),"r"):NULL;\n\t\tif(!cf)cf=fopen(rw_path("redwood-contrast",(char[160]){0},160),"r");')
     current = (ROOT/'userland/src/camera_device.c').read_text()
@@ -111,11 +143,29 @@ static void *worker_body(void *context)
         raise ValueError('original worker changed')
     source = source.replace(marker, bridge+'\nstatic void *\nworker_original_body(void *context)\n{')
     source = source.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(rear_ultra_selected(s))break;')
+    # Report the actual primary lock state; other sensors retain the pinned metadata.
+    source=source.replace('const struct isp_stats *st, CFStringRef port)',
+        'const struct isp_stats *st, CFStringRef port, bool af_locked, bool ae_locked)')
+    source=source.replace('frame_metadata(&isp, f, &st, s->port)',
+        'frame_metadata(&isp, f, &st, s->port, f->sensor==1&&s->af_locked, f->sensor==1&&s->ae_locked)')
+    source=source.replace('md_put(m, MD_AF_LOCKED, CFRetain(kCFBooleanFalse));',
+        'md_put(m, MD_AF_LOCKED, CFRetain(af_locked?kCFBooleanTrue:kCFBooleanFalse));')
+    source=source.replace('md_put(m, MD_AE_LOCKED, CFRetain(kCFBooleanFalse));',
+        'md_put(m, MD_AE_LOCKED, CFRetain(ae_locked?kCFBooleanTrue:kCFBooleanFalse));')
     # Keep the iOS graph fixed; our native rear control owns the physical route
     # and digital crop. This avoids graph device reconfiguration while recording.
     source=source.replace('isp.zoom = s->zoom;',
         'isp.zoom=s->camera->sensor==1?rear_requested_zoom(s):s->zoom;')
     source = source.replace('if (n != (ssize_t)sizeof(head)) {', 'if(n==(ssize_t)sizeof(head)&&s->camera->sensor==1&&head.sensor==3)continue;\n            if (n != (ssize_t)sizeof(head)) {')
+
+    a=source.index('static void *\nworker_original_body(void *context)\n{')
+    b=source.index('/*\n * Reading frames from the kernel',a)
+    body=source[a:b].replace('s->af_window','measure_window')
+    body=body.replace('af_frame(device, &af, f, raw, measure_window, s->af_locked);','af_frame(device, &af, f, raw, focus_window, s->af_locked);')
+    raw='const uint8_t *raw = buffer + f->header_bytes;'
+    assert raw in body
+    body=body.replace(raw,raw+'\n        float measure_window[4];\n        memcpy(measure_window,s->af_window,sizeof(measure_window));\n        if(f->sensor==1)s20_zoom_window(s->af_window,measure_window,rear_requested_zoom(s));\n        float focus_window[4];memcpy(focus_window,measure_window,sizeof(focus_window));\n        if(f->sensor==1){for(unsigned axis=0;axis<2;axis++){float centre=(measure_window[axis]+measure_window[axis+2])*.5f;float half=(measure_window[axis+2]-measure_window[axis])*.25f;focus_window[axis]=centre-half;focus_window[axis+2]=centre+half;}}')
+    source=source[:a]+body+source[b:]
     current = current.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(s->camera->sensor==1){float z=s->zoom;FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");if(lf){float v;if(fscanf(lf,"%f",&v)==1)z=v;fclose(lf);}if(s20_zoom_mode(s20_zoom_clamp(z,true,true),true)!=5)break;}')
     out.mkdir(parents=True, exist_ok=True)
     legacy = out/'original'

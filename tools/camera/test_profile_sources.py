@@ -25,6 +25,9 @@ class ProfileSourceTests(unittest.TestCase):
             self.assertIn('redwood-primary-legacy-black',source)
             self.assertIn('fw->gain_unity > 0 && primary_legacy_black',source)
             self.assertIn('redwood-primary-contrast',source)
+            self.assertIn('redwood-primary-full',source)
+            self.assertIn('fb->width == 4032 && primary_legacy_black',source)
+            self.assertIn('fd->gain_unity > 0 && primary_legacy_black',source)
             self.assertIn('isp.zoom=s->camera->sensor==1?rear_requested_zoom(s):s->zoom;',source)
             # Old front's globals are confined to its original object; new ISP APIs use separate symbols.
             self.assertIn('extern int isp_black4[4]',(out/'original/camera_isp.h').read_text())

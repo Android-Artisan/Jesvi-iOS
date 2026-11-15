@@ -1,6 +1,6 @@
 Built 2026-10-25 22:53 from this tree.
 
-03e794e8e1d389a6abb9bcd2431eaccf9747271ff8c1234922225718c70441e9  prebuilt/mach.development.bcm2837
+6cd51d3a2b35a7d552139a3d71c27e23a712ddeb3012c3a7e112171524c9fc9d  prebuilt/mach.development.bcm2837
 3de0d8b2095989a9a8f9f9679b8bec01d80bad38eee535d934d29b7b76fee984  prebuilt/loader.efi
 932c856c04e87611b16c872da37c461d572c6258da0202ecd875d91c29886e03  prebuilt/userland/HakiosAudio
 45bffe2da6b2484836bd29074b39bd5cc67b4cdaa253c2aa39561ce5188d6ddc  prebuilt/userland/child
@@ -25,3 +25,9 @@ d1c0c4a33fb10cda3e034b09e082fdd8fd68465405c883143f21286972ac21ec  devices/poco-x
 ee93220116d7f59664edf41f43dfae69d036f26faa21e55f9e5ba3c1187f6cef  devices/poco-x5-pro/prebuilt/device-tree.dtb
 55037fd1a6d6cd861add76c2083d5d4321373bf714acae3f6a40deb004c27d47  devices/poco-x5-pro/prebuilt/mkbootimg.py
 b5a2c96250612366ea272ffac6d9744aaf4b45aacd96aa7cfcb931ee3b558259  devices/poco-x5-pro/prebuilt/ramdisk
+
+Camera image artifacts rebuilt 2026-11-16; user-approved permanent image integration.
+69621b4a2ac87f0d6ad5d39d8fc30e30b4694ea84989fdbf5dab6c03169f2b35  prebuilt/userland/libredwood-media.dylib
+cbdefedfd068a8f9819999553c9aadb8aea2dda7023c027f307a7928a2c0fe78  prebuilt/userland/libredwood-tweaks.dylib
+8990796a2815a1f49f9044fccae262d68da344328540bf47e466ccf71066e553  prebuilt/userland/RedwoodCameraBrightness.dylib
+f3cada37cb98afa82ba61dfb2d70e7c762453bf0842f0d4fb0fc07b1d37b2c28  prebuilt/userland/RedwoodCameraLenses.dylib

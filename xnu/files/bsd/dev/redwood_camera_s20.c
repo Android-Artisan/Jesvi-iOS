@@ -323,7 +323,7 @@ cam_s20_af_down(void)
 /* the bounded rear test's exposure (cam.s20.dma.test 2 [lines]): 16384 lines at 4x; under 16 lines it is 1x -- a black frame,
  * the sensor's black level per site (2026-11-12) */
 static uint32_t cam_s20_rear_test_lines = 16384;
-static int cam_s20_rear_i2c_half_us=2;
+static int cam_s20_rear_i2c_half_us=1;
 static bool cam_s20_rear_slow;   /* the fast rear bus failed once this boot: half_us 2 from then on */
 
 /*

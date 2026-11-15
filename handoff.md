@@ -764,3 +764,15 @@ resolution. Kernel full mode exists (.b=3); pinned original worker explicitly as
 4032x3024. User prefers native full primary; measureFPS/heat, don't fake resolution
 or call the current upsampled binned still native. Primary gamma0.35 S-curve remains
 with standard sRGB; don't remove gamma itself as a voltage workaround.
+
+## 2026-11-16 final close-focus test / approval gate
+
+See docs/x1slte-camera-wrapup.md. User confirms rear primary close focus now
+works (“10x better”). Corrected prepared AF cap from511 motor units to1022
+userland-scaled units; actual kernel shifts right1. Quantized-motor host tests,
+front preservation checks, zoom ROI and signed media build pass. Reversible test
+library installed, hash69621b4a...; previous library retained on phone and host.
+No image flash/reboot in this turn. Clean-install image integration and prebuilt
+artifacts prepared in working tree, NOT deployed/merged/pushed. Latest user
+requires final testing and explicit “OK, push it” before permanent deployment,
+local branch merges and remote push. This overrides earlier blanket merge request.

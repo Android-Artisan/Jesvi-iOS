@@ -357,10 +357,16 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# (+ src/h264_encoder.c: a software H.264 encoder for VideoToolbox, the S20 having no AVE; OpenH264 from
 		#  ../../third-party/openh264, built with: make OS=ios ARCH=arm64 SDK_MIN=16.0 SDKROOT=<sdk> libraries)
 		OH=${OPENH264:-../../third-party/openh264}
+		if [ "${DEVICE:-x1slte}" = x1slte ]; then
+			CAMERA_PERMANENT=1 CAMERA_SDK="${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk" CAMERA_OPENH264="$OH" sh ../tools/camera/build-profile-media.sh obj/camera-permanent
+			cp obj/camera-permanent/libredwood-media-dev.dylib obj/libredwood-media.dylib
+			CAMERA_SDK="${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk" ../tools/camera/build-image-hooks.sh obj
+		else
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -I$OH/codec/api \
 			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c src/h264_encoder.c \
 			$OH/libopenh264.a
+		fi
 		# ... and inside appstored (STOREFRONT=1), which answers with a storefront and watches for a bag
 		# request being built (src/inject_store.c)
 		# (-lc++abi for __cxa_throw: every C++ exception thrown in the process is watched, which is how
@@ -832,6 +838,9 @@ if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; t
 	python3 -c 'import plistlib,sys
 p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"]=["/var/jb/redwood/callservicesd"]; d.pop("Program",None)
 plistlib.dump(d,open(p,"wb"))' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+fi
+if [ "${DEVICE:-x1slte}" = x1slte ] && [ -d "$IOS/rootfs/usr/lib" ]; then
+    python3 ../tools/camera/prepare-root.py root --binaries obj
 fi
 python3 ../tools/apfs/mkapfs.py -z --plain fw -o root.apfs redwood=root | tail -1
 [ -z "$CHECK" ] || ../tools/apfs/check-image.sh root.apfs redwood=root

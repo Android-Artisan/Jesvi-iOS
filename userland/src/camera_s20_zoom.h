@@ -10,4 +10,12 @@ static inline float s20_zoom_clamp(float z,bool rear,bool enabled){
 }
 static inline unsigned s20_zoom_mode(float z,bool enabled){return enabled&&z<1?5:2;}
 static inline float s20_zoom_crop(float z,bool ultra){return ultra?z/0.5f:z;}
+/* Map a displayed primary ROI back into its centre-cropped RAW frame. */
+static inline void s20_zoom_window(const float input[4],float output[4],float zoom){
+    if(!isfinite(zoom)||zoom<1)zoom=1;
+    for(unsigned i=0;i<4;i++){
+        float v=isfinite(input[i])?input[i]:(i<2?0.3f:0.7f);
+        v=v<0?0:v>1?1:v;output[i]=zoom==1?v:0.5f+(v-0.5f)/zoom;
+    }
+}
 #endif

@@ -13,5 +13,8 @@ int main(void){
  assert(fabsf(s20_zoom_crop(.5f,true)-1)<1e-6f);
  assert(fabsf(s20_zoom_crop(.9f,true)-1.8f)<1e-6f);
  assert(s20_zoom_crop(2,false)==2);
+ float window[4]={0,.2f,.4f,.8f},mapped[4];s20_zoom_window(window,mapped,2);
+ assert(fabsf(mapped[0]-.25f)<1e-6f&&fabsf(mapped[2]-.45f)<1e-6f);
+ s20_zoom_window(window,mapped,1);for(unsigned i=0;i<4;i++)assert(mapped[i]==window[i]);
  puts("PASS: front/disabled zoom, finite clamp, lens boundary and per-lens crop");
 }
