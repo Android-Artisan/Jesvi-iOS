@@ -19,6 +19,7 @@
 #include <sys/redwood_dbgport.h>
 #include <sys/systm.h>
 #include "redwood_camera_s20_controls.h"
+#include "redwood_camera_s20_aux_power.h"
 #include "redwood_camera_s20_3j1.h"
 #include "redwood_camera_s20_2ld.h"
 #include "redwood_camera_s20_2ld_ret.h"
@@ -2891,11 +2892,92 @@ cam_s20_inventory(__unused const uint64_t *v, __unused unsigned n, char *out, si
 	    0x15c302c0U, "gpm22-0", 0);
 }
 
+/* Explicit one-shot 2LA identification. No setfile, stream, CSI/PHY or DMA writes.
+ * GPIO route follows x1slte HSI2C45 gpm14-0/gpm15-0, reset gpm33-0,
+ * CIS_CLK3 (logical mclk_ch3), gpc0-3 function2. No automatic bus scan. */
+extern bool redwood_camera_aux_acquire(void);
+extern void redwood_camera_aux_release(bool clean);
+extern bool redwood_s2mpb02_2la_power(struct cam_aux_power *, bool, bool *);
+static void cam_s20_2la_identify(__unused const uint64_t *v, unsigned n, char *out, size_t cap) {
+    struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
+    struct cam_aux_power rails={0};
+    volatile uint8_t *reset=NULL,*mclk=NULL,*cmu=NULL;
+    static const uint32_t offs[4]={0x1024,0x1820,0x2028,0x3010};
+    uint32_t r[3]={0},m[3]={0},clock[4]={0};
+    uint8_t model[2]={0},revision[2]={0};
+    bool pins=false,bus_saved=false,powered=false,clock_saved=false,clean=true,ok=false;
+    const char *phase="busy";
+    if(!cap)return;
+    if(n){snprintf(out,cap,"{\"camera\":\"2LA\",\"result\":\"bad_arguments\"}\n");return;}
+    if(!redwood_camera_aux_acquire())goto report;
+    phase="map";
+    reset=redwood_gpio_bank(PINCTRL_CMGP_PHYS,0x420);
+    mclk=redwood_gpio_bank(PINCTRL_PERIC1_PHYS,PINCTRL_PERIC1_GPC0);
+    bus.bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,0x1c0);
+    bus.sda_bank=redwood_gpio_bank(PINCTRL_CMGP_PHYS,0x1e0);
+    cmu=(volatile uint8_t *)ml_io_map(CMU_TOP_PHYS,0x4000);
+    if(!reset||!mclk||!bus.bank||!bus.sda_bank||!cmu)goto cleanup;
+    for(unsigned i=0;i<3;i++){r[i]=cam_s20_rd(reset,i*4);m[i]=cam_s20_rd(mclk,i*4);}
+    pins=true;
+    redwood_gpio_set(reset,0,0);redwood_gpio_func(reset,0,REDWOOD_GPIO_OUTPUT);
+    redwood_gpio_pull(reset,0,REDWOOD_GPIO_PULL_NONE);
+    phase="rails (cold dedicated supplies and BUCK2 1.3V required)";
+    if(!redwood_s2mpb02_2la_power(&rails,false,&clean))goto cleanup;
+    powered=true;
+    phase="I2C setup";bus_saved=true;
+    if(!redwood_bbi2c_setup(&bus,true,out,cap))goto cleanup;
+    delay_for_interval(10,NSEC_PER_USEC);
+    redwood_gpio_set(reset,0,1);delay_for_interval(10,NSEC_PER_USEC);
+    for(unsigned i=0;i<4;i++)clock[i]=cam_s20_rd(cmu,offs[i]);
+    clock_saved=true;phase="MCLK";
+    cam_s20_wr(cmu,offs[0],clock[0]&~1U);cam_s20_wr(cmu,offs[1],clock[1]&~0x1fU);
+    cam_s20_wr(cmu,offs[3],clock[3]|3U);
+    cam_s20_wr(cmu,offs[2],clock[2]|(1U<<20)|(1U<<21));
+    redwood_gpio_set(mclk,3,0);redwood_gpio_func(mclk,3,2);redwood_gpio_pull(mclk,3,REDWOOD_GPIO_PULL_NONE);
+    delay_for_interval(2,NSEC_PER_MSEC);
+    phase="model/revision";
+    const uint8_t a[2]={0,0},b[2]={0,2};
+    ok=redwood_bbi2c_xfer(&bus,0x2d,a,2,model,2)&&redwood_bbi2c_xfer(&bus,0x2d,b,2,revision,2);
+    if(ok&&(model[0]==0&&model[1]==0))ok=false;
+    if(ok&&(model[0]==0xff&&model[1]==0xff))ok=false;
+cleanup:
+    if(pins){redwood_gpio_set(reset,0,0);redwood_gpio_set(mclk,3,0);redwood_gpio_func(mclk,3,REDWOOD_GPIO_OUTPUT);}
+    if(clock_saved){
+        /* Gate first; then restore div/mux/QCH and the prior gate exactly. */
+        cam_s20_wr(cmu,offs[2],clock[2]&~((1U<<20)|(1U<<21)));
+        cam_s20_wr(cmu,offs[1],clock[1]);cam_s20_wr(cmu,offs[0],clock[0]);
+        cam_s20_wr(cmu,offs[3],clock[3]);cam_s20_wr(cmu,offs[2],clock[2]);
+        const uint32_t masks[4]={1U,0x1fU,1U<<20,3U};
+        for(unsigned i=0;i<4;i++)if((cam_s20_rd(cmu,offs[i])^clock[i])&masks[i])clean=false;
+    }
+    if(bus_saved){
+        redwood_bbi2c_restore(&bus);
+        if(((cam_s20_rd(bus.bank,REDWOOD_GPIO_CON)^bus.saved_con)&0xfU)||
+           ((cam_s20_rd(bus.bank,REDWOOD_GPIO_PUD)^bus.saved_pud)&0xfU)||
+           ((cam_s20_rd(bus.sda_bank,REDWOOD_GPIO_CON)^bus.saved_sda_con)&0xfU)||
+           ((cam_s20_rd(bus.sda_bank,REDWOOD_GPIO_PUD)^bus.saved_sda_pud)&0xfU))clean=false;
+    }
+    if(powered){bool restored=true;if(!redwood_s2mpb02_2la_power(&rails,true,&restored)||!restored)clean=false;}
+    if(pins){
+        redwood_gpio_restore(reset,0,r[0],r[2],r[1]);
+        redwood_gpio_restore(mclk,3,m[0],m[2],m[1]);
+        for(unsigned i=0;i<3;i++){
+            uint32_t rm=i==1?((r[0]&0xfU)==REDWOOD_GPIO_OUTPUT?1U:0):0xfU;
+            uint32_t mm=i==1?(((m[0]>>12)&0xfU)==REDWOOD_GPIO_OUTPUT?(1U<<3):0):(0xfU<<12);
+            if(((cam_s20_rd(reset,i*4)^r[i])&rm)||((cam_s20_rd(mclk,i*4)^m[i])&mm))clean=false;
+        }
+    }
+    redwood_camera_aux_release(clean);
+report:
+    snprintf(out,cap,"{\"camera\":\"2LA\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":false}\n",ok&&clean?"id_read":"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false");
+}
+
 void
 redwood_exynos_camera_s20_init(void)
 {
 	/* printf is not included in the phone's HTTP /log stream. Return snapshots
 	 * over the existing root-only kern.redwood.poke interface instead. */
+	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);
 	redwood_dbgport_add("cam.s20.id", " [1]: one-shot rear S5K2LD model/revision read (1: then its tables, ~0.5 s of streaming read by its frame counter); rails and pins restored", cam_s20_identify);
 	redwood_dbgport_add("cam.s20.front.id", ": one-shot front SAK3J1 model/revision read; camera rail enable bits and pins are restored", cam_s20_front_identify);

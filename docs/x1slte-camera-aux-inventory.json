@@ -135,6 +135,15 @@
           256
         ]
       },
+      "/pinctrl@10430000/hsi2c1-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpp0-2",
+          "gpp0-3"
+        ]
+      },
       "/pinctrl@10730000/gpc0": {},
       "/pinctrl@10730000/sensor-mclk0-fn": {
         "samsung,pin-function": [
@@ -168,8 +177,19 @@
           "gpc0-3"
         ]
       },
+      "/pinctrl@15C30000/gpm14": {},
+      "/pinctrl@15C30000/gpm15": {},
       "/pinctrl@15C30000/gpm32": {},
-      "/pinctrl@15C30000/gpm33": {}
+      "/pinctrl@15C30000/gpm33": {},
+      "/pinctrl@15C30000/hsi2c45-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpm14-0",
+          "gpm15-0"
+        ]
+      }
     },
     "base_sha256": "ffcad4d6011d108329f801abb9ca9ee48cffd6ccfc2704ea47d5e8f24507e22b",
     "overlay_nodes": {
@@ -179,6 +199,45 @@
             "base_path": "/hsi2c@10560000",
             "symbol": "hsi2c_1"
           }
+        ]
+      },
+      "/fragment@16/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          2,
+          0,
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          0
+        ],
+        "pinctrl-0": [
+          33
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10430000/hsi2c1-bus",
+            "symbol": "hsi2c1_bus"
+          }
+        ],
+        "pinctrl-2": [
+          33
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
         ]
       },
       "/fragment@16/__overlay__/is-gw2@2D": {
@@ -203,6 +262,45 @@
           }
         ]
       },
+      "/fragment@19/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm14",
+            "symbol": "gpm14"
+          },
+          0,
+          0,
+          {
+            "base_path": "/pinctrl@15C30000/gpm15",
+            "symbol": "gpm15"
+          },
+          0,
+          0
+        ],
+        "pinctrl-0": [
+          36
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@15C30000/hsi2c45-bus",
+            "symbol": "hsi2c45_bus"
+          }
+        ],
+        "pinctrl-2": [
+          36
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
       "/fragment@19/__overlay__/is-2la@2D": {
         "compatible": [
           "samsung,exynos-is-cis-2la"
@@ -220,7 +318,140 @@
           "okay"
         ]
       },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
+        "regulator-max-microvolt": [
+          1300000
+        ],
+        "regulator-min-microvolt": [
+          1300000
+        ],
+        "regulator-name": [
+          "S2MPB02_BUCK2"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo10": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDD_1.8V_OIS"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo12": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo13": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo3": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo6": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_VT"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo7": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo8": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo1": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo3": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo6": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo7": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDD_VM_2.8V_OIS"
+        ]
+      },
       "/fragment@camera": {},
+      "/fragment@camera/__overlay__": {},
       "/fragment@camera/__overlay__/is_sensor_2la@2D": {
         "active_height": [
           3024
@@ -2437,6 +2668,15 @@
           256
         ]
       },
+      "/pinctrl@10430000/hsi2c1-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpp0-2",
+          "gpp0-3"
+        ]
+      },
       "/pinctrl@10730000/gpc0": {},
       "/pinctrl@10730000/sensor-mclk0-fn": {
         "samsung,pin-function": [
@@ -2470,8 +2710,19 @@
           "gpc0-3"
         ]
       },
+      "/pinctrl@15C30000/gpm14": {},
+      "/pinctrl@15C30000/gpm15": {},
       "/pinctrl@15C30000/gpm32": {},
-      "/pinctrl@15C30000/gpm33": {}
+      "/pinctrl@15C30000/gpm33": {},
+      "/pinctrl@15C30000/hsi2c45-bus": {
+        "samsung,pin-function": [
+          3
+        ],
+        "samsung,pins": [
+          "gpm14-0",
+          "gpm15-0"
+        ]
+      }
     },
     "base_sha256": "ffcad4d6011d108329f801abb9ca9ee48cffd6ccfc2704ea47d5e8f24507e22b",
     "overlay_nodes": {
@@ -2481,6 +2732,45 @@
             "base_path": "/hsi2c@10560000",
             "symbol": "hsi2c_1"
           }
+        ]
+      },
+      "/fragment@16/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          2,
+          0,
+          {
+            "base_path": "/pinctrl@10730000/gpc0",
+            "symbol": "gpc0"
+          },
+          3,
+          0
+        ],
+        "pinctrl-0": [
+          34
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@10430000/hsi2c1-bus",
+            "symbol": "hsi2c1_bus"
+          }
+        ],
+        "pinctrl-2": [
+          34
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
         ]
       },
       "/fragment@16/__overlay__/is-gw2@2D": {
@@ -2505,6 +2795,45 @@
           }
         ]
       },
+      "/fragment@19/__overlay__": {
+        "clock-frequency": [
+          1000000
+        ],
+        "gpios": [
+          {
+            "base_path": "/pinctrl@15C30000/gpm14",
+            "symbol": "gpm14"
+          },
+          0,
+          0,
+          {
+            "base_path": "/pinctrl@15C30000/gpm15",
+            "symbol": "gpm15"
+          },
+          0,
+          0
+        ],
+        "pinctrl-0": [
+          37
+        ],
+        "pinctrl-1": [
+          {
+            "base_path": "/pinctrl@15C30000/hsi2c45-bus",
+            "symbol": "hsi2c45_bus"
+          }
+        ],
+        "pinctrl-2": [
+          37
+        ],
+        "pinctrl-names": [
+          "default",
+          "on_i2c",
+          "off_i2c"
+        ],
+        "status": [
+          "okay"
+        ]
+      },
       "/fragment@19/__overlay__/is-2la@2D": {
         "compatible": [
           "samsung,exynos-is-cis-2la"
@@ -2522,7 +2851,140 @@
           "okay"
         ]
       },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-buck2": {
+        "regulator-max-microvolt": [
+          1300000
+        ],
+        "regulator-min-microvolt": [
+          1300000
+        ],
+        "regulator-name": [
+          "S2MPB02_BUCK2"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo10": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDD_1.8V_OIS"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo12": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo13": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDAF_2.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo3": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_WIDESUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo6": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_VT"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo7": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_SUB"
+        ]
+      },
+      "/fragment@5/__overlay__/s2mpb02_pmic@59/regulators/s2mpb02-ldo8": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_WIDESUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo1": {
+        "regulator-max-microvolt": [
+          1050000
+        ],
+        "regulator-min-microvolt": [
+          1050000
+        ],
+        "regulator-name": [
+          "VDDD_1.05V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo3": {
+        "regulator-max-microvolt": [
+          1800000
+        ],
+        "regulator-min-microvolt": [
+          1800000
+        ],
+        "regulator-name": [
+          "VDDIO_1.8V_CAM"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo6": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDDA_2.8V_SUB"
+        ]
+      },
+      "/fragment@7/__overlay__/s2mpb03_pmic@56/regulators/s2mpb03-ldo7": {
+        "regulator-max-microvolt": [
+          2800000
+        ],
+        "regulator-min-microvolt": [
+          2800000
+        ],
+        "regulator-name": [
+          "VDD_VM_2.8V_OIS"
+        ]
+      },
       "/fragment@camera": {},
+      "/fragment@camera/__overlay__": {},
       "/fragment@camera/__overlay__/is_sensor_2la@2D": {
         "active_height": [
           3024

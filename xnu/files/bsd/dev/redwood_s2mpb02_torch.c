@@ -32,6 +32,7 @@
 #include <sys/redwood_input.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
+#include "redwood_camera_s20_aux_power.h"
 
 #define BANK_GPP3               0x60U           /* PERIC0 */
 #define PMIC_ADDR               0x59U
@@ -137,6 +138,27 @@ redwood_s2mpb02_camera_bits(uint8_t reg, uint8_t mask, uint8_t value)
 done:
 	lck_mtx_unlock(&s2mpb02_lock);
 	return ok;
+}
+
+/* Private 2LA adapter: fixed register allowlist lives in the portable plan.
+ * Hold the torch/PMIC lock for the complete transaction, including rollback. */
+static bool aux_read(void *ctx, uint8_t reg, uint8_t *value) {
+    (void)ctx;return get_unlocked(reg,value);
+}
+static bool aux_write(void *ctx, uint8_t reg, uint8_t value) {
+    (void)ctx;return redwood_bbi2c_write_reg(&bus,PMIC_ADDR,reg,value);
+}
+bool redwood_s2mpb02_2la_power(struct cam_aux_power *saved, bool restore, bool *clean) {
+    struct cam_aux_power_io io={NULL,aux_read,aux_write};
+    bool ok=false;*clean=true;
+    lck_mtx_lock(&s2mpb02_lock);
+    if(restore){ok=cam_aux_power_restore(saved,io);*clean=ok;}
+    else if(bus_ready&&!broken){
+        ok=cam_aux_power_begin(saved,io);
+        if(!ok)*clean=cam_aux_power_restore(saved,io);
+    }
+    if(!*clean)broken=true;
+    lck_mtx_unlock(&s2mpb02_lock);return ok;
 }
 
 /* x1slte dtbo.0: VT core 1.05 V, IO 1.8 V, analog 2.95 V, AF 2.8 V.

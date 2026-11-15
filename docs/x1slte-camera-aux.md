@@ -60,3 +60,68 @@ FOV, model/revision and calibration must be verified before publishing metadata.
 No auxiliary power writes, ID probes, streaming, kernel install or reboot were
 performed for this checkpoint. Main-rear RAW format6 versus packed format7 and
 native12MP readout remain separate pending experiments.
+
+## 2026-11-15: bounded 2LA identity kernel prepared
+
+Integrated `feat/s20-camera-quality` and accepted master8eaa52cf, including AOD
+changes, in this auxiliary branch. No main/master pointers were moved.
+
+Added explicit root debug command `cam.s20.2la.id` (no arguments). It reserves
+idle camera ownership; refuses an open camera, active session, warm main sensor
+or earlier failed cleanup. Device opens return EBUSY during the transaction.
+The warm-main cooldown and sensor startup gaps are covered by the reservation.
+Wait at least20seconds with Camera closed before a probe; busy is not a failed
+sensor identity. It runs only when explicitly invoked, never during boot.
+
+The probe sets reset low, applies the fixed rail transaction, takes split-bank
+I2C pins, raises reset with the DT delay, enables CIS_CLK3 at26MHz on gpc0-3,
+waits2ms and reads model0000/revision0002 at seven-bit address0x2d. It does not
+scan addresses, write setfiles, start streaming, access CSI/PHY/DMA or change
+front-camera tuning. Read identity is reported without assuming enum53 is an ID.
+GPIO wire direction is based on the existing Samsung bus-pair convention;
+a successful live identity read is still required to validate that assignment.
+
+Power transaction (stock S2MPB02 formulas and phone DT):
+
+| Rail | Register | Requested value |
+|---|---|---|
+| BUCK2 | 0x0d enable, 0x0e selector | Require existing selector0x90=1.3V; preserve lower control bits |
+| LDO12 analog | 0x29 | selector0x58=2.8V, enable bit7 |
+| LDO3 core | 0x20 | selector0x24=1.05V, enable bit7 |
+| LDO8 IO | 0x25 | selector0x30=1.8V, enable bit7 |
+
+Snapshot all control bytes before any writes. Reject any already-enabled dedicated
+rail, or an unexpected shared buck voltage. The read-only live baseline showed
+core selector0x20=1.0V, analog0x58 and IO0x30: merely toggling enable bits would
+leave the core below the DT requirement. This is a bring-up finding for2LA,
+not evidence explaining main-rear grain. Nothing was written to the live rails.
+
+Cleanup holds reset low, stops/restores MCLK, restores I2C pin configuration,
+restores all rail bytes in reverse order and restores reset/MCLK pin state.
+Readback verifies writable clock fields and pin functions/pulls; input DAT and
+clock status bits are not mistaken for persistent output latches. A PMIC NACK
+may occur after a write latched, so the transaction marks the register before
+writing it. Restore continues after individual errors. Cleanup failure poisons
+auxiliary ownership and refuses later camera opens, rather than continuing with
+unknown power state. Recovery then requires investigation and an approved reboot.
+
+Validation: four inventory tests; ASan/UBSan fault injection of every rail
+transaction operation (including latched-write NACKs, live-rail and shared-voltage
+guards, cleanup error reporting); passcode build integration; full GICv2 kernel
+build and incremental rebuild pass. Changed tracked and build-overlay files match.
+These tests do not verify physical sensor identity or camera-open arbitration on
+the device. The expanded inventory includes controller overlay properties and
+supply voltages. Local pinctrl phandle numbers differ between saved overlays
+(33/34 and36/37); these are references, not physical addresses. Previously
+compared module/CIS wiring and supply voltages agree.
+
+Private uninstalled candidate:
+`/Users/jesvi/ios-port-research/build/camera-aux-20261115/`.
+Stripped kernel15196056bytes, SHA256
+`bc8e5120c206d404dba1b865a0fbe0e62197057960c62e60188de0d5493dfa54`.
+Padded16MiB slot SHA256
+`14f70dab3b2d63d0bf09e22b138f2d03c4cd7d9fd15609918262a5957da19700`.
+Back up the CURRENT slot after acquiring exclusive ownership before deployment;
+old rollback slots predate AOD. No flash or reboot yet. Explicit reboot approval
+is required. GW2 still has no identity/stream implementation; its stock TNP and
+shared OIS sequence must be handled separately after the first sensor is verified.

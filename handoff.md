@@ -1,3 +1,37 @@
+# Latest: 2LA identity probe built, awaiting approved hardware boot
+
+Branch feat/s20-rear-aux now integrates camera-quality and accepted master8eaa52cf
+through merge commits08fc65d3/3fa430b3. Main/master unchanged. The accepted
+brightness tweak remains installed, original front default preserved.
+
+New root-only `cam.s20.2la.id` implements cold/idle-only model/revision reads and
+transactional power/clock/pin cleanup. No auto probe or streaming. Dedicated core
+rail needs selector0x24=1.05V, not baseline0x20=1.0V. Do not attribute this aux
+finding to main-rear grain. See docs/x1slte-camera-aux.md for exact design, guards,
+hashes, tests and limits. Host fault tests, four inventory tests, passcode checks
+and full GICv2 kernel build pass. Tracked/build overlay sources match.
+
+Candidate: build/camera-aux-20261115/kernel-slot-2la-id.bin (outside git), SHA256
+14f70dab3b2d63d0bf09e22b138f2d03c4cd7d9fd15609918262a5957da19700.
+NOT installed. No auxiliary sensor has been identified or streamed. No smooth
+zoom/lens switching implemented. GW2 probe still pending its separate power plan.
+
+Phone is now held by codex-camera-aux after A released it; check actual lock.
+During an earlier acquisition race, acquisition failed but one read-only uname/
+PMIC snapshot command ran because the shell sequence lacked fail-fast guarding;
+no rail/system writes occurred. Subsequent commands stopped until lock was free.
+Use set -e / explicit successful lock checks for every dependent device action.
+
+Next: obtain explicit approval for ONE diagnostic-kernel install/reboot, then
+back up current AOD kernel slot, verify write/readback, preserve passcode chain,
+ask user to unlock on-device, close Camera/wait20s and invoke identity command.
+Never treat previous camera reboot approval or elapsed time as new approval.
+Successful ID is a gate to revision-correct setfiles and bounded RAW capture,
+not proof of a functioning auxiliary Camera lens. Preserve all private logs and
+backups outside git; no firmware or personal captures should enter commits.
+
+---
+
 > Push status (2026-11-15): local commits complete, remote push blocked.
 > Both feature-branch pushes to configured upstream
 > https://github.com/oosexgang/hakios-xnu-kernel.git returned HTTP403:

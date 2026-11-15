@@ -3310,6 +3310,25 @@ static int ios_source = SOURCE_SENSOR;
 static volatile unsigned ios_switch_to;         /* 1 + the sensor's index; 0: none asked for */
 static uint32_t ios_switch_mode;
 
+/* Auxiliary identity transactions reserve the camera while no device client or
+ * sensor session owns it. Also cover the warm-main cooldown outside ios_lock. */
+static bool ios_aux_busy, ios_aux_failed, ios_session_active;
+extern bool redwood_camera_s20_rear_is_warm(void);
+bool redwood_camera_aux_acquire(void) {
+    bool ok;
+    lck_mtx_lock(&ios_lock);
+    ok=!ios_aux_busy&&!ios_aux_failed&&!ios_session_active&&!ios_open&&
+        !ios_streaming&&!ios_wanted&&!ios_switch_to&&!redwood_camera_s20_rear_is_warm();
+    if(ok)ios_aux_busy=true;
+    lck_mtx_unlock(&ios_lock);return ok;
+}
+void redwood_camera_aux_release(bool clean) {
+    lck_mtx_lock(&ios_lock);
+    if(!clean)ios_aux_failed=true;
+    ios_aux_busy=false;
+    lck_mtx_unlock(&ios_lock);wakeup(&ios_open);
+}
+
 static uint64_t
 ios_ms(void)
 {
@@ -3953,7 +3972,10 @@ camdev_open(__unused dev_t dev, __unused int flags, __unused int type, __unused 
 	if (broken) {
 		return EIO;
 	}
+	lck_mtx_lock(&ios_lock);
+	if(ios_aux_busy||ios_aux_failed){int error=ios_aux_failed?EIO:EBUSY;lck_mtx_unlock(&ios_lock);return error;}
 	ios_open = true;
+	lck_mtx_unlock(&ios_lock);
 	return 0;
 }
 
@@ -4298,15 +4320,18 @@ serve_ios(void)
 	}
 	while (!broken) {
 		lck_mtx_lock(&ios_lock);
-		while (!broken && !(ios_open && ios_wanted) && ios_switch_to == 0) {
+		while (!broken && (ios_aux_busy || (!(ios_open && ios_wanted) && ios_switch_to == 0))) {
+            if(ios_aux_busy){(void)msleep(&ios_open,&ios_lock,PZERO,"redwood-camera-aux",NULL);continue;}
 			if (s20_real && redwood_camera_s20_rear_is_warm()) {
 				/* the rear main waits warm for 20 s (a fast start), then goes all the way down */
 				struct timespec ts = { 20, 0 };
 
 				if (msleep(&ios_open, &ios_lock, PZERO, "redwood-camera-warm", &ts) == EWOULDBLOCK) {
-					lck_mtx_unlock(&ios_lock);
+					ios_session_active=true;
+                    lck_mtx_unlock(&ios_lock);
 					redwood_camera_s20_rear_cool();
 					lck_mtx_lock(&ios_lock);
+                    ios_session_active=false;
 				}
 				continue;
 			}
@@ -4329,6 +4354,7 @@ serve_ios(void)
 		}
 		lck_mtx_lock(&ios_lock);
 		ios_wanted = false;
+        ios_session_active=true;
 		lck_mtx_unlock(&ios_lock);
 		if (s20_real) {
 			s20_session();
@@ -4337,6 +4363,7 @@ serve_ios(void)
 		} else {
 			ios_session();
 		}
+        lck_mtx_lock(&ios_lock);ios_session_active=false;lck_mtx_unlock(&ios_lock);
 	}
 	say("camera: /dev/redwood-camera: no more frames in this run\n");
 }
