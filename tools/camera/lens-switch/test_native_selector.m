@@ -1,4 +1,5 @@
 /* Device test of the actual selector/delegate, with an isolated control file. */
+#define RW_LENS_TELE_ENABLE_PATH "/var/root/native-lens-test-tele-enable"
 #define RW_LENS_PRIMARY_TEST_PATH "/var/root/native-lens-test-primary-default"
 #define RW_LENS_CONTROL_PATH @"/var/root/native-lens-test-zoom"
 #include "camera_lens_switch.m"
@@ -24,7 +25,7 @@
 }
 @end
 int main(void){@autoreleasepool{
-    unlink(RW_LENS_PRIMARY_TEST_PATH);
+    unlink(RW_LENS_PRIMARY_TEST_PATH);unlink(RW_LENS_TELE_ENABLE_PATH);
     assert(dlopen("/System/Library/PrivateFrameworks/CameraUI.framework/CameraUI",RTLD_NOW));
     UIView *zoom=[[NSClassFromString(@"CAMZoomControl") alloc]initWithFrame:CGRectMake(0,0,375,102)];
     ((void(*)(id,SEL,double,double,double,double,double))objc_msgSend)(zoom,NSSelectorFromString(@"configureForSingleCameraPlusToggleWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:"),1,1,1,5,5);
@@ -59,6 +60,15 @@ int main(void){@autoreleasepool{
     original.graph.devicePosition=0;configureZoom(zoom);assert(proxy.rear);
     assert(((id(*)(id,SEL))objc_msgSend)(zoom,getter)==proxy);
     configureZoom(zoom);assert(proxy.original==original);
+    flag=fopen(RW_LENS_TELE_ENABLE_PATH,"w");assert(flag);fclose(flag);configureZoom(zoom);
+    assert([[zoom valueForKey:@"_zoomFactors"] containsObject:@3]);
+    [proxy zoomControl:zoom didChangeSelectedButtonIndex:2 displayZoomFactor:3];assert(requestedZoom()==3);
+    [proxy zoomControl:zoom didChangeZoomFactor:10 interactionType:1];assert(requestedZoom()==10&&original.graphZoom==3);
+    [proxy toggleBetweenZoomFactorsForZoomControl:zoom];assert(requestedZoom()==0.5);
+    [proxy toggleBetweenZoomFactorsForZoomControl:zoom];assert(requestedZoom()==1);
+    [proxy toggleBetweenZoomFactorsForZoomControl:zoom];assert(requestedZoom()==3);
+    unlink(RW_LENS_TELE_ENABLE_PATH);configureZoom(zoom);
+    assert(![[zoom valueForKey:@"_zoomFactors"] containsObject:@3]);
     [[NSFileManager defaultManager]removeItemAtPath:control error:nil];
     puts("PASS: actual native selector, rear selection/toggle/drag writes, front restoration, rear re-entry");
 }}

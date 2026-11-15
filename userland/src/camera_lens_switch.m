@@ -18,19 +18,26 @@ static BOOL defaultRearApplied;
 static NSString *defaultRearValue(void) {
     return access(RW_LENS_PRIMARY_TEST_PATH,F_OK)==0?@"1\n":@"0.9\n";
 }
+#ifndef RW_LENS_TELE_ENABLE_PATH
+#define RW_LENS_TELE_ENABLE_PATH "/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-gw2-enable"
+#endif
+static BOOL teleEnabled(void){return access(RW_LENS_TELE_ENABLE_PATH,F_OK)==0;}
+static double maximumZoom(void){return teleEnabled()?16:5;}
 static SEL configurationSelector(void) {
+    if(teleEnabled())return NSSelectorFromString(@"configureForTripleDeviceWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:switchOverZoomFactor1:displaySwitchOverZoomFactor1:switchOverZoomFactor2:displaySwitchOverZoomFactor2:");
     return NSSelectorFromString(@"configureForDualDeviceWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:dualCameraSwitchOverZoomFactor:displayDualCameraSwitchOverZoomFactor:");
 }
 static double requestedZoom(void) {
     double z=[NSString stringWithContentsOfFile:control encoding:NSUTF8StringEncoding error:nil].doubleValue;
-    return isfinite(z)&&z>=0.5?fmin(z,5):1;
+    return isfinite(z)&&z>=0.5?fmin(z,maximumZoom()):1;
 }
 /* Stock-style display: 0.5x full ultra-wide, 1x primary. No relabeling. */
 static const double displayBase=1.0;
 static void showZoom(id zoom,double factor) {
     SEL min=NSSelectorFromString(@"setMinAvailableZoomFactor:");
     if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
-    ((void(*)(id,SEL,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5/displayBase,5,5/displayBase,1,1/displayBase);
+    if(teleEnabled())((void(*)(id,SEL,double,double,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5,16,16,1,1,3,3);
+    else ((void(*)(id,SEL,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5/displayBase,5,5/displayBase,1,1/displayBase);
     if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
 }
 @interface RWNativeLensDelegate:NSObject
@@ -45,7 +52,7 @@ static void showZoom(id zoom,double factor) {
 - (id)forwardingTargetForSelector:(SEL)selector {return self.original;}
 - (BOOL)writeZoom:(double)factor {
     if(!isfinite(factor))return NO;
-    factor=fmax(0.5,fmin(5,factor));
+    factor=fmax(0.5,fmin(maximumZoom(),factor));
     if(![[NSString stringWithFormat:@"%.6f\n",factor] writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])return NO;
     self.factor=factor;return YES;
 }
@@ -61,7 +68,7 @@ static void showZoom(id zoom,double factor) {
     SEL sel=_cmd;return [self.original respondsToSelector:sel]?((BOOL(*)(id,SEL,id))objc_msgSend)(self.original,sel,zoom):NO;
 }
 - (void)toggleBetweenZoomFactorsForZoomControl:(id)zoom {
-    if(self.rear){if([self writeZoom:requestedZoom()<1?1:0.5]){showZoom(zoom,self.factor);}return;}
+    if(self.rear){if([self writeZoom:teleEnabled()?(requestedZoom()<1?1:requestedZoom()<3?3:0.5):(requestedZoom()<1?1:0.5)]){showZoom(zoom,self.factor);}return;}
     if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id))objc_msgSend)(self.original,_cmd,zoom);
 }
 - (void)zoomControl:(id)zoom didChangeZoomFactor:(double)factor interactionType:(NSInteger)type {
@@ -101,7 +108,7 @@ static void configureZoom(UIView *zoom) {
     double factor=requestedZoom();
     NSArray *factors=nil;
     @try{factors=[zoom valueForKey:@"_zoomFactors"];}@catch(__unused NSException *e){}
-    if(proxy.factor!=factor||![factors containsObject:@0.5]){proxy.factor=factor;showZoom(zoom,factor);}
+    if(proxy.factor!=factor||![factors containsObject:@0.5]||(teleEnabled()!=[factors containsObject:@3])){proxy.factor=factor;showZoom(zoom,factor);}
     /* The single-device graph can republish a 1x UI floor and zoom. The rear
      * route accepts 0.5x; retain that range and the user's nominal lens value. */
     SEL min=NSSelectorFromString(@"setMinAvailableZoomFactor:");
@@ -133,7 +140,7 @@ __attribute__((constructor))static void start(void) {
                  * queue turn. Resolve it here so early loading cannot disable UI. */
                 Class cls=NSClassFromString(@"CAMZoomControl");
                 Method method=class_getInstanceMethod(cls,configurationSelector());
-                if(!method||strcmp(method_getTypeEncoding(method),"v72@0:8d16d24d32d40d48d56d64"))return;
+                if(!method||strcmp(method_getTypeEncoding(method),teleEnabled()?"v88@0:8d16d24d32d40d48d56d64d72d80":"v72@0:8d16d24d32d40d48d56d64"))return;
                 for(UIScene *scene in UIApplication.sharedApplication.connectedScenes)
                     if([scene isKindOfClass:UIWindowScene.class]&&scene.activationState==UISceneActivationStateForegroundActive)
                         for(UIWindow *window in ((UIWindowScene*)scene).windows)walk(window,cls);

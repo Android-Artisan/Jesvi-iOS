@@ -1804,6 +1804,7 @@ worker_body(void *context)
 	uint32_t tuned_for = ~0u;
 	bool switched = false;
     bool aux_enabled=access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)==0;
+    bool tele_enabled=access(rw_path("redwood-gw2-enable",(char[160]){0},160),F_OK)==0;
     unsigned rear_mode=~0U;
 	float lux = -1, cct = -1;
 	struct af af = { 0 };
@@ -1830,7 +1831,7 @@ worker_body(void *context)
 		bool want_rear = s->camera->sensor == 1;
 		bool binned = access(rw_path("redwood-binned-stream", (char[160]){0}, 160), F_OK) == 0;
 		struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
-			.b = want_rear ? s20_zoom_mode(s->zoom,aux_enabled) : binned ? 1 : 0 };
+			.b = want_rear ? s20_zoom_mode_tele(s->zoom,aux_enabled,tele_enabled) : binned ? 1 : 0 };
 
 		(void)write(device, &rc, sizeof(rc));
 		say("the %s asked for before the first frame", want_rear ? "rear main" : "front sensor");
@@ -1871,7 +1872,7 @@ worker_body(void *context)
              * the stock Camera UI advertises fractional zoom on its D22 profile. */
             FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");
             if(lf){float z;if(fscanf(lf,"%f",&z)==1)requested_zoom=s20_zoom_clamp(z,true,true);fclose(lf);}
-            unsigned next=s20_zoom_mode(requested_zoom,true);
+            unsigned next=s20_zoom_mode_tele(requested_zoom,true,tele_enabled);
             if(rear_mode!=next){
                 if(drawer_up)render_wait(h);
                 free(buffers[0]);free(buffers[1]);buffers[0]=buffers[1]=buffer=NULL;bytes=0;next_buffer=0;
@@ -1879,7 +1880,7 @@ worker_body(void *context)
                 if(write(device,&lc,sizeof(lc))!=sizeof(lc)){say("rear lens request failed: %s",strerror(errno));break;}
                 rear_mode=next;asked_sensor=false;skipped_other=0;tuned_for=~0U;lux=cct=-1;
                 isp.awb_fast=12;isp.wb[0]=isp.wb[1]=isp.wb[2]=1;
-                say("rear lens requested: %s",next==5?"2LA ultra-wide":"2LD main");
+                say("rear lens requested: %s",next==6?"GW2 tele crop":next==5?"2LA ultra-wide":"2LD main");
             }
         }
         ssize_t n;
@@ -1912,7 +1913,7 @@ worker_body(void *context)
 			 */
 			if (one_sensor > 0 && !asked_binned && access(rw_path("redwood-rear-off", (char[160]){0}, 160), F_OK) != 0) {
 				bool rear_frames = head.width == 2016 || head.width == 4032, want_rear = s->camera->sensor == 1;
-                if(aux_enabled&&want_rear&&((head.sensor==3)!=(rear_mode==5)))continue;
+                if(aux_enabled&&want_rear&&(head.sensor!=(rear_mode==6?4U:rear_mode==5?3U:1U)))continue;
 
 				if (rear_frames != want_rear) {
 					struct redwood_camera_command rc = { .command = REDWOOD_CAMERA_SENSOR, .a = want_rear ? 1 : 2,
@@ -2260,7 +2261,7 @@ worker_body(void *context)
 		lux = lux < 0 ? lux_index(&isp, f) : lux * 0.9f + lux_index(&isp, f) * 0.1f;
 		cct = cct < 0 ? colour_temperature(&isp) : cct * 0.97f + colour_temperature(&isp) * 0.03f;
 		isp_tune(&isp, lux, cct);
-		isp.zoom = s20_zoom_crop(requested_zoom,f->sensor==3);
+		isp.zoom = s20_zoom_crop_sensor(requested_zoom,f->sensor);
 		isp.turned = s->camera->turned;
 		{
 			/* the kernel's say (kern.redwood.camera_turn, the S20): bit 0 turns the front camera's pictures half round */
@@ -2275,7 +2276,7 @@ worker_body(void *context)
 			bool from_file = false;
 			/* the rear main (its 2016x1512 frames) is mounted the other way round from the front: its own setting,
 			 * redwood-rear-turn, 4 (no turn) unless it says otherwise (2026-11-12, user: upside down with the front's) */
-			bool rear_frames = f->width == 2016 || f->width == 4032;   /* (4032x3024: the full mode, 2026-11-12) */
+			bool rear_frames = f->sensor==4 || f->width == 2016 || f->width == 4032;   /* (4032x3024: the full mode, 2026-11-12) */
 			FILE *tf = fopen(rw_path(rear_frames ? "redwood-rear-turn" : "redwood-camera-turn", (char[160]){0}, 160), "r");
 
 			if (tf == NULL && rear_frames) {

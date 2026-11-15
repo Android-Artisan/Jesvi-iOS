@@ -71,6 +71,7 @@ def primary_af_source(source):
     body=body.replace(marker,'if(f->sensor==1){\n            int next=(int)af->at+af->way*AF_STEP;\n            next=next<(int)af_minimum(af)?(int)af_minimum(af):next>(int)af_limit(af)?(int)af_limit(af):next;\n            if((uint32_t)next!=af->at){af_go(device,af,(uint32_t)next);return;}\n        }\n        if (f->sensor!=1 && af->worse < 2 && (int)af->at + af->way * AF_STEP')
     helpers='static uint32_t af_limit(const struct af *af){return af->primary_limit?af->primary_limit:AF_FAR;}\n'
     helpers+='static uint32_t af_minimum(const struct af *af){return af->primary_limit?0:AF_NEAR;}\n\n'
+    body=body.replace('f->sensor==1','(f->sensor==1||f->sensor==4)').replace('f->sensor!=1','(f->sensor!=1&&f->sensor!=4)')
     return source[:a]+helpers+body+source[b:]
 
 
@@ -96,7 +97,7 @@ def prepare(out):
         '.b = want_rear ? (access(rw_path("redwood-primary-full",(char[160]){0},160),F_OK)==0?3:2) :')
     source=source.replace('FILE *cf = fopen(rw_path("redwood-contrast", (char[160]){0}, 160), "r");',
         'FILE *cf=s->camera->sensor==1?fopen(rw_path("redwood-primary-contrast",(char[160]){0},160),"r"):NULL;\n\t\tif(!cf)cf=fopen(rw_path("redwood-contrast",(char[160]){0},160),"r");')
-    current = (ROOT/'userland/src/camera_device.c').read_text()
+    current = primary_af_source((ROOT/'userland/src/camera_device.c').read_text())
     shared = {}
     for name in ('stream', 'output', 'camera', 'device'):
         a, b = declaration(source, name), declaration(current, name)
@@ -122,7 +123,7 @@ static float rear_requested_zoom(struct stream *s)
 static bool rear_ultra_selected(struct stream *s)
 {
     if(s->camera->sensor!=1 || access(rw_path("redwood-ultrawide-enable",(char[160]){0},160),F_OK)!=0)return false;
-    return s20_zoom_mode(rear_requested_zoom(s),true)==5;
+    return s20_zoom_mode_tele(rear_requested_zoom(s),true,access(rw_path("redwood-gw2-enable",(char[160]){0},160),F_OK)==0)!=2;
 }
 static void *worker_original_body(void *context);
 static void *worker_body(void *context)
@@ -166,7 +167,7 @@ static void *worker_body(void *context)
     assert raw in body
     body=body.replace(raw,raw+'\n        float measure_window[4];\n        memcpy(measure_window,s->af_window,sizeof(measure_window));\n        if(f->sensor==1)s20_zoom_window(s->af_window,measure_window,rear_requested_zoom(s));\n        float focus_window[4];memcpy(focus_window,measure_window,sizeof(focus_window));\n        if(f->sensor==1){for(unsigned axis=0;axis<2;axis++){float centre=(measure_window[axis]+measure_window[axis+2])*.5f;float half=(measure_window[axis+2]-measure_window[axis])*.25f;focus_window[axis]=centre-half;focus_window[axis+2]=centre+half;}}')
     source=source[:a]+body+source[b:]
-    current = current.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(s->camera->sensor==1){float z=s->zoom;FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");if(lf){float v;if(fscanf(lf,"%f",&v)==1)z=v;fclose(lf);}if(s20_zoom_mode(s20_zoom_clamp(z,true,true),true)!=5)break;}')
+    current = current.replace('while (s->running && failures < 5) {', 'while (s->running && failures < 5) {\n        if(s->camera->sensor==1){float z=s->zoom;FILE *lf=fopen(rw_path("redwood-rear-zoom",(char[160]){0},160),"r");if(lf){float v;if(fscanf(lf,"%f",&v)==1)z=v;fclose(lf);}if(s20_zoom_mode_tele(s20_zoom_clamp(z,true,true),true,access(rw_path("redwood-gw2-enable",(char[160]){0},160),F_OK)==0)==2)break;}')
     out.mkdir(parents=True, exist_ok=True)
     legacy = out/'original'
     legacy.mkdir(exist_ok=True)
@@ -177,6 +178,8 @@ static void *worker_body(void *context)
     names = set(re.findall(r'\b(isp_\w+)\s*\(', header))
     names |= {'redwood_camera_device_create', 'redwood_camera_say'}
     (out/'experimental-symbols.h').write_text(''.join(f'#define {n} experimental_{n}\n' for n in sorted(names)))
+    current=current.replace('af_frame(device, &af, f, raw, s->af_window, s->af_locked);',
+        'float tele_window[4];memcpy(tele_window,s->af_window,sizeof(tele_window));if(f->sensor==4)s20_zoom_window(s->af_window,tele_window,s20_zoom_crop_sensor(requested_zoom,4));\n        af_frame(device, &af, f, raw, tele_window, s->af_locked);')
     current += r'''
 /* Worker boundary only: original device/stream lifecycle owns exclusion. */
 static pthread_once_t experimental_functions_once = PTHREAD_ONCE_INIT;

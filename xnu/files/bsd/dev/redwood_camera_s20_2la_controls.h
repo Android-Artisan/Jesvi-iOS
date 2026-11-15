@@ -22,5 +22,5 @@ static inline bool ax_sensor_controls_apply(struct ax_2la_control_io io,uint16_t
 }
 static inline bool ax_2la_controls_apply(struct ax_2la_control_io io,uint16_t lines,uint16_t gain,struct ax_2la_control_report *r){return ax_sensor_controls_apply(io,lines,gain,r,6652,11200);}
 static inline bool ax_gw2_controls_apply(struct ax_2la_control_io io,uint16_t lines,uint16_t gain,struct ax_2la_control_report *r){return ax_sensor_controls_apply(io,lines,gain,r,3608,17680);}
-static inline bool ax_gw2_full_controls_apply(struct ax_2la_control_io io,uint16_t lines,uint16_t gain,struct ax_2la_control_report *r){return ax_sensor_controls_apply(io,lines,gain,r,5294,12304);}
+static inline bool ax_gw2_full_controls_apply(struct ax_2la_control_io io,uint16_t lines,uint16_t gain,struct ax_2la_control_report *r){return ax_sensor_controls_apply(io,lines,gain,r,5166,12304);}
 #endif

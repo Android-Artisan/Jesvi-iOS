@@ -28,3 +28,22 @@ initialization refused before DMA arm, cleanup passed. Auditing stock mux code
 found mux_reg=[address,byte_length], not[address,value]: write CSI channel2,
 not length4. Added exact failed-MMIO report and corrected route in next build.
 Front/main/UW capture regression36frames each passed after the refused probe.
+
+RAW2432x1824 now PASSED: no CSI/DMA errors, guards intact, exact controls,
+shutdown/restoration verified. Frame was exported and a real scene was visible.
+WDMA3 address slots17..32 read0xdeadc0de; configure only16 implemented slots.
+VC1 carries608x904 RAW10 PDAF data and needs valid CSI dimensions even when not
+DMA-captured; configuring it removed WRONG_CFG. Full crop4864x3648 size readback
+passed but control gate caught a timing conversion error:0x142e is5166 lines,
+not5294. Corrected to5166/12304 (1918MHz pixel clock) before stream test.
+
+Next candidate adds mode6 continuous4864x3648, distinctive sensor4 metadata,
+finite exposure limits, frame-geometry guard, and GW2 AK737x0x0f on HSI2C0, per
+stock DT (primary remains0x0c). Native selector test passed on actual CameraUI
+for0.5/1/3 buttons and10x drag with no graph zoom forwarding; front delegate
+restoration still passed. GW2 backend/UI are opt-in by redwood-gw2-enable.
+3x is a provisional test entry, not a claimed stock switching threshold.
+Samsung public documentation confirms3x hybrid/up to30x digital only:
+https://www.samsung.com/uk/support/mobile-devices/check-out-the-new-camera-functions-of-the-galaxy-s20-plus-s20-ultra/
+This prototype caps the control at16x and uses stock central crop, nominal2x
+base pending field-of-view calibration. It does not implement5x optical zoom.
