@@ -15,8 +15,7 @@ branch integration and push are authorized; results are recorded below.
 - Primary: correct board voltages, live-state-preserving PMIC enable/shutdown,
   black64 default rather than old undervoltage correction tables. Kernel source
   defaults setup bus half-period to1us with existing failure fallback to2us.
-  Running kernel still has2us default with1us selected live; source change awaits
-  final kernel deployment.
+  The permanent kernel now defaults to1us, with2us fallback retained.
 - Rear zoom keeps the capture graph fixed, including video; switching physical
   sensors incurs a cold-start pause. Seamless transitions are not implemented.
 - Native primary full-resolution mode is an explicit opt-in via
@@ -43,7 +42,7 @@ Host rollback: build/camera-final/rollback/libredwood-media-dev.dylib
 Restore that file to /var/redwood/libredwood-media-dev.dylib and restart Camera
 and mediaserverd. No reboot or image change was needed for this test.
 
-## Prepared clean-install integration (not deployed)
+## Clean-install integration
 
 - userland/build.sh builds the dual-profile media backend for S20, preserving
   original front and independent ultra-wide processing. Other devices retain
@@ -66,10 +65,10 @@ Validation: actual generated AF controller with address/undefined sanitizers;
 primary stats comparison with front/UW identity; profile ABI tests; zoom ROI
 checks; clean-data seed fixture and idempotent root assembly; passcode and AOD
 integration checks; shell syntax; signed arm64 media/hooks cross-build. User
-confirms rear primary close focus now works. Final optical/regression acceptance
-and actual clean-install boot verification remain pending.
+confirms rear primary close focus now works. User accepted the optical/regression test. Actual wiped-data clean-install boot
+was not performed; empty-data seeding is validated by the host fixture.
 
-## After explicit approval
+## Integration procedure (approval received)
 
 1. Record user acceptance. Commit reviewed source/artifacts; preserve pre-existing
    changes. Recheck latest accepted main/master before merge.
@@ -89,3 +88,36 @@ and actual clean-install boot verification remain pending.
 5. Push accepted branches to the writable Jesvi-iOS private remote. Upstream
    oosexgang denies this account write access. Update SHIPPING/handoff with
    actual commit IDs, image hashes and test boundaries; release phone lock.
+
+## Approved permanent deployment result
+
+Implementation commit: d07148b4. User explicitly approved permanent deployment,
+local merges and private push. Installed the signed recovery and standalone boot
+head using loader writes with read-back confirmation, then cold-rebooted once.
+Only payload rsize, Android boot identifier/AVB metadata, kernel and small root
+changed. Loader code/logos, command line, system and data were preserved. Live
+init and SpringBoard library hashes match the pre-update baseline.
+
+The built-in /redwood/lib/libredwood-media.dylib SHA256 is the user-approved
+69621b4a2ac87f0d6ad5d39d8fc30e30b4694ea84989fdbf5dab6c03169f2b35.
+Development override renamed to .before-permanent, so no runtime override is
+needed. Camera injection is now in root/etc/inject.conf; seed artifacts are in
+the root. Keybag restored locked (0x1) and remained locked across36-frame tests
+for ultra-wide4032x3024, primary2016x1512 and front1824x1368. Native primary
+full-resolution remains opt-in. No data wipe was performed.
+
+Root bytes: 13545472; SHA256 99e4eae79fb2692fd76426105c6295f8deb5859a2dbdc8c13e49e495b3fd882d.
+
+Kernel SHA256 6cd51d3a2b35a7d552139a3d71c27e23a712ddeb3012c3a7e112171524c9fc9d.
+
+Recovery candidate SHA256 e17eb22f207b7b0be067610faa5d097a0aa866d301508e0bc47e17ea231bd8a0.
+
+Private deployment, backups and logs: workspace build/camera-final/deploy.
+The recovery full-image hash changes when the running kernel saves logs; the
+immutable head, kernel/root ranges and APFS artifacts identify this deployment.
+The prior recovery and standalone boot head are both retained for rollback.
+
+Branch integration covers every active branch, with normal merges for the
+quality/fingerprint/release branches and fast-forwards where possible. Existing
+unrelated changes in x1slte and AOD worktrees are preserved. Historical branches
+legacy-hackios and snapshots/x1slte-2026-11-14-0547 remain archival baselines.
