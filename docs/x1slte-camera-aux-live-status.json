@@ -12,7 +12,14 @@
       "frame_counter_changes": 11,
       "stream_off_verified": true,
       "cleanup_ok": true,
-      "raw_capture_verified": false
+      "raw_capture_verified": true,
+      "raw_width": 4032,
+      "raw_height": 3024,
+      "raw_stride": 5040,
+      "raw_guard_errors": 0,
+      "raw_dma_error": 0,
+      "usable_preview_verified": false,
+      "repeat_cleanup_bug": "FS/FE child W1C sources must be cleared; manual idle acknowledgement enabled lit repeat"
     },
     "gw2": {
       "model": "0x0972",
@@ -25,5 +32,6 @@
   "user_confirmed_front_main_and_repeat_passcode": true,
   "first_host_keybag_read": 4,
   "before_first_unlock_state_observed": false,
-  "camera_aux_lenses_exposed": false
+  "camera_aux_lenses_exposed": false,
+  "session_camera_test_reboots_authorized": true
 }

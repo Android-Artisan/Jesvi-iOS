@@ -1,3 +1,34 @@
+# Latest LIVE: native2LA12MP RAW received; exposure/cleanup fix next
+
+User explicitly authorized camera-test reboots for THIS SESSION (standing approval,
+not later sessions). Phone lock codex-camera-aux. Latest installed kernel source
+295a2162, build21:58:02IST; slota1f28ed5..., loader readback verified. Protected
+AKS1 observed before first unlock on this boot. No loader/root/system/data rewrite.
+
+2LA4032×3024 RAW transport PASSED:12,192,768 words changed, DMA error0, guards0,
+C-PHY error masks0, abort/stream-off verified, cleanuptrue, no retained buffer.
+RWCAM001 packed export15,245,056bytes incl4096 header, labelS5K2LA, stride5040.
+First scene was essentially black pedestal58..69. User positioned toward light;
+a second accepted frame has60..204 and recognizable monitor/room, but badly
+underexposed and uncalibrated. Host previews shown to user; no app lens yet.
+
+Repeat initially refused idle guard because aggregate CSIS SRC1 stayed6. Found
+stock ISR clears CHILD FS_INT_SRC0x24/FE_INT_SRC0x2c (and LINE_END0x634) as well.
+After documented idle checks, manually acknowledged VC0 child bits; SRC1 cleared
+and lit capture passed. Fix automatic cleanup before more repeated captures.
+Current receiver frame count reads wrong0x100; correct v5.3 offset0x500 identified.
+JSON link_errors currently reports RAW SRC1=6 (normal FS/FE), not actual errors;
+next revision must distinguish raw IRQ from masked error bits.
+
+Next: controlled raw-only exposure/gain with stock limits/read-back, correct
+child-source cleanup/counter offset and actual-driver repeat regression test.
+Default front/main pipeline remains original. GW2 ID0972/a300 verified, no GW2
+stream or RAW yet. Camera app still only front/main. Save RAWs/images ONLY outside
+git in build/camera-aux-latest-20261115; ensure export succeeded before downloading.
+--black64 host preview is explicit pedestal development, not a calibrated ISP fix.
+
+---
+
 # Latest: native2LA RAW receiver built and host-tested (not installed)
 
 Working phone kernel21:17:15 has both IDs and2LA sensor streaming verified;
