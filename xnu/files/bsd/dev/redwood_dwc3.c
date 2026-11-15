@@ -2264,6 +2264,8 @@ link_watch(void)
 	}
 }
 
+extern volatile int redwood_display_is_on;      /* redwood_exynos_acpm.c */
+
 static void
 tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
@@ -2330,7 +2332,9 @@ again:
 		if (now > busy_until && period < POLL_IDLE_MS) {
 			period = POLL_IDLE_MS;
 		}
-		clock_interval_to_deadline(connected ? period : 20, NSEC_PER_MSEC, &deadline);
+		/* (A, 2026-11-15) no host and the screen off: every 250 ms, not 20 (50 wake-ups a second on the battery
+		 * with no cable, for nothing); a cable plugged in meanwhile is found within a quarter of a second */
+		clock_interval_to_deadline(connected ? period : redwood_display_is_on ? 20 : 250, NSEC_PER_MSEC, &deadline);
 	}
 	thread_call_enter_delayed(call, deadline);
 }

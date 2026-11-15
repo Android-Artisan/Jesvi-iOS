@@ -173,3 +173,21 @@ frame-rate improvement is claimed. The separate software-passcode empty-probe
 optimization removes unnecessary KDF work but is staged for a future kernel
 boot, not measured as a fix for renderer stutters. See `x1slte-passcode.md` for
 implementation, validation boundaries and the persistent repeat-lock bridge.
+
+## Screen off / AOD (15 November 2026, A)
+
+With the display off (also ~2-6 s into AOD, when backboardd powers the panel down) the kernel:
+
+| What | Switch (boot arg / live) | Default |
+| --- | --- | --- |
+| Scheduler on the A55s only (recommended cores 0-3); all 8 back at display on, and while sound plays + 10 s | `scroff_little=0` / `sysctl -w kern.redwood.scroff_little=0`; state `kern.redwood.scroff_little_now` | on |
+| Governor + thermal tick 500 ms (clocks are at the screen-off caps anyway) | `dvfs_scroff_tick=50` (old) / 250 / 1000 | 500 |
+| Wi-Fi poll 2 ms → 10 ms → 100 ms when quiet | `net_scroff_poll=0` | on |
+| USB controller tick 250 ms with no host | — | on |
+| Wi-Fi on the battery: PM_MAX + listen every 3rd DTIM; PM_FAST + every beacon at display on | `wifi_scroff=0` | on |
+| Flashlight thread sleeps until iOS asks (any screen state) | — | on |
+
+Measured in AOD (cable attached): fast cores 4/5/7 had zero wake-ups in 10 s (were ~250 a second each), SoC
+60-61 C (was 68-70 C). Wake-up hunt: `sysctl -w kern.redwood.wake_stats=1` for 30 s, read `wakes core` in /m2m;
+thread calls are now named by function (`fn 0x...`: `atos -o out/mach.x1slte ADDR`). Not done yet: cluster
+power-down (CPD) and SoC idle (SICD) from the dtb's exynos-cpupm, touch low-power mode in AOD.

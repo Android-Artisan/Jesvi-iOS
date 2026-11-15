@@ -2164,13 +2164,31 @@ static int iovar_int(const char *name, int32_t value);
  */
 extern int redwood_battery_external(void);
 static int32_t pm_fixed = -1, pm_now = -1;
+/*
+ * (A, 2026-11-15) Screen off on the battery: PM_MAX (1) and listening to every 3rd DTIM beacon (bcn_li_dtim 3), what
+ * Samsung's DHD does in suspend; back to PM_FAST and every beacon the moment the display comes on (redwood_dvfs_display
+ * wakes the thread below). A charger/cable keeps PM 0. wifi_scroff=0: as before.
+ */
+extern volatile int redwood_display_is_on;      /* redwood_exynos_acpm.c */
+static uint32_t wifi_scroff = 1;
+static int32_t dtim_now = -1;
 
 static void
 power_save_follow(void)
 {
 	int ext = redwood_battery_external();
-	int32_t want = pm_fixed >= 0 ? pm_fixed : ext == 1 ? 0 : 2, got = -1;
+	int off = wifi_scroff && !redwood_display_is_on && ext != 1 && pm_fixed < 0;
+	int32_t want = pm_fixed >= 0 ? pm_fixed : ext == 1 ? 0 : off ? 1 : 2, got = -1;
+	int32_t dtim = off ? 3 : 0;
 
+	if (dtim != dtim_now && (dtim_now >= 0 || dtim != 0)) {
+		if (iovar_int("bcn_li_dtim", dtim) == 0) {
+			blog("power save: beacons: every %s DTIM (%s)", dtim ? "3rd" : "", dtim ? "screen off" : "screen on");
+			dtim_now = dtim;
+		} else {
+			dtim_now = 0;   /* (not taken: not asked again until it changes) */
+		}
+	}
 	if (want == pm_now) {
 		return;
 	}
@@ -2179,8 +2197,8 @@ power_save_follow(void)
 	}
 	if (ioctl(WLC_SET_PM, &want, sizeof(want), sizeof(want)) == 0) {
 		(void)ioctl(WLC_GET_PM, &got, sizeof(got), sizeof(got));
-		blog("power save: PM %d (%s), reads %d", want, pm_fixed >= 0 ? "wifi_pm=" : ext == 1 ? "on a charger" : "on the battery",
-		    got);
+		blog("power save: PM %d (%s), reads %d", want, pm_fixed >= 0 ? "wifi_pm=" : ext == 1 ? "on a charger" :
+		    off ? "on the battery, screen off" : "on the battery", got);
 		pm_now = want;
 	}
 }
@@ -2191,14 +2209,21 @@ signal_thread(__unused void *p, __unused wait_result_t w)
 	uint32_t said = 0;
 
 	PE_parse_boot_argn("wifi_pm", &pm_fixed, sizeof(pm_fixed));
+	PE_parse_boot_argn("wifi_scroff", &wifi_scroff, sizeof(wifi_scroff));
 	for (;;) {
-		delay_for_interval(3, NSEC_PER_SEC);
+		/* every 3 s, or at once when the display goes on or off */
+		assert_wait_timeout((event_t)&redwood_display_is_on, THREAD_UNINT, 3000, NSEC_PER_MSEC);
+		thread_block(THREAD_CONTINUE_NULL);
 		if (sta_state.phase == REDWOOD_STA_JOINED) {
 			power_save_follow();
 		}
 		if (sta_state.phase != REDWOOD_STA_JOINED) {
 			wifi_rssi_now = 0;
+			pm_now = dtim_now = -1;         /* a new association starts from the firmware's defaults */
 			continue;
+		}
+		if (!redwood_display_is_on) {
+			continue;                       /* (nobody looks at the bars with the screen off) */
 		}
 		uint8_t scb[12] = { 0 };
 		int32_t rssi, noise = 0;

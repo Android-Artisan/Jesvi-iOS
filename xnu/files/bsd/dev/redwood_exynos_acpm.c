@@ -523,13 +523,88 @@ efficiency_active(unsigned domain)
 }
 enum { PROF_NORMAL = 0, PROF_LPM = 1, PROF_OFF = 2 };
 
+/*
+ * Screen off: the small cores only (A, 2026-11-15). With small_cores=2 the A55s are used only when every big core is
+ * busy -- right for the UI, backwards with the screen off: every daemon's and driver's wake-up landed on an M5/A76
+ * (each woken ~250 times a second in AOD, measured with wake_stats) while the A55s slept. iPhones do the opposite
+ * (background work on the E-cores, the P cluster off). So with the screen off the scheduler is given cores 0-3 only
+ * (its recommended cores, as Apple's CLPC does); all 8 come back the moment the display does, before the wake boost.
+ * Not while sound plays (music, a call's voice: redwood_audio.c) or for 10 s after. Boot-arg scroff_little=0: off;
+ * live: kern.redwood.scroff_little.
+ */
+extern void sched_perfcontrol_update_recommended_cores(uint32_t recommended_cores);
+extern uint64_t redwood_audio_active_at;
+static uint32_t scroff_little = 1;
+static int scroff_little_on;            /* the scheduler has cores 0-3 only now */
+static uint32_t scroff_little_switches;
+LCK_GRP_DECLARE(scroff_lck_grp, "redwood-scroff");
+LCK_MTX_DECLARE(scroff_lock, &scroff_lck_grp);
+
+static void
+scroff_little_set(int on)               /* scroff_lock held */
+{
+	if (on == scroff_little_on) {
+		return;
+	}
+	scroff_little_on = on;
+	scroff_little_switches++;
+	sched_perfcontrol_update_recommended_cores(on ? 0x0fu : 0xffffffffu);
+}
+
 void redwood_dvfs_display(int on);
 void
 redwood_dvfs_display(int on)
 {
 	redwood_screen_on = on != 0;
 	redwood_display_is_on = on != 0;
+	if (on && scroff_little_on) {
+		lck_mtx_lock(&scroff_lock);
+		scroff_little_set(0);
+		lck_mtx_unlock(&scroff_lock);
+	}
 	thread_wakeup((event_t)&redwood_gov_wake);
+	thread_wakeup((event_t)&redwood_display_is_on);  /* Wi-Fi power save follows the screen (redwood_bcm4375.c) */
+}
+
+/* from the governor's thread, every tick */
+static void
+scroff_little_check(void)
+{
+	int want = scroff_little && prof_sleep && !redwood_screen_on;
+
+	if (want && redwood_audio_active_at != 0) {
+		uint64_t hold;
+
+		nanoseconds_to_absolutetime(10ull * NSEC_PER_SEC, &hold);
+		want = mach_absolute_time() - redwood_audio_active_at >= hold;
+	}
+	if (want == scroff_little_on) {
+		return;
+	}
+	lck_mtx_lock(&scroff_lock);
+	if (redwood_screen_on) {
+		want = 0;                       /* (the display came on meanwhile: it has already given all 8 back) */
+	}
+	scroff_little_set(want);
+	lck_mtx_unlock(&scroff_lock);
+	dlog("power: screen off: %s", scroff_little_on ? "small cores only (0-3)" : "all 8 cores");
+}
+
+static int
+sysctl_scroff_little SYSCTL_HANDLER_ARGS
+{
+	int value = (int)scroff_little;
+	int error = sysctl_handle_int(oidp, &value, 0, req);
+
+	if (error || req->newptr == USER_ADDR_NULL) {
+		return error;
+	}
+	if (value != 0 && value != 1) {
+		return EINVAL;
+	}
+	scroff_little = (uint32_t)value;
+	thread_wakeup((event_t)&redwood_gov_wake);
+	return 0;
 }
 
 static int
@@ -567,12 +642,21 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, efficiency_auto, CTLTYPE_INT | CTLFLAG_RW |
     &efficiency_auto, 0, sysctl_efficiency, "I", "Independent automatic cooling: on by default, uses existing thermal samples");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, efficiency_mask, CTLFLAG_RD | CTLFLAG_LOCKED,
     &efficiency_mask, 0, "Automatic cooling bits: A55=1 A76=2 M5=4 GPU=8; memory independent");
+SYSCTL_PROC(_kern_redwood, OID_AUTO, scroff_little, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
+    NULL, 0, sysctl_scroff_little, "I", "Screen off: the small cores (0-3) only; 1 on (default), 0 off");
+SYSCTL_INT(_kern_redwood, OID_AUTO, scroff_little_now, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &scroff_little_on, 0, "1: the scheduler has cores 0-3 only right now");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, scroff_little_switches, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &scroff_little_switches, 0, "times the screen-off small-cores mode was switched");
 /*
  * x1slte (2026-11-06): a tick of 50 ms (was 200: a frame's worth of work had come and gone before the clock moved;
  * Samsung's schedutil re-decides on every scheduler update), one rung down after GOV_DOWN_TICKS quiet ticks (300 ms);
  * eight rungs of Samsung's own levels (ECT steps of the Exynos 990) up to the real tops.
  */
 #define GOV_TICK_MS     50
+/* (A, 2026-11-15) screen off: one tick every 500 ms (dvfs_scroff_tick=250|500|1000; 50 = as awake). The clocks sit at
+ * the screen-off caps anyway; the thermal steps then run every tick (500 ms) and the 10 s line stays 10 s. */
+static uint32_t gov_scroff_tick_ms = 500;
 #define GOV_DOWN_TICKS  6
 #define GOV_RUNGS       8
 static const struct {
@@ -744,6 +828,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_ffl_cl2", &gov_frame_khz[2], sizeof(gov_frame_khz[2]));
 	PE_parse_boot_argn("dvfs_ffl_g3d", &gov_frame_khz[3], sizeof(gov_frame_khz[3]));
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
+	PE_parse_boot_argn("scroff_little", &scroff_little, sizeof(scroff_little));
+	PE_parse_boot_argn("dvfs_scroff_tick", &gov_scroff_tick_ms, sizeof(gov_scroff_tick_ms));
+	if (gov_scroff_tick_ms != 50 && gov_scroff_tick_ms != 250 && gov_scroff_tick_ms != 500 && gov_scroff_tick_ms != 1000) {
+		gov_scroff_tick_ms = 500;
+	}
 	PE_parse_boot_argn("dvfs_lpm", &prof_lpm, sizeof(prof_lpm));
 	PE_parse_boot_argn("dvfs_efficiency", &efficiency, sizeof(efficiency));
 	efficiency = efficiency != 0;
@@ -862,6 +951,15 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	redwood_dbgport_add("acpm.rate", "DOMAIN KHZ: an ACPM DVFS request (AUD 8, INT 1, MIF 0, G3D 10)", dbg_acpm_rate);
 	for (;; tick++) {
 		uint64_t tick_end;
+		/* screen off: a longer tick, `step` short ones long; tick kept a multiple of step so the 250 ms (5) and
+		 * 10 s (200) marks still fall on it */
+		bool long_tick = mode >= 2 && prof_sleep && !redwood_screen_on && gov_scroff_tick_ms > GOV_TICK_MS;
+		unsigned step = long_tick ? gov_scroff_tick_ms / GOV_TICK_MS : 1;
+
+		if (step > 1) {
+			tick = (tick + step - 1) / step * step;
+		}
+		scroff_little_check();
 
 		if (dbg_domain != ~0u) {
 			uint32_t d = dbg_domain;
@@ -871,13 +969,19 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 
 		/* a tick, or sooner a finger coming down or a slow GPU job: its boost at once */
-		clock_interval_to_deadline(GOV_TICK_MS, NSEC_PER_MSEC, &tick_end);
+		clock_interval_to_deadline(GOV_TICK_MS * step, NSEC_PER_MSEC, &tick_end);
 		for (;;) {
 			bool slow;
 
 			assert_wait_deadline((event_t)&redwood_gov_wake, THREAD_UNINT, tick_end);
 			if (thread_block(THREAD_CONTINUE_NULL) != THREAD_AWAKENED) {
 				break;
+			}
+			if (long_tick && redwood_screen_on) {
+				break;                  /* the display is back: a normal tick now, not in up to 500 ms */
+			}
+			if (!long_tick && !redwood_screen_on && step == 1 && gov_scroff_tick_ms > GOV_TICK_MS) {
+				scroff_little_check();  /* the display went off: hand the work to the small cores now */
 			}
 			slow = redwood_mali_slow_jobs != gov_slow_seen;
 			gov_slow_seen = redwood_mali_slow_jobs;
@@ -958,7 +1062,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			uint64_t hold;
 
 			nanoseconds_to_absolutetime(FRAME_HOLD_MS * NSEC_PER_MSEC, &hold);
-			gov_frame_ticks += mach_absolute_time() - redwood_fb_swap_at < hold;
+			gov_frame_ticks += (mach_absolute_time() - redwood_fb_swap_at < hold) ? step : 0;
 		}
 		for (unsigned g = 0; govern && mode >= 2 && g < NGOV; g++) {
 			unsigned d = 0, top = GOV_RUNGS - 1, want;
@@ -1011,7 +1115,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			khz = gov[g].rung[want];
 			khz = khz > targets[d] ? targets[d] : khz;
 			khz = cap != 0 && khz > cap ? cap : khz;
-			gov_khz_sum[g] += khz;
+			gov_khz_sum[g] += (uint64_t)khz * step;
 			if (khz != gov_sent[g]) {
 				if (governor_set_rate(domains[d].domain, khz, &gov_sent[g]) < 0) {
 					dlog("%s: %u kHz was not taken", domains[d].name, khz);
