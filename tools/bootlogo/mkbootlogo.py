@@ -35,7 +35,8 @@ LOGO_H = 300        # one size on every screen: the UEFI's logo slot is a 300 x 
                     # 300 of the panel's 3200 rows is 9.4 %, an iPhone X's 237 of 2436 is 9.7 %
 UEFI_LZMA = bytes.fromhex('98584eee143959429d6edc7bd79403cf')      # EFI_LZMA_CUSTOM_DECOMPRESS_GUID
 UEFI_BMP_SIZE = 91078                                                # SiliciumPkg BootLogo.bmp: 300x300, 8 bit
-UEFI_HINT = b'[Volume Up] Boot Manager'      # Mu-Silicium's line under its logo (its own boot menu): blank for end users
+UEFI_HINT = b'[Volume Up] Boot Manager'      # Mu-Silicium's line under its logo (its own boot menu)
+UEFI_TEXT = b'[JESVI]'                      # what it says instead (the string ends there: centered as its own length)
 
 
 def find_rootfs():
@@ -181,10 +182,10 @@ def patch_uefi(path, bmp, hint=False, pristine=None):
     fv[j:j + UEFI_BMP_SIZE] = bmp
     k = fv.find(UEFI_HINT)
     if k >= 0 and not hint:
-        fv[k:k + len(UEFI_HINT)] = b' ' * len(UEFI_HINT)
+        fv[k:k + len(UEFI_HINT)] = UEFI_TEXT + b'\0' * (len(UEFI_HINT) - len(UEFI_TEXT))
     current = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(bytes(d[start:end]))
     if current[:raw_len] == bytes(fv):
-        return 'already as wanted (iOS logo, Boot Manager line %s)' % ('shown' if hint else 'blank')
+        return 'already as wanted (iOS logo, line %s)' % ('[Volume Up] Boot Manager' if hint else UEFI_TEXT.decode())
     lc, rest = props % 9, props // 9; lp, pb = rest % 5, rest // 5
     body = lzma.compress(bytes(fv), format=lzma.FORMAT_RAW, filters=[{'id': lzma.FILTER_LZMA1, 'dict_size': dict_size,
                          'lc': lc, 'lp': lp, 'pb': pb, 'preset': 9 | lzma.PRESET_EXTREME}])
@@ -195,7 +196,7 @@ def patch_uefi(path, bmp, hint=False, pristine=None):
     assert check[:raw_len] == bytes(fv), 'round trip failed'
     d[start:end] = new + b'\0' * (end - start - len(new))
     open(path, 'wb').write(d)
-    return 'patched: iOS logo, Boot Manager line %s (%d of %d bytes)' % ('shown' if hint else 'blank', len(new), end - start)
+    return 'patched: iOS logo, line %s (%d of %d bytes)' % ('[Volume Up] Boot Manager' if hint else UEFI_TEXT.decode(), len(new), end - start)
 
 
 def main():
