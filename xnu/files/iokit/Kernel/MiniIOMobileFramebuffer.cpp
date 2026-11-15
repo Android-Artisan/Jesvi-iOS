@@ -834,7 +834,8 @@ static volatile uint32_t gBLThermalCap;
 /*
  * Always-On Display (A, 2026-11-15): kern.redwood.display_aod, set by SpringBoard's AOD service on the backlight's
  * InactiveOn transition. iOS's own AOD brightness curve never reaches this driver, so the level is made here:
- * a percentage of the brightness at the moment AOD began (default 30 %, between 2 and 12 nits, never above it),
+ * a percentage of the brightness at the moment AOD began (default 30 %, between 2 and 60 nits, never above it: the
+ * same proportion from a dark room to daylight, so a bright screen gives a well visible AOD),
  * then HELD. Auto-brightness keeps sending small changes during AOD (in a dark room the sensor wobbles, and at the
  * panel's 1-nit bottom steps each one showed): those are kept for the wake but do not move the AOD picture. Only a
  * big change of light (CoreBrightness asking 2x or 1/2 of the level AOD started from: a walk outside, a lamp on)
@@ -844,12 +845,12 @@ static volatile uint32_t gBLThermalCap;
 static volatile uint32_t gAODDim;
 static uint32_t gAODBase, gAODLevel;    /* (fBLLock) nits 16.16 AOD started from, and the level held */
 static TUNABLE(uint32_t, gAODPct, "fb_aod_pct", 30);
-static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 12);
+static TUNABLE(uint32_t, gAODMaxNits, "fb_aod_max", 60);
 
 static uint32_t
 aodFrom(uint32_t base)
 {
-	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 12) << 16, level;
+	uint32_t lo = 2u << 16, hi = (gAODMaxNits ? gAODMaxNits : 60) << 16, level;
 
 	level = (uint32_t) ((uint64_t) base * (gAODPct ? gAODPct : 30) / 100);
 	level = level < lo ? lo : level > hi ? hi : level;
