@@ -1,12 +1,73 @@
 # S20 GPS implementation status
 
 2026-11-16, feat/s20-gps, based on accepted master735b41e0 (camera completion).
-**No satellite fix yet. No GPS service or Core Location provider is shipped.**
+**Real satellite fixes verified in the host-assisted lab. No standalone GPS service
+or verified Core Location provider is shipped.**
 The accepted camera and authentication source/root image are preserved. A GPS-only
 hub polling change is under device test; this is not a shipped GPS implementation.
 The previous feat/s20-fingerprint branch is preserved separately.
 
 ## Current phone state / next work
+
+### Continuation: real acquisition verified, native delivery still pending
+
+The existing09:15:25 kernel remains installed; this continuation did not reboot
+the phone or write boot/root/kernel images. Indoor receiver acquisition succeeded
+in private lab session `out/gps/private/lab/share/session-1794806033/`:
+252GGA and252RMC reports,190valid of each, maximum8satellites used, peak reported
+C/N0 40dB-Hz, and settled HDOP about1.2. Independent parsing checked checksums and
+fresh dates/times; the last live fix checked was under one second old. A rough
+user-supplied reference point was consistent with the captured fixes. Reference
+coordinates and receiver positions remain private and are never substituted for
+receiver measurements.
+
+Two setup gaps were addressed: stock x1slte `LhePinMux=P17=M1` is available as
+the relay's explicit `--s20-lna` option (RPC34, bytes17,1); and stock `ref_time`
+accepts `week` and millisecond `tow`, not the previously attempted `utc` field.
+The lab launcher optionally supplies the VM's real current time, with5second
+uncertainty. Its GPS-UTC assumption is restricted to2026 and must be rechecked
+before later use. See [USNO's offset](https://www.cnmoc.usff.navy.mil/Our-Commands/United-States-Naval-Observatory/Precise-Time-Department/Global-Positioning-System/USNO-GPS-Time-Transfer/Leap-Seconds/)
+and [IERS Bulletin C72](https://datacenter.iers.org/data/html/bulletinc-072.html).
+This is time assistance, not a position or successful-fix injection.
+
+`tools/gps/lab-session.sh` mounts the lab runtime's device/proc paths, starts its
+FIFO reader before gpsd can emit startup commands, refuses non-FIFO endpoints,
+and cleans up only its own children. An earlier race lost startup commands; the
+phone relay now rejects navigation data arriving without an open channel. It
+also validates the incoming MEIF stream before forwarding it. The following
+130second session had6882valid packets, zero malformed packets, acknowledged
+navigation stop and no reported hub exception, but did not regain a valid fix.
+Repeat acquisition is therefore not yet qualified.
+
+USB ECM went inactive during two longer tests. A serial `usb restart` restored
+the USB link without rebooting iOS; a user cable reconnect was also tested.
+The successful long session's final navigation-stop acknowledgement was not
+captured after link loss. Subsequent bounded sessions and locked native MKB
+state1/AKS0x5 were checked. Do not claim camera or repeat-passcode regression
+coverage from these checks.
+
+Native investigation verified `CLAccessoryLocationProviderAdapter`, its adaptee
+and `CLDispatchSilo` on the device. `location-abi-probe.m` is metadata-only.
+`location-nmea-lab.m` and `nmea-lab-send.c` are an **unqualified prototype** for a
+root-only local, fresh-RMC/matching-GGA bridge into Apple's accessory parser.
+Host ASan/UBSan gate tests reject stale/future, mismatched, invalid, estimated
+and bad-checksum input. No app delivery has been demonstrated. Temporary
+locationd launches exposed signing/fixup and proxy-dispatch startup failures;
+the runtime injection configuration was restored after each attempt and normal
+locationd recovered. Do not deploy this prototype as a boot service. Next resolve
+the actual native service lifecycle/protocol before another delivery trial.
+
+Apple Maps' blank world is a separate open issue. All89stock app files and the
+GeoServices/VectorKit/MapKit resource sets were compared with the source root DMG
+and installed paths. The phone fetched Apple's Maps configuration over TLS with
+HTTP200; GeoServices has downloaded resource manifests. This does not prove tile
+downloads or rendering. No Maps data, permissions or caches were erased.
+
+Next: finish native delivery and demand/lifecycle handling, reproduce acquisition,
+fix the blank map, and remove the Linux/Mac engine dependency. A real lab fix does
+not make the port's GPS standalone or make Maps functional.
+
+The older chronological handoff below records the earlier no-fix bring-up.
 
 Phone lock: codex-gps. The user approved recovery and further GPS test reboots in
 this session. The unchanged installed07:42:36 IST camera kernel rebooted, the user
