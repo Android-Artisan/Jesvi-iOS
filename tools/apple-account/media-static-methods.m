@@ -6,9 +6,9 @@
 int main(void){ @autoreleasepool {
  dlopen("/System/Library/PrivateFrameworks/AppleMediaServices.framework/AppleMediaServices",RTLD_NOW);
  NSMutableArray *rows=[NSMutableArray array];
- for(NSString *name in @[@"AMSAuthenticateTask",@"AMSDelegateAuthenticateTask",@"AMSAuthKitUpdateTask",@"AMSMescal"]){
+ for(NSString *name in @[@"AMSAuthenticateTask",@"AMSDelegateAuthenticateTask",@"AMSAuthKitUpdateTask",@"AMSAuthKitUpdateResult",@"AMSMescal"]){
   Class cls=NSClassFromString(name);
-  if([name isEqual:@"AMSMescal"])cls=object_getClass(cls);
+  if([name isEqual:@"AMSMescal"] || [name isEqual:@"AMSAuthKitUpdateResult"])cls=object_getClass(cls);
   unsigned count=0; Method *methods=class_copyMethodList(cls,&count);
   for(unsigned i=0;i<count;i++){
    IMP imp=method_getImplementation(methods[i]);Dl_info info;
