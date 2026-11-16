@@ -3,11 +3,27 @@
 #import <objc/runtime.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <execinfo.h>
+#include <dlfcn.h>
 #include "shared-layer-scope.h"
 static int fd=-1;
 static __thread BOOL inside;
 static id (*nativeCreate)(id,SEL,id,NSInteger,id);
 static NSMutableDictionary *lastSeen;
+/* Static framework code offsets only. Never inspect stack bytes/arguments. */
+static NSArray *mediaCodeOrigins(void){
+ void *frames[24];int count=backtrace(frames,24);
+ NSMutableArray *origins=[NSMutableArray array];
+ for(int i=0;i<count && origins.count<8;i++){
+  Dl_info info;if(!dladdr(frames[i],&info) || !info.dli_fname || !info.dli_fbase)continue;
+  NSString *image=[[NSString stringWithUTF8String:info.dli_fname] lastPathComponent];
+  if(![@[@"AppleMediaServices",@"AppleMediaServicesCore",@"AppleMediaServicesUI"] containsObject:image])continue;
+  uintptr_t address=(uintptr_t)frames[i],base=(uintptr_t)info.dli_fbase;
+  if(address<base || address-base>128*1024*1024)continue;
+  [origins addObject:@{@"image":image,@"offset":@(address-base)}];
+ }
+ return origins;
+}
 static void observe(id value,const char *phase){
  if(inside || ![value isKindOfClass:NSError.class])return;
  inside=YES;
@@ -25,7 +41,8 @@ static void observe(id value,const char *phase){
    if(lastSeen.count>256)[lastSeen removeAllObjects];
    if(!lastSeen[key] || now-[lastSeen[key] doubleValue]>=5){
     lastSeen[key]=@(now);
-    NSDictionary *entry=@{@"event":@"media_native_error",@"pid":@(getpid()),@"process":NSProcessInfo.processInfo.processName,@"phase":[NSString stringWithUTF8String:phase],@"time":@(now),@"errors":chain};
+    NSMutableDictionary *entry=[@{@"event":@"media_native_error",@"pid":@(getpid()),@"process":NSProcessInfo.processInfo.processName,@"phase":[NSString stringWithUTF8String:phase],@"time":@(now),@"errors":chain} mutableCopy];
+    if([[(NSError *)value domain] isEqual:@"AMSErrorDomain"])entry[@"code_origins"]=mediaCodeOrigins();
     NSData *bytes=[NSJSONSerialization dataWithJSONObject:entry options:0 error:NULL];
     if(fd>=0 && bytes){write(fd,bytes.bytes,bytes.length);write(fd,"\n",1);}
    }

@@ -284,3 +284,9 @@ request,response,error), so its status0 result is inconclusive. Worker3's
 200/401 loopback transport and absent-Authorization fixture are verified.
 Do not reuse worker1/2 or mistake the synthetic SRP8291/-20101 fixture for a
 real server response. Current live phone libraries did not change for this fix.
+
+FairPlay restoration: `fairplay-service.py` can register/status/rollback the
+owner-supplied original binary/job. KeepAlive disabled; pending native clients
+can still request relaunch. Stock code currently exits0; no working service claim.
+Current shared992a records static AMS image offsets on errors; account remains
+saved/active but authentication flag is currently false. Read handoff top.

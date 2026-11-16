@@ -1,5 +1,30 @@
 # S20 Apple Account: current handoff
 
+## Latest runtime: shared992a945fac1b51d6; account authentication flag now false
+
+User requested continued work, service restore and combined feature push. Branch
+feat/s20-apple-account-gps published (initial commit1a3c0aab). FairPlay job remains
+registered user501 with stock binary unchanged. Explicit/native demand starts
+still exit0; runs5/spawnscheduled observed, so KeepAlive=false does NOT eliminate
+relaunch from pending clients. Do not say service is functional or has no retries.
+Native expected /usr/sbin path not tested on this read-only system volume.
+
+Added bounded static-code backtraces ONLY to AMS-domain error observation: maximum
+8 AppleMediaServices/Core/UI image offsets, no stack arguments/bytes, no arbitrary
+image paths or descriptions. Native error factory/result/description preservation
+smoke passed on phone. Shared992a installed via upgrade preserving other rules;
+six services restarted. New background AMS7/1 origins captured; no new Media user
+trial yet, so exact auth0/12 origin still pending. No licensing/auth success stubs.
+
+IMPORTANT post-upgrade read-only health: AuthKit RPC still passes; account count1,
+active=true, warming=false BUT authenticated=false on repeated checks. Before
+upgrade it readtrue. Do not claim preserved authentication health merely because
+account remains saved. Observer source only changes output metadata; cause of flag
+change not established. No account deletion, reset, password entry or automated
+login was performed. User told this state explicitly. Resume existing account,
+not fresh sign-out. One user-controlled retry is now useful to capture exact AMS
+error origin; user may report loader immediately, no required minute wait.
+
 ## CURRENT: original FairPlay job registered; integration branch
 
 User requested adding the service and publishing combined AppleAccount/GPS progress.
