@@ -13,6 +13,10 @@ int main(void)
     struct gnss_meif_decoder d={0};
     for(size_t i=0;i<sizeof(golden);i++)gnss_meif_feed(&d,golden+i,1,received,NULL);
     assert(packets==1 && d.malformed==0);
+    /* Actual live ACK from BCM4775 B1: no fourth header word. */
+    const uint8_t ack[]={0xa5,0x93,0,0,6,0,1,3,10,0,0xa5,0x68};
+    gnss_meif_feed(&d,ack,sizeof(ack),received,NULL);assert(packets==2);
+    packets=1;
     uint8_t out[64];size_t n=gnss_meif_wrap(out,sizeof(out),golden+2,sizeof(golden)-4);
     assert(n==sizeof(golden) && !memcmp(out,golden,n));
     assert(!gnss_meif_wrap(out,4,golden+2,sizeof(golden)-4));

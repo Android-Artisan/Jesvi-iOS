@@ -2,26 +2,82 @@
 
 2026-11-16, feat/s20-gps, based on accepted master735b41e0 (camera completion).
 **No satellite fix yet. No GPS service or Core Location provider is shipped.**
-The existing camera, authentication, root image and kernel are unchanged.
+The accepted camera and authentication source/root image are preserved. A GPS-only
+hub polling change is under device test; this is not a shipped GPS implementation.
 The previous feat/s20-fingerprint branch is preserved separately.
 
-## Current phone state / immediate next action
+## Current phone state / next work
 
-Phone lock: codex-gps. Running kernel initially verified as2026-11-16 07:42:36 IST,
-matching the accepted permanent GW2 camera deployment.
+Phone lock: codex-gps. The user approved recovery and further GPS test reboots in
+this session. The unchanged installed07:42:36 IST camera kernel rebooted, the user
+confirmed the iOS lock screen, and increasing motion counters verified hub recovery.
+A kernel-slot-only test update was read-back verified by the loader at09:20 IST
+(approximate); root, loader/boot profile and data were not written. The new kernel
+build is09:15:25 IST. Recovery copy: workspace build/camera-gw2/permanent/kernel-slot.bin.
 
-A16-byte stock ROM memory RPC worked. A larger768-byte request triggered
-`host_com_rx.cpp` firmware exceptions and stopped sensor sample counters. iOS and
-SSH remained running. Subsequent requests did not acknowledge; all device probing
-was stopped. **Sensor-hub recovery is pending a reboot of the existing installed
-image, explicitly requested from the user. No reboot approval has arrived yet.**
-Do not assume a read-only firmware request is harmless at arbitrary sizes.
-Do not issue repeated requests into this failed state or reset the hub separately:
-the normal firmware/SSP startup belongs to the existing kernel thread.
+The first768-byte ROM read triggered host_com_rx.cpp assertions. After recovery,
+2048 reads of16 bytes captured ROM0x20000..0x27fff (32768 bytes) with sensors
+continuing to update. SHA256:
+8b11e8772133d3624da5381a930d3de1ce9403b94dbbe4d5539c1c0df80e5df7.
+The reader refuses larger requests and aborts on firmware exceptions.
 
-The host-side reader now refuses requests above the only proven16-byte size,
-stops on exception RPCs, and preserves partial private output. That fixed binary
-was cross-built but has NOT been deployed or qualified on the phone.
+**Live navigation handshake passed twice:** RPC1C start, RPC1E carrying stock
+gpsd's14-byte pass-through command, then a valid MEIF state-report10 and power
+statistics, followed by acknowledged RPC1C stop. The repeated session decoded
+six navigation packets, including an8-byte ACK, with no malformed frames or
+firmware fault. That proves the navigation channel and this one state transition,
+not satellite acquisition or RF configuration.
+
+The actual8-byte ACK corrected an assumption from static research: MEIF packets
+can have a6-byte header plus checksum. They do not all have an8-byte header.
+The portable decoder and its independent live-ACK test now cover this.
+
+A read of the actual GPS29 descriptor's ops pointer returned0x82dba0, proving that
+its callback table is installed despite its absent advertised scan bit. A paired
+SSP sensor29 start/stop completed without exceptions; it produced no GNSS control
+request or fix, and its GPS reference counter was zero afterward. Do not equate
+SSP transport completion with the application callback executing.
+
+An isolated Linux ARM64 VM on the Mac runs stock Samsung gpsd using its own
+Android11 linker/libraries. A temporary USB-only relay connects its actual LHD
+commands to the existing XNU hub owner. Two bounded relays reached measurement
+engine patch upload but hit gpsd's10.5-second initialization watchdog. Sensor
+updates continued, with no hub exception. No NMEA or satellite fix was produced.
+A third display-awake test roughly doubled traffic (201 transmitted hub chunks,
+299 received packets), but still timed out during patch upload. This supports a
+latency problem without proving polling is its only cause.
+
+The kernel previously slept100ms between polls with the display off, including
+when a GNSS client had a pending command. The test change keeps the existing4ms
+running interval while any GNSS descriptor is open, and restores the original
+idle policy after the last close. The actual pump function passes a host fake-clock
+sanitizer test for inactive/active/multiple clients and early completion. Both
+tracked and generated build sources match. The accepted redwood.patch was checked
+against the generated tree with a temporary Git index; stale overlay files were
+backed up privately and synchronized from tracked source before compiling.
+
+Device test of09:15:25 kernel: native MKB lock state1, AKS flags0x5 (locked),
+sensors0/1/4/5 started normally. Display-off relay reached198 transmitted chunks
+and294 received packets with acknowledged navigation stop and no hub exception,
+but still hit the stock watchdog. This matches the display-awake throughput, so
+the remaining latency is outside the fixed display-off hub sleep.
+
+A subsequent host-VM-only experiment extends the decoded wait4init timer from
+10000ms to60000ms (ELF offset0x372f24, original word0x5284e204). It preserves
+RF/fix logic and does not modify/deploy a stock binary on the phone. This tests
+whether the patch sequence can finish across the temporary laboratory transport.
+No position is fabricated. **RelayE completed successfully:**911 transmitted hub
+chunks,3835 received packets, acknowledged navigation stop, no hub exception.
+It produced95 GGA reports and95 RMC reports over the bounded session, all invalid;
+maximum satellites used0. This proves measurement-engine startup and NMEA output
+across the lab bridge, not satellite reception or a real fix. Native MKB remained
+locked1/flags0x5 afterward. Lab gpsd/bridge processes were stopped.
+
+Next: verify acquisition with clear sky, inspect RF/antenna/clock setup and eliminate
+the host dependency. Core Location registration remains unimplemented.
+
+The temporary relay and Linux lab are bring-up tools, not a native iOS GPS service.
+Stock daemon/runtime, captures and decompilation remain in ignored out/.
 
 ## Confirmed boundaries
 
@@ -30,11 +86,11 @@ local research and private Ghidra artifacts are in ignored
 `proposals/gps-research-20261116/`. Do not add firmware/decompiled binaries to git.
 
 - Hub scan returned000577771f07f6bf; firmware version23030400.
-- Advertised scan bit29 (GPS) is absent. Firmware contains a descriptor29 GPS
+- Advertised scan bit29 (GPS) is absent, but its installed callback table was
+  verified in RAM. Firmware contains a descriptor29 GPS
   initializer at0x82d9ae, start/stop callback table0x82dba0, location callback
-  0x82d694 and shared buffer0x90f7a8, but registration reachability is unproved.
-  No literal pointer or direct BL/B.W call to that initializer was found.
-  Treat it as potentially dormant code, not an available sensor API.
+  0x82d694 and shared buffer0x90f7a8. Do not assume the advertised scan mask
+  represents all registered virtual sensor descriptors.
 - Stock lhd encodes RPC1C as navigation-channel Start(bool), RPC1E as host-to-hub
   bytes and RPC1F as hub-to-host bytes.1E/1F bodies contain a LE16 byte count.
   A transport acknowledgement is not evidence of acquisition or a fix.
@@ -81,8 +137,8 @@ changes were required.
 
 ## Next implementation steps
 
-1. With user approval, reboot the unchanged installed image; verify increasing
-   motion sample counters before further experiments. Do not flash a new image.
+1. Preserve the recovered stable camera image. Continue from the verified
+   pass-through handshake and the isolated stock-engine lab.
 2. Recover the actual B1 ROM codec/controller state and the allowed response
    size using small, bounded requests. Large bulk-read attempts are disallowed.
 3. Resolve stock GNSS-channel/pass-through initialization and RF/clock config.

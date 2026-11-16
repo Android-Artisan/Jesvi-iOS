@@ -13,7 +13,7 @@ static inline void gnss_put16(uint8_t *p,uint16_t v) { p[0]=(uint8_t)v;p[1]=(uin
 static inline uint16_t gnss_checksum(const uint8_t *p,size_t n) { uint16_t sum=0;while(n--)sum=(uint16_t)(sum+*p++);return sum; }
 static inline bool gnss_meif_valid(const uint8_t *p,size_t n)
 {
-    return n>=10 && n<=GNSS_MEIF_MAX && !(n&1) && gnss_u16(p+2)==n-2 &&
+    return n>=8 && n<=GNSS_MEIF_MAX && !(n&1) && gnss_u16(p+2)==n-2 &&
         gnss_u16(p+n-2)==gnss_checksum(p,n-2);
 }
 /* Complete unescaped MEIF packet; doubles literal A5 bytes. Zero on overflow. */
