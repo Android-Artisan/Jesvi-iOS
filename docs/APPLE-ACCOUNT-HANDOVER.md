@@ -1,3 +1,24 @@
+## CURRENT: native Mac Mescal signing adapter ready for App Store trial
+
+Media&Purchases/AppStore remain UNVERIFIED. The account was authenticated/active at continuation start. New shared layer installed, services restarted; latest account count1/active=true/warming=false/authenticated=false (previous restarts showed this transiently; do not assume recovery). Native akd11535 and accountsd11540 retain CS_VALID637534209, correct identity/entitlements, read-only auth RPC passes. No account reset or reboot.
+
+Existing trace establishes Settings AND AppStore failure at native AMS12 branch "Mescal Failed / Failed to fetch hardware info"; user-owned Mac AMSMescalSession synthetic sign succeeds. Stock FairPlay binary unchanged; restored demand job repeatedly exited0 and was UNLOADED during prior investigation to stop wait/relaunch; no licensing patch. Do not re-register blindly.
+
+NEW implementation:
+- native-media-provider.m compiled immutable native-media-provider-v1 on Hackintosh, private stdio only. Uses real native default/prime MescalSession + IMURLBag, real sign/prime/verify/verify-prime promises. Verification failure never becomes success.
+- native-media-transport.py manages persistent pinned SSH RPC, strict version/nonce/op/size schema, reconnects after closed transport, no payload/proof logging.
+- native-provider-server.py optional --media-helper native-media-provider-v1 adds bearer-only loopback POST /v1/media. Owner explicitly authorized private signing assistance; signing bytes MAY include credential values, unlike narrow iCloud body schema. Data exists transiently over pinned SSH/memory only, never files/logs. No arbitrary URL/command/session selection. Max131072-byte input,30sec RPC.
+- media-signing-bridge.m hooks ONLY four typed native AMSMescalSession methods (sign, prime, verify, verify-prime) in existing media process scope. Uses same private connection.json and fixed loopback endpoint. Real helper verification required; helper/native error fails closed. No forged success or dialog bypass, no raw input/error text logging.
+- Shared artifact LIVE /var/jb/usr/lib/libredwood-account-layer-9b41e2a7df42db8b.dylib. All four hooks installed in store/account processes. Native iCloud adapters unchanged; unrelated injection/graphics/passcode preserved.
+
+Tests: Mac synthetic sign RPC PASS; end-to-end PHONE sign+prime returns real proofs, malformed server and priming signatures rejected, empty input fails closed; combined shared library same smoke and existing bridge sync/async metadata smoke PASS. Unauthorized endpoint401, malformed/unknown operation400. test-native-media-transport.py schema PASS. Shared-rule preservation tests PASS. No real Media sign-in yet under new library.
+
+Runtime: native broker tool exec55437, host jesvi@account-hackintosh via private account-hotspot-ssh.conf, metadata helper8 + mediahelper1, same bearer and loopback49741/phone49742. Existing IPv6 tunnel supervisor unchanged. Old broker5867 stopped after exact command verification. To restart add --media-helper native-media-provider-v1 to previous broker command. Keep both Macs awake.
+
+NEXT: user prefers AppStore login, can report "loading" immediately, no minute wait. No further synthetic investigation needed before ONE test. AppStore/Preferences were not running at last check, so next launch loads newlayer. Inspect media-error-events.log for media_native_helper_result operations/success and native error origins while loader runs; do not wait for5min UIerror before inspecting. Also recheck saved account health. Store downloads still unverified.
+
+MacBook device label is expected from borrowed coherent Mac machine identity. No cosmetic iPhone model spoof applied. Correcting registration/device type requires a coherent supported provider, not changing clientinfo alone. User offered Mac Media logout; unnecessary for this synthetic/native helper test, asked them to keep signed in.
+
 # S20 Apple Account: current handoff
 
 ## Latest runtime: shared992a945fac1b51d6; account authentication flag now false

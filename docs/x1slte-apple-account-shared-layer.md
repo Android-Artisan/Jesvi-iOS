@@ -1,7 +1,7 @@
 # Shared native Apple Account layer
 
 Live experimental deployment: 2026-11-17. The native iCloud account is stored,
-authenticated and active; setup warm-up is false. Media & Purchases authentication
+active; authentication state must be checked after service restarts (latest false). Media & Purchases authentication
 remains under investigation. Individual Apple services need their own verification.
 
 ## Current architecture
@@ -41,7 +41,7 @@ credential-bearing delegate body.
 ## Deployment and recovery
 
 Current artifact:
-`/var/jb/usr/lib/libredwood-account-layer-d78ff32a576b7c94.dylib`.
+`/var/jb/usr/lib/libredwood-account-layer-9b41e2a7df42db8b.dylib`.
 The path is immutable. Build/sign into a temporary file and publish a new hashed
 filename for every source change; never overwrite a mapped signed dylib on this
 port. The build script includes adapter/header/build-script content in its hash.
@@ -104,3 +104,11 @@ application acceptance. Do not infer password mistakes from a generic UI failure
 Private configs, SSH keys, machine proofs, credentials and responses stay excluded
 from source. Diagnostics emit fixed code/presence metadata. The old comparison
 that forwarded a fresh PET is disarmed and is not part of the shared library.
+
+## Native Media signing assistance (trial pending)
+
+The shared layer now includes media-signing-bridge.m for native Mescal sign/prime/verify operations through the user-owned Mac. native-media-provider.m calls native Apple signing and verification; no licensing/verification success stubs. Signatures and invalid-signature rejection passed synthetic end-to-end tests. AppStore login/download remains unverified.
+
+Enable broker with --media-helper native-media-provider-v1. Media signing bytes can contain credential values selected by Apple's policy; owner authorized this private transfer. Only bounded bytes cross pinned SSH in memory; no raw data/proof logging or disk capture. The existing iCloud schema remains separately restricted to device/service metadata. Helper is mandatory for this experimental route.
+
+The Settings MacBook device label comes from the provider's borrowed Mac identity. Changing only its label/model does not create a coherent iPhone identity.

@@ -6,6 +6,7 @@ account credentials, keychain access or public listener. Native proof bytes
 exist only in the helper/SSH/broker/phone memory, never written to artifacts.
 """
 import argparse
+import importlib.util
 import base64
 import hashlib
 import json
@@ -145,6 +146,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--host', required=True)
     p.add_argument('--ssh-config', type=Path)
+    p.add_argument('--media-helper',help='Enable owner-native media signing helper')
     p.add_argument('--helper', default='hackintosh-provider-v5')
     p.add_argument('--key', type=Path, required=True)
     p.add_argument('--known-hosts', type=Path, required=True)
@@ -156,6 +158,15 @@ def main():
     if not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', token):
         raise ValueError('Invalid broker token')
     transport = NativeTransport(args.host, args.key.resolve(), args.known_hosts.resolve(), helper=args.helper, ssh_config=args.ssh_config)
+    media = None
+    media_module = None
+    if args.media_helper:
+        if not re.fullmatch(r'native-media-provider-v[0-9]+',args.media_helper):raise ValueError('Invalid media helper')
+        spec=importlib.util.spec_from_file_location('native_media_transport',Path(__file__).with_name('native-media-transport.py'))
+        media_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(media_module)
+        command=transport.command.copy()
+        command[-1]='.local/share/redwood-account-lab/'+args.media_helper+' --stdio 2>/dev/null'
+        media=media_module.MediaTransport(command)
     try:
         try:
             transport.fetch(secrets.token_hex(16), timeout=30)  # Optional warm-up; recover on next request.
@@ -196,6 +207,21 @@ def main():
                 self.reply(200, {'issued_at': issued, 'icloud_body': base64.b64encode(body).decode(), 'machine_headers': snapshot})
 
             def do_POST(self):
+                if self.path == '/v1/media':
+                    if not secrets.compare_digest(self.headers.get('Authorization',''),'Bearer '+token):
+                        self.reply(401,{'error':'unauthorized'});return
+                    if media is None:
+                        self.reply(503,{'error':'media_provider_unavailable'});return
+                    try:
+                        length=int(self.headers.get('Content-Length','0'))
+                        if not 0<length<=370000:raise ValueError()
+                        value=json.loads(self.rfile.read(length))
+                        if not media_module.valid_request(value):raise ValueError()
+                    except (ValueError,TypeError):
+                        self.reply(400,{'error':'invalid_request'});return
+                    try:self.reply(200,media.fetch(value))
+                    except Exception:self.reply(503,{'error':'media_provider_unavailable'})
+                    return
                 if self.path != '/v1/anisette':
                     self.reply(404, {'error': 'not_found'}); return
                 if not secrets.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + token):
@@ -237,6 +263,7 @@ def main():
         finally:
             server.server_close()
     finally:
+        if media is not None:media.close()
         transport.close()
 
 
