@@ -542,6 +542,9 @@ exchange(const uint8_t *p, size_t n)
  * firmware loads and answers are awaited; 4 ms once the sensors run, where samples come every 20 ms or slower)
  */
 static uint32_t idle_us = 500;
+/* Open GNSS clients need timely patch/command replies even with the display off.
+ * The SPI owner reads this without shub_lock; open/close serialize the count. */
+static uint32_t gnss_poll_users;
 extern volatile int redwood_display_is_on;     /* (redwood_exynos_acpm.c) */
 
 static void
@@ -555,7 +558,8 @@ pump(uint32_t ms, bool (*done)(void))
 		}
 		if (host_req()) {
 			(void)exchange(NULL, 0);
-		} else if (idle_us >= 1000 && !redwood_display_is_on) {
+		} else if (idle_us >= 1000 && !redwood_display_is_on &&
+		    __atomic_load_n(&gnss_poll_users, __ATOMIC_RELAXED) == 0) {
 			/* (B, 2026-11-07) display off: 100 ms between looks, not 4 (250 wakeups a second kept the big cores up;
 			 * the samples wait in the hub). An interrupt on HOST_REQ (gpa1-7 EINT) is the real fix. */
 			delay_for_interval(100000, NSEC_PER_USEC);
@@ -1495,6 +1499,7 @@ gnss_open(__unused dev_t dev, __unused int flags, __unused int devtype, __unused
 {
 	lck_mtx_lock(&shub_lock);
 	gnss_readers++;
+	__atomic_store_n(&gnss_poll_users, (uint32_t)gnss_readers, __ATOMIC_RELAXED);
 	lck_mtx_unlock(&shub_lock);
 	return 0;
 }
@@ -1506,6 +1511,7 @@ gnss_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unuse
 	if (gnss_readers > 0 && --gnss_readers == 0) {
 		gnss_tail = gnss_head;
 	}
+	__atomic_store_n(&gnss_poll_users, (uint32_t)gnss_readers, __ATOMIC_RELAXED);
 	lck_mtx_unlock(&shub_lock);
 	return 0;
 }

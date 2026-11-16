@@ -850,11 +850,8 @@ struct rwa_vertex_layout {
  * end.
  *
  * It is in the SHAPE because that is where Metal puts it -- blend state is compiled into
- * the pipeline, not set on the encoder -- with ONE exception that is therefore refused:
- * the four factors that read Metal's BLEND COLOUR
- * (-setBlendColorRed:green:blue:alpha:) are encoder state, this contract has nowhere to
- * carry it, and the driver's own setter is a stub. See the refusal list at
- * rwa_render_create.
+ * the pipeline, not set on the encoder. The constant blend colour itself is
+ * encoder state and is supplied separately in rwa_draw.blend_color.
  */
 struct rwa_color_blend {
 	unsigned blending_enabled;               /* isBlendingEnabled */
@@ -1115,15 +1112,6 @@ void rwa_depth_stencil_destroy(struct rwa_depth_stencil *state);
  * blend fields were added to end, so each is a sentence with the caller's own words in
  * it:
  *
- *   - MTLBlendFactorBlendColor, OneMinusBlendColor, BlendAlpha and OneMinusBlendAlpha
- *     (11-14). Gallium has all four (PIPE_BLENDFACTOR_CONST_COLOR and friends) and so
- *     does the hardware; what nothing here has is the COLOUR. Metal keeps it on the
- *     encoder, -setBlendColorRed:green:blue:alpha:, so it is not pipeline state and not
- *     in this shape -- and the driver's own setter is a stub that drops it. Honouring
- *     them would blend against the zero a Gallium context starts with, which is
- *     "multiply by nothing": the layer would vanish instead of failing. Serving them is
- *     one float[4] in rwa_draw and one call to set_blend_color, on the day something
- *     asks.
  *   - MTLBlendFactorSource1Color, OneMinusSource1Color, Source1Alpha and
  *     OneMinusSource1Alpha (15-18): dual-source blending, where the second factor comes
  *     from a SECOND fragment output at [[color(0), index(1)]]. Neither this contract nor
@@ -1407,6 +1395,8 @@ struct rwa_draw {
 	const unsigned *color_level;
 	const unsigned *color_layer;
 	unsigned depth_level, depth_layer;
+	/* Encoder blend colour at this draw, or NULL for Metal's zero default. */
+	const float *blend_color;
 };
 
 /* A pass that clears and draws nothing: the attachments, clear values and `deferred` of
