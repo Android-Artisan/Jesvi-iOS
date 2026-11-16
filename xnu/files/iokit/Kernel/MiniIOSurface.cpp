@@ -235,6 +235,7 @@ poolGive(int slot)
 static int gCameraPoolSlot = -1;
 static int gCameraPoolSlot2 = -1;      /* the next slot as well, when the camera asks for more than one slot (adjacent: contiguous) */
 static int gCameraPoolSlot3 = -1;      /* and the one after it: the rear main's full 4032x3024 RAW10, double-buffered (~31 MB) */
+static int gCameraPoolSlot4 = -1;      /* GW2 full crop double buffering exceeds three14MB slots. */
 static IOMemoryDescriptor *gCameraPoolMemory;
 static IOMemoryMap *gCameraPoolMap;
 static IOMemoryMap *gCameraPoolCached;  /* a second, cached mapping for reading finished frames fast (B, 2026-11-11) */
@@ -275,7 +276,7 @@ redwood_camera_dma_cached(void)
 extern "C" bool
 redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 {
-	if (!bytes || bytes > 3ULL * POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
+	if (!bytes || bytes > 4ULL * POOL_SLOT || !phys || !virt || !gSurfaceLock) return false;
 	IOLockLock(gSurfaceLock);
 	if (gCameraPoolSlot >= 0) { IOLockUnlock(gSurfaceLock); return false; }
 	uint64_t address = 0;
@@ -283,17 +284,18 @@ redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 	if (bytes <= POOL_SLOT) {
 		slot = poolTake(bytes, &address);
 	} else {
-		/* two (or three) adjacent free slots, taken together (full-resolution camera frames, double-buffered: about
+		/* two, three or four adjacent free slots, taken together (full-resolution camera frames, double-buffered: about
 		 * 25 MB for the front's 3648x2736, 31 MB for the rear main's 4032x3024) */
-		uint32_t n = bytes > 2ULL * POOL_SLOT ? 3 : 2;
-		(void)poolTake(1, &address);    /* (looks the pool up once) */
-		poolGive((int)((address - gPoolBase) / POOL_SLOT));
+		uint32_t n = bytes > 3ULL * POOL_SLOT ? 4 : bytes > 2ULL * POOL_SLOT ? 3 : 2;
+		int probe = poolTake(1, &address); /* initialize pool; may have no free slot */
+		poolGive(probe);
 		for (uint32_t i = 0; gPoolBase && i + n - 1 < gPoolSlots; i++) {
 			uint32_t used = gPoolUsed, run = ((1u << n) - 1) << i;
 			if (!(used & run) && OSCompareAndSwap(used, used | run, &gPoolUsed)) {
 				slot = (int)i;
 				gCameraPoolSlot2 = (int)i + 1;
-				gCameraPoolSlot3 = n == 3 ? (int)i + 2 : -1;
+				gCameraPoolSlot3 = n >= 3 ? (int)i + 2 : -1;
+				gCameraPoolSlot4 = n == 4 ? (int)i + 3 : -1;
 				address = gPoolBase + (uint64_t)i * POOL_SLOT;
 				break;
 			}
@@ -310,6 +312,7 @@ redwood_camera_dma_get(uint64_t bytes, uint64_t *phys, void **virt)
 		gCameraPoolSlot2 = -1;
 		poolGive(gCameraPoolSlot3);
 		gCameraPoolSlot3 = -1;
+		poolGive(gCameraPoolSlot4);gCameraPoolSlot4 = -1;
 		IOLockUnlock(gSurfaceLock);
 		return false;
 	}
@@ -336,6 +339,7 @@ redwood_camera_dma_put(void)
 	gCameraPoolSlot2 = -1;
 	poolGive(gCameraPoolSlot3);
 	gCameraPoolSlot3 = -1;
+	poolGive(gCameraPoolSlot4);gCameraPoolSlot4 = -1;
 	IOLockUnlock(gSurfaceLock);
 }
 

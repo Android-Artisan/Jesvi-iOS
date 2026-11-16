@@ -34,6 +34,7 @@ class ImageTests(unittest.TestCase):
             tweak=data/'private/var/jb/usr/lib/TweakInject/RedwoodCameraLenses.plist'
             self.assertEqual(plistlib.loads(tweak.read_bytes())['Filter']['Bundles'],['com.apple.camera'])
             self.assertTrue((data/(module.CACHE.lstrip('/')+'/redwood-ultrawide-enable')).is_file())
+            self.assertTrue((data/(module.CACHE.lstrip('/')+'/redwood-gw2-enable')).is_file())
             self.assertLess(len((root/'etc/seed.list').read_bytes()),4096)
     def test_missing_artifacts_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

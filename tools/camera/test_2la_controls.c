@@ -14,4 +14,12 @@ int main(void){struct mock m=initial();struct ax_2la_control_report r={0};struct
  assert(!ax_2la_controls_valid(6637,0x20));assert(!ax_2la_controls_valid(100,0x201));assert(!ax_2la_controls_valid(UINT64_MAX,0x20));
  assert(ax_2la_controls_valid(16,0x20)&&ax_2la_controls_valid(6636,0x200));
  m=initial();m.regs[0x0340]=1000;assert(!ax_2la_controls_apply(io,3000,0x20,&r)&&m.writes==0);
+ m=initial();m.regs[0x0340]=3608;m.regs[0x0342]=17680;
+ assert(ax_gw2_controls_apply(io,3000,0x80,&r)&&r.applied);
+ count=m.calls;for(unsigned i=1;i<=count;i++){m=initial();m.regs[0x0340]=3608;m.regs[0x0342]=17680;m.fail=i;r=(struct ax_2la_control_report){0};assert(!ax_gw2_controls_apply(io,3000,0x80,&r)&&m.calls==i&&!r.applied);}
+ m=initial();m.regs[0x0340]=3608;m.regs[0x0342]=17680;
+ assert(!ax_gw2_controls_apply(io,3593,0x20,&r)&&m.calls==0);
+ m=initial();m.regs[0x0340]=5166;m.regs[0x0342]=12304;
+ assert(ax_gw2_full_controls_apply(io,5000,0x80,&r)&&r.applied);
+ assert(!ax_gw2_full_controls_apply(io,5151,0x20,&r));
  puts("PASS: 2LA stock bounds/mode guard, exposure-gain readback, and fail-fast at every I2C operation");}

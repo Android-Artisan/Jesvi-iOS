@@ -26,8 +26,9 @@ def prepare(root, binaries):
             leaf = name+'.'+extension
             entries.append(f'{mode}\t0\t0\t/private/var/jb/usr/lib/TweakInject/{leaf}\t/seed/{leaf}')
     # Empty enable file is intentional; no cached exposure/calibration is shipped.
-    (seed/'redwood-ultrawide-enable').write_text('')
-    entries.append(f'644\t501\t501\t{CACHE}/redwood-ultrawide-enable\t/seed/redwood-ultrawide-enable')
+    for flag in ('redwood-ultrawide-enable','redwood-gw2-enable'):
+        (seed/flag).write_text('')
+        entries.append(f'644\t501\t501\t{CACHE}/{flag}\t/seed/{flag}')
     manifest = root/'etc/seed.list'
     lines = manifest.read_text().splitlines() if manifest.exists() else []
     destinations = {line.split('\t')[3] for line in entries}
