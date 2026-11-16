@@ -8,7 +8,7 @@
 static int output=-1;
 static void record(NSString *stage,NSDictionary *flags){
  if(output<0)return;
- NSDictionary *entry=@{@"event":@"media_auth_flow",@"stage":stage,@"pid":@(getpid()),@"process":NSProcessInfo.processInfo.processName,@"flags":flags};
+ NSDictionary *entry=@{@"event":@"media_auth_flow",@"stage":stage,@"pid":@(getpid()),@"process":NSProcessInfo.processInfo.processName,@"flags":flags,@"time":@(NSDate.date.timeIntervalSince1970)};
  NSData *bytes=[NSJSONSerialization dataWithJSONObject:entry options:0 error:NULL];
  if(bytes){write(output,bytes.bytes,bytes.length);write(output,"\n",1);}
 }

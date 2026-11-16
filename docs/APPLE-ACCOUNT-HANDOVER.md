@@ -1,3 +1,28 @@
+## CURRENT: coordinated private response capture replaces fragmented tracing
+
+User explicitly criticized repeated expensive UI trials, requested better root-level tools/logging. Do NOT add another isolated hook/ask for another trial for each observation. New coordinated recorder tested and installed; next action is ONE monitored AppStore trial, then analyze captured bytes offline.
+
+Latest prior trial AppStore11764: native SRP success, authkit_delegate result13fields/native_continue=true, process_authkit_update accountpresent/result14fields, finish_verified_account accountnil. iTunesStore0, iCloud account1. Native app-token API observer never fired, session-isolation marker never fired even though gsas200/401 observed. Removed ineffective session-isolation rule and restarted akd. Static literal behind AMS0 reads "Unknown Error / Request finished without a result." No proven server rejection reason. Do not call gsas401 causal until correlated to actual request.
+
+NEW tools:
+- media-transaction-recorder.m: Foundation __NSCFLocalSessionTask _onqueue_resume, connection:didReceiveData:completion:, _onqueue_didFinishWithError: typed, originals unchanged. Opt-in capture.json with random32hex run and expiry<=900sec. Request IDs pid-counter, timestamps/duration, process, host/sanitized path (NO query), header NAMES only, request-body LENGTH only, real HTTP status/error/response metadata. No request body/credential values recorded.
+- Actual decrypted RESPONSE bytes streamed unchanged to private files, <=2MB per response/8MB per process per run, truncation flagged; in-flight captured tasks can finish after arming deadline/disarm, bounds still enforced. Raw responses can contain account tokens; owner explicitly authorized private debugging. Files stay mode0600 under mobile-owned0700 directory /var/mobile/Library/RedwoodAppleAccountLab/private-capture/<run>. Never cat/raw-print/commit. Local collection in ignored out/apple-account/private/capture-<run>.
+- Scope: gsa.apple.com,gsas.apple.com,auth.itunes.apple.com,buy.itunes.apple.com and *-buy.itunes.apple.com. No helper loopback traffic/image/catalog capture. This is in-process plaintext response data, NOT a claim of exact TLS wire headers.
+- media-capture.py prepare/collect/disarm/watch --ssh-config privateconfig. Controller correlates events, privately collects response files, outputs fixed nested protocol error/status summaries only. Watch streams relevant request/native-flow events, stops3sec after finish_verified_account, auto-collect/disarm; otherwise expires. State private media-capture-active.json. Parent/run directories tested mobile-readable/writeable, raw artifact ignored bygit.
+- media-auth-flow-probe.m now timestamped, compiled into combined recorder. Synthetic preservation test previously passed. Existing standalone oldflow rule REMOVED to prevent duplicate tracing. app-token-error-probe rule also REMOVED (unused). Core shared9b41/Mescal helper unchanged.
+- session-data-metadata.m confirms exact Foundation callback ABI; media-static-strings.m reads ONLY two known constant NSString literals, never account memory. Metadata/static probes no auth calls.
+
+LIVE addon: /var/tmp/media-transaction-recorder-v1.dylib akd accountsd appleaccountd amsaccountsd appstored itunesstored storeaccountd Preferences AppStore. Installed immutable tested bytes; six native services restarted once, UI apps closed to load recorder on next launch. installedtrue markers for akd11869/accountsd11874/appleaccountd11879/amsaccountsd11884/appstored11889/itunesstored11894. Native auth health passes. No account reset/reboot/credential substitution. Deployment manifest ignored media-recorder-deployment.json records replaced observers. Do not overwrite signed mapped binaries.
+
+Tests: root AND mobile UID live localhost HTTP200/401 each160016bytes, native completion status/body unchanged, captured bytes match byte-for-byte, no truncation, request-body sentinel absent from metadata. Local-only fixture ports cleaned. test-media-capture.py checks nested Response.Status.ec plist/JSON, HTML/binary distinction, excludes token/account/message values. All pass. Fixture captures contain synthetic data only. Real capture not yet armed at doc write; prepare/watch next before user trial.
+
+Commands from worktree:
+python3 tools/apple-account/media-capture.py prepare --seconds 600 --ssh-config out/apple-account/private/account-hotspot-ssh.conf
+python3 -u tools/apple-account/media-capture.py watch --ssh-config out/apple-account/private/account-hotspot-ssh.conf
+Manual collection if watcher interrupted:
+python3 tools/apple-account/media-capture.py collect --ssh-config out/apple-account/private/account-hotspot-ssh.conf
+Raw files are private even after collection; inspect with code in memory and print ONLY redacted/numeric findings. Do not assert success from HTTP200; correlate application status and native store-account save.
+
 ## CURRENT control: isolate gsas session storage, trial pending
 
 - Latest AppStore11708 flow: native AuthKit delegate result13fields, password/username/DSID/AltDSID keys present, native_continue=true; process_authkit_update result14fields/accountpresent; finish_verified_account accountnil -> media failure loop. Native SRP successful, real helper sign events. iTunesStore count0, iCloud account1 active/authenticatedflagfalse. No successful download.

@@ -57,6 +57,10 @@ All commands below run from this worktree. `out/apple-account/private/` is ignor
 it holds machine proofs/state, the private SSH key and broker token. Never commit,
 print, distribute, or indiscriminately search its contents.
 
+## Coordinated Media capture (current)
+
+Read the latest handoff first. Media sign-in remains unresolved. Use media-capture.py prepare/watch to capture one full attempt with timed per-request metadata and protected decrypted response files; request bodies are excluded. media-transaction-recorder-v1.dylib is installed as an additive recorder, replacing unused observer addons. Byte-for-byte native HTTP200/401 fixture tests passed under root and mobile. Keep raw files in ignored private out; never print or commit them. The older pending comparison instructions below are historical.
+
 ## Current pending test
 
 Read the current handoff before old instructions below. The armed comparison now runs **on the phone**, public NSURLSession worker11 after native401, with exact phone body/helper snapshot. Old observer `mac_http_status` label is misleading for this test; local service logs worker_target=phone. Both Mac HTTP200 and application service status0 were confirmed in the preceding comparison. Current helpers: native provider7, broker auto-recovery, phone-helper-tunnel.py supervisor. No working native S20 sign-in yet.
