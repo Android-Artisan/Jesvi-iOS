@@ -38,6 +38,9 @@ int main(void){
  unsigned old_writes=writes;af.state=AF_SWEEP;f.focus=position;af_frame(1,&af,&f,NULL,window,true);
  assert(writes==old_writes&&af.state==AF_WATCH&&af.at==f.focus);
  f.focus=REDWOOD_CAMERA_NO_FOCUS;af_frame(1,&af,&f,NULL,window,true);assert(writes==old_writes);
+ f.sensor=4;scene=2;position=500;af=(struct af){.state=AF_STEADY,.now=true,.sweep=true};
+ for(unsigned n=0;n<300;n++){f.focus=position;af_frame(1,&af,&f,NULL,window,false);}
+ assert(af.state==AF_WATCH&&abs((int)position-1022)<=AF_FINE);
  /* Front's existing controller range is unchanged by the primary-only patch. */
  af=(struct af){.at=250};limit=768;af_go(1,&af,700);assert(af.target==700);
  puts("PASS: primary scaled9-bit search converges, lock stops moves, unavailable motor ignored, front behaviour preserved");

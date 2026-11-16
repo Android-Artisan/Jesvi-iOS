@@ -21,6 +21,8 @@
 #include "redwood_camera_s20_controls.h"
 #include "redwood_camera_s20_aux_power.h"
 #include "redwood_camera_s20_gw2_power.h"
+#include "redwood_camera_s20_gw2.h"
+#include "redwood_camera_s20_gw2_table.h"
 #include "redwood_camera_s20_main_voltage.h"
 #include "redwood_camera_s20_aux_table.h"
 #include "redwood_camera_s20_2la.h"
@@ -214,6 +216,8 @@ cam_s20_cphy_2ld_config(volatile uint8_t *phy, volatile uint8_t *bias)
 
 /* the session streams the rear main (S5K2LD over C-PHY/CSIS0/WDMA2) instead of the front: REDWOOD_CAMERA_SENSOR mode 2 */
 static bool cam_s20_rear;
+static bool cam_s20_gw2_now;
+void redwood_camera_s20_set_gw2(bool enabled){cam_s20_gw2_now=enabled;}
 void redwood_camera_s20_set_rear(bool rear) { cam_s20_rear = rear; }
 /*
  * The rear main in its full 4032x3024 mode (Samsung's setA A0: what the stock camera shows and shoots, 2964 Msps
@@ -252,6 +256,7 @@ redwood_camera_s20_rear_full(void)
  */
 static struct redwood_bbi2c cam_s20_af_bus = { .name = "AK737x HSI2C24 gpp8-0/1", .scl = 0, .sda = 1, .half_us = 4 };
 static bool cam_s20_af_ready;
+static uint8_t cam_s20_af_address=0x0c;
 static volatile uint32_t cam_s20_af_pos = 0xffffffffU;    /* 0..511 while the motor is up */
 static volatile uint32_t cam_s20_af_want;
 static volatile bool cam_s20_af_pending;
@@ -259,7 +264,7 @@ static volatile bool cam_s20_af_pending;
 static bool
 cam_s20_af_w(uint8_t reg, uint8_t value)
 {
-	return redwood_bbi2c_write_reg(&cam_s20_af_bus, 0x0c, reg, value);
+	return redwood_bbi2c_write_reg(&cam_s20_af_bus, cam_s20_af_address, reg, value);
 }
 
 static bool
@@ -270,8 +275,9 @@ cam_s20_af_set(uint32_t p)
 }
 
 static bool
-cam_s20_af_up(void)
+cam_s20_af_up_for(bool rear,bool gw2)
 {
+    cam_s20_af_address=gw2?0x0f:0x0c;cam_s20_af_pending=false;
 	char report[160];
 	uint8_t id = 0;
 
@@ -279,7 +285,7 @@ cam_s20_af_up(void)
 	 * The rear main's lens motor is an AK737x too, at 0x0c on HSI2C0 (x1slte fragment@17 is-actuator@0C, id 0):
 	 * gpp0-0 SCL, gpp0-1 SDA (pinctrl hsi2c0-bus) -- 2026-11-12.
 	 */
-	if (cam_s20_rear) {
+	if (rear) {
 		cam_s20_af_bus.name = "AK737x HSI2C0 gpp0-0/1 (rear)";
 		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC0_PHYS, 0x00);  /* gpp0 */
 	} else {
@@ -287,24 +293,26 @@ cam_s20_af_up(void)
 		cam_s20_af_bus.bank = redwood_gpio_bank(PINCTRL_PERIC1_PHYS, 0x60);  /* gpp8 */
 	}
 	if (cam_s20_af_bus.bank == NULL || !redwood_bbi2c_setup(&cam_s20_af_bus, true, report, sizeof(report))) {
-		printf("camera: %s focus: its bus cannot be used (%s)\n", cam_s20_rear ? "rear" : "front", report);
+		printf("camera: %s focus: its bus cannot be used (%s)\n", gw2?"GW2":rear?"rear":"front", report);
 		return false;
 	}
 	if (!cam_s20_af_w(0x02, 0x40)) goto fail;
 	cam_s20_wait_ms(1);
-	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, 0x0c, 0xf3, &id, 1)) goto fail;
+	if (!redwood_bbi2c_read_reg(&cam_s20_af_bus, cam_s20_af_address, 0xf3, &id, 1)) goto fail;
 	if (!cam_s20_af_set(250)) goto fail;
 	cam_s20_wait_ms(2);
 	if (!cam_s20_af_w(0x02, 0x00)) goto fail;
 	cam_s20_af_ready = true;
 	cam_s20_af_pos = 250;
-	printf("camera: %s focus: AK737x (id %#x) up, the lens at 250 of 511\n", cam_s20_rear ? "rear" : "front", id);
+	printf("camera: %s focus: AK737x (id %#x) up, the lens at 250 of 511\n", gw2?"GW2":rear?"rear":"front", id);
 	return true;
 fail:
-	printf("camera: %s focus: the AK737x does not answer at 0x0c; no focus in this session\n", cam_s20_rear ? "rear" : "front");
+	printf("camera: %s focus: the AK737x does not answer at 0x0c; no focus in this session\n", gw2?"GW2":rear?"rear":"front");
 	redwood_bbi2c_restore(&cam_s20_af_bus);
 	return false;
 }
+
+static bool cam_s20_af_up(void){return cam_s20_af_up_for(cam_s20_rear,cam_s20_gw2_now);}
 
 static void
 cam_s20_af_down(void)
@@ -1157,6 +1165,7 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, camera_frame, CTLTYPE_OPAQUE | CTLFLAG_RD |
 static bool cam_s20_ultra;
 void redwood_camera_s20_set_ultra(bool ultra){cam_s20_ultra=ultra;}
 static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap);
+static bool cam_s20_gw2_live(redwood_s20_frame_fn fn,char *out,size_t cap);
 static bool cam_s20_full;
 #define CAM_S20_W (cam_s20_full ? 3648U : 1824U)
 #define CAM_S20_H (cam_s20_full ? 2736U : 1368U)
@@ -1195,7 +1204,8 @@ redwood_camera_s20_stream(redwood_s20_frame_fn fn, char *out, size_t cap)
 	cam_s20_stream_exposure_failed = false;
 	cam_s20_stream_fn = fn;
 	bool clean=true;
-    if(cam_s20_ultra)clean=cam_s20_2la_live(fn,out,cap);
+    if(cam_s20_gw2_now)clean=cam_s20_gw2_live(fn,out,cap);
+    else if(cam_s20_ultra)clean=cam_s20_2la_live(fn,out,cap);
     else cam_s20_dma_pattern(args, 2, out, cap);
 	cam_s20_stream_fn = NULL;
 	return clean && cam_s20_stream_frames != 0 && !cam_s20_stream_exposure_failed;
@@ -2997,26 +3007,54 @@ static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
 }
 #include "redwood_camera_s20_aux_rx_impl.h"
 
+static bool aux_gw2_send(void *context,const uint8_t *bytes,unsigned count){
+    return redwood_bbi2c_xfer(context,0x2d,bytes,count,NULL,0);
+}
+static bool aux_gw2_program(struct redwood_bbi2c *bus,bool full){
+    struct cam_gw2_table_io io={bus,aux_gw2_send,aux_sensor_pause};
+#define GW2_TABLE(t) cam_gw2_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
+    bool ok=GW2_TABLE(redwood_GW2_setfile_A_Tnp)&&GW2_TABLE(redwood_GW2_setfile_A_Global)&&
+        GW2_TABLE(redwood_gw2_dual_single_A_settings)&&(full?GW2_TABLE(redwood_gw2_setfile_A_4864x3648_30fps):GW2_TABLE(redwood_gw2_setfile_A_2432x1824_30fps));
+#undef GW2_TABLE
+    /* No unvalidated EEPROM data: stock driver's uncalibrated-module fallback.
+     * PDXTC/PDAF calibration and image quality remain separate qualification. */
+    return ok&&aux_sensor_write16(bus,0x6028,0x2000)&&aux_sensor_write16(bus,0x602a,0x55b0)&&
+        aux_sensor_write16(bus,0x6f12,0)&&aux_sensor_write16(bus,0xfcfc,0x4000);
+}
+static bool cam_gw2_upload_slow;
+static bool aux_gw2_tables(struct redwood_bbi2c *bus,bool full){
+    /* Speed only the bounded upload; identity/control reads retain4us timing. */
+    uint32_t saved=bus->half_us;
+    bus->half_us=cam_gw2_upload_slow?4U:(uint32_t)__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED);
+    bool ok=aux_gw2_program(bus,full);
+    if(!ok&&bus->half_us<4){
+        cam_gw2_upload_slow=true;bus->half_us=4;
+        printf("camera: GW2 fast upload failed; replaying sensor reset/TNP at4us\n");
+        ok=aux_gw2_program(bus,full);
+    }
+    bus->half_us=saved;return ok;
+}
 static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, redwood_s20_frame_fn fn, bool session, char *out, size_t cap) {
     struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};
     struct cam_aux_power rails={0};
     struct cam_gw2_power gw2_rails={0};
     struct ax_receiver receiver={0};bool receiver_started=false;
+    bool gw2_full=gw2&&raw&&n==3&&args[2]==1;
     struct ax_2la_control_report controls={0};
     uint64_t requested_lines=raw&&n>0?args[0]:3000,requested_gain=raw&&n>1?args[1]:0x20;
     if(session){requested_lines=cam_s20_exp_lines;requested_gain=cam_s20_exp_gain;}
-    bool pmic03_saved=false,stream_sent=false,stream_stop=false;
+    bool pmic03_saved=false,stream_sent=false,stream_stop=false,af_started=false;
     unsigned counter_changes=0;uint8_t last_counter=0xff;
     volatile uint8_t *reset=NULL,*mclk=NULL,*cmu=NULL;
     uint32_t offs[4]={0x1024,0x1820,0x2028,0x3010};
     unsigned mclk_pin=gw2?0:3;
     const char *sensor=gw2?"GW2":"2LA";
     uint32_t r[3]={0},m[3]={0},clock[4]={0};
-    uint8_t model[2]={0},revision[2]={0};
+    uint8_t model[2]={0},revision[2]={0};uint16_t mode_width=0,mode_height=0;
     bool pins=false,bus_saved=false,powered=false,clock_saved=false,clean=true,ok=false;
     const char *phase="busy";
     if(!cap)return false;
-    if((!raw&&n)||(raw&&(n>2||!ax_2la_controls_valid(requested_lines,requested_gain)))){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return false;}
+    if((!raw&&n)||(raw&&(n>(gw2?3U:2U)||(gw2&&n==3&&args[2]>1)||!ax_2la_controls_valid(requested_lines,requested_gain)))){snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"bad_arguments\"}\n",sensor);return false;}
     if(!session&&!redwood_camera_aux_acquire())goto report;
     if(raw&&!fn){
         lck_mtx_lock(&cam_frame_lock);
@@ -3073,23 +3111,30 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
     if(ok&&(model[0]==0&&model[1]==0))ok=false;
     if(ok&&(model[0]==0xff&&model[1]==0xff))ok=false;
     if(stream){
-        if(!ok||gw2||model[0]!=0x20||model[1]!=0xca||revision[0]!=0xa2||revision[1]!=0x02){ok=false;phase="A202 model/revision gate";goto cleanup;}
-        phase="A202 initial/global2/mode/single-sync";
+        if(!ok||(gw2?(model[0]!=0x09||model[1]!=0x72||revision[0]!=0xa3||revision[1]!=0):
+            (model[0]!=0x20||model[1]!=0xca||revision[0]!=0xa2||revision[1]!=0x02))){ok=false;phase="A202 model/revision gate";goto cleanup;}
+        phase=gw2?"A300 TNP/global/single-sync/2432x1824 mode":"A202 initial/global2/mode/single-sync";
         struct cam_aux_table_io io={&bus,aux_sensor_write16,aux_sensor_pause};
 #define AUX_TABLE(t) cam_aux_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
-        ok=AUX_TABLE(redwood_2la_setfile_A_initial_setting)&&AUX_TABLE(redwood_2la_setfile_A_Global_2)&&
+        ok=gw2?aux_gw2_tables(&bus,gw2_full):AUX_TABLE(redwood_2la_setfile_A_initial_setting)&&AUX_TABLE(redwood_2la_setfile_A_Global_2)&&
            AUX_TABLE(redwood_2la_setfile_A_4032x3024_30fps)&&AUX_TABLE(redwood_2la_dual_single_A_settings);
 #undef AUX_TABLE
         if(!ok)goto cleanup;
         uint8_t size[4]={0};phase="mode output readback";
-        ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
+        if(gw2){
+            ok=aux_sensor_read16(&bus,0x034c,&mode_width)&&aux_sensor_read16(&bus,0x034e,&mode_height)&&mode_width==(gw2_full?4864:2432)&&mode_height==(gw2_full?3648:1824);
+        }else{
+            ok=aux_sensor_read(&bus,0x034c,size,4)&&size[0]==0x0f&&size[1]==0xc0&&size[2]==0x0b&&size[3]==0xd0;
+            mode_width=(size[0]<<8)|size[1];mode_height=(size[2]<<8)|size[3];
+        }
         if(!ok)goto cleanup;
+        if(gw2&&raw){phase="GW2 AK737x motor0x0f";if(!cam_s20_af_up_for(true,true)){ok=false;goto cleanup;}af_started=true;}
         if(raw){
             phase="bounded exposure/gain readback";
             struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
-            if(!ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls)){ok=false;goto cleanup;}
+            if(!(gw2?(gw2_full?ax_gw2_full_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls):ax_gw2_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls)):ax_2la_controls_apply(control_io,(uint16_t)requested_lines,(uint16_t)requested_gain,&controls))){ok=false;goto cleanup;}
         }
-        if(raw){receiver_started=true;if(!(fn?ax_receiver_begin_mode(&receiver,true):ax_receiver_begin(&receiver))){ok=false;phase=receiver.phase;goto cleanup;}}
+        if(raw){receiver_started=true;if(!ax_receiver_begin_sensor(&receiver,fn!=NULL,gw2_full?2:gw2?1:0)){ok=false;phase=receiver.phase;goto cleanup;}}
         phase=raw?"sensor and RAW receiver":"sensor frame counter (no receiver)";stream_sent=true;
         ok=aux_sensor_write16(&bus,0x0100,0x0100);
         if(!ok)goto cleanup;
@@ -3101,12 +3146,16 @@ static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *arg
                 if(failed){ok=false;phase="continuous receiver error";break;}
                 if(!data){if(++idle>1500){ok=false;phase="continuous frame timeout";break;}cam_s20_wait_ms(1);continue;}
                 idle=0;cam_s20_stream_frames++;
-                more=fn(data,4032,3024,5040);
+                more=fn(data,mode_width,mode_height,((mode_width*10/8+15)&~15U));
+                if(gw2&&cam_s20_af_pending&&cam_s20_af_ready){
+                    uint32_t want=cam_s20_af_want;cam_s20_af_pending=false;
+                    if(want!=cam_s20_af_pos){if(!cam_s20_af_set(want)){ok=false;phase="GW2 focus write failed";break;}cam_s20_af_pos=want;}
+                }
                 if(cam_s20_exp_pending&&more){
                     uint32_t lines=cam_s20_exp_lines,gain=cam_s20_exp_gain;
                     cam_s20_exp_pending=false;
                     struct ax_2la_control_io control_io={&bus,aux_sensor_read16,aux_sensor_write16,aux_sensor_write8};
-                    if(!ax_2la_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls)){
+                    if(!(gw2?(gw2_full?ax_gw2_full_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls):ax_gw2_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls)):ax_2la_controls_apply(control_io,(uint16_t)lines,(uint16_t)gain,&controls))){
                         ok=false;cam_s20_stream_exposure_failed=true;phase="continuous exposure readback failed";break;
                     }
                 }
@@ -3133,6 +3182,7 @@ cleanup:
         if(!fn&&!receiver.exported)ok=false;
         if(!fn||!clean)phase=receiver.phase;
     }
+    if(af_started)cam_s20_af_down();
     if(pins){redwood_gpio_set(reset,0,0);redwood_gpio_set(mclk,mclk_pin,0);redwood_gpio_func(mclk,mclk_pin,REDWOOD_GPIO_OUTPUT);}
     if(clock_saved){
         /* Gate first; then restore div/mux/QCH and the prior gate exactly. */
@@ -3161,14 +3211,18 @@ cleanup:
     }
     redwood_camera_aux_release(clean);
 report:
-    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
+    snprintf(out,cap,"{\"camera\":\"%s\",\"result\":\"%s\",\"phase\":\"%s\",\"model\":\"0x%02x%02x\",\"revision\":\"0x%02x%02x\",\"cleanup_ok\":%s,\"streamed\":%s,\"counter_changes\":%u,\"stream_stop_verified\":%s,\"raw_exported\":%s,\"receiver_irq\":%u,\"receiver_error\":%u,\"receiver_frames\":%u,\"changed_words\":%u,\"link_errors\":[%u,%u],\"link_irq_raw\":[%u,%u],\"controls_applied\":%s,\"controls_before\":[%u,%u,%u],\"controls_after\":[%u,%u,%u],\"frame_lines\":%u,\"line_pck\":%u,\"guard_errors\":%u,\"pixel_range\":[%u,%u],\"receiver_write\":[%u,%u,%u,%u,%u],\"mode_size\":[%u,%u],\"buffer_retained\":%s}\n",sensor,ok&&clean?(fn?"stream_complete":raw?"raw_exported":stream?"counter_advanced":"id_read"):"not_verified",phase,model[0],model[1],revision[0],revision[1],clean?"true":"false",stream_sent&&counter_changes>=2?"true":"false",counter_changes,stream_stop?"true":"false",
         receiver.exported?"true":"false",receiver.irq,receiver.error,receiver.frames,receiver.changed,receiver.link0&0x00fff07fU,receiver.link1&0x78U,
         receiver.link0,receiver.link1,controls.applied?"true":"false",controls.before[0],controls.before[1],controls.before[2],
         controls.after[0],controls.after[1],controls.after[2],controls.frame_lines,controls.line_pck,receiver.guard_bad,
-        receiver.pixel_min,receiver.pixel_max,receiver.retained?"true":"false");
+        receiver.pixel_min,receiver.pixel_max,receiver.failed_region,receiver.failed_offset,receiver.failed_mask,receiver.failed_want,receiver.failed_actual,mode_width,mode_height,receiver.retained?"true":"false");
     return ok&&clean;
 }
 
+static bool cam_s20_gw2_live(redwood_s20_frame_fn fn,char *out,size_t cap){
+    if(redwood_camera_s20_rear_is_warm())redwood_camera_s20_rear_cool();
+    uint64_t args[3]={0,0,1};return cam_s20_aux_run(true,true,true,args,3,fn,true,out,cap);
+}
 static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
     if(redwood_camera_s20_rear_is_warm())redwood_camera_s20_rear_cool();
     return cam_s20_aux_run(false,true,true,NULL,0,fn,true,out,cap);
@@ -3176,6 +3230,9 @@ static bool cam_s20_2la_live(redwood_s20_frame_fn fn,char *out,size_t cap){
 
 static void cam_s20_2la_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,false,false,v,n,NULL,false,out,cap);}
 static void cam_s20_gw2_identify(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,false,false,v,n,NULL,false,out,cap);}
+
+static void cam_s20_gw2_raw(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,true,true,v,n,NULL,false,out,cap);}
+static void cam_s20_gw2_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(true,true,false,v,n,NULL,false,out,cap);}
 
 static void cam_s20_2la_stream(__unused const uint64_t *v,unsigned n,char *out,size_t cap){cam_s20_aux_run(false,true,false,v,n,NULL,false,out,cap);}
 
@@ -3188,6 +3245,8 @@ redwood_exynos_camera_s20_init(void)
 	 * over the existing root-only kern.redwood.poke interface instead. */
 	redwood_dbgport_add("cam.s20.2la.raw", ": [lines [again-code]]: A202 native12MP RAW; default3000 lines/1x; stock bounds/readback, guarded DMA", cam_s20_2la_raw);
 	redwood_dbgport_add("cam.s20.2la.stream", ": A202-only bounded native12MP sensor-counter test; no receiver/DMA; restores power and pins", cam_s20_2la_stream);
+	redwood_dbgport_add("cam.s20.gw2.raw", ": [lines gain [full=1]] A300 guarded RAW10;2432x1824 or4864x3648 with mode/control readback", cam_s20_gw2_raw);
+	redwood_dbgport_add("cam.s20.gw2.stream", ": cold/idle-only A300 TNP and bounded frame-counter test; no receiver or Camera exposure", cam_s20_gw2_stream);
 	redwood_dbgport_add("cam.s20.gw2.id", ": cold/idle-only bounded GW2 identity read; both PMIC rail maps restored, no streaming", cam_s20_gw2_identify);
 	redwood_dbgport_add("cam.s20.2la.id", ": cold/idle-only bounded 2LA identity read; rails/pins/clocks restored, no streaming", cam_s20_2la_identify);
 	redwood_dbgport_add("cam.s20", ": read-only S20 camera pin inventory; no writes", cam_s20_inventory);

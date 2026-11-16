@@ -785,3 +785,29 @@ head. Cold reboot passed; keybag locked, root media hash matches accepted build,
 36frames each UW/main/front passed. Development override is disabled and backed
 up. Source and tracked prebuilts cover clean builds; no data wipe was done.
 See docs/x1slte-camera-wrapup.md and latest SHIPPING.md for hashes and rollback.
+
+## GW2 final integration —2026-11-16
+
+Work moved to feat/s20-gw2-telephoto from f03fd343. GW2 RAW and continuous
+4864x3648 are working; user confirmed3x image and SINGLE native icon cycle
+0.5/1/3 with scale closing. Front processing retained. Source/prebuilt clean
+installation prepared; user explicitly asked commit/push/permanent/latest and
+wrap-up. See docs/x1slte-camera-gw2.md for tests, startup limits and rollback.
+Final deployment and local branch integration are being completed in this turn.
+
+
+### Final permanent GW2 deployment / startup result
+User accepted native SINGLE-icon0.5→1→3 cycle and scale closure. Permanent
+root/recovery/boot installed and read back; root injection verified after cold
+boot, protected keybag locked. GW2 final36-frame probe passed, first frame
+1671.1ms versus2651.4ms before. Primary cold delay remains; no seamless claim.
+See docs/x1slte-camera-gw2.md and build/camera-gw2/permanent for artifacts.
+Camera integration is to be propagated to all18 active branches; archival
+legacy-hackios and snapshots/x1slte-2026-11-14-0547 stay unchanged.
+
+Final post-deployment regressions: ultra-wide, explicit binned primary mode4,
+and front each delivered36frames; primary exposure/gain readback passed in
+mode4. The legacy boot-default mode2 probe delivered36frames but did not
+apply its manual exposure assertion; this is not counted as an exposure pass.
+App primary continues to use its explicit accepted mode. Front remained on its
+original worker. Final regression logs are in the permanent artifact directory.

@@ -1,3 +1,10 @@
+## 2026-11-16 — Third rear sensor and native single-icon cycle
+- Camera's single native lens icon cycles0.5x →1x →3x and closes the scale normally; user confirmed. No overlay or forced three-button layout.
+- GW2 native4864x3648 capture, focus and digital crop above3x are enabled;5x/10x trials retained GW2. This is not5x optical zoom. Primary autofocus and the original front worker are preserved.
+- Source, signed media/lens/kernel prebuilts and clean-data enable seeding are included. Permanent recovery/root and standalone boot installed with read-back verification; system/data and loader configuration preserved.
+- GW2 first frame improved2651.4→1671.1ms in a cold probe with safe slow-upload fallback. Primary cold startup remains roughly3s; switching is not seamless.
+- Protected keybag restored locked. See docs/x1slte-camera-gw2.md for validation, limits and rollback; clean seeding is fixture-tested, not a wiped-device installation.
+
 ## 2026-11-16 — Native rear lens control and primary autofocus shipped
 - Native Camera zoom selects ultra-wide below1x and primary at1–5x; front keeps its original processing. GW2 is identified but not exposed.
 - Correct primary rail voltages and full scaled autofocus travel; user confirms close focus works. Rear zoom no longer reconfigures the capture graph during video.

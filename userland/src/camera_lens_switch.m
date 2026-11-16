@@ -18,19 +18,24 @@ static BOOL defaultRearApplied;
 static NSString *defaultRearValue(void) {
     return access(RW_LENS_PRIMARY_TEST_PATH,F_OK)==0?@"1\n":@"0.9\n";
 }
+#ifndef RW_LENS_TELE_ENABLE_PATH
+#define RW_LENS_TELE_ENABLE_PATH "/var/mobile/Library/Caches/com.apple.mediaserverd/redwood-gw2-enable"
+#endif
+static BOOL teleEnabled(void){return access(RW_LENS_TELE_ENABLE_PATH,F_OK)==0;}
+static double maximumZoom(void){return teleEnabled()?16:5;}
 static SEL configurationSelector(void) {
     return NSSelectorFromString(@"configureForDualDeviceWithZoomFactor:minimumZoomFactor:displayMinimumZoomFactor:maximumZoomFactor:displayMaximumZoomFactor:dualCameraSwitchOverZoomFactor:displayDualCameraSwitchOverZoomFactor:");
 }
 static double requestedZoom(void) {
     double z=[NSString stringWithContentsOfFile:control encoding:NSUTF8StringEncoding error:nil].doubleValue;
-    return isfinite(z)&&z>=0.5?fmin(z,5):1;
+    return isfinite(z)&&z>=0.5?fmin(z,maximumZoom()):1;
 }
 /* Stock-style display: 0.5x full ultra-wide, 1x primary. No relabeling. */
 static const double displayBase=1.0;
 static void showZoom(id zoom,double factor) {
     SEL min=NSSelectorFromString(@"setMinAvailableZoomFactor:");
     if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
-    ((void(*)(id,SEL,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5/displayBase,5,5/displayBase,1,1/displayBase);
+    ((void(*)(id,SEL,double,double,double,double,double,double,double))objc_msgSend)(zoom,configurationSelector(),factor,0.5,0.5/displayBase,maximumZoom(),maximumZoom()/displayBase,1,1/displayBase);
     if([zoom respondsToSelector:min])((void(*)(id,SEL,double))objc_msgSend)(zoom,min,0.5);
 }
 @interface RWNativeLensDelegate:NSObject
@@ -45,7 +50,7 @@ static void showZoom(id zoom,double factor) {
 - (id)forwardingTargetForSelector:(SEL)selector {return self.original;}
 - (BOOL)writeZoom:(double)factor {
     if(!isfinite(factor))return NO;
-    factor=fmax(0.5,fmin(5,factor));
+    factor=fmax(0.5,fmin(maximumZoom(),factor));
     if(![[NSString stringWithFormat:@"%.6f\n",factor] writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])return NO;
     self.factor=factor;return YES;
 }
@@ -61,7 +66,7 @@ static void showZoom(id zoom,double factor) {
     SEL sel=_cmd;return [self.original respondsToSelector:sel]?((BOOL(*)(id,SEL,id))objc_msgSend)(self.original,sel,zoom):NO;
 }
 - (void)toggleBetweenZoomFactorsForZoomControl:(id)zoom {
-    if(self.rear){if([self writeZoom:requestedZoom()<1?1:0.5]){showZoom(zoom,self.factor);}return;}
+    if(self.rear){if([self writeZoom:teleEnabled()?(requestedZoom()<1?1:requestedZoom()<3?3:0.5):(requestedZoom()<1?1:0.5)]){showZoom(zoom,self.factor);}return;}
     if([self.original respondsToSelector:_cmd])((void(*)(id,SEL,id))objc_msgSend)(self.original,_cmd,zoom);
 }
 - (void)zoomControl:(id)zoom didChangeZoomFactor:(double)factor interactionType:(NSInteger)type {
@@ -75,6 +80,33 @@ static void showZoom(id zoom,double factor) {
 }
 
 @end
+static IMP originalButtonTap,originalSingleToggle;
+static BOOL nativeRearCycle(id zoom,double before){
+    RWNativeLensDelegate *proxy=objc_getAssociatedObject(zoom,&proxyKey);
+    if(!teleEnabled()||!proxy.rear)return NO;
+    double next=before<1?1:before<3?3:0.5;
+    if([proxy writeZoom:next])showZoom(zoom,next);
+    SEL cleanup=NSSelectorFromString(@"_cleanupForCancelTracking"),hide=NSSelectorFromString(@"_setShouldShowZoomDial:");
+    if([zoom respondsToSelector:cleanup])((void(*)(id,SEL))objc_msgSend)(zoom,cleanup);
+    if([zoom respondsToSelector:hide])((void(*)(id,SEL,BOOL))objc_msgSend)(zoom,hide,NO);
+    return YES;
+}
+static void nativeButtonTap(id zoom,SEL selector,id button){
+    double before=requestedZoom();((void(*)(id,SEL,id))originalButtonTap)(zoom,selector,button);
+    nativeRearCycle(zoom,before);
+}
+static void nativeSingleToggle(id zoom,SEL selector){
+    double before=requestedZoom();((void(*)(id,SEL))originalSingleToggle)(zoom,selector);
+    nativeRearCycle(zoom,before);
+}
+static void installNativeTapHooks(void){
+    Class cls=NSClassFromString(@"CAMZoomControl");if(!cls||originalButtonTap)return;
+    Method tap=class_getInstanceMethod(cls,NSSelectorFromString(@"_handleButtonTapped:"));
+    Method toggle=class_getInstanceMethod(cls,NSSelectorFromString(@"_handleButtonTappedForSingleCameraZoomPlusToggle"));
+    if(!tap||strcmp(method_getTypeEncoding(tap),"v24@0:8@16")||!toggle||strcmp(method_getTypeEncoding(toggle),"v16@0:8"))return;
+    originalButtonTap=method_setImplementation(tap,(IMP)nativeButtonTap);
+    originalSingleToggle=method_setImplementation(toggle,(IMP)nativeSingleToggle);
+}
 static void configureZoom(UIView *zoom) {
     SEL getDelegate=NSSelectorFromString(@"delegate"),setDelegate=NSSelectorFromString(@"setDelegate:");
     if(![zoom respondsToSelector:getDelegate]||![zoom respondsToSelector:setDelegate])return;
@@ -96,7 +128,7 @@ static void configureZoom(UIView *zoom) {
         if([defaultRearValue() writeToFile:control atomically:YES encoding:NSUTF8StringEncoding error:nil])defaultRearApplied=YES;
     }
     if(!proxy){proxy=[RWNativeLensDelegate new];proxy.factor=-1;objc_setAssociatedObject(zoom,&proxyKey,proxy,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
-    proxy.original=controller;proxy.rear=YES;
+    proxy.original=controller;proxy.rear=YES;installNativeTapHooks();
     if(delegate!=proxy)((void(*)(id,SEL,id))objc_msgSend)(zoom,setDelegate,proxy);
     double factor=requestedZoom();
     NSArray *factors=nil;

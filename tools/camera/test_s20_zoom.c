@@ -16,5 +16,9 @@ int main(void){
  float window[4]={0,.2f,.4f,.8f},mapped[4];s20_zoom_window(window,mapped,2);
  assert(fabsf(mapped[0]-.25f)<1e-6f&&fabsf(mapped[2]-.45f)<1e-6f);
  s20_zoom_window(window,mapped,1);for(unsigned i=0;i<4;i++)assert(mapped[i]==window[i]);
+ assert(s20_sensor_is_rear(1)&&s20_sensor_is_rear(3)&&s20_sensor_is_rear(4)&&!s20_sensor_is_rear(2));
+ assert(s20_zoom_mode_tele(2.99f,true,true)==2&&s20_zoom_mode_tele(3,true,true)==6);
+ assert(s20_zoom_mode_tele(5,true,false)==2&&s20_zoom_mode_tele(.5f,true,true)==5);
+ assert(s20_zoom_crop_sensor(5,4)==2.5f&&s20_zoom_crop_sensor(10,4)==5);
  puts("PASS: front/disabled zoom, finite clamp, lens boundary and per-lens crop");
 }

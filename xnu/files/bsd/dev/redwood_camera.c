@@ -3269,6 +3269,8 @@ extern void redwood_camera_s20_rear_cool(void);
 extern bool redwood_camera_s20_rear_full(void);
 extern void redwood_camera_s20_select_rear_mode(int full);
 extern void redwood_camera_s20_set_ultra(bool ultra);
+extern void redwood_camera_s20_set_gw2(bool enabled);
+static bool s20_gw2_now;
 static bool s20_ultra_now;
 static bool s20_rear_now;    /* the session streams the rear main (REDWOOD_CAMERA_SENSOR mode 2) */
 static bool s20_real;           /* cam_s20=1: the S20's SAK3J1 (SMIA analog gain: 0x20 is 1x, 0x200 = 16x its most) */
@@ -3345,6 +3347,7 @@ static void
 exposure_limits(uint32_t *lines, uint32_t *gain, uint32_t *frame_lines)
 {
 	uint32_t shortest = ios_mode->frame_length;
+    if(s20_real&&s20_gw2_now){*lines=MAX(16U,MIN(*lines,5150U));*gain=MAX(32U,MIN(*gain,512U));*frame_lines=5166;return;}
     if(s20_real&&s20_ultra_now){
         *lines=MAX(16U,MIN(*lines,6636U));*gain=MAX(32U,MIN(*gain,512U));*frame_lines=6652;return;
     }
@@ -3838,6 +3841,7 @@ static bool
 s20_frame(const volatile uint8_t *data, uint32_t width, uint32_t height, uint32_t in_stride)
 {
 	uint32_t stride = RAW10_STRIDE(width);
+    if(width!=ios_mode->width||height!=ios_mode->height||in_stride<stride){say("camera: S20 frame geometry mismatched selected mode\n");return false;}
 	int p = -1;
 	bool more;
 
@@ -4059,9 +4063,9 @@ camdev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 	f.gain_max = GAIN_MAX;
 	f.frame_lines = place[b].frame_lines;
 	f.frame_lines_min = ios_mode->frame_length;
-	f.frame_lines_max = s20_real&&s20_ultra_now?6652:FRAME_LINES_MAX;
-	f.margin = s20_real&&s20_ultra_now?16:EXPOSURE_MARGIN;
-	f.sensor = s20_real&&s20_ultra_now?3:hw_index;
+	f.frame_lines_max = s20_real&&s20_gw2_now?5166:s20_real&&s20_ultra_now?6652:FRAME_LINES_MAX;
+	f.margin = s20_real&&(s20_ultra_now||s20_gw2_now)?16:EXPOSURE_MARGIN;
+	f.sensor = s20_real&&s20_gw2_now?4:s20_real&&s20_ultra_now?3:hw_index;
 	f.focus = af_position;
 	lck_mtx_unlock(&ios_lock);
 
@@ -4228,6 +4232,8 @@ ios_select(unsigned index, uint32_t mode_n)
 		{ 4032, 3024, 0, 0, 3, 1, 7, REDWOOD_2LD_PIXEL_CLOCK, 4240, 12160, 30000, RAW10_DT },
         /* 2LA A202 native ultra-wide, fixed normal frame timing. */
         { 4032, 3024, 0, 0, 3, 1, 7, 2236000000U, 11200, 6652, 30000, RAW10_DT },
+        /* GW2 high-resolution central crop, stock mode2; no binned upsample. */
+        { 4864, 3648, 0, 0, 3, 1, 1, 1918000000U, 12304, 5166, 30000, RAW10_DT },
 	};
 	static const uint32_t fake_blocks[] = { 0 };
 
@@ -4236,9 +4242,10 @@ ios_select(unsigned index, uint32_t mode_n)
 	 * the next session -- 0 the full 3648x2736, 1 the 2x2-binned 1824x1368 (a quarter of the data: the preview
 	 * and video without the phone at 95 C and half its clock, 2026-11-12); ~0 keeps what there is.
 	 */
-	if (s20_real && fake && mode_n <= 5) {
+	if (s20_real && fake && mode_n <= 6) {
 		/* mode 2: the rear main (S5K2LD) instead of the front, asked for by libredwood-media's Back Camera */
-		s20_ultra_now=mode_n==5;redwood_camera_s20_set_ultra(s20_ultra_now);
+		s20_gw2_now=mode_n==6;redwood_camera_s20_set_gw2(s20_gw2_now);
+        s20_ultra_now=mode_n==5;redwood_camera_s20_set_ultra(s20_ultra_now);
         s20_rear_now = mode_n >= 2;
         /* S20 commands 3/4 select native full/binned explicitly. Mode2 retains
          * the boot profile. This runs only after the previous stream stops. */
@@ -4262,7 +4269,7 @@ ios_select(unsigned index, uint32_t mode_n)
 		}
 		ctab = &fake_head;
 		ctab_size = sizeof(fake_head) + sizeof(fake_modes) + sizeof(fake_blocks);
-		ctab_modes = s20_real ? s20_modes + (s20_ultra_now ? 4 : s20_rear_now ? (redwood_camera_s20_rear_full() ? 3 : 2) : s20_full ? 0 : 1) : fake_modes;
+		ctab_modes = s20_real ? s20_modes + (s20_gw2_now ? 5 : s20_ultra_now ? 4 : s20_rear_now ? (redwood_camera_s20_rear_full() ? 3 : 2) : s20_full ? 0 : 1) : fake_modes;
 		ctab_tables = (const uint8_t *)fake_blocks;
 		say("camera: cam_fake=1: using the built-in %ux%u RAW10 mode; no sensor firmware table is needed\n",
 		    fake_modes[0].width, fake_modes[0].height);
@@ -4290,7 +4297,8 @@ ios_select(unsigned index, uint32_t mode_n)
 	}
 	ios_line_ns = (uint32_t)(1000000000000ull / ((uint64_t)ios_mode->fps_milli * ios_mode->frame_length));
 	if(s20_real&&s20_ultra_now)ios_line_ns=(uint32_t)(11200ULL*1000000000ULL/2236000000ULL);
-	if (s20_real && s20_rear_now && !s20_ultra_now) ios_line_ns = redwood_2ld_line_ns(ios_mode->line_length);
+	if(s20_real&&s20_gw2_now)ios_line_ns=(uint32_t)(12304ULL*1000000000ULL/1918000000ULL);
+	if (s20_real && s20_rear_now && !s20_ultra_now && !s20_gw2_now) ios_line_ns = redwood_2ld_line_ns(ios_mode->line_length);
 	uint32_t pattern = 0, count = 0;
 	const struct ctab_entry *tpgon;
 
