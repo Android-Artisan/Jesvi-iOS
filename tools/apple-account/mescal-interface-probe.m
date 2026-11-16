@@ -13,7 +13,7 @@ int main(void){@autoreleasepool{
  unsigned n=0;Class *classes=objc_copyClassList(&n);
  for(unsigned i=0;i<n;i++){
   const char *name=class_getName(classes[i]);
-  BOOL bag=!strcmp(name,"AMSBagValue") || !strcmp(name,"AMSBag") || !strcmp(name,"IMURLBag");
+  BOOL bag=!strcmp(name,"AMSAnisette") || !strcmp(name,"AMSBagValue") || !strcmp(name,"AMSBag") || !strcmp(name,"IMURLBag");
   if(!bag && (strncmp(name,"AMS",3) || (!strstr(name,"Mescal") && !strstr(name,"SAP"))))continue;
   list(classes[i],name,'-');list(object_getClass(classes[i]),name,'+');
  }free(classes);return 0;

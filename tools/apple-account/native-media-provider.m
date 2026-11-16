@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 @interface NSObject (RWMediaProvider)
++ (id)_headersForRequest:(NSURLRequest *)request account:(id)account type:(NSInteger)type;
 + (id)defaultSession;
 + (id)primeSession;
 - (id)signData:(NSData *)data bag:(id)bag;
@@ -31,6 +32,23 @@ static NSDictionary *perform(id request){
  if(![nonce isKindOfClass:NSString.class] || nonce.length<16 || nonce.length>64 || [nonce rangeOfCharacterFromSet:allowed.invertedSet].location!=NSNotFound)return @{@"error":@"invalid_request"};
  NSMutableDictionary *reply=[@{@"version":@1,@"nonce":nonce} mutableCopy];
  NSString *op=request[@"operation"];
+ if([op isEqual:@"store-proof"]){
+  NSSet *keys=[NSSet setWithArray:[request allKeys]];
+  NSString *endpoint=request[@"endpoint"];
+  NSArray *allowed=@[@"https://auth.itunes.apple.com/auth/v1/native",@"https://auth.itunes.apple.com/auth/v1/native/",@"https://auth.itunes.apple.com/auth/v1/native/fast",@"https://auth.itunes.apple.com/auth/v1/native/fast/"];
+  if(![keys isEqual:[NSSet setWithArray:@[@"version",@"nonce",@"operation",@"endpoint"]]] || ![request[@"version"] isEqual:@1] || ![allowed containsObject:endpoint]){reply[@"error"]=@"invalid_request";return reply;}
+  Class cls=NSClassFromString(@"AMSAnisette");Method method=class_getClassMethod(cls,@selector(_headersForRequest:account:type:));
+  if(!method || strcmp(method_getTypeEncoding(method),"@40@0:8@16@24q32")){reply[@"error"]=@"unsupported_interface";return reply;}
+  id headers=[cls _headersForRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:endpoint]] account:nil type:2];
+  NSMutableDictionary *selected=[NSMutableDictionary dictionary];
+  for(NSString *field in @[@"X-Apple-AMD",@"X-Apple-AMD-M"]){
+   id value=[headers isKindOfClass:NSDictionary.class]?headers[field]:nil;
+   if(![value isKindOfClass:NSString.class] || ![value length] || [value length]>16384 || [value rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location!=NSNotFound){reply[@"error"]=@"native_failure";return reply;}
+   selected[field]=value;
+  }
+  reply[@"headers"]=selected;return reply;
+ }
+
  NSSet *keys=[NSSet setWithArray:[request allKeys]];
  NSSet *expected=[NSSet setWithArray:[op isEqual:@"verify"]?@[@"version",@"nonce",@"operation",@"data",@"signature"]:@[@"version",@"nonce",@"operation",@"data"]];
  NSData *data=decode(request[@"data"]),*signature=[op isEqual:@"verify"]?decode(request[@"signature"]):nil;

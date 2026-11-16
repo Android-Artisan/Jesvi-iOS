@@ -7,16 +7,19 @@ import subprocess
 import threading
 import time
 
-OPERATIONS = {'sign', 'prime', 'verify', 'verify-prime'}
+OPERATIONS = {'sign', 'prime', 'verify', 'verify-prime', 'store-proof'}
 def valid_request(value):
     if not isinstance(value, dict) or value.get('operation') not in OPERATIONS:
         return False
-    expected={'version','nonce','operation','data'}
+    expected={'version','nonce','operation','endpoint'} if value['operation']=='store-proof' else {'version','nonce','operation','data'}
     if value['operation']=='verify':expected.add('signature')
     if set(value)!=expected or type(value['version']) is not int or value['version']!=1:
         return False
     import re
     if not isinstance(value['nonce'],str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,64}',value['nonce']):return False
+    if value['operation']=='store-proof' and value.get('endpoint') not in {
+        'https://auth.itunes.apple.com/auth/v1/native', 'https://auth.itunes.apple.com/auth/v1/native/',
+        'https://auth.itunes.apple.com/auth/v1/native/fast', 'https://auth.itunes.apple.com/auth/v1/native/fast/'}:return False
     for field in ('data','signature'):
         if field not in value:continue
         try:
@@ -56,6 +59,10 @@ class MediaTransport:
                 if 'error' in result:
                     if result['error'] not in {'invalid_request','unsupported_interface','timeout','native_failure','invalid_native_result'}:raise ValueError('Unknown failure')
                     return {k:result[k] for k in ('version','nonce','error')}
+                if value['operation']=='store-proof':
+                    headers=result.get('headers')
+                    if not isinstance(headers,dict) or set(headers)!={'X-Apple-AMD','X-Apple-AMD-M'} or any(not isinstance(v,str) or not 0<len(v)<=16384 or '\n' in v or '\r' in v for v in headers.values()):raise ValueError('Invalid Store proof')
+                    return {'version':1,'nonce':value['nonce'],'headers':headers}
                 if value['operation'].startswith('verify'):
                     if type(result.get('verified')) is not bool:raise ValueError('Invalid verification result')
                     return {'version':1,'nonce':value['nonce'],'verified':result['verified']}
