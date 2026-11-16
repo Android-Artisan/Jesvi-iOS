@@ -3010,7 +3010,7 @@ static bool aux_bus_restore_checked(struct redwood_bbi2c *bus){
 static bool aux_gw2_send(void *context,const uint8_t *bytes,unsigned count){
     return redwood_bbi2c_xfer(context,0x2d,bytes,count,NULL,0);
 }
-static bool aux_gw2_tables(struct redwood_bbi2c *bus,bool full){
+static bool aux_gw2_program(struct redwood_bbi2c *bus,bool full){
     struct cam_gw2_table_io io={bus,aux_gw2_send,aux_sensor_pause};
 #define GW2_TABLE(t) cam_gw2_apply_table(io,t,(unsigned)(sizeof(t)/sizeof((t)[0])))
     bool ok=GW2_TABLE(redwood_GW2_setfile_A_Tnp)&&GW2_TABLE(redwood_GW2_setfile_A_Global)&&
@@ -3020,6 +3020,19 @@ static bool aux_gw2_tables(struct redwood_bbi2c *bus,bool full){
      * PDXTC/PDAF calibration and image quality remain separate qualification. */
     return ok&&aux_sensor_write16(bus,0x6028,0x2000)&&aux_sensor_write16(bus,0x602a,0x55b0)&&
         aux_sensor_write16(bus,0x6f12,0)&&aux_sensor_write16(bus,0xfcfc,0x4000);
+}
+static bool cam_gw2_upload_slow;
+static bool aux_gw2_tables(struct redwood_bbi2c *bus,bool full){
+    /* Speed only the bounded upload; identity/control reads retain4us timing. */
+    uint32_t saved=bus->half_us;
+    bus->half_us=cam_gw2_upload_slow?4U:(uint32_t)__atomic_load_n(&cam_s20_rear_i2c_half_us,__ATOMIC_RELAXED);
+    bool ok=aux_gw2_program(bus,full);
+    if(!ok&&bus->half_us<4){
+        cam_gw2_upload_slow=true;bus->half_us=4;
+        printf("camera: GW2 fast upload failed; replaying sensor reset/TNP at4us\n");
+        ok=aux_gw2_program(bus,full);
+    }
+    bus->half_us=saved;return ok;
 }
 static bool cam_s20_aux_run(bool gw2, bool stream, bool raw, const uint64_t *args, unsigned n, redwood_s20_frame_fn fn, bool session, char *out, size_t cap) {
     struct redwood_bbi2c bus={.name="S20 2LA HSI2C45 gpm14-0/gpm15-0",.scl=0,.sda=0,.half_us=4};

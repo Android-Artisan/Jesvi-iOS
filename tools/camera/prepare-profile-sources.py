@@ -157,7 +157,7 @@ static void *worker_body(void *context)
     # and digital crop. This avoids graph device reconfiguration while recording.
     source=source.replace('isp.zoom = s->zoom;',
         'isp.zoom=s->camera->sensor==1?rear_requested_zoom(s):s->zoom;')
-    source = source.replace('if (n != (ssize_t)sizeof(head)) {', 'if(n==(ssize_t)sizeof(head)&&s->camera->sensor==1&&head.sensor==3)continue;\n            if (n != (ssize_t)sizeof(head)) {')
+    source = source.replace('if (n != (ssize_t)sizeof(head)) {', 'if(n==(ssize_t)sizeof(head)&&s->camera->sensor==1&&(head.sensor==3||head.sensor==4))continue;\n            if (n != (ssize_t)sizeof(head)) {')
 
     a=source.index('static void *\nworker_original_body(void *context)\n{')
     b=source.index('/*\n * Reading frames from the kernel',a)
@@ -178,6 +178,14 @@ static void *worker_body(void *context)
     names = set(re.findall(r'\b(isp_\w+)\s*\(', header))
     names |= {'redwood_camera_device_create', 'redwood_camera_say'}
     (out/'experimental-symbols.h').write_text(''.join(f'#define {n} experimental_{n}\n' for n in sorted(names)))
+    current=current.replace('const struct isp_stats *st, CFStringRef port)',
+        'const struct isp_stats *st, CFStringRef port, bool af_locked, bool ae_locked)')
+    current=current.replace('frame_metadata(&isp, f, &st, s->port)',
+        'frame_metadata(&isp, f, &st, s->port, f->sensor==4&&s->af_locked, f->sensor==4&&s->ae_locked)')
+    current=current.replace('md_put(m, MD_AF_LOCKED, CFRetain(kCFBooleanFalse));',
+        'md_put(m, MD_AF_LOCKED, CFRetain(af_locked?kCFBooleanTrue:kCFBooleanFalse));')
+    current=current.replace('md_put(m, MD_AE_LOCKED, CFRetain(kCFBooleanFalse));',
+        'md_put(m, MD_AE_LOCKED, CFRetain(ae_locked?kCFBooleanTrue:kCFBooleanFalse));')
     current=current.replace('af_frame(device, &af, f, raw, s->af_window, s->af_locked);',
         'float tele_window[4];memcpy(tele_window,s->af_window,sizeof(tele_window));if(f->sensor==4)s20_zoom_window(s->af_window,tele_window,s20_zoom_crop_sensor(requested_zoom,4));\n        af_frame(device, &af, f, raw, tele_window, s->af_locked);')
     current += r'''

@@ -47,3 +47,40 @@ Samsung public documentation confirms3x hybrid/up to30x digital only:
 https://www.samsung.com/uk/support/mobile-devices/check-out-the-new-camera-functions-of-the-galaxy-s20-plus-s20-ultra/
 This prototype caps the control at16x and uses stock central crop, nominal2x
 base pending field-of-view calibration. It does not implement5x optical zoom.
+
+## User-accepted integration and final packaging
+
+User confirmed3x live image, then confirmed the SINGLE native lens icon cycles
+0.5->1->3->0.5 and the scale closes. No three-button platter or overlay is
+installed. Native tap handlers run their normal cleanup before the selected
+route is applied; front delegates/layout retain their original behavior.
+The original dual-style native dial is retained, with16x maximum when GW2 is
+enabled. A native-handler device test covers the cycle and closed dial.
+
+Continuous4864x3648 passed36frames with actual focus metadata, then UW, main
+and front each passed36frames. App logs verify4864x3648 delivery and rendered
+frames after fixing BOTH old width heuristics: rear/front classification and
+the legacy deliberate-black rear gate now use sensor identity. Stale GW2
+headers are discarded when returning to the pinned original primary worker.
+User confirmed image and cycle. 5x/10x control trials kept the GW2 route active.
+Factory PDXTC calibration and OIS are not newly implemented/qualified.
+
+Startup request: baseline first-frame probe GW2=2651.4ms, primary=2945.3ms.
+Cold firmware uploads dominate; main/GW2 share MCLK0 and are powered down on
+switch, so true seamless switching is NOT implemented. Primary already uses
+1us half-period. Final candidate speeds ONLY GW2 firmware upload from4us to
+the bounded rear setting1us; identity/exposure reads retain4us. On any upload
+error, replay the full sensor reset/TNP at4us and retain slow fallback until
+reboot. Host tests cover fallback and restoring bus timing. Final live speed
+measurements are recorded after deployment. Do not promise instant switching.
+
+Clean images now seed redwood-gw2-enable and include native cycle/media hooks
+and the kernel's GW2 firmware/receiver/motor/four-slot DMA support in source
+and tracked prebuilts. Existing files are preserved by init seeding. No wiped
+data boot was performed; clean seeding is fixture-tested.
+Private deployment/rollback artifacts: workspace build/camera-gw2/permanent.
+Original stable2-lens rollback remains build/camera-final/deploy.
+Final image is prepared from the live root, retaining its keybag/AOD/telephony
+chain, logos, loader configuration, system and user data. Temporary native UI
+probe files were removed. After reboot, injection must point to the root media
+library, not the temporary GW2 test file.

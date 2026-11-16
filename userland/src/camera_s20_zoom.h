@@ -8,6 +8,7 @@ static inline float s20_zoom_clamp(float z,bool rear,bool enabled){
     if(!isfinite(z))return 1.0f;
     return z<min?min:z>16?16:z;
 }
+static inline bool s20_sensor_is_rear(unsigned sensor){return sensor==1||sensor==3||sensor==4;}
 static inline unsigned s20_zoom_mode(float z,bool enabled){return enabled&&z<1?5:2;}
 /* Provisional3x entry; opt-in until sensor/FOV/quality are qualified. */
 static inline unsigned s20_zoom_mode_tele(float z,bool ultra,bool tele){return tele&&z>=3?6:s20_zoom_mode(z,ultra);}

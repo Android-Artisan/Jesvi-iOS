@@ -785,3 +785,12 @@ head. Cold reboot passed; keybag locked, root media hash matches accepted build,
 36frames each UW/main/front passed. Development override is disabled and backed
 up. Source and tracked prebuilts cover clean builds; no data wipe was done.
 See docs/x1slte-camera-wrapup.md and latest SHIPPING.md for hashes and rollback.
+
+## GW2 final integration —2026-11-16
+
+Work moved to feat/s20-gw2-telephoto from f03fd343. GW2 RAW and continuous
+4864x3648 are working; user confirmed3x image and SINGLE native icon cycle
+0.5/1/3 with scale closing. Front processing retained. Source/prebuilt clean
+installation prepared; user explicitly asked commit/push/permanent/latest and
+wrap-up. See docs/x1slte-camera-gw2.md for tests, startup limits and rollback.
+Final deployment and local branch integration are being completed in this turn.
