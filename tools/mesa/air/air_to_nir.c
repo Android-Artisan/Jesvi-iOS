@@ -1491,7 +1491,8 @@ translate_argument_buffer(struct air_ctx *c, const struct air_md *node, unsigned
  * resource keep the Metal name the application uses -- the runtime binds by
  * the first and the application names by the second.
  *
- * The counters start above the highest index a DIRECT argument of that kind
+ * Buffer members occupy unused slots, preserving direct Metal buffer indices.
+ * Texture/sampler counters start above the highest DIRECT argument of that kind
  * already took, so a member and an argument cannot land in one Gallium slot.
  * None of Resident Evil 4's 7 620 modules mixes the two -- those shaders have
  * no direct resources at all -- so this is the part of the allocation nothing
@@ -1505,13 +1506,14 @@ translate_argument_buffer(struct air_ctx *c, const struct air_md *node, unsigned
 static void
 allocate_argbuf_indices(struct air_ctx *c)
 {
-   unsigned next_buffer = 0, next_texture = 0, next_sampler = 0;
+   uint64_t used_buffer = 0;
+   unsigned next_texture = 0, next_sampler = 0;
    for (unsigned i = 0; i < c->info->num_resources; i++) {
       const struct air_resource *r = &c->info->resources[i];
       switch (r->kind) {
       case AIR_RESOURCE_CONSTANT_BUFFER:
       case AIR_RESOURCE_DEVICE_BUFFER:
-         next_buffer = MAX2(next_buffer, r->index + 1);
+         if (r->index < 64) used_buffer |= UINT64_C(1) << r->index;
          break;
       case AIR_RESOURCE_TEXTURE:
       case AIR_RESOURCE_IMAGE:
@@ -1532,7 +1534,15 @@ allocate_argbuf_indices(struct air_ctx *c)
          switch (m->kind) {
          case AIR_RESOURCE_CONSTANT_BUFFER:
          case AIR_RESOURCE_DEVICE_BUFFER:
-            m->index = next_buffer++;
+            /* Direct Metal indices may be sparse/high (e.g.31). Reuse holes
+             * for flattened argument members rather than exceeding Gallium's
+             * binding limit despite having only a few resources. */
+            if (used_buffer == UINT64_MAX) {
+               air_error(c, "argument buffer has too many flattened buffer bindings");
+               return;
+            }
+            m->index = (unsigned)__builtin_ctzll(~used_buffer);
+            used_buffer |= UINT64_C(1) << m->index;
             break;
          case AIR_RESOURCE_TEXTURE:
          case AIR_RESOURCE_IMAGE:
@@ -1646,7 +1656,14 @@ translate_input(struct air_ctx *c, const struct air_md *node, unsigned *next_var
    /* resources */
    if (md_key(node, "air.buffer") >= 0) {
       uint64_t as = 0, index = 0, size = 0;
-      md_key_int(node, "air.address_space", &as);
+      /* Some Apple libraries omit the redundant address-space metadata. The
+       * LLVM pointer type still carries the real space; absence must not turn
+       * a constant/device buffer into a generic address-space-zero pointer. */
+      if (!md_key_int(node, "air.address_space", &as)) {
+         if (t->kind != AIR_TYPE_POINTER)
+            return air_error(c, "interface: a buffer parameter is not a pointer");
+         as = t->addrspace;
+      }
       md_key_int(node, "air.location_index", &index);
       md_key_int(node, "air.buffer_size", &size);
       bool read = md_key(node, "air.read") >= 0 || md_key(node, "air.read_write") >= 0;

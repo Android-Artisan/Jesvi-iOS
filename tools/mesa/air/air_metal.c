@@ -68,7 +68,7 @@
 #include "util/set.h"
 
 /* the Metal driver keeps its own copy of this struct (userland/src/redwoodmetal.m) */
-_Static_assert(sizeof(struct rwa_draw) == 328 && offsetof(struct rwa_draw, viewport) == 296 &&
+_Static_assert(sizeof(struct rwa_draw) == 336 && offsetof(struct rwa_draw, blend_color) == 328 && offsetof(struct rwa_draw, viewport) == 296 &&
                offsetof(struct rwa_draw, color_level) == 304 && offsetof(struct rwa_draw, depth_level) == 320,
                "struct rwa_draw must match userland/src/redwoodmetal.m");
 
@@ -1031,7 +1031,9 @@ texture_type_name(unsigned type)
  * so the translation is the identity on memory and there is nothing in it to get subtly
  * wrong.
  *
- * What is deliberately absent is everything packed into a 32-bit word -- RGB10A2Unorm,
+ * RGB10A2Unorm (90) is supported using Apple's specified low-to-high R/G/B/A
+ * layout and Gallium R10G10B10A2_UNORM; see the GPU clear/readback test.
+ * Other packed 32-bit formats remain declined --
  * RG11B10Float, RGB9E5, the XR formats. Those names order their channels by one
  * convention and Gallium's by another, and a mistake there does not fail: it shifts a
  * channel by two bits in a texture that still looks like a texture. docs/air.md has
@@ -1157,6 +1159,8 @@ static const struct rwa_pixel_format rwa_pixel_formats[] = {
    {  74, "MTLPixelFormatRGBA8Sint",       PIPE_FORMAT_R8G8B8A8_SINT },
    {  80, "MTLPixelFormatBGRA8Unorm",      PIPE_FORMAT_B8G8R8A8_UNORM },
    {  81, "MTLPixelFormatBGRA8Unorm_sRGB", PIPE_FORMAT_B8G8R8A8_SRGB },
+   {  90, "MTLPixelFormatRGB10A2Unorm",    PIPE_FORMAT_R10G10B10A2_UNORM },
+   {  92, "MTLPixelFormatRG11B10Float",     PIPE_FORMAT_R11G11B10_FLOAT },
    { 103, "MTLPixelFormatRG32Uint",        PIPE_FORMAT_R32G32_UINT },
    { 104, "MTLPixelFormatRG32Sint",        PIPE_FORMAT_R32G32_SINT },
    { 105, "MTLPixelFormatRG32Float",       PIPE_FORMAT_R32G32_FLOAT },
@@ -1300,7 +1304,7 @@ pixel_format_refusal(unsigned f)
       return "MTLPixelFormatBGRA4Unorm, which Metal.framework's own enumeration carries at "
              "44 and this device's MTLPixelFormat.h does not declare at all: a format no "
              "public header names is one whose layout nothing here can read";
-   if (f >= 90 && f <= 94)
+   if (f == 91 || f == 93 || f == 94)
       return "one of Metal's formats packed into a 32-bit word (RGB10A2, RG11B10, RGB9E5, "
              "BGR10A2), whose field order and bias this library will not guess: an error of "
              "two bits in a channel is a picture, not a failure";
@@ -1628,7 +1632,7 @@ texture_of_shape(struct rwa_device *device, const struct rwa_texture_shape *shap
 
    unsigned bind = (read ? PIPE_BIND_SAMPLER_VIEW : 0) |
                    (write ? PIPE_BIND_SHADER_IMAGE : 0) |
-                   ((shape->usage & RWA_USAGE_RENDER_TARGET) || (depth_stencil && !shape->usage)
+                   ((shape->usage & RWA_USAGE_RENDER_TARGET) || !shape->usage
                        ? (depth_stencil ? PIPE_BIND_DEPTH_STENCIL : PIPE_BIND_RENDER_TARGET)
                        : 0);
    if (!bind) {
@@ -2225,18 +2229,10 @@ rwa_texture_write(struct rwa_texture *texture, unsigned level, unsigned layer,
       say(why, why_size, "no bytes to write into a texture");
       return -1;
    }
-   /* A depth or stencil texture is refused here and read through rwa_depth_read, and
-    * the two go together on purpose: a texel of Depth32Float_Stencil8 holds two values
-    * of two kinds, so a call whose only argument is "bytes" cannot say which of them
-    * the caller means. Nothing in this path needs to write one -- a depth attachment is
-    * filled by the pass's clear and by the draw -- so this declines rather than
-    * inventing an aspect argument no caller has asked for.
-    */
-   if (format_is_depth_stencil(texture->res->format)) {
-      say(why, why_size, "writing texels into a %s texture: a depth or stencil texel has "
-                         "an aspect and this call has nowhere to name it. A depth "
-                         "attachment is filled by the render pass's clearDepth and by what "
-                         "the draw writes", texture->format_name);
+   /* A single depth/stencil aspect has an unambiguous raw layout. Combined
+    * depth+stencil formats still require an aspect-specific transfer. */
+   if (format_has_depth(texture->res->format) && format_has_stencil(texture->res->format)) {
+      say(why, why_size, "combined depth/stencil upload needs an explicit aspect");
       return -1;
    }
    /*
@@ -5379,19 +5375,14 @@ rwa_module_argbufs(struct rwa_device *device, const void *bitcode, size_t size,
    for (unsigned k = 0; k < n; k++) {
       struct rwa_argbuf_layout *l = &out[k];
 
-      /* The ids have to be 0..member_count-1 with nothing missing and nothing twice,
-       * because that is what makes `8 x members` the length Metal would have answered.
-       * A set that is not dense is refused by name: the alternative is an application
-       * allocating its buffer too short and encoding one member over another.
-       */
+      /* IDs may be sparse. Validate uniqueness/range and reserve the span through
+       * the highest ID, including holes, so later encodings cannot overlap. */
       uint64_t seen = 0;
       for (unsigned i = 0; i < l->member_count; i++) {
-         if (l->members[i].id >= l->member_count) {
+         if (l->members[i].id >= 64) {
             say(why, why_size, "the argument buffer %s declares at Metal buffer index %u "
-                               "has %u members and one of them (`%s`) is id %u: Metal's "
-                               "encodedLength is over the highest id, so this library "
-                               "will not answer a length for a set whose ids have a gap "
-                               "in them", name, l->metal_index, l->member_count,
+                               "has %u members and one of them (`%s`) is id %u: this exceeds "
+                               "the supported argument ID range", name, l->metal_index, l->member_count,
                 l->members[i].name, l->members[i].id);
             ralloc_free(mem_ctx);
             return -1;
@@ -5405,7 +5396,9 @@ rwa_module_argbufs(struct rwa_device *device, const void *bitcode, size_t size,
          }
          seen |= 1ull << l->members[i].id;
       }
-      l->encoded_length = 8 * l->member_count;
+      l->encoded_length = 0;
+      for (unsigned i = 0; i < l->member_count; i++)
+         l->encoded_length = MAX2(l->encoded_length, 8 * (l->members[i].id + 1));
    }
 
    if (count)
@@ -5655,10 +5648,9 @@ rwa_depth_stencil_destroy(struct rwa_depth_stencil *state)
  *
  * `delivers` is what the shader's register holds afterwards, and it is here because that
  * is what has to match the member's declared type: a _UINT format delivers an integer,
- * a _UNORM one delivers a float in [0, 1]. Gallium's _USCALED/_SSCALED -- an integer in
- * memory widened to a float without normalising -- has no Metal counterpart and is
- * deliberately absent; Metal's plain integer formats feed an integer member, which is
- * what this check is for.
+ * a _UNORM one delivers a float in [0, 1]. When Metal's shader declares a float
+ * for an unnormalized integer attribute, _USCALED/_SSCALED implement the numeric
+ * conversion. Integer shader inputs retain the integer format.
  *
  * `bytes` is one element's size in memory, which no pipe_format query gives for a
  * three-component vertex format the way the fetch sees it (util_format_get_blocksize of
@@ -5725,6 +5717,23 @@ static const struct rwa_vertex_format rwa_vertex_formats[] = {
    { 52, "MTLVertexFormatShortNormalized", PIPE_FORMAT_R16_SNORM, AIR_ATTRIB_FLOAT, 2 },
    { 53, "MTLVertexFormatHalf", PIPE_FORMAT_R16_FLOAT, AIR_ATTRIB_FLOAT, 2 },
 };
+
+/* Metal converts unnormalized integer vertex data numerically when stage_in
+ * declares floating point. Scaled Gallium formats express that conversion;
+ * normalized formats and integer shader inputs retain their existing mapping. */
+static enum pipe_format vertex_float_fetch(enum pipe_format format)
+{
+#define SCALE_CHANNELS(bits, channels) \
+ case PIPE_FORMAT_##channels##_SINT: return PIPE_FORMAT_##channels##_SSCALED; \
+ case PIPE_FORMAT_##channels##_UINT: return PIPE_FORMAT_##channels##_USCALED;
+ switch(format){
+ SCALE_CHANNELS(8,R8) SCALE_CHANNELS(8,R8G8) SCALE_CHANNELS(8,R8G8B8) SCALE_CHANNELS(8,R8G8B8A8)
+ SCALE_CHANNELS(16,R16) SCALE_CHANNELS(16,R16G16) SCALE_CHANNELS(16,R16G16B16) SCALE_CHANNELS(16,R16G16B16A16)
+ SCALE_CHANNELS(32,R32) SCALE_CHANNELS(32,R32G32) SCALE_CHANNELS(32,R32G32B32) SCALE_CHANNELS(32,R32G32B32A32)
+ default:return format;
+ }
+#undef SCALE_CHANNELS
+}
 
 static const struct rwa_vertex_format *
 vertex_format(unsigned mtl)
@@ -5900,7 +5909,11 @@ build_vertex_state(const struct air_shader_info *vinfo,
              d->format, vertex_format_refusal(d->format));
          return false;
       }
-      if (f->delivers != a->base_type) {
+      enum pipe_format fetch_format=f->pipe;
+      bool convert_to_float=a->base_type==AIR_ATTRIB_FLOAT &&
+          (f->delivers==AIR_ATTRIB_INT || f->delivers==AIR_ATTRIB_UINT);
+      if(convert_to_float)fetch_format=vertex_float_fetch(f->pipe);
+      if (f->delivers != a->base_type && !convert_to_float) {
          say(why, why_size, "vertex attribute %u of %s is %s, which wants %s components, "
                             "and %s delivers %s ones", a->index, vname,
              a->type_name ? a->type_name : (a->name ? a->name : "unnamed"),
@@ -5914,10 +5927,10 @@ build_vertex_state(const struct air_shader_info *vinfo,
        * maps but that hardware cannot fetch is a sentence here instead of an assertion
        * there.
        */
-      if (!screen->is_format_supported(screen, f->pipe, PIPE_BUFFER, 0, 0,
+      if (!screen->is_format_supported(screen, fetch_format, PIPE_BUFFER, 0, 0,
                                        PIPE_BIND_VERTEX_BUFFER)) {
          say(why, why_size, "%s cannot fetch %s (%s) as a vertex attribute",
-             screen->get_name(screen), f->name, util_format_short_name(f->pipe));
+             screen->get_name(screen), f->name, util_format_short_name(fetch_format));
          return false;
       }
       if (d->buffer_index >= RWA_MAX_VERTEX_BUFFERS) {
@@ -6002,7 +6015,7 @@ build_vertex_state(const struct air_shader_info *vinfo,
       }
 
       out->element[loc] = (struct pipe_vertex_element){
-         .src_format = f->pipe,
+         .src_format = fetch_format,
          .src_offset = (uint16_t)d->offset,
          .src_stride = stride,
          .vertex_buffer_index = d->buffer_index,
@@ -6023,12 +6036,13 @@ build_vertex_state(const struct air_shader_info *vinfo,
       const struct air_resource *r = &vinfo->resources[i];
       if (r->kind != AIR_RESOURCE_CONSTANT_BUFFER && r->kind != AIR_RESOURCE_DEVICE_BUFFER)
          continue;
-      if (r->index < RWA_MAX_VERTEX_BUFFERS && (out->stream_mask & (1u << r->index))) {
+      unsigned metal_index = r->argbuf_set == ~0u ? r->index : r->argbuf_set;
+      if (metal_index < RWA_MAX_VERTEX_BUFFERS && (out->stream_mask & (1u << metal_index))) {
          say(why, why_size, "buffer index %u is a vertex stream in this descriptor and "
                             "%s reads it as [[buffer(%u)]] (%s): Metal has one table "
                             "behind -setVertexBuffer:offset:atIndex: and an index can be "
-                            "a stream or an argument, not both", r->index, vname,
-             r->index, r->name ? r->name : "unnamed");
+                            "a stream or an argument, not both", metal_index, vname,
+             metal_index, r->name ? r->name : "unnamed");
          return false;
       }
    }
@@ -6772,13 +6786,6 @@ blend_operation_name(unsigned op)
 static const char *
 blend_factor_refusal(unsigned f)
 {
-   if (f >= 11 && f <= 14)
-      return "one of Metal's BLEND COLOUR factors, whose colour is ENCODER state "
-             "(-setBlendColorRed:green:blue:alpha:) and not pipeline state: this "
-             "contract has nowhere to carry it and the driver's own setter drops it, so "
-             "the blend would be against the zero a Gallium context starts with -- the "
-             "layer would vanish rather than fail. Serving it is one float[4] in "
-             "rwa_draw and one set_blend_color, on the day something asks";
    if (f >= 15 && f <= 18)
       /* Deliberately short: `why` is 512 bytes here and in the driver, and the prefix
        * naming the field takes some of it, so a longer sentence would arrive truncated
@@ -6813,10 +6820,10 @@ blend_factor_from_metal(unsigned f, bool alpha_channel, unsigned *out, const cha
       PIPE_BLENDFACTOR_DST_ALPHA,          /* ...DestinationAlpha                    8 */
       PIPE_BLENDFACTOR_INV_DST_ALPHA,      /* ...OneMinusDestinationAlpha            9 */
       PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE, /* ...SourceAlphaSaturated               10 */
-      PIPE_BLENDFACTOR_CONST_COLOR,        /* ...BlendColor            11  REFUSED, above */
-      PIPE_BLENDFACTOR_INV_CONST_COLOR,    /* ...OneMinusBlendColor    12  REFUSED */
-      PIPE_BLENDFACTOR_CONST_ALPHA,        /* ...BlendAlpha            13  REFUSED */
-      PIPE_BLENDFACTOR_INV_CONST_ALPHA,    /* ...OneMinusBlendAlpha    14  REFUSED */
+      PIPE_BLENDFACTOR_CONST_COLOR,        /* ...BlendColor            11 */
+      PIPE_BLENDFACTOR_INV_CONST_COLOR,    /* ...OneMinusBlendColor    12 */
+      PIPE_BLENDFACTOR_CONST_ALPHA,        /* ...BlendAlpha            13 */
+      PIPE_BLENDFACTOR_INV_CONST_ALPHA,    /* ...OneMinusBlendAlpha    14 */
       PIPE_BLENDFACTOR_SRC1_COLOR,         /* ...Source1Color          15  REFUSED */
       PIPE_BLENDFACTOR_INV_SRC1_COLOR,     /* ...OneMinusSource1Color  16  REFUSED */
       PIPE_BLENDFACTOR_SRC1_ALPHA,         /* ...Source1Alpha          17  REFUSED */
@@ -8202,6 +8209,10 @@ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
                      znear } });
 
    pipe->bind_blend_state(pipe, render->blend);
+   struct pipe_blend_color blend_color = { 0 };
+   if (draw->blend_color)
+      memcpy(blend_color.color, draw->blend_color, sizeof(blend_color.color));
+   pipe->set_blend_color(pipe, &blend_color);
    /* The caller's depth/stencil state, or the pipeline's zeroed one, which is Metal's
     * behaviour with no MTLDepthStencilState set: no test and no write.
     */

@@ -1,3 +1,4 @@
+#include "metal_argument_indices.h"
 /*
  * The device object of a Metal driver for this port, as a real library.
  *
@@ -334,8 +335,9 @@ struct rwa_draw {
 	const unsigned *color_level;
 	const unsigned *color_layer;
 	unsigned depth_level, depth_layer;
+	const float *blend_color;
 };
-_Static_assert(sizeof(struct rwa_draw) == 328 && offsetof(struct rwa_draw, viewport) == 296 &&
+_Static_assert(sizeof(struct rwa_draw) == 336 && offsetof(struct rwa_draw, blend_color) == 328 && offsetof(struct rwa_draw, viewport) == 296 &&
 	       offsetof(struct rwa_draw, color_level) == 304 && offsetof(struct rwa_draw, depth_level) == 320,
 	       "struct rwa_draw must match tools/mesa/air/air_metal.h");
 
@@ -2663,6 +2665,7 @@ rw_fc_collect(id function, struct rwa_function_constant *out, unsigned max, NSMu
 	unsigned clearStencil;
 	BOOL clearsDepth, clearsStencil;
 	unsigned stencilReference[2];
+	float blendColor[4];
 	float depthRange[2];
 	BOOL hasDepthRange;
 	unsigned primitive, vertexStart, vertexCount;
@@ -3833,10 +3836,10 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  *     which this frontend binds nothing for;
  *   - an array of descriptors (arrayLength above 1), which no module in reach declares
  *     and which a shader could index at run time;
- *   - indices with a gap in them. Metal's own encodedLength is over the highest index, so
+ *   - duplicate or out-of-range indices. Gaps are supported: encodedLength spans
+ *     the highest ID, so
  *     a set declaring [[id(0)]] and [[id(5)]] is 48 bytes and not 16 -- and this library
- *     answers 8 bytes per member. Saying so is better than handing back a length the
- *     application would allocate too little memory from.
+ *     reserves 8 bytes per index, including holes. Duplicate IDs remain invalid.
  */
 - (id)newArgumentEncoderWithArguments:(NSArray *)arguments
 {
@@ -3856,7 +3859,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 	layout.metal_index = ~0u;      /* the application binds it where it likes */
 	layout.alignment = 8;
 	layout.member_count = (unsigned)count;
-	layout.encoded_length = 8 * (unsigned)count;
+	layout.encoded_length = 0;
 
 	uint64_t seen = 0;
 	for (NSUInteger i = 0; i < count; i++) {
@@ -3885,15 +3888,10 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 			         (unsigned long)index, (unsigned long)array);
 			return nil;
 		}
-		if (index >= count || (seen & (1ull << index)) != 0) {
-			m2m_log('W', "ENC", "this argument encoder has %lu members and one of "
-			         "them is index %lu: Metal's encodedLength is over the highest "
-			         "index, so this driver will not answer a length for indices "
-			         "with a gap or a repeat in them\n", (unsigned long)count,
-			         (unsigned long)index);
-			return nil;
-		}
-		seen |= 1ull << index;
+        if (!rw_argument_index_add(&seen, &layout.encoded_length, index)) {
+            m2m_log('W', "ENC", "argument descriptor index %lu is duplicate or exceeds the supported index range\n", (unsigned long)index);
+            return nil;
+        }
 		layout.members[i].id = (unsigned)index;
 		layout.members[i].kind = kind;
 		/* The flat index is the SHADER's to allocate, and there is no shader here:
@@ -6949,6 +6947,7 @@ done:
 		.clear_stencil = work->clearsStencil ? &work->clearStencil : NULL,
 		.depth_stencil = [work->depthStencilState mesaDepthStencil],
 		.stencil_reference = { work->stencilReference[0], work->stencilReference[1] },
+		.blend_color = work->blendColor,
 		.depth_range = work->hasDepthRange ? work->depthRange : NULL,
 		.vertex = { .buffers = vertex_buffers, .buffer_count = work->vertexBufferCount },
 		/* and the streams the layout fetches from, at Metal's own indices with
@@ -7643,6 +7642,7 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 	BOOL _clearsDepth, _clearsStencil;
 	unsigned _depthLevel, _depthSlice;
 	unsigned _stencilReference[2];
+	float _blendColor[4];
 	float _depthRange[2];
 	BOOL _hasDepthRange;
 	id _vertexBuffers[RW_MAX_BUFFERS];
@@ -7975,7 +7975,8 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 }
 - (void)setBlendColorRed:(float)r green:(float)g blue:(float)b alpha:(float)a
 {
-	(void)r; (void)g; (void)b; (void)a;
+	_blendColor[0] = r; _blendColor[1] = g;
+	_blendColor[2] = b; _blendColor[3] = a;
 }
 
 - (void)recordDraw:(NSUInteger)primitive
@@ -8063,6 +8064,7 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 	work->storeAction = _store[0];
 	work->stencilReference[0] = _stencilReference[0];
 	work->stencilReference[1] = _stencilReference[1];
+	memcpy(work->blendColor, _blendColor, sizeof(work->blendColor));
 	work->depthRange[0] = _depthRange[0];
 	work->depthRange[1] = _depthRange[1];
 	work->hasDepthRange = _hasDepthRange;
@@ -9902,7 +9904,10 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
 		}
 		return NO;
 	}
-	if (index >= _layout.member_count) {
+	BOOL declared = NO;
+    for (unsigned i = 0; i < _layout.member_count; i++)
+        if (_layout.members[i].id == index) { declared = YES; break; }
+    if (!declared) {
 		/* Which of the two layouts this is matters to whoever reads the line: a
 		 * shader's set is the shader's business and an application cannot change
 		 * it, while a set described with MTLArgumentDescriptors is the

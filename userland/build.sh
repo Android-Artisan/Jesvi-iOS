@@ -229,6 +229,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		{ ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond; }
 		$DYN -framework CoreFoundation -framework AudioToolbox -framework AVFoundation -lobjc -o obj/sound_test src/sound_test.c
 		$DYN -framework CoreFoundation -lMobileGestalt -o obj/mg_test src/mg_test.c
+        $DYN -dynamiclib -fobjc-arc -fblocks -Wl,-no_fixup_chains -framework UIKit -framework QuartzCore \
+            -o obj/libredwood-graphics.dylib src/graphics_compat.m
+
 		$DYN -framework CoreFoundation -framework AVFoundation -lobjc -o obj/torch_test src/torch_test.c
 		$DYN -O2 -o obj/camera_test src/camera_test.c src/camera_isp.c
 		$DYN -fobjc-arc -framework Foundation -framework AVFoundation -o obj/camera_avtest src/camera_avtest.m
@@ -669,6 +672,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
+    # Shared graphics is automatic for normal applications. GRAPHICS_COMPAT=0
+    # retains the previous discovery behavior for diagnosis.
+    if [ "${GRAPHICS_COMPAT-1}" != 0 ] && [ -n "$GL" ] && [ "$GL" != test ]; then
+        python3 ../tools/graphics/prepare-root.py root --binaries obj
+    fi
 	# calls on iOS's own call screen (A, 2026-11-14): callservicesd (CallKit's daemon; the system image leaves framework
 	# executables out) runs from /var/jb/redwood (5 MB: too big for root.apfs in RECOVERY; tools/cellular/RedwoodPhone/
 	# install.sh puts it there from the iOS rootfs), its own launchd job pointed there, and RedwoodPhone (installed in
