@@ -20,6 +20,8 @@
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <libkern/c++/OSData.h>
+#include <libkern/c++/OSSerialize.h>
+#include "redwood_graphics_policy.h"
 #include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSArray.h>
@@ -4025,9 +4027,62 @@ class IOAcceleratorES : public IOService
 
 public:
 	virtual IOReturn setProperties(OSObject * properties) APPLE_KEXT_OVERRIDE;
+#define RW_GRAPHICS_DECL(Type) \
+    virtual OSPtr<OSObject> copyProperty(const Type *key) const APPLE_KEXT_OVERRIDE; \
+    virtual OSPtr<OSObject> copyProperty(const Type *key, const IORegistryPlane *plane, IOOptionBits options) const APPLE_KEXT_OVERRIDE;
+    RW_GRAPHICS_DECL(char)
+    RW_GRAPHICS_DECL(OSString)
+    RW_GRAPHICS_DECL(OSSymbol)
+#undef RW_GRAPHICS_DECL
+    virtual OSPtr<OSDictionary> dictionaryWithProperties(void) const APPLE_KEXT_OVERRIDE;
+    virtual bool serializeProperties(OSSerialize *serialize) const APPLE_KEXT_OVERRIDE;
+
 };
 
 OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+
+/* Keep incompatible core renderers on their established path. Filtering is
+ * request-local: never remove properties from the shared live registry table,
+ * never patch user-space IOKit entry points or recursively call another hook. */
+static bool rw_graphics_legacy_client(void)
+{
+    char name[32] = {0};
+    proc_selfname(name, sizeof(name));
+    return rw_graphics_legacy_process(name);
+}
+static const char *rw_graphics_key(const char *key) { return key; }
+static const char *rw_graphics_key(const OSString *key) { return key ? key->getCStringNoCopy() : nullptr; }
+#define RW_GRAPHICS_COPY(Type) \
+OSPtr<OSObject> IOAcceleratorES::copyProperty(const Type *key) const { \
+    if (rw_graphics_legacy_client() && rw_graphics_discovery_key(rw_graphics_key(key))) return nullptr; \
+    return IOService::copyProperty(key); \
+} \
+OSPtr<OSObject> IOAcceleratorES::copyProperty(const Type *key, const IORegistryPlane *plane, IOOptionBits options) const { \
+    if (rw_graphics_legacy_client() && rw_graphics_discovery_key(rw_graphics_key(key))) return nullptr; \
+    return IOService::copyProperty(key, plane, options); \
+}
+RW_GRAPHICS_COPY(char)
+RW_GRAPHICS_COPY(OSString)
+RW_GRAPHICS_COPY(OSSymbol)
+#undef RW_GRAPHICS_COPY
+
+OSPtr<OSDictionary> IOAcceleratorES::dictionaryWithProperties(void) const
+{
+    auto dict = IOService::dictionaryWithProperties();
+    if (dict && rw_graphics_legacy_client()) {
+        const char *const keys[] = {"MetalPluginName", "MetalPluginClassName",
+            "IOGLESBundleName", "IOGLESMetalBundleName", "IOGLESDefaultUseMetal"};
+        for (unsigned i=0; i<sizeof keys/sizeof *keys; i++) dict->removeObject(keys[i]);
+    }
+    return dict;
+}
+bool IOAcceleratorES::serializeProperties(OSSerialize *serialize) const
+{
+    if (!rw_graphics_legacy_client()) return IOService::serializeProperties(serialize);
+    auto dict = dictionaryWithProperties();
+    return dict && dict->serialize(serialize);
+}
+
 
 /*
  * Switch Metal's own device discovery on, from user space: IORegistryEntrySetCFProperties() with
@@ -4370,6 +4425,7 @@ publishAccelerator(IOService * provider)
 	}
 	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
 		accelerator->setName("sgx");
+        accelerator->setProperty("RedwoodGraphicsPolicyVersion", (unsigned long long)1, 32);
 		accelerator->registerService();
 		/* the first line to look for in the log of such a boot: the gate is open, nothing is set yet */
 		if (gAcceleratorTakesProperties) {

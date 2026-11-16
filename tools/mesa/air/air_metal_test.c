@@ -3997,7 +3997,7 @@ run_attrib(const char *vpath, const char *vfunc, const char *fpath, const char *
    } bad[] = {
       { "attribute 0 configured with no format at all", narrow, MTL_STEP_PER_VERTEX, 1,
         ~0u, false },
-      { "an integer format for a float4 attribute", narrow, MTL_STEP_PER_VERTEX, 1, ~0u,
+      { "a descriptor index beyond the supported vertex format range", narrow, MTL_STEP_PER_VERTEX, 1, ~0u,
         false },
       { "MTLVertexFormatFloatRGB9E5, which the VFD cannot fetch", narrow,
         MTL_STEP_PER_VERTEX, 1, ~0u, false },
@@ -4027,7 +4027,7 @@ run_attrib(const char *vpath, const char *vfunc, const char *fpath, const char *
                        bad[i].instance_buffer);
       switch (i) {
       case 0: s.vertex_attribute[0].format = 0; break;
-      case 1: s.vertex_attribute[0].format = MTL_VF_INT4; break;
+      case 1: s.vertex_attribute[0].format = 65535; break;
       case 2: s.vertex_attribute[0].format = MTL_VF_FLOAT_RGB9E5; break;
       case 3: s.vertex_attribute[0].format = MTL_VF_UINT1010102_NORMALIZED; break;
       case 4: s.vertex_attribute[0].format = 99; break;
@@ -5455,6 +5455,8 @@ blend_min(float a, float b)
  * alpha case below is therefore unreachable from a served pipeline and is written out so
  * the two readings can be printed next to each other.
  */
+static float test_blend_color[4];
+
 static float
 metal_factor(unsigned f, unsigned channel, const float src[4], const float dst[4],
              bool *modelled)
@@ -5474,6 +5476,10 @@ metal_factor(unsigned f, unsigned channel, const float src[4], const float dst[4
    case BF_INV_DST_ALPHA: return 1.0f - dst[3];
    case BF_SRC_ALPHA_SAT:
       return channel < 3 ? blend_min(src[3], 1.0f - dst[3]) : 1.0f;
+   case 11: return test_blend_color[channel];
+   case 12: return 1.0f - test_blend_color[channel];
+   case 13: return test_blend_color[3];
+   case 14: return 1.0f - test_blend_color[3];
    default:
       *modelled = false;
       return 0.0f;
@@ -5504,15 +5510,15 @@ gallium_factor(unsigned pf, unsigned channel, const float src[4], const float ds
    case 4:    return dst[3];                                       /* DST_ALPHA */
    case 5:    return dc;                                           /* DST_COLOR */
    case 6:    return channel < 3 ? blend_min(src[3], 1.0f - dst[3]) : 1.0f;
-   case 7:    return 0.0f;                                         /* CONST_COLOR */
-   case 8:    return 0.0f;                                         /* CONST_ALPHA */
+   case 7:    return test_blend_color[channel];                                         /* CONST_COLOR */
+   case 8:    return test_blend_color[3];                                         /* CONST_ALPHA */
    case 0x11: return 0.0f;                                         /* ZERO */
    case 0x12: return 1.0f - sc;                                    /* INV_SRC_COLOR */
    case 0x13: return 1.0f - src[3];                                /* INV_SRC_ALPHA */
    case 0x14: return 1.0f - dst[3];                                /* INV_DST_ALPHA */
    case 0x15: return 1.0f - dc;                                    /* INV_DST_COLOR */
-   case 0x17: return 1.0f;                                         /* INV_CONST_COLOR */
-   case 0x18: return 1.0f;                                         /* INV_CONST_ALPHA */
+   case 0x17: return 1.0f - test_blend_color[channel];                                         /* INV_CONST_COLOR */
+   case 0x18: return 1.0f - test_blend_color[3];                                         /* INV_CONST_ALPHA */
    default:
       /* 0 and 0x0b..0x10 and 0x16 are no enumerator at all, and 9, 10, 0x19, 0x1a are
        * dual-source factors reading a second output that does not exist here. Both are
@@ -5677,6 +5683,7 @@ struct blend_case {
     * Appended so that every row above can leave it out -- which is also why it is read
     * only when `blend_count` is 2 or more. */
    struct rwa_color_blend b1;
+   bool use_blend_color;
 };
 
 /* A served case, spelled out so the table reads as Metal's own descriptor. */
@@ -5832,7 +5839,13 @@ run_blend(const char *path, const char *func)
        */
       { "MTLBlendFactorBlendColor, whose colour is encoder state", MTL_RGBA32_FLOAT, 1, 1,
         BLEND_ON(BF_BLEND_COLOR, BF_INV_SRC_ALPHA, BO_ADD, BF_ONE, BF_INV_SRC_ALPHA,
-                 BO_ADD, CWM_ALL), true },
+                 BO_ADD, CWM_ALL), false, .use_blend_color = true },
+      { "constant colour inverse / constant alpha", MTL_RGBA32_FLOAT, 1, 1,
+        BLEND_ON(12, BF_ZERO, BO_ADD, 13, BF_ZERO, BO_ADD, CWM_ALL), false, .use_blend_color = true },
+      { "constant alpha and inverse", MTL_RGBA32_FLOAT, 1, 1,
+        BLEND_ON(13, 14, BO_ADD, 14, 13, BO_ADD, CWM_ALL), false, .use_blend_color = true },
+      { "constant colour returns to zero without encoder state", MTL_RGBA32_FLOAT, 1, 1,
+        BLEND_ON(11, BF_ZERO, BO_ADD, 13, BF_ZERO, BO_ADD, CWM_ALL), false },
       { "MTLBlendFactorSource1Color: dual-source, with no second output in the contract",
         MTL_RGBA32_FLOAT, 1, 1,
         BLEND_ON(BF_SRC1_COLOR, BF_INV_SRC_ALPHA, BO_ADD, BF_ONE, BF_INV_SRC_ALPHA,
@@ -5887,6 +5900,9 @@ run_blend(const char *path, const char *func)
 
    for (unsigned ci = 0; ci < COUNT_OF(cases); ci++) {
       const struct blend_case *c = &cases[ci];
+      const float blend_color[4] = { 0.2f, 0.4f, 0.6f, 0.8f };
+      for (unsigned ch = 0; ch < 4; ch++)
+         test_blend_color[ch] = c->use_blend_color ? blend_color[ch] : 0.0f;
       bool eight = c->attachment == MTL_BGRA8_UNORM;
       const float *s = eight ? src8 : src;
       float d[4];
@@ -6033,6 +6049,7 @@ run_blend(const char *path, const char *func)
          const struct rwa_draw draw = {
             .color = color, .color_count = c->attachments,
             .clear_color = NULL,           /* MTLLoadActionLoad: keep the destination */
+            .blend_color = c->use_blend_color ? blend_color : NULL,
             .fragment = { .buffers = buf, .buffer_count = nbuf, .textures = tex,
                           .texture_count = ntex, .samplers = samp,
                           .sampler_count = nsamp },

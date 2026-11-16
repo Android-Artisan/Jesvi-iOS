@@ -1,3 +1,11 @@
+## 2026-11-16 — Shared Maps graphics and Photos/UI compatibility deployed
+- User confirmed Apple/Google Maps portrait/landscape and Photos previews/albums after the corrected cold boot. SpringBoard, backboardd and mediaserverd retained PIDs 9/21/57 throughout the postboot checks; no core fault seen in those captures.
+- Shared driver fixes cover blend state, packed formats, sparse argument IDs, bounded resource-slot allocation, numeric vertex conversion and depth uploads. Common Metal-layer presentation helper requires no Maps app list.
+- Kernel filters discovery for incompatible core renderers and Photos without runtime IOKit hooks. On-phone normal/legacy tests passed direct, search and dictionary registry APIs plus actual Metal device creation. Startup requires this kernel policy; older kernels stay off.
+- Source and signed userland/kernel prebuilts included. Kernel uses standard strip -x (15,295,672 bytes); loader read window checked before flashing. Recovery head/tail and standalone boot read-back passed; base system and user data preserved. Passcode, AOD, camera-image and graphics assembly checks pass. Phone reports no protected passcode bag, as before this deployment; repeat protected-bag unlock was not retested.
+- Open: Weather wallpaper hits CFRelease(NULL); Aegir wallpaper rejects an extended-range layer. Wallpaper prewarming can restart these extensions. This is not universal Metal support or complete wallpaper stability. Native standalone GPS remains separate unfinished work.
+- See docs/x1slte-maps-rendering.md for evidence, loader-window correction and rollback.
+
 ## 2026-11-16 — Third rear sensor and native single-icon cycle
 - Camera's single native lens icon cycles0.5x →1x →3x and closes the scale normally; user confirmed. No overlay or forced three-button layout.
 - GW2 native4864x3648 capture, focus and digital crop above3x are enabled;5x/10x trials retained GW2. This is not5x optical zoom. Primary autofocus and the original front worker are preserved.
