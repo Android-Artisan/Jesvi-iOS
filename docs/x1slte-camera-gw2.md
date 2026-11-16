@@ -40,7 +40,7 @@ not5294. Corrected to5166/12304 (1918MHz pixel clock) before stream test.
 Next candidate adds mode6 continuous4864x3648, distinctive sensor4 metadata,
 finite exposure limits, frame-geometry guard, and GW2 AK737x0x0f on HSI2C0, per
 stock DT (primary remains0x0c). Native selector test passed on actual CameraUI
-for0.5/1/3 buttons and10x drag with no graph zoom forwarding; front delegate
+for the historical multi-button prototype and10x drag with no graph zoom forwarding; front delegate
 restoration still passed. GW2 backend/UI are opt-in by redwood-gw2-enable.
 3x is a provisional test entry, not a claimed stock switching threshold.
 Samsung public documentation confirms3x hybrid/up to30x digital only:
@@ -84,3 +84,29 @@ Final image is prepared from the live root, retaining its keybag/AOD/telephony
 chain, logos, loader configuration, system and user data. Temporary native UI
 probe files were removed. After reboot, injection must point to the root media
 library, not the temporary GW2 test file.
+
+
+## Permanent deployment verified (2026-11-16)
+
+Final source/kernel integration: e859bd7a. Recovery and standalone boot were
+written and read back successfully; the phone rebooted into the 07:42:36 IST
+kernel. The root media library hash is
+`8a5e6e11da631fe50f349f1378b6ef59c9c6599851b844e2d59ad78c2d2dcbf0`.
+Runtime injection uses `/redwood/lib/libredwood-media.dylib`, not a development
+override. Protected keybag restored locked (state0x5). Recovery SHA256:
+`bcd83e4ec5230288bcaf07e2bc03123ca8eb595b43e09a6f587e9114306b0348`.
+Full artifact hashes and rollback are in build/camera-gw2/permanent.
+
+The final cold GW2 first-frame probe measured1671.1ms versus2651.4ms before
+(37% reduction), and delivered36 native4864x3648 frames. This is a single
+cold-start comparison, not a guaranteed Camera-app switch latency. Primary's
+2945.3ms baseline is unchanged; shared-clock firmware reinitialization still
+prevents seamless primary/third-sensor transitions. Front processing is pinned
+to its original worker. No wiped-data test was performed.
+
+Final post-deployment regressions: ultra-wide, explicit binned primary mode4,
+and front each delivered36frames; primary exposure/gain readback passed in
+mode4. The legacy boot-default mode2 probe delivered36frames but did not
+apply its manual exposure assertion; this is not counted as an exposure pass.
+App primary continues to use its explicit accepted mode. Front remained on its
+original worker. Final regression logs are in the permanent artifact directory.
