@@ -48,6 +48,7 @@ static volatile uint32_t gen;                   /* operation generation: a new o
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
 static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
+static volatile int enrolling;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
 
 static void
 lg(const char *fmt, ...)
@@ -234,6 +235,7 @@ on_line(const char *l)
 		int err;
 		if (sscanf(l, "fp template: saved %u bytes to " TEMPLATE " (error %d)", &bytes, &err) == 2 && !err &&
 		    bytes > 0) {
+			enrolling = 0;
 			ev_send(FPCD_EV_ENROL_DONE, 0, FID, 0, 0, samples_seen, 0);
 			ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
 		} else {
@@ -332,7 +334,7 @@ run(void *arg)
 	pthread_mutex_lock(&mx);
 	ring(1);
 	log_baseline();
-	if (kind == 1) { samples_seen = 0; enrol_pct = 0; }
+	if (kind == 1 && enrol_pct == 0) samples_seen = 0;
 	int bad = 0;
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
 	/* the kernel's fp cbge runs the same chain with CONTROL 67 per slot (slot byte + 0x96000 output), as Samsung's
@@ -344,9 +346,9 @@ run(void *arg)
 	} else {
 		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
 		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
-		for (int rounds = 0; !bad && op == 1 && g == gen && rounds < 12; rounds++) {
+		for (int rounds = 0; !bad && op == 1 && g == gen && rounds < 200; rounds++) {
 			bad = step("fp einit 1", g);
-			if (!bad) bad = step("fp run 3 1 15 4", g);
+			if (!bad) bad = step("fp run 3 1 60 4", g);
 		}
 	}
 	if (bad && op == kind && g == gen) {
@@ -393,11 +395,15 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		p->len = sizeof(ids);
 		return FPCD_OK;
 	}
-	case 3: return start(1);                                /* EnrollMode */
+	case 3: enrolling = 1; return start(1);                 /* EnrollMode */
 	case 4:                                                 /* MatchMode */
-		if (op == 1) return FPCD_OK;                    /* phase 2 asked before the template was committed */
+		if (enrolling) {                                /* phase 2 before the template was committed: go on */
+			if (op != 1) return start(1);
+			return FPCD_OK;
+		}
 		return has ? start(2) : FPCD_E_NOENT;
 	case 12:                                                /* Cancel */
+		enrolling = 0;
 		gen++;
 		op = 0;
 		return FPCD_OK;
