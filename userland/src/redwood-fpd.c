@@ -95,6 +95,7 @@ tee_ok(const char *cmd, const char *s)
 	const char *last = strstr(s, "\nlast: ");
 	last = last ? last + 7 : "";
 	if (!strcmp(cmd, "fp power")) return !strncmp(last, "fp power: configured, error 0", 29);
+	if (!strcmp(cmd, "fp prepare")) return !strncmp(last, "fp prepare: ", 12) && strstr(last, ": error 0") != NULL;
 	if (!strcmp(cmd, "fp cbgeefs")) return strstr(last, "2 factory slots read, load error 0") != NULL;
 	if (!strcmp(cmd, "fp idinit")) return !strncmp(last, "fp idinit: error 0 op ", 22);
 	if (!strcmp(cmd, "fp einit 1")) return !strncmp(last, "fp einit 1: result 0 error 0 op ", 32);
@@ -266,7 +267,7 @@ run(void *arg)
 {
 	int kind = (int)(intptr_t)arg;
 	uint32_t g = gen;
-	const char *setup[] = { "fp power", "fp 1:2", "fp cbgeefs", "fp 10:1", "fp 1:2" };
+	const char *setup[] = { "fp power", "fp prepare", "fp cbgeefs", "fp 10:1", "fp prepare" };
 	pthread_mutex_lock(&mx);
 	log_baseline();
 	samples_seen = 0;
