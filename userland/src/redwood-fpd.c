@@ -236,7 +236,7 @@ on_line(const char *l)
 		if (sscanf(l, "fp template: saved %u bytes to " TEMPLATE " (error %d)", &bytes, &err) == 2 && !err &&
 		    bytes > 0) {
 			enrolling = 0;
-			extend = 1;                     /* Apple's phase 2 ("adjust your grip") follows */
+			grip_phase = 1;                     /* Apple's phase 2 ("adjust your grip") follows */
 			ev_send(FPCD_EV_ENROL_DONE, 0, FID, 0, 0, samples_seen, 0);
 			ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
 		} else {
@@ -406,7 +406,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		p->len = sizeof(ids);
 		return FPCD_OK;
 	}
-	case 3: enrolling = 1; extend = 0; return start(1);     /* EnrollMode */
+	case 3: enrolling = 1; grip_phase = 0; return start(1);     /* EnrollMode */
 	case 4:                                                 /* MatchMode */
 		if (enrolling) {                                /* phase 2 before the template was committed: go on */
 			if (op != 1) return start(1);
@@ -414,7 +414,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		}
 		return has ? start(2) : FPCD_E_NOENT;
 	case 12:                                                /* Cancel (Apple also sends it between its two phases) */
-		if (!enrolling) extend = 0;
+		if (!enrolling) grip_phase = 0;
 		gen++;
 		op = 0;
 		return FPCD_OK;
