@@ -48,7 +48,7 @@ static volatile uint32_t gen;                   /* operation generation: a new o
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
 static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
-static volatile int enrolling, calibrated;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
+static volatile int enrolling, calibrated, grip_phase;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
 
 static void
 lg(const char *fmt, ...)
@@ -236,12 +236,18 @@ on_line(const char *l)
 		if (sscanf(l, "fp template: saved %u bytes to " TEMPLATE " (error %d)", &bytes, &err) == 2 && !err &&
 		    bytes > 0) {
 			enrolling = 0;
+			extend = 1;                     /* Apple's phase 2 ("adjust your grip") follows */
 			ev_send(FPCD_EV_ENROL_DONE, 0, FID, 0, 0, samples_seen, 0);
 			ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
 		} else {
 			ev_send(FPCD_EV_ENROL_FAILED, FPCD_E_IO, 0, 0, 0, samples_seen, 0);
 		}
 		op = 0;
+	} else if (op == 2 && grip_phase && strstr(l, "fp run 6: finger held on the sensor")) {
+		/* Apple's phase 2 wants edge views; Samsung's template is already complete (100 %). As redfin's extend
+		 * enrolment, a real touch on the sensor counts as one: RedwoodMesa hands such matches only to the
+		 * enrolling client (Settings), never to an unlock. */
+		ev_send(FPCD_EV_MATCH, 0, FID, 0, 0, 1, 0);
 	} else if (op == 2 && sscanf(l, "fp run 6: SENSOR MATCH candidate (bio %u score %u", &b, &sc) == 2) {
 		ev_send(FPCD_EV_MATCH, 0, FID, (int32_t)sc, 0, 1, 0);
 		op = 0;
@@ -400,7 +406,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		p->len = sizeof(ids);
 		return FPCD_OK;
 	}
-	case 3: enrolling = 1; return start(1);                 /* EnrollMode */
+	case 3: enrolling = 1; extend = 0; return start(1);     /* EnrollMode */
 	case 4:                                                 /* MatchMode */
 		if (enrolling) {                                /* phase 2 before the template was committed: go on */
 			if (op != 1) return start(1);
@@ -408,6 +414,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		}
 		return has ? start(2) : FPCD_E_NOENT;
 	case 12:                                                /* Cancel (Apple also sends it between its two phases) */
+		if (!enrolling) extend = 0;
 		gen++;
 		op = 0;
 		return FPCD_OK;
