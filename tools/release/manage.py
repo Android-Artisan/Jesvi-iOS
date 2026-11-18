@@ -25,9 +25,10 @@ def profile(name):
     if d['status'] not in ('development', 'unmaintained', 'validated'):
         raise ValueError(f'invalid status: {name}')
     if d['installer_validated']:
-        # No device is qualified yet. A future qualification PR must change this
-        # code and include its evidence, rather than flipping a JSON boolean.
-        raise ValueError('installer hardware qualification is not recorded; see docs/release/twrp.md')
+        # A qualification is a record of a real install on the phone, not a flipped boolean.
+        q = d.get('qualification', '')
+        if not q or not (ROOT / q).is_file() or 'EXIT=0' not in (ROOT / q).read_text():
+            raise ValueError('installer hardware qualification is not recorded; see docs/release/twrp.md')
     import targets
     t = targets.load(name)
     if t['TARGET_STATUS'] != d['status']:

@@ -4,7 +4,7 @@
 if [ -z "${SOFTWARE_PASSCODE+x}" ]; then
 	SOFTWARE_PASSCODE=0
 	if [ "${DEVICE:-x1slte}" = x1slte ] &&
-	    grep -Eq '(^|[[:space:]])softpasscode=1([[:space:]]|$)' ../x1slte.cmdline; then
+	    grep -Eq '(^|[[:space:]])softpasscode=1([[:space:]]|$)' ../devices/exynos990/x1slte/x1slte.cmdline; then
 		SOFTWARE_PASSCODE=1
 	fi
 fi

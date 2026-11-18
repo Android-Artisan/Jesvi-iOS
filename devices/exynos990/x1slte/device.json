@@ -15,7 +15,8 @@
   "bootloaders": [
     "G980FXXSNHYB7"
   ],
-  "installer_validated": false,
+  "installer_validated": true,
+  "qualification": "docs/release/qualification-x1slte.md",
   "partitions": {
     "boot": 61865984,
     "recovery": 69009408,
