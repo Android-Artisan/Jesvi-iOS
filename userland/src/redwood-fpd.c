@@ -37,7 +37,7 @@
 
 #define TEMPLATE        "/var/root/fp-template.bin"
 #define FID             1u                      /* one finger: the TEE holds one template */
-#define ENROL_TOUCHES   15u                     /* "fp run 3 1 15 4" */
+#define ENROL_TOUCHES   17u                     /* good touches to 100 % on this phone (FINGERPRINT-HANDOVER.md) */
 #define STEP_MS         20000
 #define RUN_MS          60000
 
@@ -193,7 +193,8 @@ static void
 on_line(const char *l)
 {
 	unsigned n, v, b, sc, x, y;
-	if (strstr(l, ": touch at ") && sscanf(strstr(l, ": touch at "), ": touch at %u,%u", &x, &y) == 2) {
+	if (strstr(l, ": touch at ") && strstr(l, "ON THE SENSOR") &&
+	    sscanf(strstr(l, ": touch at "), ": touch at %u,%u", &x, &y) == 2) {   /* a tap elsewhere is not a finger */
 		ev_send(FPCD_EV_FINGER_DOWN, 0, 0, 0, 0, 0, 0);
 	} else if (strstr(l, ": finger lifted")) {
 		ev_send(FPCD_EV_FINGER_UP, 0, 0, 0, 0, 0, 0);
@@ -202,7 +203,7 @@ on_line(const char *l)
 	} else if (op == 1 && sscanf(l, "fp run 3: SAMPLE %u ACCEPTED: progress %u", &n, &v) == 2 && v <= 100) {
 		samples_seen = n;
 		/* the TEE says how far, not how many are left: estimate from the touches so far */
-		uint32_t rem = v >= 100 ? 0 : (v ? (n * (100 - v) + v - 1) / v : ENROL_TOUCHES);
+		uint32_t rem = v >= 100 ? 0 : (n < ENROL_TOUCHES ? ENROL_TOUCHES - n : 1);
 		ev_send(FPCD_EV_ENROL_PROGRESS, v >= 100 ? 0 : 1, 0, 0, rem ? rem : (v < 100), n, 0);
 	} else if (op == 1 && !strncmp(l, "fp template: saved ", 19)) {
 		unsigned bytes;
@@ -271,8 +272,17 @@ run(void *arg)
 	samples_seen = 0;
 	int bad = 0;
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
-	if (!bad) bad = step(kind == 1 ? "fp einit 1" : "fp idinit", g);
-	if (!bad) bad = step(kind == 1 ? "fp run 3 1 15 4" : "fp run 6 1 15 0", g);
+	if (kind == 2) {
+		if (!bad) bad = step("fp idinit", g);
+		if (!bad) bad = step("fp run 6 1 15 0", g);
+	} else {
+		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
+		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
+		for (int rounds = 0; !bad && op == 1 && g == gen && rounds < 12; rounds++) {
+			bad = step("fp einit 1", g);
+			if (!bad) bad = step("fp run 3 1 15 4", g);
+		}
+	}
 	if (bad && op == kind && g == gen) {
 		ev_send(kind == 1 ? FPCD_EV_ENROL_FAILED : FPCD_EV_ERROR, FPCD_E_IO, 0, 0, 0, samples_seen, 0);
 	}
@@ -323,6 +333,28 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		op = 0;
 		return FPCD_OK;
 	case 38: case 69: return FPCD_OK;                       /* finger detect: the runs detect by themselves */
+	case 2:                                                 /* ResetSensor: end any run */
+		if (op) {
+			gen++;
+			op = 0;
+		}
+		return FPCD_OK;
+	case 14: return FPCD_OK;                                /* EnrollContinue: the enrol run goes on by itself */
+	case 49: return FPCD_OK;                                /* NoCatacomb: the template file stays (nothing to load) */
+	case 56: {                                              /* GetCatacombId: a stable id for the template db */
+		uint64_t id = has ? 0x4a45535649544944ull : 0;  /* "JESVITID" */
+		memcpy(p->data, &id, 8);
+		p->len = 8;
+		return FPCD_OK;
+	}
+	case 78: p->len = 0; return FPCD_OK;                    /* GetLastMatchEvent: none kept here */
+	case 72: {                                              /* RemoveUserData: every finger (kept aside, not deleted) */
+		char bak[96];
+		snprintf(bak, sizeof(bak), TEMPLATE ".removed.%ld", (long)time(NULL));
+		if (has && rename(TEMPLATE, bak)) return FPCD_E_IO;
+		ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
+		return FPCD_OK;
+	}
 	case 13: {                                              /* RemoveTemplate */
 		char bak[96];
 		snprintf(bak, sizeof(bak), TEMPLATE ".removed.%ld", (long)time(NULL));
