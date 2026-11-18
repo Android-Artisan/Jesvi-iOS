@@ -22,13 +22,19 @@ static uint16_t u16(const uint8_t *p){return p[0]|(uint16_t)p[1]<<8;}
 static void put32(uint8_t *p,uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
 static int write_all(int fd,const uint8_t *p,size_t n){while(n){ssize_t k=write(fd,p,n);if(k<0 && errno==EINTR)continue;if(k<=0)return -1;p+=k;n-=(size_t)k;}return 0;}
-int main(void)
+int main(int argc,char **argv)
 {
+    unsigned duration=115;
+    if(argc>2){fprintf(stderr,"usage: %s [seconds:10..600]\n",argv[0]);return 2;}
+    if(argc==2){char *tail=NULL;errno=0;long v=strtol(argv[1],&tail,10);
+        if(errno || tail==argv[1] || *tail || v<10 || v>600){fprintf(stderr,"invalid test duration\n");return 2;}duration=(unsigned)v;}
+
     signal(SIGINT,signal_stop);signal(SIGTERM,signal_stop);signal(SIGPIPE,SIG_IGN);
     const char *server="/share/android/data/vendor/gps/.pipe.gpsd_to_lhd.to_server";
     const char *client="/share/android/data/vendor/gps/.pipe.gpsd_to_lhd.to_client";
     int in=open(server,O_RDONLY|O_NONBLOCK),out=-1;
     if(in<0){perror("FIFO server");return 1;}
+    fprintf(stderr,"FIFO server ready\n");fflush(stderr);
     double end=now()+10;
     while(now()<end){out=open(client,O_WRONLY|O_NONBLOCK);if(out>=0)break;usleep(10000);}
     if(out<0){perror("FIFO client");close(in);return 1;}
@@ -36,7 +42,7 @@ int main(void)
     int sock=socket(AF_INET,SOCK_STREAM,0);struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons(31338);inet_pton(AF_INET,"192.168.64.1",&a.sin_addr);
     if(connect(sock,(void*)&a,sizeof(a))){perror("USB relay connect");return 1;}
     int yes=1;setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes));
-    uint8_t fifo[16384],net[8192];size_t f_used=0,n_used=0;unsigned commands=0,replies=0;end=now()+115;
+    uint8_t fifo[16384],net[8192];size_t f_used=0,n_used=0;unsigned commands=0,replies=0;end=now()+duration;
     while(!stop && now()<end){
         struct pollfd fds[]={{in,POLLIN,0},{sock,POLLIN,0}};
         int got=poll(fds,2,100);if(got<0 && errno==EINTR)continue;if(got<0)break;
