@@ -22,7 +22,7 @@ static NSDictionary *rpc(NSString *operation,NSData *data,NSData *signature,NSEr
  NSMutableDictionary *body=[@{@"version":@1,@"nonce":nonce,@"operation":operation,@"data":[data base64EncodedStringWithOptions:0]} mutableCopy];
  if(signature)body[@"signature"]=[signature base64EncodedStringWithOptions:0];
  NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld/v1/media",(long)port]]];
- request.HTTPMethod=@"POST";request.timeoutInterval=35;request.HTTPBody=[NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
+ request.HTTPMethod=@"POST";request.timeoutInterval=8;request.HTTPBody=[NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
  [request setValue:[@"Bearer " stringByAppendingString:config[@"token"]] forHTTPHeaderField:@"Authorization"];
  NSURLSession *session=[NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
@@ -31,7 +31,7 @@ static NSDictionary *rpc(NSString *operation,NSData *data,NSData *signature,NSEr
   if(!transportError && [response isKindOfClass:NSHTTPURLResponse.class]){status=[(NSHTTPURLResponse *)response statusCode];if(value.length<=200000)bytes=value;}
   dispatch_semaphore_signal(done);
  }] resume];
- BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,36*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
+ BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
  id result=!timeout && status==200 && bytes?[NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL]:nil;
  if(![result isKindOfClass:NSDictionary.class] || ![result[@"version"] isEqual:@1] || ![result[@"nonce"] isEqual:nonce] || result[@"error"]){if(error)*error=failure();return nil;}
  return result;

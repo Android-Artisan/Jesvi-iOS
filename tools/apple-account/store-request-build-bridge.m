@@ -35,7 +35,7 @@ static NSDictionary *broker_build(NSString *endpoint,NSDictionary *parameters){
                           @"endpoint":[@"https://auth.itunes.apple.com" stringByAppendingString:[[NSURL URLWithString:endpoint] path]],
                           @"parameters":[pdata base64EncodedStringWithOptions:0]};
     NSMutableURLRequest *req=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld/v1/media",(long)port]]];
-    req.HTTPMethod=@"POST";req.HTTPBody=[NSJSONSerialization dataWithJSONObject:value options:0 error:NULL];req.timeoutInterval=35;
+    req.HTTPMethod=@"POST";req.HTTPBody=[NSJSONSerialization dataWithJSONObject:value options:0 error:NULL];req.timeoutInterval=8;
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [req setValue:[@"Bearer " stringByAppendingString:config[@"token"]] forHTTPHeaderField:@"Authorization"];
     NSURLSession *session=[NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
@@ -43,7 +43,7 @@ static NSDictionary *broker_build(NSString *endpoint,NSDictionary *parameters){
     [[session dataTaskWithRequest:req completionHandler:^(NSData *b,NSURLResponse *r,NSError *e){
         if(!e && [r isKindOfClass:NSHTTPURLResponse.class] && b.length<=300000){status=[(NSHTTPURLResponse *)r statusCode];data=b;}dispatch_semaphore_signal(done);
     }] resume];
-    BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,36*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
+    BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
     id reply=!timeout && status==200 && data?[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]:nil;
     if(![reply isKindOfClass:NSDictionary.class] || reply[@"error"] || ![reply[@"nonce"] isEqual:nonce] || ![reply[@"version"] isEqual:@1])return nil;
     NSString *url=reply[@"url"];NSDictionary *headers=reply[@"request_headers"];NSString *body=reply[@"body"];

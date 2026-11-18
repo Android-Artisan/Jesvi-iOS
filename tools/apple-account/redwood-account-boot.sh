@@ -5,7 +5,7 @@
 export PATH=/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/sbin:/usr/sbin
 RW=/redwood/bin/rwsys
 LC=/var/jb/bin/launchctl
-AL=/var/jb/usr/lib/libredwood-account-layer-9b41e2a7df42db8b.dylib
+AL=/var/jb/usr/lib/libredwood-account-layer-d3c28bbd2c3f506f.dylib
 MO=/var/jb/usr/lib/libredwood-metaloff.dylib
 SB=/var/jb/usr/lib/libredwood-store-build.dylib
 RC=/var/jb/usr/lib/libredwood-media-recorder.dylib

@@ -23,7 +23,7 @@ static NSDictionary *proofs(NSURL *url,NSError **error){
  NSString *endpoint=[@"https://auth.itunes.apple.com" stringByAppendingString:url.path];
  NSDictionary *value=@{@"version":@1,@"nonce":nonce,@"operation":@"store-proof",@"endpoint":endpoint};
  NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld/v1/media",(long)port]]];
- request.HTTPMethod=@"POST";request.HTTPBody=[NSJSONSerialization dataWithJSONObject:value options:0 error:NULL];request.timeoutInterval=35;
+ request.HTTPMethod=@"POST";request.HTTPBody=[NSJSONSerialization dataWithJSONObject:value options:0 error:NULL];request.timeoutInterval=8;
  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
  [request setValue:[@"Bearer " stringByAppendingString:config[@"token"]] forHTTPHeaderField:@"Authorization"];
  NSURLSession *session=[NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
@@ -31,7 +31,7 @@ static NSDictionary *proofs(NSURL *url,NSError **error){
  [[session dataTaskWithRequest:request completionHandler:^(NSData *b,NSURLResponse *r,NSError *e){
   if(!e && [r isKindOfClass:NSHTTPURLResponse.class] && b.length<=65536){status=[(NSHTTPURLResponse *)r statusCode];data=b;}dispatch_semaphore_signal(done);
  }] resume];
- BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,36*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
+ BOOL timeout=dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC))!=0;[session invalidateAndCancel];
  id reply=!timeout && status==200 && data?[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]:nil;
  if(![reply isKindOfClass:NSDictionary.class] || ![reply[@"nonce"] isEqual:nonce] || ![reply[@"version"] isEqual:@1] || reply[@"error"])return nil;
  id headers=reply[@"headers"];
