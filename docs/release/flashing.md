@@ -9,7 +9,7 @@ For a first release, qualify **TWRP for first installation**, **Odin/Download Mo
 for bootstrap and rescue**, and **a host helper for input verification, progress,
 backups and readback**. A `.sh` file is an interface, not a flashing protocol.
 The [experimental TWRP backend](twrp.md) implements this transaction, but is not
-yet qualified on hardware; `run.sh` only verifies files and
+yet qualified on hardware; `./build.sh verify|plan` only verifies files and
 prints an offline plan. Do not turn the research `x1slte.sh` flash functions into
 public one-click instructions without the tests below.
 
@@ -17,7 +17,7 @@ public one-click instructions without the tests below.
 |---|---|---|---|
 | TWRP ZIP / sideload | Root access, partition discovery, streamed writes, user-facing progress | Runtime consumes the recovery partition; final installation replaces TWRP. `/data` is a future raw HFS partition | Preferred first-install environment, pending qualification |
 | Odin `.tar` / `.tar.md5` | Samsung Download Mode bootstrap and rescue; familiar on Windows | Tar packaging does not validate model/geometry or manage first-boot formatting. Full raw/sparse `super` behavior needs testing. MD5 is not release authentication | Use for separately validated TWRP/rescue packages initially |
-| Host `run.sh` + adb in TWRP | Read-only probe, model checks, external backups, streaming, hashes | Needs a working recovery and cable; Windows needs a native Python/PowerShell wrapper or an explicitly tested environment | Build toward a common host backend; current helper is offline only |
+| Host `./build.sh verify|plan` + adb in TWRP | Read-only probe, model checks, external backups, streaming, hashes | Needs a working recovery and cable; Windows needs a native Python/PowerShell wrapper or an explicitly tested environment | Build toward a common host backend; current helper is offline only |
 | Heimdall | Open Download Mode transport | Project notes record handshake/session failures and preference for one partition per session | Optional tested rescue alternative, not default multi-partition automation |
 | Stock fastboot/fastbootd | Android bootloader/logical-partition workflows where provided | Samsung Download Mode is not generic fastboot. The custom loader implements its own protocol | Never publish `fastboot flash` commands copied from Qualcomm instructions |
 | Custom loader updater | Potential fast small updates after installation | Current commands are development tools; recovery holds a live log and kernel/root slots | Later, after protocol/version/readback/interruption qualification |
@@ -104,8 +104,8 @@ repartition actions as part of an all-device installer.
 After assembling a private candidate:
 
 ```sh
-./run.sh verify --bundle dist/my-candidate
-./run.sh plan --bundle dist/my-candidate --device-report /private/path/device-report.json
+./build.sh verify --bundle dist/my-candidate
+./build.sh plan --bundle dist/my-candidate --device-report /private/path/device-report.json
 ```
 
 A tester-supplied report has this shape. This example is not a live device probe

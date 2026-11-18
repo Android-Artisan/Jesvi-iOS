@@ -2,7 +2,7 @@
 
 Status: **a local build produces a verified private image package, but this branch
 has no qualified install command yet.** The package manifest deliberately says
-`installer_validated: false`. `run.sh` supports offline `verify` and `plan` only.
+`installer_validated: false`. `./build.sh verify|plan` supports offline `verify` and `plan` only.
 A successful build/cache check does not establish that this exact candidate boots.
 
 An [experimental TWRP ZIP](twrp.md) is now implemented, including a preflight-only
@@ -28,7 +28,7 @@ From the release checkout on a prepared Mac:
 
 ```sh
 ./build.sh local --output dist/s20-001
-./run.sh verify --bundle dist/s20-001
+./build.sh verify --bundle dist/s20-001
 ```
 
 The retained local validation candidate is at `dist/local-validation/`. The
@@ -40,7 +40,7 @@ Verify a newly built ZIP from its parent directory before any TWRP trial:
 
 ```sh
 (cd dist && shasum -a 256 -c s20-001.zip.sha256)
-./run.sh verify --bundle dist/s20-001
+./build.sh verify --bundle dist/s20-001
 ```
 
 Use the checksum received through a trusted channel when distributing packages;

@@ -139,7 +139,7 @@ hosting is later chosen, use content-addressed objects/chunks and a signed manif
 with complete size/hash records, range/resume and retention.
 [GitHub release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases).
 
-The new `run.sh` is deliberately an **offline verifier/planner**, not a ready
+The new `./build.sh verify|plan` is deliberately an **offline verifier/planner**, not a ready
 flasher. This task did not authorize interrupting the other agent's phone tests,
 and no new installer has been tested on hardware. See the full
 [flashing design and acceptance tests](flashing.md).

@@ -53,7 +53,7 @@ that the remote workflows or complete private image path have been executed.
 - [ ] Exact TWRP build/model properties, bootloader/unlock prerequisites and AVB behavior
       recorded; full image/manifest authentication implemented.
 - [ ] First-install writer implemented with preflight, streaming, readback, no protected
-      partitions and fail-stop behavior. Current run.sh is only offline verification.
+      partitions and fail-stop behavior. Current `./build.sh verify` is only offline verification.
 - [ ] BOOT head, runtime, clean install, cold boot, interrupted writes and Download Mode
       rescue demonstrated on the owner's SM-G980F.
 - [ ] Data preservation/update/downgrade policy tested; no OTA/dirty-update claim by default.

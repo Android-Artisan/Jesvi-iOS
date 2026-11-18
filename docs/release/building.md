@@ -79,7 +79,7 @@ kit. The hosted kernel job does not need ASIF.
 HACKIOS_IMAGE_CACHE=/private/build-cache/system \
   ./build.sh images --device x1slte --development
 ./build.sh package --output dist/rc1-private
-./run.sh verify --bundle dist/rc1-private
+./build.sh verify --bundle dist/rc1-private
 ```
 
 `lock-inputs` hashes the actual local files; it does not grant redistribution rights

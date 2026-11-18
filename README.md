@@ -1,93 +1,77 @@
-# Jesvi iOS — Exynos 990
+# Jesvi iOS
 
-An experimental iOS 16.5 / XNU port for Samsung Exynos 990 devices, developed on
-**Galaxy S20 LTE, SM-G980F (`x1slte`), 128 GB**. Working project name: **Jesvi iOS**;
-proposed repository: `ios-exynos990`.
+iOS 16.5 running natively on the **Samsung Galaxy S20 (SM-G980F, Exynos 990)**. The XNU kernel,
+loader, drivers and user-space glue are built from this tree; the iOS system files come from an IPSW
+you download yourself. Built on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel) and laid out
+the same way: a common tree, plus one directory per device.
 
-The S20 runs the port; a general-purpose installer is **not yet qualified**.
-The current storage layout replaces Android in `super`, uses all `userdata` for
-HFS+, and uses `recovery` for the runtime. **Fresh installation requires explicit
-userdata initialization and replaces TWRP. Normal boot never formats userdata.** Do not follow upstream Qualcomm `fastboot boot`
-instructions on Samsung hardware.
+> Experimental. It replaces Android on the phone. Read [Install](docs/release/install.md) and
+> [Rollback](docs/release/rollback.md) before you start.
 
-## Start here
+## What works on the S20
 
-| Task | Guide |
+| | |
 |---|---|
-| Understand release readiness and design decisions | [Release research](docs/release/research.md) |
-| Build/check from a fresh clone | [Build guide](docs/release/building.md) |
-| Add another Exynos 990 device | [Porting guide](docs/release/porting.md) |
-| Build an experimental TWRP ZIP | [TWRP package](docs/release/twrp.md) |
-| Installation steps, current limits and package verification | [Installation guide](docs/release/install.md) |
-| Choose TWRP / Odin / host script and understand recovery | [Flashing design](docs/release/flashing.md) |
-| Configure GitHub, CI and image retention | [Repository and CI](docs/release/operations.md) |
-| Roll back or return to stock Android | [Recovery/rollback guide](docs/release/rollback.md) |
-| Cut a release | [Release checklist](docs/release/checklist.md) |
-| Find subsystem notes | [Documentation index](docs/README.md) |
+| Display | FHD+ up to 120 Hz (real ProMotion), auto-brightness, Always-On Display |
+| Graphics | Metal on the Mali-G77; OpenGL ES games through Mesa |
+| Cellular | 4G data, VoLTE calls both ways, SMS in Messages |
+| Cameras | front + three rear lenses by zoom, photo and video with sound |
+| Connectivity | Wi-Fi 2.4/5 GHz, Bluetooth audio, USB networking, Finder file access |
+| System | touch, buttons, vibration, charging, sensors and compass, passcode, persistent data, thermal control |
+| Not yet | fingerprint, full GPS, App Store purchases |
 
-## Device roadmap
+The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
+and every change is logged in [SHIPPING.md](SHIPPING.md).
 
-| Family | Profile | State |
-|---|---|---|
-| Galaxy S20 | `x1slte` | Active SM-G980F development; only this exact measured variant |
-| Galaxy S20+ | `y2s` | Maintainer needed; no supported model allowlist yet |
-| Galaxy S20 Ultra | `z3s` | Maintainer needed |
-| Galaxy Note20 | `c1s` | Maintainer needed |
-| Galaxy Note20 Ultra | `c2s` | Maintainer needed |
-| Galaxy S20 FE, Exynos variant | `r8s` | Later candidate, outside the first five |
+## Install (TWRP)
 
-These are family roadmap entries, not six working ports. Snapdragon variants,
-other RAM/storage sizes and even S20 5G need separate evidence. Shared Exynos 990
-code helps, but does not establish panel, camera, memory or partition compatibility.
+1. Flash TWRP for the S20 with Odin (AP slot) and boot into it.
+2. Copy `Jesvi-iOS_<version>_x1slte.zip` to a microSD card or USB-OTG drive, or use `adb sideload`.
+3. *Install* the ZIP and hold **Volume Up** when asked. On a phone that already runs Jesvi iOS,
+   your data is kept.
+4. Reboot. The Apple logo shows from power-on.
 
-## Developer commands
+To go back to Android, flash `Jesvi-iOS-Restore_<version>_x1slte.zip` from TWRP, then any Android ROM.
+Details: [install](docs/release/install.md), [TWRP package](docs/release/twrp.md), [rollback](docs/release/rollback.md).
 
-Host checks need Python 3.9+, Git and a C compiler. The kernel adapter currently uses
-macOS and native compiler tools; see the build guide for dependencies.
+## Build
+
+On macOS, with your own iOS 16.5 IPSW and the phone's firmware:
 
 ```sh
-./build.sh devices
-./build.sh validate
-bash ci/check.sh
-./build.sh doctor --device x1slte
-./build.sh kernel --device x1slte --jobs 4
+make doctor          # what this Mac is still missing
+make check           # source checks and tests (what CI runs)
+make kernel          # the kernel        -> out/kernel/mach.x1slte
+make release         # TWRP + restore ZIPs -> dist/release/
 ```
 
-The kernel output is `out/kernel/mach.x1slte`, with provenance and SHA-256 checksums.
-**It is not a flashable boot image.** No command above connects to a phone.
+`./build.sh --help` lists every command; settings live in [`release.conf`](release.conf).
+Guides: [building](docs/release/building.md), [one-command local build](docs/release/local-build.md),
+[CI and releases](docs/release/operations.md).
 
-Private image assembly additionally requires the builder's own IPSW extraction,
-firmware, exact UEFI/DT table, toolchain and HFS kit. `./build.sh doctor --images`
-lists missing inputs. Source-only CI does not download or publish complete iOS images.
-`./run.sh` verifies private candidates and prints offline plans; it does not flash.
+## Layout
 
-## What is known to work
+| Path | What |
+|---|---|
+| `build.sh`, `Makefile`, `release.conf` | the entry points and release settings |
+| `devices/` | `manifest.conf`; `exynos990/` = SoC layer (`soc.conf`) and one directory per phone (`x1slte/`: `device.conf`, boot line, partition profile) |
+| `xnu/` | the kernel: patch against Apple's `xnu-8796.121.2` plus our own files (`xnu/files/`) |
+| `xnuloader/` | the UEFI loader that starts XNU |
+| `userland/` | the system image: daemons, injected libraries, boot jobs, defaults |
+| `prebuilt/` | binaries the image takes when they are not rebuilt |
+| `tools/` | per-subsystem tools (`camera/`, `cellular/`, `recovery/`, `release/`, ...) |
+| `x1slte.sh` | the S20 developer loop: payload, pack, flash over USB |
+| `docs/` | `release/` install and build, `devices/x1slte/` per-feature notes, `dev/` and `research/` |
+| `ci/`, `.github/` | checks and workflows |
 
-The development log records boot to the iOS UI, Mali GPU rendering, touch, Wi-Fi,
-charging, persistent storage, several cameras/sensors, USB integration, LTE data and
-SMS on the test phone. These are per-feature observations, not a release certification.
-Calls, carrier coverage and other unfinished behavior must be taken from the exact
-release commit's [SHIPPING.md](SHIPPING.md) and tested on that release candidate.
-No claim of complete iPhone compatibility or Apple services support is made.
+## More devices
 
-## Source and generated inputs
+The Exynos 990 layer is shared, so the S20+ (`y2s`), S20 Ultra (`z3s`) and Note20 (`c1s`/`c2s`) can be
+added as directories next to `x1slte`. See [porting](docs/release/porting.md).
 
-- `xnu/`: exported patches and drivers; `xnuloader/`: loader.
-- `userland/`, `tools/`: source, image tools and development utilities.
-- `devices/exynos990/`: shared platform and per-board evidence profiles.
-- `ci/`, `.github/`, `tools/release/`: build, cache, checks and release tooling.
-- `inputs/`, `.cache/`, `out/`, `dist/`, `fw-*`, `sysimage` extraction: local inputs/output.
+## Credits and licenses
 
-The inherited tree still contains prebuilts, donor UEFI binaries and research files
-requiring publication review. `python3 tools/release/audit.py --output out/audit.json`
-inventories them; do not assume that `.gitignore` removes files already in Git history.
-
-This work builds on HakiOS/Redwood, the y2s overlay, Mu-Silicium, Apple's open-source
-XNU and other credited components. Preserve upstream attribution and per-file
-licenses: [NOTICE](NOTICE), [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md),
-[LICENSE](LICENSE), [LICENSE.APSL](LICENSE.APSL). The
-[historical upstream README](docs/upstream/README.md) describes Qualcomm/QEMU work.
-Jesvi iOS is independent of Apple and Samsung.
-
-Local full builds produce a TWRP ZIP by default (preflight-only until explicitly
-enabled with `--experimental`). Local private package automation: [one-command build](docs/release/local-build.md).
+HakiOS (oosexgang), Apple's open-source XNU (APSL 2.0), Mu-Silicium, Mesa and the other components
+in [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Nothing of Apple's or
+Samsung's is in this repository: the build takes it from your own IPSW and phone. Jesvi iOS is not
+affiliated with Apple or Samsung. [LEGAL.md](LEGAL.md).
