@@ -33,6 +33,7 @@
 #include <dirent.h>
 #include <spawn.h>
 #include <IOKit/IOKitLib.h>
+#include <notify.h>
 #include "fpcd_bridge.h"
 
 #define TEMPLATE        "/var/root/fp-template.bin"
@@ -187,6 +188,21 @@ ev_send(unsigned code, int32_t status, uint32_t fid, int32_t score, uint32_t rem
 	    samples, k);
 }
 
+
+/* the sensor's ring on screen (libredwood-touchid-ui in SpringBoard) while a capture waits for a finger */
+static void
+ring(int on)
+{
+	static int token = -1;
+	if (token == -1 && notify_register_check("com.redwood.touchid.sensor", &token) != NOTIFY_STATUS_OK) {
+		token = -2;
+	}
+	if (token >= 0) {
+		notify_set_state(token, (uint64_t)on);
+		notify_post("com.redwood.touchid.sensor");
+	}
+}
+
 /* ---- operations ---- */
 static uint32_t samples_seen;
 
@@ -270,6 +286,7 @@ run(void *arg)
 	uint32_t g = gen;
 	const char *setup[] = { "fp power", "fp prepare", "fp cbgeefs", "fp 10:1", "fp prepare" };
 	pthread_mutex_lock(&mx);
+	ring(1);
 	log_baseline();
 	samples_seen = 0;
 	int bad = 0;
@@ -289,6 +306,7 @@ run(void *arg)
 		ev_send(kind == 1 ? FPCD_EV_ENROL_FAILED : FPCD_EV_ERROR, FPCD_E_IO, 0, 0, 0, samples_seen, 0);
 	}
 	if (g == gen) op = 0;
+	ring(0);
 	pthread_mutex_unlock(&mx);
 	return NULL;
 }
