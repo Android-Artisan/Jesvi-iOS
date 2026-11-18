@@ -96,6 +96,7 @@ tee_ok(const char *cmd, const char *s)
 	const char *last = strstr(s, "\nlast: ");
 	last = last ? last + 7 : "";
 	if (!strcmp(cmd, "fp power")) return !strncmp(last, "fp power: configured, error 0", 29);
+	if (!strcmp(cmd, "fp cbge")) return !strncmp(last, "fp cbge: ", 9);
 	if (!strncmp(cmd, "fp 12:", 6)) return !strncmp(last, "fp 12 (", 7);
 	if (!strcmp(cmd, "fp prepare")) return !strncmp(last, "fp prepare: ", 12) && strstr(last, ": error 0") != NULL;
 	if (!strcmp(cmd, "fp cbgeefs")) return strstr(last, "2 factory slots read, load error 0") != NULL;
@@ -298,7 +299,7 @@ tee_next_op(void)
  * timeout, 67), then CONTROL 71 until it answers 0. Without it every capture ran with "IPC line low" and the matcher
  * rejected most images (PARTIAL / DUPLICATED / LIGHT_TOUCH); on the phone (2026-11-19) this chain set the line high.
  */
-static void
+static void __attribute__((unused))
 cbge_chain(uint32_t g)
 {
 	char c[32];
@@ -330,7 +331,9 @@ run(void *arg)
 	samples_seen = 0;
 	int bad = 0;
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
-	if (!bad) cbge_chain(g);
+	/* the kernel's fp cbge runs the same chain with CONTROL 67 per slot (slot byte + 0x96000 output), as Samsung's
+	 * update_cbge (0x14c794); the generic chain above left 67 without data and the next capture failed with 0x44 */
+	if (!bad) { step("fp cbge", g); lg("background calibration: fp cbge done"); }
 	if (kind == 2) {
 		if (!bad) bad = step("fp idinit", g);
 		if (!bad) bad = step("fp run 6 1 15 0", g);
