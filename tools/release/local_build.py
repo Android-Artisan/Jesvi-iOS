@@ -81,7 +81,7 @@ def build(output, check_only=False, twrp=True, experimental=False, bundle_only=F
         run('02-inputs: lock prepared inputs', ['./build.sh', 'lock-inputs'])
         run('03-build: compile and assemble images', ['./build.sh', 'images', '--development'])
         run('04-package: assemble candidate', ['./build.sh', 'package', '--output', str(output)])
-        run('05-verify: verify candidate', ['python3', 'tools/release/flash_plan.py', 'verify', '--bundle', str(output)])
+        run('05-verify: verify candidate', ['./build.sh', 'verify', '--bundle', str(output)])
         if bundle_only:
             print(f'Verified candidate: {output}', flush=True)
             return
