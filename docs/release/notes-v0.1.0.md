@@ -12,13 +12,15 @@ The first packaged build: iOS 16.5 on the Exynos 990 Galaxy S20 LTE, installed f
 
 ## Install
 
-1. Flash TWRP for the S20 (`twrp-3.7.0_11-0-x1s.img`, Odin AP slot) and boot into it.
-2. Put the ZIP on microSD / USB-OTG, or `adb sideload` it.
-3. *Install*, then hold **Volume Up** when the installer asks.
-4. Reboot: the Apple logo, then iOS.
+Tested on the S20 on 2026-11-18 ([record](qualification-x1slte.md)).
 
-Only the SM-G980F 8 GB / 128 GB with bootloader `G980FXXSNHYB7` is accepted; the installer checks
-before it writes. EFS, modem, bootloader and param partitions are never touched.
+1. TWRP **3.7.1 or newer** (the official 3.7.0 is too old for current bootloaders); boot it.
+2. Cable **straight into the computer**, then: `tools/install/twrp-install.sh Jesvi-iOS_0.1.0_<date>_x1slte.zip`
+3. Hold **Volume Up** when the phone asks. An existing Jesvi iOS keeps its data.
+4. `adb reboot`: the Apple logo, then iOS.
+
+Only the SM-G980F with bootloader `G980FXXSNHYB7` is accepted; the installer checks before it writes. EFS, modem,
+bootloader and param partitions are never touched. The restore ZIP is run the same way.
 
 ## Works
 

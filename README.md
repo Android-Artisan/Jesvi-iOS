@@ -26,8 +26,8 @@ and every change is logged in [SHIPPING.md](SHIPPING.md).
 ## Install (TWRP)
 
 1. Flash TWRP for the S20 with Odin (AP slot) and boot into it.
-2. Copy `Jesvi-iOS_<version>_x1slte.zip` to a microSD card or USB-OTG drive, or use `adb sideload`.
-3. *Install* the ZIP and hold **Volume Up** when asked. On a phone that already runs Jesvi iOS,
+2. Use TWRP 3.7.1 or newer (the official 3.7.0 is too old for current bootloaders).
+3. Run `tools/install/twrp-install.sh <zip>` (cable straight into the computer) and hold **Volume Up** when asked. On a phone that already runs Jesvi iOS,
    your data is kept.
 4. Reboot. The Apple logo shows from power-on.
 

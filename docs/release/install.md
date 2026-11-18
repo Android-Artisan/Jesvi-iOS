@@ -1,4 +1,40 @@
-# Installation: current process and release plan
+# Install Jesvi iOS from TWRP
+
+Qualified on the SM-G980F (`G980FXXSNHYB7`) on 2026-11-18: [record](qualification-x1slte.md).
+
+## You need
+
+- The phone with an unlocked bootloader, at least 50 % charged.
+- **TWRP 3.7.1 or newer** for the S20 (ExtremeROM's unified Exynos 990 build works). The official 3.7.0 (2022) is too
+  old for current bootloaders: its USB drops out.
+- A computer with `adb`, and a cable **straight into the computer** (a USB hub made TWRP's adb vanish).
+
+## Steps
+
+1. Flash TWRP with Odin (AP slot), then boot it: Volume Down + Power until black, then at once Volume Up + Power.
+2. From the computer, in this repository:
+
+   ```sh
+   tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip
+   ```
+
+   It copies the ZIP into TWRP's memory, checks it, and starts the installer there.
+3. When the phone asks, **hold Volume Up for 3 seconds**. On a phone that already runs Jesvi iOS your data is
+   kept; on Android it asks a second time before it initializes the data partition.
+4. `adb reboot`: the Apple logo, then iOS. TWRP is replaced by the iOS runtime.
+
+Why not TWRP's Install button or ADB Sideload: Install stops before the ZIP runs on an iOS phone ("Unable to find
+partition for path '/system_root'"), and Sideload streams 2.6 GB over a link that can drop. Coming from Android, TWRP's
+Install from microSD/USB-OTG should pass that check (not yet tried).
+
+## Back to Android
+
+Flash `Jesvi-iOS-Restore_<version>_x1slte.zip` the same way, then without rebooting *Wipe > Format Data* and
+flash an Android ROM. See [rollback](rollback.md).
+
+---
+
+## Background: design and earlier plan
 
 Status: **a local build produces a verified private image package, but this branch
 has no qualified install command yet.** The package manifest deliberately says
