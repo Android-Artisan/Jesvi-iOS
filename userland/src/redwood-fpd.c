@@ -40,7 +40,7 @@
 #define FID             1u                      /* one finger: the TEE holds one template */
 #define ENROL_TOUCHES   17u                     /* good touches to 100 % on this phone (FINGERPRINT-HANDOVER.md) */
 #define STEP_MS         20000
-#define RUN_MS          60000
+#define RUN_MS          120000  /* longer than a round (fp run 3 1 45 4) */
 
 static io_connect_t conn;
 static pthread_mutex_t mx = PTHREAD_MUTEX_INITIALIZER;
@@ -348,7 +348,7 @@ run(void *arg)
 		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
 		for (int rounds = 0; !bad && op == 1 && g == gen && rounds < 200; rounds++) {
 			bad = step("fp einit 1", g);
-			if (!bad) bad = step("fp run 3 1 60 4", g);
+			if (!bad) bad = step("fp run 3 1 45 4", g);
 		}
 	}
 	if (bad && op == kind && g == gen) {
