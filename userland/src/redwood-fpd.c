@@ -48,7 +48,7 @@ static volatile uint32_t gen;                   /* operation generation: a new o
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
 static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
-static volatile int enrolling;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
+static volatile int enrolling, calibrated;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
 
 static void
 lg(const char *fmt, ...)
@@ -336,12 +336,15 @@ run(void *arg)
 	log_baseline();
 	if (kind == 1 && enrol_pct == 0) samples_seen = 0;
 	int bad = 0;
-	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
+	/* a match keeps the background calibration the enrolment ran with (stock calibrates when the sensor asks and
+	 * keeps it); reloading the factory slots and PREPARE op 2 before identify gave NO MATCH on the same finger */
+	if (kind == 2 && calibrated) bad = step("fp power", g);
+	else for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
 	/* the kernel's fp cbge runs the same chain with CONTROL 67 per slot (slot byte + 0x96000 output), as Samsung's
 	 * update_cbge (0x14c794); the generic chain above left 67 without data and the next capture failed with 0x44 */
 	/* only before an enrolment: a calibration taken while a finger rests on the sensor (Apple's phase 2 asks for the
 	 * next touch at once) becomes the "background", and identify's contamination check then fails every image (29) */
-	if (!bad && kind == 1) { step("fp cbge", g); lg("background calibration: fp cbge done"); }
+	if (!bad && kind == 1) { step("fp cbge", g); calibrated = 1; lg("background calibration: fp cbge done"); }
 	if (kind == 2) {
 		if (!bad) bad = step("fp idinit", g);
 		if (!bad) bad = step("fp run 6 1 15 0", g);
@@ -404,8 +407,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 			return FPCD_OK;
 		}
 		return has ? start(2) : FPCD_E_NOENT;
-	case 12:                                                /* Cancel */
-		enrolling = 0;
+	case 12:                                                /* Cancel (Apple also sends it between its two phases) */
 		gen++;
 		op = 0;
 		return FPCD_OK;
