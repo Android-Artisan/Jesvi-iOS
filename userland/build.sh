@@ -135,6 +135,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
 INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system locationd /Applications/ /private/var/containers/Bundle/Application/ /var/containers/Bundle/Application/
 /redwood/lib/libredwood-sb.dylib SpringBoard
+/redwood/lib/libredwood-touchid-ui.dylib SpringBoard Preferences
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
 /redwood/lib/libredwood-tweaks.dylib Preferences imagent Camera
@@ -226,6 +227,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
 		$DYN -o obj/teetsd ../tools/fingerprint/teetsd.c
 		$DYN -o obj/dsc-exec src/dsc_exec.c
+		# Touch ID's place on screen: Apple's enrolment fingerprint moved onto the sensor, a ring while a capture waits
+		$DYN -dynamiclib -fobjc-arc -fblocks -Wl,-no_fixup_chains -framework UIKit -framework Foundation -framework CoreGraphics \
+			-install_name /redwood/lib/libredwood-touchid-ui.dylib -o obj/libredwood-touchid-ui.dylib src/touchid_ui.m src/fp_ring.m
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
 		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
@@ -454,6 +458,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd obj/dsc-exec root/bin/
+	[ -f obj/libredwood-touchid-ui.dylib ] && cp obj/libredwood-touchid-ui.dylib root/lib/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	if [ -n "$PREBUILT" ]; then
 		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
