@@ -23,16 +23,16 @@ the same way: a common tree, plus one directory per device.
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
 and every change is logged in [SHIPPING.md](SHIPPING.md).
 
-## Install (TWRP)
+## Install
 
-1. Flash TWRP for the S20 with Odin (AP slot) and boot into it.
-2. Use TWRP 3.7.1 or newer (the official 3.7.0 is too old for current bootloaders).
-3. Run `tools/install/twrp-install.sh <zip>` (cable straight into the computer) and hold **Volume Up** when asked. On a phone that already runs Jesvi iOS,
-   your data is kept.
-4. Reboot. The Apple logo shows from power-on.
+Everything is in the **[install guide](docs/release/install.md)**: before you start, then
 
-To go back to Android, flash `Jesvi-iOS-Restore_<version>_x1slte.zip` from TWRP, then any Android ROM.
-Details: [install](docs/release/install.md), [TWRP package](docs/release/twrp.md), [rollback](docs/release/rollback.md).
+- **A. From Android** (ExtremeROM, UN1CA, stock...): TWRP 3.7.1+, then the install ZIP from microSD/USB-C or with
+  `tools/install/twrp-install.sh` from a computer; hold Volume Up to confirm.
+- **B. Update** an S20 already on Jesvi iOS (keeps your data): `tools/install/twrp-install.sh <zip>` in TWRP.
+  Tested on the phone 2026-11-18.
+- **C. Back to Android:** Odin TWRP, the restore ZIP, *Format Data*, flash any ROM. Nothing is repartitioned.
+- **D. If something goes wrong**, and troubleshooting.
 
 ## Build
 

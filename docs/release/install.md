@@ -1,36 +1,92 @@
-# Install Jesvi iOS from TWRP
+# Install, update and remove Jesvi iOS
 
-Qualified on the SM-G980F (`G980FXXSNHYB7`) on 2026-11-18: [record](qualification-x1slte.md).
+For the **Galaxy S20 LTE (SM-G980F)** with bootloader **G980FXXSNHYB7**. The installer checks both before it writes
+anything; another model or bootloader is refused.
 
-## You need
+| Path | Tested on a real phone |
+|---|---|
+| Update an S20 already on Jesvi iOS | **Yes**, 2026-11-18 ([record](qualification-x1slte.md)) |
+| Android ROM (ExtremeROM, UN1CA, stock...) → Jesvi iOS | Not yet (same installer; tested on simulated partitions) |
+| Jesvi iOS → back to Android | Not yet (tested on simulated partitions, against this S20's real partition map) |
 
-- The phone with an unlocked bootloader, at least 50 % charged.
-- **TWRP 3.7.1 or newer** for the S20 (ExtremeROM's unified Exynos 990 build works). The official 3.7.0 (2022) is too
-  old for current bootloaders: its USB drops out.
-- A computer with `adb`, and a cable **straight into the computer** (a USB hub made TWRP's adb vanish).
+## Before you start
 
-## Steps
+- **Back up** anything you want to keep. Installing over Android wipes the data partition; going back to Android wipes iOS's.
+- Battery **at least 50 %**: the installer refuses below that.
+- **TWRP 3.7.1 or newer** for the S20. The official TWRP 3.7.0 (2022) is too old for current bootloaders: its USB drops
+  out. ExtremeROM's TWRP (unified Exynos 990 build, 3.7.1_12) works.
+- For the computer method: `adb` and this repository, and the cable **straight into the computer**. Through a USB hub
+  TWRP's connection kept vanishing.
+- Get the release files: `Jesvi-iOS_<version>_x1slte.zip` (on GitHub in two parts: join them with
+  `cat <zip>.part1 <zip>.part2 > <zip>` and check `shasum -a 256 -c <zip>.sha256`) and
+  `Jesvi-iOS-Restore_<version>_x1slte.zip`.
 
-1. Flash TWRP with Odin (AP slot), then boot it: Volume Down + Power until black, then at once Volume Up + Power.
-2. From the computer, in this repository:
+Booting TWRP on an S20: phone off or in Download Mode, hold **Volume Down + Power** until the screen goes black, then
+at once **Volume Up + Power** until TWRP appears.
 
-   ```sh
-   tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip
-   ```
+## A. From Android (ExtremeROM or any ROM) to iOS
 
-   It copies the ZIP into TWRP's memory, checks it, and starts the installer there.
-3. When the phone asks, **hold Volume Up for 3 seconds**. On a phone that already runs Jesvi iOS your data is
-   kept; on Android it asks a second time before it initializes the data partition.
-4. `adb reboot`: the Apple logo, then iOS. TWRP is replaced by the iOS runtime.
+1. Boot TWRP.
+2. Either
+   - **with a computer:** `tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip`, or
+   - **without one:** put the ZIP on a **microSD card or USB-C stick** (never internal storage: it is about to be
+     wiped), then TWRP → *Install* → pick the ZIP.
+3. **Hold Volume Up for 3 seconds** when asked to confirm the install, and again when asked to confirm initializing
+   the data partition. Volume Down or Power cancels; nothing is written before the first confirmation.
+4. Before it writes iOS, the installer saves your ROM's partition map at the end of `super` (used by the way back).
+5. Reboot: the Apple logo from power-on, then iOS's first setup.
 
-Why not TWRP's Install button or ADB Sideload: Install stops before the ZIP runs on an iOS phone ("Unable to find
-partition for path '/system_root'"), and Sideload streams 2.6 GB over a link that can drop. Coming from Android, TWRP's
-Install from microSD/USB-OTG should pass that check (not yet tried).
+## B. Update an S20 that already runs Jesvi iOS
 
-## Back to Android
+Your data, apps and settings are kept.
 
-Flash `Jesvi-iOS-Restore_<version>_x1slte.zip` the same way, then without rebooting *Wipe > Format Data* and
-flash an Android ROM. See [rollback](rollback.md).
+1. Boot TWRP (iOS lives where TWRP was, so flash TWRP with Odin first if it is not there).
+2. `tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip` (cable straight into the computer).
+3. Hold **Volume Up** when asked. Then `adb reboot`.
+
+On a phone running iOS, TWRP's own *Install* button and *ADB Sideload* do not work: Install stops before the ZIP runs
+("Unable to find partition for path '/system_root'": there is no Android system any more), and Sideload streams
+2.6 GB over a connection that can drop. The script copies the ZIP into TWRP's memory, checks it and runs the
+installer there, so after the copy the cable no longer matters.
+
+## C. Back to Android (ExtremeROM or any ROM)
+
+Nothing was resized or repartitioned: the same partitions only held iOS's contents. EFS, modem, bootloader and the
+partition table were never touched.
+
+1. **Odin → AP: TWRP** (iOS's runtime took recovery's place). Boot TWRP.
+2. Run the restore ZIP **with the script** (on an iOS phone TWRP's Install button refuses every ZIP):
+   `tools/install/twrp-install.sh Jesvi-iOS-Restore_<version>_x1slte.zip`, hold Volume Up.
+   It puts the saved Android partition map back into `super` (or Samsung's stock layout if none was saved) and clears
+   the iOS data headers. BOOT and recovery are left alone.
+3. Without rebooting: TWRP → *Wipe → Format Data* → type `yes`.
+4. Flash the ROM ZIP (ExtremeROM etc.) as usual. It rebuilds system/vendor/product inside `super` and writes its own boot.
+5. Reboot into Android. From here it is a normal Android phone for any ROM.
+
+## D. If something goes wrong
+
+| You see | Do |
+|---|---|
+| The installer stopped with a message | Nothing was written unless it said "Writing". Fix what it says (battery, model) and run it again. |
+| It stopped after "Writing ..." | Run the same ZIP again: every write is checked by reading it back. |
+| The Samsung logo forever, or our loader's menu after an install | Download Mode, Odin → AP: TWRP, boot TWRP, run the install again (B). |
+| No TWRP any more and no iOS | Download Mode (Volume Down + Volume Up, plug the cable in), flash TWRP with Odin (AP), then A or C. |
+| Want the exact previous state | Keep your own `recovery`/`boot` backups from TWRP (*Backup*) or, on iOS, from the developer tools. |
+
+## Troubleshooting
+
+- **Computer does not see the phone in TWRP:** cable straight into the computer, another port or cable; in TWRP
+  *Mount → Enable MTP*; unplug and plug again.
+- **"battery must report at least 50 percent":** charge in TWRP and run it again.
+- **"physical confirmation timed out":** you have 45 seconds to hold Volume Up for 3 seconds; run it again.
+- **"unqualified recovery product" or "model/bootloader mismatch":** not an SM-G980F on G980FXXSNHYB7: not supported.
+- **The phone runs hot in TWRP:** let it cool; TWRP has none of iOS's thermal control.
+
+## Build it yourself
+
+Most people should use the release ZIPs. To build: [building](building.md) and [local build](local-build.md).
+iOS 16.5 is downloaded from Apple automatically; the Samsung firmware comes from your own phone
+(`tools/s20-firmware.sh --adb`, while it runs Android or TWRP) and a few board inputs are listed in the build guide.
 
 ---
 

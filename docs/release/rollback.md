@@ -1,3 +1,5 @@
+> **Step by step for users:** [Install guide, section C "Back to Android"](install.md#c-back-to-android-extremerom-or-any-rom). This page is the background.
+
 # Rollback and returning to Android
 
 There are two different recovery paths. Neither is an undo of erased personal
