@@ -114,7 +114,7 @@ BOOT checks. No OTA, dirty-update or downgrade compatibility is promised yet.
 
 Retain `softpasscode=1`, `autounlock=0`, native keybagd, the guarded pre-launchd
 restore and repeat-lock bridge. Do not clear keybags to recover from a failed
-update. See [passcode traps and recovery](../x1slte-passcode.md#traps-and-recovery).
+update. See [passcode traps and recovery](../devices/x1slte/passcode.md#traps-and-recovery).
 
 The legacy `x1slte.sh` and workspace phone-update tools were used for development.
 They can write/reboot, contain historical assumptions and are not a substitute

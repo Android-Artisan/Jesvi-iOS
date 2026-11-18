@@ -4,7 +4,7 @@
  * AP plays the part of the voice engine, as any VoIP app does:
  *   in   RTP (AMR-NB, PT 100, RFC 4867 bandwidth-efficient: our SDP answer has no octet-align) -> opencore-amr decoder
  *        -> 8 kHz -> 48 kHz stereo -> /dev/redwood-audio (the speaker driver's raw input, sys/redwood_audio.h)
- *   out  /dev/redwood-mic (48 kHz mono, docs/x1slte-audio.md) -> 8 kHz -> AMR-NB 12.2 -> RTP to the SDP's c=/m=
+ *   out  /dev/redwood-mic (48 kHz mono, docs/devices/x1slte/audio.md) -> 8 kHz -> AMR-NB 12.2 -> RTP to the SDP's c=/m=
  * opencore-amr 0.1.6 (Apache-2.0), built static for iOS: work/third_party/amr-build/out (see tools/cellular/build-ims.sh).
  *
  * (B, 2026-11-15) the payload types are the negotiated ones (Jio offers AMR as 100 or 112: with 112 every packet was

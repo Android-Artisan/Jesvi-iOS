@@ -4,7 +4,7 @@ Status: 2026-11-12 15:08. Live BOOT64496B, PCIe L0 and distinct Type0 modem
 endpoint are proven; verified shutdown leaves CP off and iOS running. Reserved
 loader/SPI8 kernel installed. LTE/calls remain unavailable. Next: download
 queues/remaining firmware, IPC and precise memory/cache/DMA backend. SIM is
-currently OUT; target later is Jio India LTE/VoLTE ([requirements](cellular-jio.md)).
+currently OUT; target later is Jio India LTE/VoLTE ([requirements](jio.md)).
 
 ## Architecture
 
@@ -79,7 +79,7 @@ a bounded RAM report and restores original BOOT. Do not start concurrent writers
 Other agents' kernel source/build trees remain untouched.
 
 Detailed pins, source revisions, commands, evidence and acceptance checklist:
-[cellular-s20.md](cellular-s20.md).
+[cellular-s20.md](s20.md).
 
 ## Live-first workflow (user direction, Nov12)
 
@@ -134,7 +134,7 @@ can actually be tested. The UI currently reports unavailable service honestly.
 
 Nov12 15:08: live endpoint proof PASS; ROOT Type1/command00100000 versus EP
 Type0/IDa5a5144d. EP BME106 cleared102, no DMA enable. Cleanup1, CP off, iOS
-running. No restart for these iterations. Next: [download backend plan](cellular-download-plan.md).
+running. No restart for these iterations. Next: [download backend plan](download-plan.md).
 
 ## Next firmware path (source recovered, not yet live)
 
@@ -149,4 +149,4 @@ flowchart LR
 
 Samsung's external SIPC loader source now gives the command and acknowledgement
 format. Encoder and ordered RADIO plan pass host tests; no UDL command has been
-sent yet. See the [pinned source and checklist](cellular-download-plan.md).
+sent yet. See the [pinned source and checklist](download-plan.md).

@@ -430,7 +430,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			$DYN $M/libOSMesa.8.dylib -o obj/u2f_test src/u2f_test.c
 			cp $M/libOSMesa.8.dylib obj/
 			# air_run draws with a Metal shader translated by the AIR frontend
-			# and reads the pixels back (docs/air.md). It is built inside the
+			# and reads the pixels back (docs/dev/air.md). It is built inside the
 			# Mesa build, because it needs Gallium itself and not the gl*
 			# entry points this library exports; AIR=1 tools/mk-mesa.sh makes
 			# it, and it is copied in when it is there.

@@ -118,7 +118,7 @@ existing script also deploys and restarts mediaserverd.
 Local artifacts/logs: workspace `build/camera-quality/`. A preserved copy and
 source/output checksums are stored outside git under
 `discovery/s20-camera-quality/2026-11-14/` and recorded in
-[x1slte-camera-quality-build.json](x1slte-camera-quality-build.json).
+x1slte-camera-quality-build.json (private build manifest).
 
 Kernel build command used in this environment:
 

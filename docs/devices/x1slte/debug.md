@@ -1,7 +1,7 @@
 # S20 debug switches: what is off by default and how to turn it on
 
 Everything below was found running all the time on 2026-11-14 while scrolling was being tuned (120 Hz work,
-`docs/x1slte-display.md`). Each costs time on a path that has to finish a frame in 8.3 ms, or wakes the cores, so the
+`docs/devices/x1slte/display.md`). Each costs time on a path that has to finish a frame in 8.3 ms, or wakes the cores, so the
 default is **off**; each can be turned on again for an investigation. "Live" means without a reboot.
 
 The boot line is at its limit (540 of the 550 characters the loader takes, `x1slte.cmdline`): prefer the live switches

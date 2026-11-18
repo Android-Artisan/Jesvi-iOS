@@ -35,7 +35,7 @@ WIDGETS=(
 
 case "${1:-}" in
 on)
-  # the mics: /dev/redwood-mic starts DMIC -> VTS SLIF -> UAIF6 -> NSRC4 -> WDMA4 while it is open (docs/x1slte-audio.md)
+  # the mics: /dev/redwood-mic starts DMIC -> VTS SLIF -> UAIF6 -> NSRC4 -> WDMA4 while it is open (docs/devices/x1slte/audio.md)
   $SSH 'nohup sh -c "cat /dev/redwood-mic > /dev/null" >/dev/null 2>&1 & echo $! > /var/tmp/call-mic.pid'
   echo "s2mpu: $($SSH "/var/root/rwsys kern.redwood.poke 'cp.s2mpu'" 2>&1 | head -1)"
   echo "START_VSS: $(send 1 160)"

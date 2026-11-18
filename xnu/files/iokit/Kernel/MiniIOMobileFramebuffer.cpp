@@ -149,7 +149,7 @@ static TUNABLE(uint32_t, gScaler, "fb_scaler", 0);
  *   - SpringBoard's own 20-30 fps animation caps raised (userland/src/inject_sb.c sb_fps_hooks; sb_fps=0 off).
  * At 2x (fb_mode 3/4) also: MobileGestalt's cached scale and pitch (init.c mg_scale_sync) and the status bar's notch
  * layout (statusbar_shift.h) -- see the drawing size below. Check on the phone: /var/root/hztest must print 120.0 Hz.
- * Everything here: docs/x1slte-display.md, "Display presets" and "Smoothness findings".
+ * Everything here: docs/devices/x1slte/display.md, "Display presets" and "Smoothness findings".
  */
 static TUNABLE(uint32_t, gFbMode, "fb_mode", 0);
 /*

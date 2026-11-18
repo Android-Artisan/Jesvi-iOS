@@ -1,6 +1,6 @@
 # S20 camera: deeper reverse engineering and configuration audit
 
-2026-11-14, `camera-improve`. Continues [the tuning layout report](x1slte-camera-tuning-format.md).
+2026-11-14, `camera-improve`. Continues [the tuning layout report](tuning-format.md).
 No phone access, flash, service restart or reboot was performed. Runtime camera
 sources/defaults are unchanged. The new code is offline decoding and a mathematical
 reconstruction of one isolated stock colour helper.

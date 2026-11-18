@@ -14,7 +14,7 @@
  * SpringBoard starts (tuning takes a respring, no reboot), overrides that:
  *     w=81 h=36.667 y=5        (points; any left out keep Apple's value)
  *     off                      (nothing hooked: Apple's pill) Goes into SpringBoard through the tweak loader
- * (src/inject_tweaks.c; RedwoodIsland.plist filters on SpringBoard). docs/x1slte-dynamic-island.md.
+ * (src/inject_tweaks.c; RedwoodIsland.plist filters on SpringBoard). docs/devices/x1slte/dynamic-island.md.
  */
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>

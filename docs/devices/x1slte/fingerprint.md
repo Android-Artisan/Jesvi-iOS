@@ -30,7 +30,7 @@ are untouched. A structured `exchange-v2` research bridge is built locally and
 host-tested, **not installed**. It allows proper client-side request packing,
 metadata handling and file-reload experiments without a kernel rebuild per trial.
 Installing it requires a separate reboot approval; the one approved audit-v1
-installation has completed. See [the bridge instructions](../tools/fingerprint/RESEARCH-EXCHANGE.md).
+installation has completed. See [the bridge instructions](../../../tools/fingerprint/RESEARCH-EXCHANGE.md).
 Earlier dated sections are history; this status and the protocol audit take
 precedence. The existing software passcode remains the unlock backend.
 
@@ -558,10 +558,10 @@ and split the function into misleading short pieces. Its reconstructed function
 spans `0x15341c..0x15361f` plus those outlines. The same issue occurs in
 `decode_each_templ_ver3` (`0x11f750..0x11fbdf`).
 
-The reproducible helper is [DecompileOutlined.java](../tools/fingerprint/reverse/DecompileOutlined.java).
+The reproducible helper is [DecompileOutlined.java](../../../tools/fingerprint/reverse/DecompileOutlined.java).
 Run it with `-readOnly`; it joins only a two-instruction outline that branches
 back into the supplied function range. The ELF and saved Ghidra project are not
-modified. See [the reverse-engineering instructions](../tools/fingerprint/reverse/README.md).
+modified. See [the reverse-engineering instructions](../../../tools/fingerprint/reverse/README.md).
 
 The complete database function deserializes every supplied template before an
 optional clone/transformation controlled by the flag array. Seeing a flag of zero

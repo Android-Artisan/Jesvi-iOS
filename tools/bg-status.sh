@@ -1,6 +1,6 @@
 #!/bin/sh
 # bg-status.sh: what of ours (and the known iOS offenders) runs in the background on the phone, what it costs,
-# and how each debug switch stands. Read-only. See docs/x1slte-background.md.
+# and how each debug switch stands. Read-only. See docs/devices/x1slte/background.md.
 ssh -o ConnectTimeout=6 -o BatchMode=yes s20 '
 echo "== load"; uptime
 echo "== top CPU (more than 2 %)"; ps -A -o pid,%cpu,time,rss,comm -r | sed -n "2,30p" | while read p c t r n; do case "$c" in 0.*|1.*) ;; *) echo "  $p $c% $t ${r}K $n";; esac; done

@@ -18,7 +18,7 @@
 #                        and the off-screen interface that hands out contexts
 #   exported-gl.txt      the gl* functions it exports, and
 #   gl.xml               their prototypes (the Khronos registry as Mesa has it): for userland/mkeagl.py
-# and with AIR=1, the two things the Metal subsystem needs (docs/air.md, docs/metal.md 10.12):
+# and with AIR=1, the two things the Metal subsystem needs (docs/dev/air.md, docs/metal.md 10.12):
 #   air_run              the test program: a Metal shader translated, drawn or dispatched, read back
 #   libredwoodair.dylib  the same path as a library (tools/mesa/air/air_metal.h), install name
 #                        /redwood/lib/libredwoodair.dylib, which is what userland's Metal driver
@@ -78,7 +78,7 @@ fi
 # ours, kept in the repository: always the current ones
 rm -rf mesa-$VERSION/src/redwood-drm
 cp -r "$ROOT/tools/mesa/redwood-drm" mesa-$VERSION/src/redwood-drm
-# the AIR frontend (docs/air.md): the Metal runtime will call it in this
+# the AIR frontend (docs/dev/air.md): the Metal runtime will call it in this
 # library's own process, and tools/mesa/air-frontend.patch is the meson that
 # reaches it. Copied rather than linked, because this tree is cross-built.
 rm -rf mesa-$VERSION/src/compiler/air

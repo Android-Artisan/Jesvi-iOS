@@ -1,5 +1,5 @@
 /*
- * The Dynamic Island's pill placed for the S20's camera hole (island=1; docs/x1slte-dynamic-island.md).
+ * The Dynamic Island's pill placed for the S20's camera hole (island=1; docs/devices/x1slte/dynamic-island.md).
  * Included by src/inject_sb.c: it has to live in libredwood-sb. As a /var/jb tweak the same code cost
  * SpringBoard its CS_VALID (map_with_linking_np: "not code signed"), and SpringBoardUI's +load then
  * threw "This process should not be linking or loading SpringBoardUI.framework": a crash loop.

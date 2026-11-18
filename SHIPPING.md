@@ -4,20 +4,20 @@
 - Kernel filters discovery for incompatible core renderers and Photos without runtime IOKit hooks. On-phone normal/legacy tests passed direct, search and dictionary registry APIs plus actual Metal device creation. Startup requires this kernel policy; older kernels stay off.
 - Source and signed userland/kernel prebuilts included. Kernel uses standard strip -x (15,295,672 bytes); loader read window checked before flashing. Recovery head/tail and standalone boot read-back passed; base system and user data preserved. Passcode, AOD, camera-image and graphics assembly checks pass. Phone reports no protected passcode bag, as before this deployment; repeat protected-bag unlock was not retested.
 - Open: Weather wallpaper hits CFRelease(NULL); Aegir wallpaper rejects an extended-range layer. Wallpaper prewarming can restart these extensions. This is not universal Metal support or complete wallpaper stability. Native standalone GPS remains separate unfinished work.
-- See docs/x1slte-maps-rendering.md for evidence, loader-window correction and rollback.
+- See docs/devices/x1slte/maps-rendering.md for evidence, loader-window correction and rollback.
 
 ## 2026-11-16 — Third rear sensor and native single-icon cycle
 - Camera's single native lens icon cycles0.5x →1x →3x and closes the scale normally; user confirmed. No overlay or forced three-button layout.
 - GW2 native4864x3648 capture, focus and digital crop above3x are enabled;5x/10x trials retained GW2. This is not5x optical zoom. Primary autofocus and the original front worker are preserved.
 - Source, signed media/lens/kernel prebuilts and clean-data enable seeding are included. Permanent recovery/root and standalone boot installed with read-back verification; system/data and loader configuration preserved.
 - GW2 first frame improved2651.4→1671.1ms in a cold probe with safe slow-upload fallback. Primary cold startup remains roughly3s; switching is not seamless.
-- Protected keybag restored locked. See docs/x1slte-camera-gw2.md for validation, limits and rollback; clean seeding is fixture-tested, not a wiped-device installation.
+- Protected keybag restored locked. See docs/devices/x1slte/camera/gw2.md for validation, limits and rollback; clean seeding is fixture-tested, not a wiped-device installation.
 
 ## 2026-11-16 — Native rear lens control and primary autofocus shipped
 - Native Camera zoom selects ultra-wide below1x and primary at1–5x; front keeps its original processing. GW2 is identified but not exposed.
 - Correct primary rail voltages and full scaled autofocus travel; user confirms close focus works. Rear zoom no longer reconfigures the capture graph during video.
 - Source and signed prebuilts included in S20 root assembly: media, native dial, brightness hook, tweak loader and clean-data enable seeding.
-- Permanent recovery/boot update installed and read-back verified. Keybag locked after reboot;36frames each from ultra-wide, primary and front passed. Full wiped-data install is fixture-tested only. See docs/x1slte-camera-wrapup.md.
+- Permanent recovery/boot update installed and read-back verified. Keybag locked after reboot;36frames each from ultra-wide, primary and front passed. Full wiped-data install is fixture-tested only. See docs/devices/x1slte/camera/wrapup.md.
 
 ## 2026-11-15 (17:30, A) — UEFI line "- JESVI -"
 - The line under the UEFI's logo reads "- JESVI -" (was "[JESVI]"); the menu title "JesviOS" (was "JesViOS"). Dev-mode build flashed.
@@ -41,7 +41,7 @@
   same size and place; the loader prints nothing and boots iOS at once (volume key during the logo: the menu;
   `bootui=0`: old behavior). The kernel scales the loader's picture at the 1080x2400 switch so the logo does not jump.
   User-verified on the phone (a split-second tear at the 120 Hz switch kept by choice). Made at build time from the iOS
-  root (tools/bootlogo); no Apple artwork in git. Loader can now write up_param (tar only). docs/x1slte-boot-screen.md.
+  root (tools/bootlogo); no Apple artwork in git. Loader can now write up_param (tar only). docs/devices/x1slte/boot-screen.md.
 
 ## 2026-11-15 (11:50, A) — screen-off / AOD power: fast cores asleep, fewer wake-ups
 - Screen off or AOD: the scheduler runs on the four A55s only (`scroff_little=1`, live `kern.redwood.scroff_little`,
@@ -61,7 +61,7 @@
 - Rear timing metadata follows Samsung's pixel clock; failed exposure writes stop through normal cleanup.
 - Host RAW10/concurrency sanitizer tests, I2C fault injection, 66000 exposure-bound cases, iOS arm64 media/diagnostic
   cross-build and isolated GICv2 kernel build pass. No phone access/reboot; fingerprint phone ownership preserved.
-- See docs/x1slte-camera-implementation.md for artifacts, limits and integration/testing requirements.
+- See docs/devices/x1slte/camera/implementation.md for artifacts, limits and integration/testing requirements.
 
 ## 2026-11-14 — TEEGRIS AUX/service handshake succeeds; IRQ/config probe staged
 - Second approved test boot: all 8 AUX registrations and service channel succeeded (result 0, masks 1/1); cached
@@ -70,7 +70,7 @@
   first-event IRQ masking, response validation and panic/error rejection; host tests and kernel build pass.
 - Located a public Exynos990 client-library reference; local-only ELF analysis identifies TEEC identification
   command IDs 5/6/7. These binaries are not executed/deployed/committed and exact firmware compatibility is unproven.
-- See docs/x1slte-fingerprint.md for test results, remaining matcher/provider work and next-probe boundaries.
+- See docs/devices/x1slte/fingerprint.md for test results, remaining matcher/provider work and next-probe boundaries.
 
 ## 2026-11-14 — Fingerprint compatibility SMC returns zero; channels staged
 - User approved the probe reboot and phone takeover. Exact current recovery kernel slot backed up locally before
@@ -81,7 +81,7 @@
   4-KiB wire PFNs, per-CPU affinity, bounded cache maintenance, stop-on-first-error and no automatic retries.
 - Channel host tests with sanitizers and kernel cross-build pass. New channel kernel is NOT flashed; another
   user-approved reboot is required. No IRQ/SYSCONF/TA loading, enrollment, matching or biometric unlock yet.
-- Detailed evidence, deployment boundaries and traps: docs/x1slte-fingerprint.md. Main/master remain unchanged.
+- Detailed evidence, deployment boundaries and traps: docs/devices/x1slte/fingerprint.md. Main/master remain unchanged.
 
 ## 2026-11-14 — Fingerprint research branch (not enabled, not shipped)
 - `feat/s20-fingerprint` starts from accepted main/master `8d584cc`, including newer thermal/logging changes.
@@ -91,7 +91,7 @@
   armed one-shot TEEGRIS version diagnostic in the kernel debug port. No biometric match/unlock operation is added.
 - Host policy/guard tests under ASan/UBSan, synthetic inventory, existing passcode build-integration checks and the
   Exynos GICv2 kernel build pass. Experimental 16-MiB kernel slot is prepared in ignored out/fingerprint; not flashed.
-- Implementation/research, precise missing transport/matcher/provider work and traps: docs/x1slte-fingerprint.md.
+- Implementation/research, precise missing transport/matcher/provider work and traps: docs/devices/x1slte/fingerprint.md.
   The first compatibility test requires the shared phone lock and explicit user reboot approval. Keep main/master
   on accepted code; do not merge this prototype as working fingerprint support.
 ## 2026-11-15 (11:10, A) — AOD at 30 % of the slider (user-chosen)
@@ -166,7 +166,7 @@
 - redwood-motiond: AOD counts as asleep, so raise-to-wake works from AOD; Low Power Mode suspends AOD and raise-to-wake.
 - Verified on the phone (user): dim fade into AOD, pickup wakes at normal brightness, passcode still asked, Low Power
   Mode: screen fully off and pickup ignored. Flashed: phone's loader/boot line + x1slte kernel 03c2c41a-equivalent +
-  phone's root with the new motiond (docs/x1slte-root-swap.md method). The phone's fingerprint-research kernel
+  phone's root with the new motiond (docs/devices/x1slte/root-swap.md method). The phone's fingerprint-research kernel
   (feat/s20-fingerprint, not in x1slte) was replaced by the main line.
 - Not done: Samsung ALPM/HLPM panel mode and a 120->60 Hz drop in AOD (mode switch is one-way per boot today).
 
@@ -217,7 +217,7 @@ AOD with no restart; native state1 and unchanged SpringBoard PID independently
 observed. Repeat passcode/AOD-cycle confirmation remains pending. No kernel reboot
 or panel ALPM activation. Build, config/token regressions, package allowlist and
 hash checks pass. Standalone installer/package prepared; clean image integration
-still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
+still pending. See docs/devices/x1slte/aod-preview.md for limitations and rollback.
 
 ## 2026-11-15 (08:10, A) — texts react at once; outgoing-call delay measured; cellulard timing
 - Texts: redwood-ims sends a text the moment Messages drops it in sms-out (kqueue), RedwoodSMS picks up received
@@ -228,7 +228,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
   Copies: prebuilt/userland/redwood-ims, prebuilt/userland/RedwoodSMS.dylib. Not yet timed on the phone.
 - cellulard: ms wall-time stamps on IPC lines and a decoded line for the IMS voice bearer (16/0b). It runs as
   /var/root/redwood-cellulard (the /redwood/bin copy re-execs it). A timed call showed no delay on our side: the
-  bearer comes up 33 ms after the 183. Details: docs/x1slte-native-calls.md "Open problems".
+  bearer comes up 33 ms after the 183. Details: docs/devices/x1slte/native-calls.md "Open problems".
 - RCS: not in iOS 16 Messages; Jio has its own RCS config server (config.rcs.mnc869.mcc405...). Next step if wanted:
   check whether it provisions a non-Google client before building anything.
 
@@ -236,12 +236,12 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
 - Calls: native only, on at boot. `feat/native-calls` merged into x1slte (ad93a151); redwood-telephonyd starts from the
   boot image and registers as `com.apple.coretelephony telephony=1`; RedwoodPhone no longer shipped. Engine review
   fixes (bounded SIP message building, 100rel, no 32 s give-up after 100 Trying, one INVITE dump), telephonyd bounded
-  sets + cheap unchanged-file path. Docs: `docs/x1slte-native-calls.md`.
+  sets + cheap unchanged-file path. Docs: `docs/devices/x1slte/native-calls.md`.
 - Status bar (island phones, device-tree detection): plain time (activity only in the island), no battery bolt
-  (`bolt=1` keeps it), left padding removed (`lead=12`, `lead=0` Apple's). Docs: `docs/x1slte-dynamic-island.md`.
+  (`bolt=1` keeps it), left padding removed (`lead=12`, `lead=0` Apple's). Docs: `docs/devices/x1slte/dynamic-island.md`.
 - Settings > Cellular: VoLTE / Calls / Text Messages from the live engine state.
 - Flashed three times by swapping only root.apfs inside the phone's own recovery image (loader, kernel and signature
-  byte-identical): `docs/x1slte-root-swap.md`. Verified after each boot: telephonyd at boot, VoLTE registered,
+  byte-identical): `docs/devices/x1slte/root-swap.md`. Verified after each boot: telephonyd at boot, VoLTE registered,
   island hook armed. Not yet seen on screen by the user: plain time while recording, no bolt while charging.
 - Open: outgoing calls' late ringing (precondition / modem IPC 0x16), the privacy dot position, Personal Hotspot.
 
@@ -266,7 +266,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
   uses that profile. `userland/build.sh` follows it for unprofiled/S20 builds, and x1slte's common profile sets
   `SOFTWARE_PASSCODE=1`. Keep native keybagd, the PID 1 restore handoff and immediate-lock policy together.
 - Full implementation, ABI details, tests, staging/deployment boundaries, security limits and **Traps and recovery**:
-  `docs/x1slte-passcode.md`. Read before modifying authentication, boot args, root assembly or native keybagd.
+  `docs/devices/x1slte/passcode.md`. Read before modifying authentication, boot args, root assembly or native keybagd.
 - Host verifier/ABI/file-guard tests, clean root-assembly integration test, iOS helper/SpringBoard cross-build and
   Exynos GICv2 kernel build passed. A complete fresh IPSW/firmware build was not run; no new reboot in this step.
 - Open: software-only UI authentication, reversible legacy key wrapping, volatile retry counters, no SEP security.
@@ -280,7 +280,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
 - Thermal second step: GPU 455 MHz (was 377), A76 1482 MHz (was 1066) above 90 C.
 - Log: DVFS changes only on failure (`kern.redwood.dvfs_log=1`), BT vendor lines capped, launchd quiet by default (`QUIET=0`).
 - metaloff out of the boot list (mediaserverd stack overflow). Build: callservicesd job fixed with python (macOS build's plutil is a no-op).
-- One clean build of everyone's work flashed (main = master = x1slte, all active branches aligned; devops pending). Details: docs/x1slte-debug.md.
+- One clean build of everyone's work flashed (main = master = x1slte, all active branches aligned; devops pending). Details: docs/devices/x1slte/debug.md.
 
 ## 2026-11-14 (B) — Metal driver, wallpapers, call screen fixes
 - Metal driver (CoreImage correct on the Mali, matches macOS on 7 filters): unbound texture/sampler placeholders,
@@ -292,7 +292,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
   parallax only for Apple posters, rests unless tilted 2.5 pt (GPU ~97% idle at rest); custom pictures stay still.
 - Calls: callservicesd job forced to /var/jb/redwood (macOS builds packed the stock /System path -> no call screen);
   RedwoodPhone ignores the duplicate cold-launch dial (outgoing calls were cancelled at once).
-- Details, switches and traps: docs/x1slte-wallpaper-metal.md. Native-calls design (CommCenter identity): sessions/B.md.
+- Details, switches and traps: docs/devices/x1slte/wallpaper-metal.md. Native-calls design (CommCenter identity): sessions/B.md.
 
 ## 2026-11-14 (10:40) — Real 120 Hz: scrolling "a lot better" (user-verified)
 - iOS ran its frame clock at 60 while the panel scanned 120 (CADisplay.refreshRate 16.7 ms): backboardd now gets
@@ -300,7 +300,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
 - Touch scans at 120 Hz (sec_ts 0x94; was ~60 reports a second): `touch_scan=`. SpringBoard's own 20-30 fps animations
   raised to 60 (`sb_fps=0` off).
 - Display preset FHD+ 1080x2400 @ 120 (`fb_mode=1`, 3x). At 720x1600 iOS draws at 2x (750x1624) with MobileGestalt's scale
-  and the status bar fixed to match (`fbscale=` overrides). All presets: docs/x1slte-display.md.
+  and the status bar fixed to match (`fbscale=` overrides). All presets: docs/devices/x1slte/display.md.
 - Idle heat: USB mux and haptics threads no longer poll every 1/4 ms (big-core wake-ups ~8x fewer).
 - Tools: `kern.redwood.ksample` thread sampler, tools/perf/objcmap (method names). Open: per-page icon building
   hitches (`sb_keepicons=1` experimental, broke the home screen), touch-to-screen latency trace switch.
@@ -352,7 +352,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
   /var/mobile/Library/Preferences/com.redwood.sms-bridge-off.
 - Open: Control Center data button (an attempt was removed; notes in the cellular docs), hotspot (IPv6-only Jio needs 464XLAT),
   MMS (pictures/groups), calls. A stalled first modem start after boot is restarted by the registration watchdog.
-- Details: work/hackios-cellular/docs/cellular-download-plan.md, sessions/A.md.
+- Details: work/hackios-cellular/docs/devices/x1slte/cellular/download-plan.md, sessions/A.md.
 
 ### Cellular stability (2026-11-13 18:30, B) — `9f4c792`, `6a8ea5c`, `e005b29`, `d08bc68`
 - VoLTE now starts after every reboot: a stale `/var/tmp/redwood-cell/ims.pid` (reused pid) no longer looks like a
@@ -372,7 +372,7 @@ still pending. See docs/x1slte-aod-preview.md for limitations and rollback.
 - Sensor hub: light every 1 s while the display is on (auto-brightness needs steady readings); proximity in bursts,
   2 s every 30 s (its IR LED flashed 5 times a second); both fully off with the display off; pressure 1 s, motion 60 ms; hub debug text only with shub_text=1 (was 482
   log lines a minute). Kernel built in hackios-cellular (19:12).
-- Cellular service log quiet by default (was 38 KB/min); tools/bg-status.sh and docs/x1slte-background.md list every
+- Cellular service log quiet by default (was 38 KB/min); tools/bg-status.sh and docs/devices/x1slte/background.md list every
   background service and debug switch.
 - Status bar: the left side 3 pt nearer the edge (statusbar_shift.h, `lead=` in /var/jb/etc/redwood-statusbar.conf).
 - Island: built-in pill 18pro-small (75 x 28), presets in tools/island-presets.
@@ -486,7 +486,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
   `AngryBirdsSpace Leos_fortune`): a Mesa OpenGL ES 3 context on the Mali (panfrost), iOS's gl* functions reach
   Mesa through the table in TSD slot 30, and each presented frame is copied on the GPU (turned upright) into
   IOSurfaces the layer shows. Angry Birds Space: 97% -> 14% CPU with the GPU copy. Commit 09b9956.
-  Doc: docs/x1slte-games-gl.md.
+  Doc: docs/devices/x1slte/games-gl.md.
 - **Screen sleep by default**: our idle timer (`inject.c`) is now on unless `idle_lock=0`: lock screen dark after
   10 s untouched (`idle_lock_s=`), unlocked after Settings' Auto-Lock time ("Never" = stays on), not while sound plays.
 - How tested: both games launched from the home screen, played (user: "works flawlessly"); frames grabbed from the
@@ -510,7 +510,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
   so it covers the top of the hole. Width/height tunable (`/var/jb/etc/redwood-island.conf`, respring only).
   Cold boot verified: no SpringBoard aborts, hook in. (As a /var/jb tweak it crash-looped SpringBoard: doc.)
   Live Activities: Clock timer and stopwatch show in the island (user-verified; the first one after boot can be slow).
-  Same boot image: `init` clears MobileGestalt's cache when `island=` changes (verified: marker written). Commit e9a23d6. Doc: docs/x1slte-dynamic-island.md.
+  Same boot image: `init` clears MobileGestalt's cache when `island=` changes (verified: marker written). Commit e9a23d6. Doc: docs/devices/x1slte/dynamic-island.md.
 
 ## 2026-11-12 — Dynamic Island over the camera hole (user-verified on the phone)
 - iOS's own Dynamic Island (SpringBoard SystemAperture, Pill status bar), no overlay: the loader reports the
@@ -520,7 +520,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
 - Tested: MobileGestalt ArtworkDeviceSubType 2556, HomeButtonType 2; pill shown, home-bar swipe and touch normal.
 - Switching it: just the flag (`island=1` on, leave it out for the iPhone X notch). `init` removes MobileGestalt's
   cache when the flag changed since the last boot, so iOS rebuilds its answers (needs the next root image build).
-  Doc: docs/x1slte-dynamic-island.md.
+  Doc: docs/devices/x1slte/dynamic-island.md.
 
 ## 2026-11-12 — camera: videos save with sound; front camera tuned (user-verified on the phone)
 - Videos finish and save with sound: the audio source node saw a 430-million-frame "gap" in the HAL plug-in's
@@ -623,7 +623,7 @@ this file is the changelog; "Open" lists what a release must mention as known is
 
 ## Open (known issues)
 - S20 LTE/calls remain unimplemented. Cellular is isolated on `x1slte-cellular`;
-  see `docs/cellular-s20.md`. Native Settings UI is installed/user-confirmed.
+  see `docs/devices/x1slte/cellular/s20.md`. Native Settings UI is installed/user-confirmed.
   CP memory reservations/live cache policy, SPI BOOT64496-byte transfer with
   safe shutdown, and9 PCIe UEFI mappings passed on phone. Nov12 live CP-off
   root-port identity access/cleanup passed without reboot. Endpoint link,

@@ -1,8 +1,8 @@
 # S20 authentication and build handoff
 
 Before changing the S20 boot profile, keybag driver, SpringBoard hooks or userland
-assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
-**Traps and recovery**, and the latest [SHIPPING.md](SHIPPING.md) entry.
+assembly, read [docs/devices/x1slte/passcode.md](../devices/x1slte/passcode.md), especially
+**Traps and recovery**, and the latest [SHIPPING.md](../../SHIPPING.md) entry.
 
 - Preserve the complete software-passcode chain: `softpasscode=1`, `autounlock=0`,
   native keybagd job, fail-closed pre-launchd restore and display-off immediate-lock
@@ -26,7 +26,7 @@ assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
 - Local `main` and `master` track the accepted work. Other worktrees/branches must
   explicitly integrate these commits; do not overwrite their unrelated work.
 
-- Metal, wallpapers and the call-screen job: read [docs/x1slte-wallpaper-metal.md](docs/x1slte-wallpaper-metal.md).
+- Metal, wallpapers and the call-screen job: read [docs/devices/x1slte/wallpaper-metal.md](../devices/x1slte/wallpaper-metal.md).
   Traps: a driver copy in /var/jb next to the image's one gives backboardd two libredwoodair copies (black snapshots);
   the callservicesd job must point at /var/jb/redwood/callservicesd (build.sh fixes it right before root.apfs);
   keep libredwood-metaloff on PosterBoard until the scrambled-text bug is fixed.
@@ -35,7 +35,7 @@ assembly, read [docs/x1slte-passcode.md](docs/x1slte-passcode.md), especially
   plistlib (as the callservicesd job fix does).
 
 - Fingerprint research is isolated on `feat/s20-fingerprint` from main/master
-  `8d584cc`. Read [docs/x1slte-fingerprint.md](docs/x1slte-fingerprint.md) before
+  `8d584cc`. Read [docs/devices/x1slte/fingerprint.md](../devices/x1slte/fingerprint.md) before
   sensor, TEEGRIS or biometric-provider changes. The prepared kernel adds only
   a manually armed one-shot compatibility probe; there is no fingerprint unlock.
   Presence interrupts are not verified matches. Preserve passcode fallback and

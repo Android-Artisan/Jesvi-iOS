@@ -43,7 +43,7 @@ Not in the repository, never:
 
 | Works | Not yet |
 |---|---|
-| Lock screen, home screen, Control Center, gestures, the stock apps | Cellular: the modem boots, sees the network, the SIM is bound, the IPA data path and `en1` are in place; registration, the data session and the status bar bars are in progress (`docs/cellular.md`) |
+| Lock screen, home screen, Control Center, gestures, the stock apps | Cellular: the modem boots, sees the network, the SIM is bound, the IPA data path and `en1` are in place; registration, the data session and the status bar bars are in progress (`docs/devices/x1slte/cellular/README.md`) |
 | Touch screen, multitouch, power and volume buttons | Bluetooth |
 | All 8 CPU cores, the big core at 2.4 GHz | Charging under this kernel |
 | GPU rendering on Adreno (`gpu=1`, OpenGL ES through Mesa) | Metal (there is a shader compiler, no Metal) |
@@ -100,7 +100,7 @@ The main kernel arguments (the full list is in `docs/ru/notes.md`):
 | `wifi=1` | Wi-Fi (the network from `fw-wifi/network`) |
 | `cam=5` | the cameras |
 | `modem=1` | the modem beside the system: its firmware, file systems, IPA, SIM, NAS |
-| `modem_step=N` | the modem step by step, for debugging (`docs/cellular.md`) |
+| `modem_step=N` | the modem step by step, for debugging (`docs/devices/x1slte/cellular/README.md`) |
 | `var_store=1 ufs_write=1` | keep `/private/var` across reboots |
 
 ## Building from source
@@ -152,7 +152,7 @@ SMP2P, GLINK, QRTR, QMI; its file systems are served from the UFS (read-only, wr
 memory), TFTP and the service registry are mine. The IPA packet engine runs with its firmware,
 clock and SMMU context, and the handshake with the modem goes through. The SIM is bound to the
 subscription and NAS reads the signal. The current state and the whole story are in
-`docs/cellular.md`.
+`docs/devices/x1slte/cellular/README.md`.
 
 ## Independent, and Apple-free at the core
 

@@ -10,7 +10,7 @@ This is an offline investigation, **not a stock-quality implementation**.
 
 The 65-key layout is now recovered and validated across all 122 local ISP entries
 (7930 named blocks). Typed CCM, GRAS LUT and BLC fields and source-based scenario
-labels are decoded offline. See [the format report](x1slte-camera-tuning-format.md)
+labels are decoded offline. See [the format report](tuning-format.md)
 for offsets, evidence, tools and remaining conversion limits. The initial findings
 below describe the earlier investigation stage; its serializer-recovery task has
 now advanced. No runtime tuning has been installed.

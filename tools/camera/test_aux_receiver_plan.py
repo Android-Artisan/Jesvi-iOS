@@ -6,7 +6,7 @@ import runpy
 import unittest
 ROOT=Path(__file__).resolve().parents[2]
 PLAN=runpy.run_path(str(Path(__file__).with_name('aux-receiver-plan.py')))['receiver_plan']
-CAPTURES=json.loads((ROOT/'docs/x1slte-camera-aux-inventory.json').read_text())
+CAPTURES=json.loads((ROOT/'docs/devices/x1slte/camera/aux-inventory.json').read_text())
 class Routing(unittest.TestCase):
     def test_actual_overlay_routes(self):
         for sensor,instance,dma,phy in [('2la',4,0,0x170d2300),('gw2',2,3,0x170d1b00)]:

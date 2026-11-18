@@ -3,7 +3,7 @@
 # The phone lock's holder only: CLAUDE_SESSION=NAME userland/island-install.sh [conf line, e.g. "y=5 w=81"]
 # No conf line: the built-in default (pill top 5 pt) and any existing /var/jb/etc/redwood-island.conf stays.
 set -euo pipefail
-echo "island-install.sh: withdrawn (a /var/jb tweak can crash-loop SpringBoard, docs/x1slte-dynamic-island.md)"; exit 1
+echo "island-install.sh: withdrawn (a /var/jb tweak can crash-loop SpringBoard, docs/devices/x1slte/dynamic-island.md)"; exit 1
 cd "$(dirname "$0")"
 SDK=${SDK:-${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk}
 mkdir -p obj

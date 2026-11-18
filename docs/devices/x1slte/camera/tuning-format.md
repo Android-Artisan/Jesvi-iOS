@@ -1,14 +1,14 @@
 # Samsung ISV8 tuning: recovered layout and typed fields
 
 Follow-up on `camera-improve`, 2026-11-14. This records offline results after
-[the initial camera comparison](x1slte-camera-quality.md). Firmware stays outside
+[the initial camera comparison](quality.md). Firmware stays outside
 git. No phone access, service changes, flashing or reboot occurred.
 
 ## Latest follow-up
 
 Main positive shading grids are now decoded, CCM9 helper mathematics is verified
 against isolated AArch64 emulation, and control/timing mismatches are audited.
-See [the deeper configuration report](x1slte-camera-config-audit.md). The sections
+See [the deeper configuration report](config-audit.md). The sections
 below retain the earlier layout-discovery stage; the candidate CCM scale and
 unresolved main-grid statements have since advanced as described there.
 

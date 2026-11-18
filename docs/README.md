@@ -17,12 +17,12 @@ folder is the entry point for new developers; subsystem notes remain research ev
 - [Local storage cleanup review](release/storage-audit.md)
 - [Measured S20 evidence](release/device-evidence.md)
 - [Shipping observations](../SHIPPING.md)
-- [Cellular](cellular-download-plan.md), [S20 modem](cellular-s20.md)
-- [Calls](x1slte-calls.md), [efficiency](x1slte-efficiency.md), [passcode](x1slte-passcode.md)
-- [Audio](x1slte-audio.md), [Bluetooth](x1slte-bluetooth.md)
-- [Display](x1slte-display.md), [brightness](x1slte-auto-brightness.md)
-- [Games/OpenGL ES](x1slte-games-gl.md), [background work](x1slte-background.md)
-- [Device identity](device-identity.md), [Dynamic Island](x1slte-dynamic-island.md)
+- [Cellular](devices/x1slte/cellular/download-plan.md), [S20 modem](devices/x1slte/cellular/s20.md)
+- [Calls](devices/x1slte/calls.md), [efficiency](devices/x1slte/efficiency.md), [passcode](devices/x1slte/passcode.md)
+- [Audio](devices/x1slte/audio.md), [Bluetooth](devices/x1slte/bluetooth.md)
+- [Display](devices/x1slte/display.md), [brightness](devices/x1slte/auto-brightness.md)
+- [Games/OpenGL ES](devices/x1slte/games-gl.md), [background work](devices/x1slte/background.md)
+- [Device identity](dev/device-identity.md), [Dynamic Island](devices/x1slte/dynamic-island.md)
 
 `ru/`, `upstream/`, Qualcomm documentation and older notes can contain historical
 commands. Their device/partition assumptions are not Samsung installation instructions.

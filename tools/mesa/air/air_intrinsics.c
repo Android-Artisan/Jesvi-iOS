@@ -13,7 +13,7 @@
  * What each name means is not guessed: it is read off Apple's own compiler.
  * AGXCompilerCore carries the whole vocabulary as a table of names at
  * 0x16d082..0x16d400 of the library in this device's shared cache (the list is
- * in docs/air.md section 3.2), and that table distinguishes exactly the
+ * in docs/dev/air.md section 3.2), and that table distinguishes exactly the
  * functions the Metal Shading Language Specification defines -- round from
  * rint, exp from exp2, fmod from mod, pow from powr. Two of this file's
  * handlers were guesses before that table was read; one of them was wrong.
@@ -134,7 +134,7 @@ is_signed_part(const char *s)
  * difference, that difference reaches 253 for two normal floats, so twelve
  * passes of about ten instructions each would be the price, and its exactness
  * ON THE ADRENO could not be established from this machine at all for the
- * frcp reason above. It is not done here; section 4 of docs/air.md carries
+ * frcp reason above. It is not done here; section 4 of docs/dev/air.md carries
  * the condition and the measurement.
  *
  * Over the reference pool this leaves 7 of 264 cases differing, every one of
@@ -1196,7 +1196,7 @@ llvm_op(struct air_ctx *c, const struct air_inst *in, const char *name)
  *
  * The largest family and the one with the long tail. Its vocabulary is
  * Apple's, read off AGXCompilerCore the same way the arithmetic was
- * (docs/air.md section 3.2): the names there end in an underscore --
+ * (docs/dev/air.md section 3.2): the names there end in an underscore --
  * air.sample_texture_, air.gather_compare_depth_, air.get_num_mip_levels_texture_
  * -- because the dimensionality is appended to them. That is why the earlier
  * survey counted "about 117 get_*_texture_* variants": it is some twenty

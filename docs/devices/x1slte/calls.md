@@ -152,7 +152,7 @@ call the way stock Android does:
 1. **Modem side:** how Samsung's IMS stack (`libsec-ims`: CallManager -> CPVEInterface -> OemIPCHandler, IPC group
    0x16) makes the voice engine take the RTP stream and hand PCM to ABOX — the commands we send are accepted but the
    stream is not taken; something (an ordering, a mode, a bearer binding) is still missing.
-   See `docs/cellular-download-plan.md` (CPVE command table, payload layouts).
+   See `docs/devices/x1slte/cellular/download-plan.md` (CPVE command table, payload layouts).
 2. **Audio side:** ABOX/Calliope's VSS/PCI voice path and its topology controls (`abox_tplg.conf` ids, stock
    `mixer_paths.xml` "incall_*" routes, `tools/cellular/call-audio.sh`), plus Calliope's own echo canceller.
 3. Then RedwoodPhone stays (it is iOS's side of the call), and `redwood-ims` keeps signalling but hands media to the

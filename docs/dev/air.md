@@ -15,7 +15,7 @@ document assumes those measurements and records the decisions taken on top of th
 ## Where it stands, and what that does not mean
 
 Of the 456 modules of the device's system `.metallib` files (`tools/air/check.sh`, and
-`docs/air-report.md` for the breakdown):
+`docs/dev/air-report.md` for the breakdown):
 
 | | of 456 |
 | --- | --- |
@@ -796,7 +796,7 @@ place to get Apple's shaders; it may be a place that explains them.
 By that line, two things in these documents are excerpts and are kept: the three sampler words
 above, and the six-line listing of `clearFragment01` in `docs/metal.md` section 9.5. Neither
 substitutes for the thing it came from, and both carry the analysis they exist to support. Nothing
-committed anywhere is corpus bytes as an input: `docs/air-report.md` holds module names, counts and
+committed anywhere is corpus bytes as an input: `docs/dev/air-report.md` holds module names, counts and
 error strings, which are facts about Apple's shaders and not Apple's shaders, and no test here has
 a fixture — `tools/air/check.sh` reads `sysimage/rootfs`, which is not in the repository and cannot
 be.
@@ -1499,7 +1499,7 @@ was produced: the arithmetic reference never leaves the host.
 
 There is no hosted CI: the corpus is Apple's code and stays out of the repository (and out of
 GitHub). `check.sh` is the CI; it takes about five minutes, most of it the two per-operation checks, so it runs before every commit that touches
-the frontend, and the report it writes is committed as `docs/air-report.md` with the numbers of
+the frontend, and the report it writes is committed as `docs/dev/air-report.md` with the numbers of
 that commit.
 
 The frontend lives in `tools/mesa/air/` and `mk-host.sh` links it into the pinned Mesa as

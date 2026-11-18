@@ -189,7 +189,7 @@ cmd_pack() {
 	# call provider job; ROOT_OK=1 packs it anyway (a test root on purpose).
 	if [ "${ROOT_OK:-0}" != 1 ] && ! LC_ALL=C grep -q -a 'com.redwood.telephonyd' userland/root.apfs; then
 		echo "x1slte.sh: pack: userland/root.apfs has no com.redwood.telephonyd job (stale root: calls would stay at"
-		echo "  \"Starting...\"). Rebuild it (userland/build.sh) or take the phone's own root (docs/x1slte-root-swap.md);"
+		echo "  \"Starting...\"). Rebuild it (userland/build.sh) or take the phone's own root (docs/devices/x1slte/root-swap.md);"
 		echo "  ROOT_OK=1 to pack it anyway."
 		return 1
 	fi

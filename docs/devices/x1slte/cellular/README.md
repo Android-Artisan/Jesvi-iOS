@@ -3,7 +3,7 @@
 **Galaxy S20 / SM-G980F:** this page describes the inherited **Qualcomm** port.
 It is not evidence of working S20 cellular. The S20 has an external Samsung S5123
 modem over PCIe channel 1, with a SPI boot stage. Follow
-[the S20 implementation log and checklist](cellular-s20.md) for its actual status.
+[the S20 implementation log and checklist](s20.md) for its actual status.
 
 Where the modem stands (October 2026). The detailed, step-by-step diary in Russian is
 `docs/ru/cellular.md`.

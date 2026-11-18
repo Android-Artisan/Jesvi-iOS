@@ -3064,7 +3064,7 @@ run_index(const char *path, const char *func, const char *vfunc)
  *     bytes that hold a different texture coordinate. An element array built by
  *     attribute index, or built over all three attributes in order, feeds attribute 1's
  *     layout to attribute 3's fetch, and then the picture is flat where it should be a
- *     gradient. That is the one thing in docs/air.md 3.1 that cannot be re-derived, and
+ *     gradient. That is the one thing in docs/dev/air.md 3.1 that cannot be re-derived, and
  *     it is the only wrong answer here that still draws the right geometry;
  *   - the same four vertices are then drawn a second time with the SAME numbers in
  *     different formats -- UChar4Normalized and Short4Normalized where the first draw
@@ -3858,7 +3858,7 @@ run_attrib(const char *vpath, const char *vfunc, const char *fpath, const char *
 
    /*
     * 9. THE FUNCTION-CONSTANT GATE, which nothing above touches and which is the one rule in
-    *    docs/air.md 3.1 a runtime cannot derive from the module alone: an attribute the
+    *    docs/dev/air.md 3.1 a runtime cannot derive from the module alone: an attribute the
     *    module reads only when an implicit predicate is true is FETCHED either way -- the
     *    parameter exists whatever the predicate says -- so its bit is in
     *    vertex_attributes_read, and a pipeline whose function constants make the predicate
@@ -3973,7 +3973,7 @@ run_attrib(const char *vpath, const char *vfunc, const char *fpath, const char *
              gated_ok ? "the gate is honoured: a gated attribute needs no configuration and "
                         "an ungated one does, and the refusal named the ungated one -- which "
                         "is the fifth attribute in AIR's list, not the second"
-                      : "THE GATE IS NOT HONOURED as docs/air.md 3.1 requires");
+                      : "THE GATE IS NOT HONOURED as docs/dev/air.md 3.1 requires");
       if (!gated_ok)
          ok = false;
    } else {
@@ -4198,7 +4198,7 @@ run_attrib_sweep(const char *vpath, const char *fpath, const char *ffunc)
     * vertex function at all. A child that DIES says something no status could: softpipe
     * asserts on a 16-bit NIR opcode instead of declining it, and a `half` attribute's
     * narrowing is exactly that opcode -- so those modules are measurable on the Adreno
-    * and not here, which is the same boundary docs/air.md draws around softpipe.
+    * and not here, which is the same boundary docs/dev/air.md draws around softpipe.
     */
    enum { SWEPT_ATTRIBS = 0, SWEPT_REFUSED = 1, SWEPT_NOT_VERTEX = 2, SWEPT_PLAIN = 3 };
    unsigned built = 0, fetching = 0, refused = 0, not_vertex = 0, died = 0;
@@ -4473,7 +4473,7 @@ run_argbufs(const char *path, const char *only)
  *     [[buffer(0)]], [[sampler(0)]], [[texture(0)]], [[texture(1)]], [[sampler(1)]].
  *     So "the encoder works" needs no oracle: the two draws must produce the same
  *     pixel, and the direct draw is a path this library has drawn 255 shaders through
- *     (docs/air.md section 5).
+ *     (docs/dev/air.md section 5).
  *   - THE WRONG RECORDS. A differential that only ever passes says nothing about what
  *     would have failed, so every member is also encoded WRONG once -- the two samplers
  *     exchanged, the two textures exchanged, the buffer member at another offset -- and
@@ -5387,7 +5387,7 @@ run_pixel_formats(const char *path, const char *func)
  * tell apart. A case that cannot distinguish a mistake is counted as not distinguishing
  * it, and the run FAILS if any mistake is distinguished by no case at all -- a test that
  * cannot fail for the right reason is the thing this project has been bitten by before
- * (docs/air.md: "ask what else would have given the same answer").
+ * (docs/dev/air.md: "ask what else would have given the same answer").
  *
  * THE NUMBERS. Source (0.25, 0.5, 0.125, 0.25) over destination (0.5, 0.25, 0.75, 0.5),
  * all dyadic rationals, so every product, sum and difference in these equations is EXACT
@@ -6264,7 +6264,7 @@ main(int argc, char **argv)
       return run_argbufs(argv[2], argc > 3 ? argv[3] : NULL);
    }
 
-   /* --draw-argbuf is the runtime half of docs/air.md 8.2: the same picture through an
+   /* --draw-argbuf is the runtime half of docs/dev/air.md 8.2: the same picture through an
     * MTLArgumentEncoder's records as through direct arguments, and a named different
     * picture for each record that is deliberately wrong. Two modules, because the
     * measurement IS the comparison between them.
@@ -6444,7 +6444,7 @@ main(int argc, char **argv)
    }
 
    /* What every buffer is filled with, 0xa5 unless the fourth argument says. This is
-    * air_run's --zero and --ones in one byte and for the same reason (docs/air.md
+    * air_run's --zero and --ones in one byte and for the same reason (docs/dev/air.md
     * section 5): a kernel whose buffers carry counts, bounds or sentinels does nothing
     * at all on a byte pattern, and which fill gets it to the end says what it was
     * reading them as. Zero is the degenerate input that makes a bounds check pass;
@@ -6549,7 +6549,7 @@ main(int argc, char **argv)
    /* One buffer per binding the pipeline says it reads, each filled with a byte the
     * kernel could not have produced itself, so that a dispatch which wrote nothing is
     * distinguishable from one that wrote zeros -- the mistake air_run made first and
-    * docs/air.md section 5 records.
+    * docs/dev/air.md section 5 records.
     */
    struct rwa_buffer *buffers[16] = { 0 };
    unsigned count = info.buffers < COUNT_OF(buffers) ? info.buffers
@@ -6569,7 +6569,7 @@ main(int argc, char **argv)
     * pattern in it. A slot the kernel only writes gets the pattern too, which is the
     * same argument as the buffers' 0xa5: a kernel that writes nothing has to be
     * distinguishable from one that writes zeros, and InitMinMax writing zeros would
-    * look identical to a dispatch that never ran (docs/air.md section 5).
+    * look identical to a dispatch that never ran (docs/dev/air.md section 5).
     */
    const unsigned origin[3] = { 0, 0, 0 };
    struct rwa_texture *textures[16] = { 0 };

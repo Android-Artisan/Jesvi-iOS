@@ -97,7 +97,7 @@ Objective-C method of the given images to its offset from the shared cache base 
 are not in it, and an offset is credited to the nearest method below it, so read only plausible names.
 
 Debug output that cost frame time (GL stats from the render thread, backboardd's console os_log, wake accounting,
-progressd's crash loop) is off or gone: `docs/x1slte-debug.md` lists every switch and how to turn it back on.
+progressd's crash loop) is off or gone: `docs/devices/x1slte/debug.md` lists every switch and how to turn it back on.
 
 Drag latency, measured (2026-11-14 11:10, `kern.redwood.touch_lat=1` live, 5,900 touch samples while dragging Settings and
 unlocking): touch chip -> iOS 0.3 ms (instant); waiting until a frame starts drawing 9 ms median, 46 ms p90 (the app's

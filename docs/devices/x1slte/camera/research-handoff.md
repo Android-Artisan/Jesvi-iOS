@@ -9,18 +9,18 @@ fingerprint work are unchanged. No push was attempted.
 
 ## Read in this order
 
-1. [Latest configuration audit and verified colour math](x1slte-camera-config-audit.md):
+1. [Latest configuration audit and verified colour math](config-audit.md):
    confirmed differences, positive shading grids, emulation validation, provenance,
    and next implementation gates.
-2. [Typed tuning layout](x1slte-camera-tuning-format.md): 65 blocks, CCM, residual
+2. [Typed tuning layout](tuning-format.md): 65 blocks, CCM, residual
    LUT, BLC and scenario mappings. Its opening follow-up points out superseded
    uncertainty statements from the earlier research stage.
-3. [Initial stock-versus-port comparison](x1slte-camera-quality.md): hardware,
+3. [Initial stock-versus-port comparison](quality.md): hardware,
    table equivalence and missing processing stages.
-4. [Preserved artifact/input manifest](x1slte-camera-research-manifest.json):
+4. Preserved artifact/input manifest (private build manifest):
    absolute local paths, byte counts and SHA-256 checksums.
-5. Existing [rear-camera operating history](../tools/camera/REAR-CAMERA.md) and
-   [camera checklist](../tools/camera/CHECKLIST.md): previous hardware experiments,
+5. Existing [rear-camera operating history](../../../../tools/camera/REAR-CAMERA.md) and
+   [camera checklist](../../../../tools/camera/CHECKLIST.md): previous hardware experiments,
    failure modes and accepted defaults.
 
 ## Conclusions to preserve

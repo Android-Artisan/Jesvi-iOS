@@ -112,7 +112,7 @@ static struct rwa_device *air_device;
  *
  * It is the one thing about an encoder that cannot be seen from Metal's side: there is no
  * argument buffer to read back, because the frontend resolved every member of every set
- * to a binding and Metal's 8-byte handles mean nothing to a Gallium driver (docs/air.md
+ * to a binding and Metal's 8-byte handles mean nothing to a Gallium driver (docs/dev/air.md
  * 8.2), so what an encoder leaves behind is a RECORD in the library and not bytes. This
  * reaches it the way -mesaDevice is reached above: the driver's own accessor for the
  * `struct rwa_buffer` behind an MTLBuffer, and then the library's own count.
@@ -245,7 +245,7 @@ fnv1a(const unsigned char *bytes, size_t length)
  * function's module with LLVM's 0x0B17C0DE wrapper in front of it: Metal has already read
  * the container, found this function in it and kept the whole metallib mapped, so a driver
  * asks one declared selector and gets bytes. That is the junction with subsystem (1): the
- * frontend in docs/air.md reads exactly such a module.
+ * frontend in docs/dev/air.md reads exactly such a module.
  *
  * So this prints, for every function of the library, the wrapper's own idea of where the
  * module is and a checksum over it -- which tools/metallib.py computes over the same
@@ -838,7 +838,7 @@ compute_path(id<MTLDevice> dev, id<MTLLibrary> library, const char *only)
  *
  * `clearFragment20` out of AppleMetalGLRenderer's library writes render target 2 (int4) and
  * reads a 48-byte constant buffer at index 14. It is one of the 255 fragment shaders air_run
- * has drawn and compared pixel by pixel (docs/air.md), so there is a reference to compare
+ * has drawn and compared pixel by pixel (docs/dev/air.md), so there is a reference to compare
  * against -- and these four words ARE that reference, computed by air_run on softpipe with
  * the same (i * 7 + 13) & 0xff fill this function uses:
  *
@@ -2801,7 +2801,7 @@ read_depth_buffer(id<MTLTexture> zt, float *depth, const char *what)
  *     "bufferIndex %lu does not identify an argument buffer" and returns nil. The driver
  *     answers it instead, through a category, by reading the function's own bitcode. So
  *     what this measures is WHOSE answer came back: Apple's shaders declare no argument
- *     buffer at all (0 of 456 modules, docs/air.md 8.2), so the answer must still be nil
+ *     buffer at all (0 of 456 modules, docs/dev/air.md 8.2), so the answer must still be nil
  *     -- but with the driver's own sentence, which names how many sets the function has.
  *     Metal's sentence and the driver's are told apart in the log by "this function
  *     declares".
@@ -3518,7 +3518,7 @@ fault(int sig, siginfo_t *info, void *uap)
 /*
  * Every fragment shader of a library, drawn, one line each.
  *
- * One shader drawn is an example; 255 of them have a reference each (docs/air.md: air_run
+ * One shader drawn is an example; 255 of them have a reference each (docs/dev/air.md: air_run
  * draws every fragment shader of the corpus and the pixel was compared), so drawing them all
  * turns an example into coverage. One process does the whole library because the loader keeps
  * only the first 256 KB and the last 1 MB of a boot's log: 271 processes would lose the middle

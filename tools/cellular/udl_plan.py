@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline S20 external-SIPC download plan. No device I/O or NV reads. MIT.
 
-Protocol source and limits: docs/cellular-download-plan.md. A plan describes
+Protocol source and limits: docs/devices/x1slte/cellular/download-plan.md. A plan describes
 host commands; it does not establish CP compatibility or firmware authenticity.
 """
 import argparse

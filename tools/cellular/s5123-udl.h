@@ -1,6 +1,6 @@
 /* MIT. Original bounded SIPC UDL wire codec; no device I/O.
  * Protocol facts: Samsung cpboot_v3 ProtocolSipc/BootDumpExt and S20 CPIF.
- * Pinned references and stage ordering: docs/cellular-download-plan.md.
+ * Pinned references and stage ordering: docs/devices/x1slte/cellular/download-plan.md.
  * A wire-compatible packet is not evidence that the CP has accepted it.
  */
 #ifndef S5123_UDL_H

@@ -1861,7 +1861,7 @@ redwood_init(void)
 		/*
 		 * CoreAnimation's frame clock at the panel's rate (A, 2026-11-14). The driver publishes 120 Hz in TimingElements,
 		 * but the window server's own clock stayed at 60 (CADisplay.refreshRate 0.016667 asked from a process, with the
-		 * panel scanning 120): it went to 120 only with CA_HEARTBEAT_RATE=120 (docs/x1slte-display.md, the FHD+/120
+		 * panel scanning 120): it went to 120 only with CA_HEARTBEAT_RATE=120 (docs/devices/x1slte/display.md, the FHD+/120
 		 * retest). fb_mode 1 and 3 run the panel at 120; caenv=CA_HEARTBEAT_RATE=N (below) overrides.
 		 */
 		if (getenv("CA_HEARTBEAT_RATE") == NULL && sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {

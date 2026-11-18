@@ -44,4 +44,4 @@ Do not print or commit IMSI, ICCID, IMEI, authentication material or raw private
 IMS provisioning. No destination for a test call/SMS has been provided; obtain
 one when that implementation is ready, rather than dialing an arbitrary number.
 
-Implementation flow: [cellular-flow.md](cellular-flow.md).
+Implementation flow: [cellular-flow.md](flow.md).

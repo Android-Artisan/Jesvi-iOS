@@ -2,7 +2,7 @@
 """Offline Shannon firmware inventory and SIPC5 framing checks. No device I/O.
 
 MIT. Written from the on-disk format and Samsung CPIF protocol facts; no vendor
-code or firmware is included. See docs/cellular-s20.md for pinned references.
+code or firmware is included. See docs/devices/x1slte/cellular/s20.md for pinned references.
 """
 import argparse
 import json

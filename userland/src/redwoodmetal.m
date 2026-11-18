@@ -71,7 +71,7 @@
  * records (resource, Metal id) against (destination buffer, destination offset) instead
  * and the draw binds every member the pipeline's shaders declare. The buffer's contents
  * are never read, and an argument buffer the application did not fill through an encoder
- * is refused BY NAME (docs/air.md 8.2, and the MTLArgumentEncoder implementation at the
+ * is refused BY NAME (docs/dev/air.md 8.2, and the MTLArgumentEncoder implementation at the
  * end of this file).
  *
  * BUFFER OFFSETS are honoured, which they were not: Metal's own `offset:` is recorded at
@@ -3125,7 +3125,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * One asymmetry is deliberate and is the measured road rather than a shortcut. When the
  * descriptor names no vertex function, the compiler library supplies a pass-through vertex
  * stage over the whole attachment -- which is exactly how air_run has drawn every fragment
- * shader of the corpus, 255 of them compared pixel by pixel (docs/air.md). A descriptor that
+ * shader of the corpus, 255 of them compared pixel by pixel (docs/dev/air.md). A descriptor that
  * does name one passes both modules and nothing is generated.
  */
 - (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
@@ -3695,7 +3695,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 /* The sampler's own base class exists and owes its protocol nothing, so this is the cheapest
  * object in the driver: the state goes to the compiler library, which maps it the same way it
  * maps a shader's own `constexpr sampler` word -- one vocabulary, so the two can be checked
- * against each other (docs/air.md 3.3). */
+ * against each other (docs/dev/air.md 3.3). */
 #define RW_FILTER_CUBIC 2u     /* MTLSamplerMinMagFilterCubic: private, not in the SDK's header */
 
 - (id)newSamplerStateWithDescriptor:(MTLSamplerDescriptor *)descriptor
@@ -3829,7 +3829,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
  * this way records exactly as one made from a module does.
  *
  * Three shapes are refused BY NAME rather than encoded into something, each because the
- * frontend refuses the matching shader when it translates it (docs/air.md 8.2.1), so a
+ * frontend refuses the matching shader when it translates it (docs/dev/air.md 8.2.1), so a
  * record of ours could never be asked for:
  *
  *   - a member that is not a pointer, a texture or a sampler: a VALUE inside the set,
@@ -4251,7 +4251,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 }
 
 /* These are bitfields of floating-point behaviours a device claims. Claiming none is the
- * honest answer while nothing has verified any of them on this hardware -- and docs/air.md
+ * honest answer while nothing has verified any of them on this hardware -- and docs/dev/air.md
  * is precisely the document that would have to grow the evidence first. */
 - (uint64_t)singleFPConfig { return 0; }
 - (uint64_t)halfFPConfig   { return 0; }
@@ -4490,7 +4490,7 @@ rw_note_view(const struct rwa_texture_shape *from, NSUInteger format, NSUInteger
 
 /* Without this the device inherits _MTLDevice's own answer, which is "Apple GPU" -- true of
  * the code and false of the hardware. The name is Mesa's renderer string for this chip
- * (docs/air.md: `Adreno 7c+ Gen 3, chip 0x06030500`), and the identifier beside it is asked
+ * (docs/dev/air.md: `Adreno 7c+ Gen 3, chip 0x06030500`), and the identifier beside it is asked
  * of the kernel rather than written down, so a different phone says something different.
  * Nothing in Metal's registration reads this; a person reading a log does. */
 - (NSString *)name
@@ -7460,7 +7460,7 @@ rw_hex(char *out, size_t size, const void *bytes, size_t n)
 }
 
 /* The fence is the whole point: a dispatch that the GPU does not finish must not read as a
- * result. air_run learned that the expensive way (docs/air.md section 5). */
+ * result. air_run learned that the expensive way (docs/dev/air.md section 5). */
 - (void)waitUntilCompleted
 {
 	char why[512] = { 0 };
@@ -9739,7 +9739,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
  * Metal's encoder writes one 8-byte handle per member into a plain buffer, and those
  * handles are an Apple GPU's descriptors: a Gallium driver, which binds by index, cannot
  * read them. It also does not need to -- the AIR frontend resolves every member of every
- * set to a binding while translating (docs/air.md 8.2) -- so each -setBuffer:atIndex:
+ * set to a binding while translating (docs/dev/air.md 8.2) -- so each -setBuffer:atIndex:
  * here RECORDS (resource, Metal id) against (the destination buffer, the destination
  * offset) in the compiler library, and the draw binds every member the pipeline's shaders
  * declare from those records. The buffer's contents are never read, and an argument
@@ -10020,7 +10020,7 @@ destinationBytesPerImage:(NSUInteger)destinationBytesPerImage options:(NSUIntege
  * Nothing of this driver ever reads those bytes, and that is said here because it is the
  * kind of silence that costs a day: a shader that reads a value out of a set is refused
  * when it is TRANSLATED ("a value read out of the set instead of a descriptor",
- * docs/air.md 8.2.1), so an application writing here is writing into memory no shader of
+ * docs/dev/air.md 8.2.1), so an application writing here is writing into memory no shader of
  * ours will be compiled to read. Answering a real pointer is still the right answer --
  * the write lands in the application's own buffer and nothing is corrupted -- while
  * answering NULL would be a crash in the application's memcpy.

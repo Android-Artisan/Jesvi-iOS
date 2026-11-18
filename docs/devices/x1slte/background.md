@@ -37,7 +37,7 @@ If it spins again: `ls /private/var/containers/Shared/SystemGroup/*/Library/Batt
 | IMS PDN | on | `touch /var/root/cell-noims` |
 | mobile data | on | `echo nodata > /var/tmp/redwood-cell/cmd` (kept in /var/root/cell-nodata) |
 | modem restart | - | `echo restart > /var/tmp/redwood-cell/cmd` |
-| island pill | built-in 18pro-small | `tools/island-preset.sh NAME` (docs/x1slte-dynamic-island.md) |
+| island pill | built-in 18pro-small | `tools/island-preset.sh NAME` (docs/devices/x1slte/dynamic-island.md) |
 | kernel stats lines | on | `dvfs=2` prints clocks/temperatures every 10 s; the sensor hub (`shub=6`) relays its own debug text. Both go to the kernel ring only (cheap); a switch for them is a kernel change, not done yet |
 
 Left on the phone, inert: old test libraries in /var/tmp (b-libredwood-*, codex-libredwood-als-*, libredwood-brightness*)

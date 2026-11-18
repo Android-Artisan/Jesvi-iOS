@@ -30,5 +30,5 @@ mkdir -p "$RE_OUT"
 
 Addresses are Ghidra virtual addresses with image base +0x100000; the end is
 exclusive. Both functions were reconstructed successfully with Ghidra 12.2.
-Outputs stay in `RE_OUT`. Read the protocol audit in `docs/x1slte-fingerprint.md`
+Outputs stay in `RE_OUT`. Read the protocol audit in `docs/devices/x1slte/fingerprint.md`
 for the actual wire layout and the limits of the current evidence.
