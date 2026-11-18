@@ -973,18 +973,21 @@ island_cache_sync(void)
 	 * because their light sensor existed only in virtual HID, not IORegistry.
 	 * Invalidate once before launchd (and when the ALS boot configuration changes),
 	 * so Settings and CoreBrightness both obtain the real kernel capability. */
-	char now[3] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2' }, last[4];
+	char now[4] = { arg != NULL && strcmp(arg, "1") == 0 ? '1' : '0', '0', '2', '0' }, last[5];
 	int fd;
 	arg = boot_arg("shub");
 	if (arg != NULL && strcmp(arg, "6") == 0) now[1] = '1';
 	arg = boot_arg("sens_als");
 	if (arg != NULL && strcmp(arg, "0") == 0) now[1] = '0';
+	/* touchid=1: the loader's /arm-io/mesa node makes this a Touch ID iPhone for MobileGestalt */
+	arg = boot_arg("touchid");
+	if (arg != NULL && strcmp(arg, "1") == 0) now[3] = '1';
 
 	if (read_whole(ISLAND_MARK, last, sizeof(last)) == sizeof(now) && !memcmp(last, now, sizeof(now))) {
 		return;
 	}
 	if (unlink(MG_CACHE) == 0) {
-		printf("  hardware capabilities changed (island=%c ALS=%c): rebuilding MobileGestalt cache\n", now[0], now[1]);
+		printf("  hardware capabilities changed (island=%c ALS=%c touchid=%c): rebuilding MobileGestalt cache\n", now[0], now[1], now[3]);
 	}
 	fd = open(ISLAND_MARK, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd >= 0) {

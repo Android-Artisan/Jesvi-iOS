@@ -713,6 +713,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ ! -x root/bin/register_finder_host ] || cp com.redwood.finder-host.plist root/LaunchDaemons/
 	[ -x ../jb/root/var/jb/usr/sbin/sshd ] && [ -f root/var/root/.ssh/authorized_keys ] && cp com.redwood.sshd.plist root/LaunchDaemons/
 	[ "${BT-1}" != 0 ] && cp com.apple.BlueTool.plist root/LaunchDaemons/
+	# native Touch ID: the iPhone 8's biometrickitd job (Touch ID module only); it starts when RedwoodMesa publishes
+	# AppleBiometricServices, i.e. only with touchid=1 (redwood-fpd). Needs libBKDM1 in the system image.
+	[ ! -x root/bin/redwood-fpd ] || cp com.apple.biometrickitd.mesa.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $IOS/rootfs.slt ] && VOLUME="--root-volume $IOS/rootfs.slt"
 	# (A, 2026-11-14: no job's os_log on the console by default -- with OS_ACTIVITY_DT_MODE backboardd, the window server,

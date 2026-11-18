@@ -3501,6 +3501,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	int torch_requested = 0;
 	/* "cam=5" there too: the phone's wide camera is iOS's (bsd/dev/redwood_camera.c) */
 	int camera_requested = 0;
+	int touchid_requested = 0;
 	/* (the loader stays for run after run: what the last run's arguments said must not hold for this one) */
 	gamut_p3 = 0;
 	island = 0;
@@ -3517,6 +3518,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		    (c[9] == 0 || c[9] == ' ');
 		torch_requested |= starts_with(c, "torch=") && (c == pi.cmdline || c[-1] == ' ') && c[6] >= '1' && c[6] <= '9';
 		camera_requested |= starts_with(c, "cam=5") && (c == pi.cmdline || c[-1] == ' ') && (c[5] == 0 || c[5] == ' ');
+		touchid_requested |= starts_with(c, "touchid=1") && (c == pi.cmdline || c[-1] == ' ') && (c[9] == 0 || c[9] == ' ');
 		gamut_p3 |= starts_with(c, "gamut=p3") && (c == pi.cmdline || c[-1] == ' ');
 		island |= starts_with(c, "island=1") && (c == pi.cmdline || c[-1] == ' ') && (c[8] == 0 || c[8] == ' ');
 		if (starts_with(c, "ufs=") && (c == pi.cmdline || c[-1] == ' ') && c[4] >= '1' && c[4] <= '2' &&
@@ -3936,6 +3938,18 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	if (camera_requested) {
 		dt_begin(&w, "isp");
 		dt_prop_u32(&w, "camera-rear", 1);
+		dt_end(&w);
+	}
+	/*
+	 * With touchid=1, Touch ID where an iPhone 8 has it (its tree: /arm-io/spi3/mesa, "biosensor,mesa", mesaType 1),
+	 * so MobileGestalt and Settings take the S20 for a Touch ID iPhone. Only the identity: no reg or interrupts, as
+	 * no Apple driver runs here; the kernel's RedwoodMesa plays the Secure Enclave's Touch ID part.
+	 */
+	if (touchid_requested) {
+		dt_begin(&w, "mesa");
+		dt_prop_str(&w, "device_type", "mesa");
+		dt_prop_str(&w, "compatible", "biosensor,mesa");
+		dt_prop_u32(&w, "mesaType", 1);
 		dt_end(&w);
 	}
 	dt_begin(&w, "gic");
