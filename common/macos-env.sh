@@ -3,7 +3,7 @@
 # The project's shell is written for GNU userland (readlink -f, stat -c, nproc, cp -rs,
 # gtar --wildcards, sed -i). On macOS that comes from Homebrew coreutils/gnu-tar/gnu-sed,
 # whose "gnubin" directories place the GNU tools first on PATH under their usual names.
-# This file only sets PATH; it is sourced by xnu-env.sh and common/lib.sh, and can also be
+# This file only sets PATH; it is sourced by xnu/xnu-env.sh and common/lib.sh, and can also be
 # sourced from your shell profile so `xl`, `qemu/*.sh`, `userland/build.sh` etc. all see it.
 #
 #   brew install coreutils gnu-tar gnu-sed findutils bison

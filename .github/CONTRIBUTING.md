@@ -1,7 +1,7 @@
 # Contributing
 
-Start with [the build guide](docs/release/building.md) and
-[device porting guide](docs/release/porting.md). Use a branch/worktree per task. Keep
+Start with [the build guide](../docs/release/building.md) and
+[device porting guide](../docs/release/porting.md). Use a branch/worktree per task. Keep
 changes small enough to review and explain the observable behavior, tests and limitations.
 
 Kernel work is represented by `xnu/redwood.patch` and `xnu/files/`. If editing a

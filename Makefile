@@ -60,14 +60,14 @@ loader-open:
 	xnuloader/build.sh
 
 hello:
-	. ./xnu-env.sh && xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding \
+	. ./xnu/xnu-env.sh && xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding \
 		-fno-stack-protector -fno-builtin -Wl,-e,_start -Wl,-pagezero_size,0x100000000 \
 		-o userland/hello userland/src/hello.c
 
 qemu-open: loader-open hello
 	[ -d xnu-src/xnu-8796.121.2 ] || xnu/apply.sh
 	[ -x xnu-deps/host/bin/xnu-clang ] || xnu-deps/setup.sh
-	./xnu-build.sh -j$(JOBS) -k
+	./xnu/xnu-build.sh -j$(JOBS) -k
 	mkdir -p logs
 	xnuloader/mkpayload.py -o qemu/payload.bin \
 		kernel=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837 \

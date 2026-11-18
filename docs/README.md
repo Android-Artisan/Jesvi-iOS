@@ -16,7 +16,7 @@ folder is the entry point for new developers; subsystem notes remain research ev
 - [Release checklist](release/checklist.md)
 - [Local storage cleanup review](release/storage-audit.md)
 - [Measured S20 evidence](release/device-evidence.md)
-- [Shipping observations](../SHIPPING.md)
+- [Shipping observations](SHIPPING.md)
 - [Cellular](devices/x1slte/cellular/download-plan.md), [S20 modem](devices/x1slte/cellular/s20.md)
 - [Calls](devices/x1slte/calls.md), [efficiency](devices/x1slte/efficiency.md), [passcode](devices/x1slte/passcode.md)
 - [Audio](devices/x1slte/audio.md), [Bluetooth](devices/x1slte/bluetooth.md)

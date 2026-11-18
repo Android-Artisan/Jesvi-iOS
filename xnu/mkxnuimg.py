@@ -18,7 +18,7 @@ Another device (common/devices/<name>.conf, read by common/build.sh) sets these 
 """
 import argparse, gzip, os, subprocess, sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MU = os.path.join(HERE, 'Mu-Silicium')
 PREBUILT = os.path.join(HERE, 'prebuilt', 'uefi')
 def env_int(name, default):

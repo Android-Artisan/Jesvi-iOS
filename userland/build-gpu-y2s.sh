@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
 set +u # Legacy environment setup reads optional unset variables.
-source ../xnu-env.sh
+source ../xnu/xnu-env.sh
 set -u
 SDK=$THEOS/sdks/iPhoneOS16.5.sdk
 mkdir -p obj ../prebuilt/userland

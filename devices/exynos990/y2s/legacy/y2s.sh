@@ -56,7 +56,7 @@ cmd_kernel() {
 	set -u
 	export GIC_V2=1
 	touch out/.kernel-start
-	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k > out/kernel-build.log 2>&1 || true
+	./xnu/xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k > out/kernel-build.log 2>&1 || true
 	if grep -E '^[^ ]*\.(c|cpp|s|h):[0-9]+:[0-9]+: (fatal error|error|warning):' out/kernel-build.log; then
 		die "compiler errors/warnings above (full log: out/kernel-build.log)"
 	fi

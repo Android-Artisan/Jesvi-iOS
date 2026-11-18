@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set +u # Legacy environment setup reads optional unset variables.
-source ./xnu-env.sh
+source ./xnu/xnu-env.sh
 set -u
 python3 - <<'PY'
 import json, pathlib, subprocess

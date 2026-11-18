@@ -24,7 +24,7 @@
 #                                                   Apple's internal SDK has and the public one lacks
 set -e -o pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "$HERE/../xnu-env.sh"
+source "$HERE/../xnu/xnu-env.sh"
 cd "$XNUDEPS"
 JOBS=${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
 CCTOOLS=$THEOS/toolchain/linux/iphone/bin
@@ -228,8 +228,8 @@ stage2() {
 		log "stage 2: nothing to do"
 		return 0
 	fi
-	log "exporting the kernel's headers (xnu-build.sh exporthdrs)"
-	"$DARWIN_REDWOOD/xnu-build.sh" -j$JOBS exporthdrs > exporthdrs.log 2>&1 && [ -d "$hdrs/osfmk" ] ||
+	log "exporting the kernel's headers (xnu/xnu-build.sh exporthdrs)"
+	"$DARWIN_REDWOOD/xnu/xnu-build.sh" -j$JOBS exporthdrs > exporthdrs.log 2>&1 && [ -d "$hdrs/osfmk" ] ||
 		die "the kernel headers were not exported, see xnu-deps/exporthdrs.log"
 	if [ ! -f $lib/libfirehose_kernel.a ]; then
 		log "building libfirehose_kernel.a"
@@ -249,7 +249,7 @@ stage2() {
 		log "building libpthread_kext.a"
 		build/pthread/build.sh
 	fi
-	log "stage 2 done; now: ./xnu-build.sh -j$JOBS -k"
+	log "stage 2 done; now: ./xnu/xnu-build.sh -j$JOBS -k"
 }
 
 case "$1" in

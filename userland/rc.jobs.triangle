@@ -121,7 +121,7 @@
 #   and no way to say which answer belonged to which.
 #
 #   AND TAKE THE SCREENSHOT while it is up, from another terminal:
-#     ./xl screenshot logs/triangle.png
+#     ./xnu/xl screenshot logs/triangle.png
 #   It may be taken more than once; the picture is identical every frame on purpose.
 #
 # THE PICTURE, WRITTEN DOWN BEFORE THE RUN. Three colours, and each means a different thing:
@@ -307,7 +307,7 @@
 #    must have a RedwoodTriangle in it; if it does not, SpringBoard took the URL and the
 #    process died before exec, and the kernel's own lines above are where to look.
 #
-#    TAKE THE SCREENSHOT ANY TIME AFTER THIS LINE: ./xl screenshot logs/triangle.png
+#    TAKE THE SCREENSHOT ANY TIME AFTER THIS LINE: ./xnu/xl screenshot logs/triangle.png
 /redwood/bin/rwtouch wait 20
 /bin/ps -A
 #

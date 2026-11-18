@@ -2,7 +2,7 @@
 # The system-image step of userland/build.sh on its own (B, 2026-11-13): Files host staged into /Applications.
 set -e
 cd "$(dirname "$(readlink -f "$0")")"
-source ../xnu-env.sh
+source ../xnu/xnu-env.sh
 IOS=../ios165
 CACHE=$IOS/20F66__iPhone10,3_6
 SILEO_BIN="chmod cp mkdir mv rm"

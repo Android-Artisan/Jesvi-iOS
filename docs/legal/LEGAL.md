@@ -3,8 +3,8 @@
 > Release audit note (2026-11-14): the upstream description below predates the
 > Samsung Exynos 990 port. It records intended distribution policy, not a verified
 > inventory of this fork. Inherited prebuilts, donor UEFI modules and embedded data
-> still require publication review. See [the release review](docs/release/research.md)
-> and [publication checklist](docs/release/checklist.md) before relying on blanket
+> still require publication review. See [the release review](../release/research.md)
+> and [publication checklist](../release/checklist.md) before relying on blanket
 > statements about what is absent or cleared for distribution.
 
 HakiOS is an independent open-source research project that ports the open-source XNU kernel to

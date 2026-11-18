@@ -1032,7 +1032,7 @@ Three references, each independent of the translator:
    and from the length of the session both. What is actually diagnostic is the size of the file:
    1 466 58x bytes *is* the cap, so a log that size is truncated however many drop markers it
    carries (the intact run here has two and lost nothing; a truncated one had one). `README.md`
-   carries this beside `./xl log`, with the three runs tabulated, because it catches anything
+   carries this beside `./xnu/xl log`, with the three runs tabulated, because it catches anything
    verbose and not just this suite.
 
    **How much room is left is worth knowing before the suite grows.** In the run that worked, at

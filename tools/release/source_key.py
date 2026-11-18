@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[2]
 paths = (
     'xnu/redwood.patch', 'xnu/files', 'xnu/apply.sh', 'xnu-deps/setup.sh',
     'xnu-deps/host', 'xnu-deps/hostinc', 'xnu-deps/iig-impl',
-    'xnu-env.sh', 'xnu-build.sh', 'common/macos-env.sh', 'ci/sources.lock.json',
+    'xnu/xnu-env.sh', 'xnu/xnu-build.sh', 'common/macos-env.sh', 'ci/sources.lock.json',
     'ci/build-kernel.sh', 'tools/release/source_key.py', 'tools/release/cache.py',
     'tools/release/kernel_manifest.py')
 inputs = {}

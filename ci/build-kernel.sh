@@ -14,7 +14,7 @@ test -d "$XNU_SRC" || bash xnu/apply.sh "$XNU_SRC"
 bash xnu-deps/setup.sh --stage1
 bash xnu-deps/setup.sh --rebuild-libs
 export GIC_V2=1
-bash xnu-build.sh -j"$jobs" -k build > out/kernel/build.log 2>&1 || {
+bash xnu/xnu-build.sh -j"$jobs" -k build > out/kernel/build.log 2>&1 || {
     tail -60 out/kernel/build.log >&2
     exit 1
 }

@@ -26,7 +26,7 @@
 #
 # Everything is compiled as FreeBSD kernel code for an Apple arm64 kernel and tied into one object
 # that shows nothing but its entry points (lx_prepare, lx_start, lx_stop, lx_transmit of the
-# kernel's bsd/sys/redwood_lx.h). It is NOT linked into the kernel yet (xnu-build.sh links
+# kernel's bsd/sys/redwood_lx.h). It is NOT linked into the kernel yet (xnu/xnu-build.sh links
 # ath11k's object only): what it asks of the kernel beyond redwood_lx.h is declared in
 # wifi/lx/include/brcmfmac/lx_os_pci.h, and the kernel has none of it so far.
 #
@@ -49,7 +49,7 @@ A=$ROOT/xnu-deps/build/ath11k			# tools/mk-ath11k.sh's downloads, if it has made
 BRCM=drivers/net/wireless/broadcom/brcm80211
 W=$ROOT/wifi/lx
 # the kernel's tree (redwood_lx.h); on macOS also the GNU tools, which the rest is written for
-source "$ROOT/xnu-env.sh"
+source "$ROOT/xnu/xnu-env.sh"
 mkdir -p "$B"
 cd "$B"
 

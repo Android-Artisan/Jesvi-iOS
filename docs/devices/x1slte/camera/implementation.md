@@ -123,7 +123,7 @@ x1slte-camera-quality-build.json (private build manifest).
 Kernel build command used in this environment:
 
 ```sh
-GIC_V2=1 bash xnu-build.sh -j6 -k build HOST_GM4=/usr/bin/m4
+GIC_V2=1 bash xnu/xnu-build.sh -j6 -k build HOST_GM4=/usr/bin/m4
 ```
 
 The isolated build tree is `xnu-src/xnu-8796.121.2` in this worktree. Missing local

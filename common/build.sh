@@ -5,12 +5,12 @@
 #   common/build.sh qemu-virt
 #   common/build.sh redwood GL=1
 #
-#   1. kernel   xnu/apply.sh, xnu-deps/setup.sh, xnu-build.sh   -- only with theos + iPhoneOS16.5.sdk,
+#   1. kernel   xnu/apply.sh, xnu-deps/setup.sh, xnu/xnu-build.sh   -- only with theos + iPhoneOS16.5.sdk,
 #                                                                  otherwise prebuilt/ is used
 #   2. loader   xnuloader/build.sh                              -- only with clang + lld-link
 #   3. images   userland/build.sh (REST=1 and the profile's USERLAND_VARS)
 #                                                               -- needs ios165/fetch.sh to have run
-#   4. boot     mkxnuimg.py -> out/<device>-boot.img             -- phones: the UEFI image for `fastboot boot`
+#   4. boot     xnu/mkxnuimg.py -> out/<device>-boot.img             -- phones: the UEFI image for `fastboot boot`
 #
 #   SKIP="kernel loader images boot"   leave steps out
 . "$(cd "$(dirname "$0")" && pwd)/lib.sh"
@@ -28,7 +28,7 @@ if ! skip kernel; then
 		export GIC_V2
 		# the export check fails after the kernel is linked, on purpose (xnu/README.md): judge by the file
 		touch out/.kernel-start
-		./xnu-build.sh -j"$(nproc)" -k > out/kernel-build.log 2>&1 || true
+		./xnu/xnu-build.sh -j"$(nproc)" -k > out/kernel-build.log 2>&1 || true
 		K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
 		[ -f $K ] && { [ $K -nt out/.kernel-start ] || ! grep -q "error:" out/kernel-build.log; } &&
 			echo "build: kernel $(stat -c %s $K) bytes" || die "kernel build failed, see out/kernel-build.log"
@@ -56,6 +56,6 @@ if ! skip boot && [ "$KIND" = phone ]; then
 	L=xnuloader/loader.efi; [ -f $L ] || L=prebuilt/loader.efi
 	python3 xnuloader/mkpayload.py -o out/usb-payload.bin loader.efi=$L --usb > /dev/null
 	FD_BASE=$FD_BASE FD_SIZE=$FD_SIZE PAYLOAD_BASE=$PAYLOAD_BASE UEFI_FD=$UEFI_FD DTB=$DTB UEFI_TARGET=$UEFI_TARGET \
-		python3 mkxnuimg.py -p out/usb-payload.bin -o out/$DEVICE-boot.img
+		python3 xnu/mkxnuimg.py -p out/usb-payload.bin -o out/$DEVICE-boot.img
 	echo "build: out/$DEVICE-boot.img -- boot it with: fastboot boot out/$DEVICE-boot.img (or common/run.sh $DEVICE)"
 fi

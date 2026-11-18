@@ -2,7 +2,7 @@
 
 > Release audit note (2026-11-14): this historical upstream checklist is not a
 > certification of the Samsung fork. Resolve the current artifact/history review
-> in [the release checklist](docs/release/checklist.md) before publication.
+> in [the release checklist](../release/checklist.md) before publication.
 
 How HakiOS meets the terms of the licenses that apply to it. This is a working checklist, not a
 legal opinion, and it does not assert that the project is free of all risk. See `LEGAL.md` and

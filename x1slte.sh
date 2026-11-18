@@ -66,7 +66,7 @@ cmd_kernel() {
 	fi
 	touch out/.kernel-start
 	local build_rc=0
-	./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k build > out/kernel-build.log 2>&1 || build_rc=$?
+	./xnu/xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k build > out/kernel-build.log 2>&1 || build_rc=$?
 	if [ "$build_rc" -ne 0 ]; then
 		tail -n 35 out/kernel-build.log >&2
 		die "kernel build failed (exit $build_rc); refusing stale kernel artifact"

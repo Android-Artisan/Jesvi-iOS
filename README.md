@@ -21,7 +21,7 @@ the same way: a common tree, plus one directory per device.
 | Not yet | fingerprint, full GPS, App Store purchases |
 
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
-and every change is logged in [SHIPPING.md](SHIPPING.md).
+and every change is logged in [SHIPPING.md](docs/SHIPPING.md).
 
 ## Install
 
@@ -72,6 +72,6 @@ added as directories next to `x1slte`. See [porting](docs/release/porting.md).
 ## Credits and licenses
 
 HakiOS (oosexgang), Apple's open-source XNU (APSL 2.0), Mu-Silicium, Mesa and the other components
-in [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Nothing of Apple's or
+in [NOTICE](NOTICE) and [THIRD_PARTY_LICENSES.md](docs/legal/THIRD_PARTY_LICENSES.md). Nothing of Apple's or
 Samsung's is in this repository: the build takes it from your own IPSW and phone. Jesvi iOS is not
-affiliated with Apple or Samsung. [LEGAL.md](LEGAL.md).
+affiliated with Apple or Samsung. [LEGAL.md](docs/legal/LEGAL.md).

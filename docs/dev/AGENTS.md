@@ -2,7 +2,7 @@
 
 Before changing the S20 boot profile, keybag driver, SpringBoard hooks or userland
 assembly, read [docs/devices/x1slte/passcode.md](../devices/x1slte/passcode.md), especially
-**Traps and recovery**, and the latest [SHIPPING.md](../../SHIPPING.md) entry.
+**Traps and recovery**, and the latest [SHIPPING.md](../SHIPPING.md) entry.
 
 - Preserve the complete software-passcode chain: `softpasscode=1`, `autounlock=0`,
   native keybagd job, fail-closed pre-launchd restore and display-off immediate-lock

@@ -76,7 +76,7 @@
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
 set -e -o pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-source ../xnu-env.sh
+source ../xnu/xnu-env.sh
 source ./software-passcode-config.sh
 
 CC="xnu-clang -arch arm64 -Os -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -Wall -Wextra"
