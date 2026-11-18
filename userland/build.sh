@@ -458,7 +458,6 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
 	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd obj/dsc-exec root/bin/
-	[ -f obj/libredwood-touchid-ui.dylib ] && cp obj/libredwood-touchid-ui.dylib root/lib/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	if [ -n "$PREBUILT" ]; then
 		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
@@ -572,6 +571,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	mkdir -p root/dev root/private/var
 	mkdir -p root/lib
 	cp obj/libredwood.dylib obj/libredwood-sb.dylib root/lib/
+	[ ! -f obj/libredwood-touchid-ui.dylib ] || cp obj/libredwood-touchid-ui.dylib root/lib/
 	[ -f obj/libredwood-media.dylib ] && cp obj/libredwood-media.dylib root/lib/     # (as with cpu_test)
 	[ -f obj/libredwood-store.dylib ] && cp obj/libredwood-store.dylib root/lib/
 	[ -f obj/libredwood-fairplay.dylib ] && cp obj/libredwood-fairplay.dylib root/lib/

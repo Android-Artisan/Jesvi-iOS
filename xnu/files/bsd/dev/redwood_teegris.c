@@ -2660,7 +2660,7 @@ extern volatile uint32_t redwood_touch_mask, redwood_touch_x, redwood_touch_y;
 #define FP_X_MAX        38000
 #define FP_Y_MIN        46500
 #define FP_Y_MAX        55500
-#define FP_HOLD_MS      400
+#define FP_HOLD_MS      700     /* 400 ms left too many TOO_FAST / LIGHT_TOUCH / PARTIAL rejections (Touch ID enrolment, 2026-11-19) */
 
 static uint32_t fp_cbge_load(void);
 static void fp_cbge(void);
