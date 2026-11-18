@@ -22,6 +22,10 @@ ATTEMPTS = 20
 URL = ('https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-85130/6AB0D10A-8AF9-4F6C-8CF5-A1B315CABE88/'
        'iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw')
 SIZE = 6165698198
+# Another firmware of the same build, e.g. the iPhone 8's for Touch ID's libBKDM1 (tools/touchid/fetch-bkdm1.sh):
+# IPSW_URL=... IPSW_SIZE=... fetch-from-ipsw.py MEMBER OUTPUT;  MEMBER "-" lists the archive's members.
+URL = os.environ.get('IPSW_URL', URL)
+SIZE = int(os.environ.get('IPSW_SIZE', SIZE))
 
 
 def fetch(start, end):
@@ -88,6 +92,10 @@ def download(data, method, csize, output):
 
 def main():
     member, output = sys.argv[1], sys.argv[2]
+    if member == '-':
+        for name, method, csize, usize, offset, expected_crc in directory():
+            print(f'{usize:>12} {name}')
+        return
     for name, method, csize, usize, offset, expected_crc in directory():
         if name != member:
             continue

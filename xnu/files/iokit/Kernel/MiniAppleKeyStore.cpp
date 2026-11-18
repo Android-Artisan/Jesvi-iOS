@@ -32,6 +32,9 @@
 #include "SoftwareKeybag.h"
 
 extern "C" void read_random(void *, u_int);
+extern "C" {
+#include <sys/errno.h>
+}
 
 #include "MiniDrivers.h"
 
@@ -82,6 +85,13 @@ static IOLock *gSoftLock;
 static struct swkb_state gSoftBags[16];
 static bool gSoftUsed[16];
 static IOService *gSoftService;
+
+/* Touch ID unlock rules (as iOS; after redfin 1198/1202, MIT): a passcode since boot, at most 48 h ago,
+ * fewer than 5 failed matches, no passcode backoff running. Used by RedwoodMesa.cpp. */
+#define BIO_TTL_S       (48 * 3600)
+#define BIO_MAX_FAILS   5
+static uint64_t gBioPasscodeAt;
+static unsigned gBioFails, gBioUnlocks, gBioRefused;
 
 /* iOS 16.5 MKBEventsRegister observes AppleKeyStore's IOGeneralInterest.
  * aksNotificationCB maps d00d to state-changed and d00f to first-unlock.
@@ -445,6 +455,12 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
 		bool changed = previousFlags != currentFlags || previousFailures != gSoftBags[0].failures ||
 		    previousRetry != gSoftBags[0].retry_after;
 		bool firstUnlock = !(previousFlags & 4) && (currentFlags & 4);
+		/* Touch ID (RedwoodMesa): a passcode that unlocked the system bag starts the 48 h biometric window */
+		if (result == kIOReturnSuccess && (previousFlags & 1) && !(currentFlags & 1) &&
+		    (selector == kAKSUnlockDevice || selector == kAKSUnlockBag || selector == kAKSSetSystem)) {
+			gBioPasscodeAt = softNow();
+			gBioFails = 0;
+		}
 		IOLockUnlock(gSoftLock);
 		/* Never call observers while holding the bag lock: consumers query
 		 * the state again. No timer or periodic polling is required. */
@@ -587,4 +603,81 @@ MiniAppleKeyStoreStart(void)
 		store->detach(resources);
 	}
 	store->release();
+}
+
+/* ---- Touch ID hooks for RedwoodMesa.cpp ---- */
+static const char *
+bioRefusal(uint64_t now)
+{
+	if (!gBioPasscodeAt) return "passcode required after restart";
+	if (now - gBioPasscodeAt > BIO_TTL_S) return "passcode required (48 h since the last passcode)";
+	if (gBioFails >= BIO_MAX_FAILS) return "passcode required (5 failed Touch ID attempts)";
+	if (gSoftBags[0].retry_after > now) return "passcode backoff";
+	return NULL;
+}
+
+/* 1 = a match may unlock now; else 0 and *why. No passcode set: allowed, nothing to unlock. */
+extern "C" int
+redwood_bio_allowed(const char **why)
+{
+	*why = "";
+	if (!gSoftPasscode || !gSoftLock) return 1;
+	IOLockLock(gSoftLock);
+	const char *r = gSoftUsed[0] && gSoftBags[0].record.has_secret ? bioRefusal(softNow()) : NULL;
+	IOLockUnlock(gSoftLock);
+	if (r) *why = r;
+	return r == NULL;
+}
+
+/* A verified match: unlock the system bag under the rules. 0 = allowed (*did_unlock 1 if it was locked), EPERM. */
+extern "C" int
+redwood_bio_unlock(int *did_unlock, const char **why)
+{
+	*did_unlock = 0;
+	*why = "";
+	if (!gSoftPasscode || !gSoftLock) return 0;
+	IOLockLock(gSoftLock);
+	const char *r = NULL;
+	bool changed = false;
+	if (gSoftUsed[0] && gSoftBags[0].record.has_secret) {
+		r = bioRefusal(softNow());
+		if (r) {
+			gBioRefused++;
+		} else {
+			gBioFails = 0;
+			if (gSoftBags[0].locked) {
+				gSoftBags[0].locked = 0;
+				changed = true;
+				gBioUnlocks++;
+			}
+		}
+	}
+	IOLockUnlock(gSoftLock);
+	if (r) {
+		*why = r;
+		IOLog("AppleKeyStore: Touch ID unlock refused: %s\n", r);
+		return EPERM;
+	}
+	if (changed) {
+		*did_unlock = 1;
+		IOLog("AppleKeyStore: Touch ID unlocked the keybag\n");
+		if (gSoftService) gSoftService->messageClients(kSoftStateChanged);
+	}
+	return 0;
+}
+
+extern "C" void
+redwood_bio_failed(void)
+{
+	if (!gSoftPasscode || !gSoftLock) return;
+	IOLockLock(gSoftLock);
+	unsigned f = ++gBioFails;
+	IOLockUnlock(gSoftLock);
+	IOLog("AppleKeyStore: Touch ID no match %u/%d%s\n", f, BIO_MAX_FAILS, f >= BIO_MAX_FAILS ? ": passcode required" : "");
+}
+
+/* LocalAuthentication's "biometry matched" credential (redfin's SweetACM): nothing to arm here yet. */
+extern "C" void
+redwood_bio_note_verified_match(void)
+{
 }
