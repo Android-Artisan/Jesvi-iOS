@@ -47,6 +47,7 @@ static pthread_mutex_t mx = PTHREAD_MUTEX_INITIALIZER;
 static volatile uint32_t gen;                   /* operation generation: a new op or a cancel bumps it */
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
+static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
 
 static void
 lg(const char *fmt, ...)
@@ -175,7 +176,7 @@ ev_send(unsigned code, int32_t status, uint32_t fid, int32_t score, uint32_t rem
 		.flags = flags, .op = (uint32_t)op, .hat_status = FPCD_HAT_NO_VERIFIER,
 	};
 	if (code == FPCD_EV_ENROL_PROGRESS || code == FPCD_EV_ENROL_DONE) {
-		v.percent = code == FPCD_EV_ENROL_DONE ? 100 : (samples + remaining ? samples * 100 / (samples + remaining) : 0);
+		v.percent = code == FPCD_EV_ENROL_DONE ? 100 : enrol_pct;
 	}
 	if (code == FPCD_EV_TEMPLATES || code == FPCD_EV_ENROL_DONE) {
 		v.n = access(TEMPLATE, F_OK) == 0;
@@ -223,7 +224,10 @@ on_line(const char *l)
 		samples_seen++;                 /* the driver counts per run; the enrolment runs on across runs */
 		n = samples_seen;
 		/* the TEE says how far, not how many are left: estimate from the touches so far */
-		uint32_t rem = v >= 100 ? 0 : (n < ENROL_TOUCHES ? ENROL_TOUCHES - n : 1);
+		/* Apple's screen follows the matcher's own percentage: phase 1 ends when Samsung commits the template (100),
+		 * not after a touch count (it ended at 75 % before, and phase 2's MatchMode cut the enrolment short) */
+		enrol_pct = v;
+		uint32_t rem = v >= 100 ? 0 : (100 - v + 5) / 6;
 		ev_send(FPCD_EV_ENROL_PROGRESS, v >= 100 ? 0 : 1, 0, 0, rem ? rem : (v < 100), n, 0);
 	} else if (op == 1 && !strncmp(l, "fp template: saved ", 19)) {
 		unsigned bytes;
@@ -328,7 +332,7 @@ run(void *arg)
 	pthread_mutex_lock(&mx);
 	ring(1);
 	log_baseline();
-	samples_seen = 0;
+	if (kind == 1) { samples_seen = 0; enrol_pct = 0; }
 	int bad = 0;
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
 	/* the kernel's fp cbge runs the same chain with CONTROL 67 per slot (slot byte + 0x96000 output), as Samsung's
@@ -390,7 +394,9 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		return FPCD_OK;
 	}
 	case 3: return start(1);                                /* EnrollMode */
-	case 4: return has ? start(2) : FPCD_E_NOENT;           /* MatchMode */
+	case 4:                                                 /* MatchMode */
+		if (op == 1) return FPCD_OK;                    /* phase 2 asked before the template was committed */
+		return has ? start(2) : FPCD_E_NOENT;
 	case 12:                                                /* Cancel */
 		gen++;
 		op = 0;

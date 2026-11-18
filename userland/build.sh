@@ -135,7 +135,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
 INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system locationd /Applications/ /private/var/containers/Bundle/Application/ /var/containers/Bundle/Application/
 /redwood/lib/libredwood-sb.dylib SpringBoard
-/redwood/lib/libredwood-touchid-ui.dylib SpringBoard Preferences
+/redwood/lib/libredwood-touchid-ui.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo
 /redwood/lib/libredwood-tweaks.dylib Preferences imagent Camera
