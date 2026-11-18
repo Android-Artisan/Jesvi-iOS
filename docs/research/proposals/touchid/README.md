@@ -43,3 +43,20 @@ Keystore hooks (`sweet_pc_bio_*` in redfin): allowed only after a passcode unloc
    first), 5 wrong fingers → passcode.
 
 Matches are only ever delivered when our TA says the finger matched: no "any touch" path.
+
+## MobileGestalt keys (iOS 16.5, present in libMobileGestalt)
+
+| Key | Hash (MGCopyAnswer obfuscation) | Want with touchid=1 |
+|---|---|---|
+| touch-id | 8Shl+AdVKo09f1Sldkb0kA | true |
+| HasMesa | HV7WDiidgMf7lwAu++Lk5w | true |
+| mesa | h0OUwg53vKp+IPdzLG4NrA | true |
+| PearlIDCapability | 8olRm6C1xqr7AJGpLRnpSw | 0 (no Face ID) |
+
+First check what the /arm-io/mesa node alone gives (userland/src/mg_test.c); override only what is still wrong.
+
+## libBKDM1 without a relinker
+
+The iPhone 8 (iPhone10,1) and the iPhone X share the A11 and iOS build 20F66, so biometrickitd's Touch ID job runs on
+the iPhone 8's whole dyld shared cache (DYLD_SHARED_CACHE_DIR; our AMFI stand-in allows custom caches), where
+libBKDM1 is linked as Apple built it. tools/touchid/push-iphone8-cache.sh puts it on the data volume (~2.5 GB).
