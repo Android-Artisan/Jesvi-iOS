@@ -222,6 +222,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/rwtouch src/rwtouch.c
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
+		# native Touch ID: our fingerprint stack behind RedwoodMesa's bridge (src/redwood-fpd.c; runs only with touchid=1)
+		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
+		$DYN -o obj/teetsd ../tools/fingerprint/teetsd.c
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
 		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
@@ -449,6 +452,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
+	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd root/bin/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	if [ -n "$PREBUILT" ]; then
 		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
@@ -672,6 +676,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
+	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
     # Shared graphics is automatic for normal applications. GRAPHICS_COMPAT=0
     # retains the previous discovery behavior for diagnosis.
     if [ "${GRAPHICS_COMPAT-1}" != 0 ] && [ -n "$GL" ] && [ "$GL" != test ]; then
