@@ -36,5 +36,5 @@ AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64)
 git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" \
 	push --porcelain "https://github.com/$OWNER/$REPO.git" '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' |
 	grep -E '^[*+!-]|Done' | sed 's/^/  /'
-api -X PATCH "https://api.github.com/repos/$OWNER/$REPO" -d '{"default_branch":"x1slte"}' >/dev/null
+api -X PATCH "https://api.github.com/repos/$OWNER/$REPO" -d '{"default_branch":"main"}' >/dev/null
 echo "done: https://github.com/$OWNER/$REPO (private)"
