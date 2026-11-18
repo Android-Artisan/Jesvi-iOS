@@ -72,3 +72,16 @@ func TestSamsungBootloaderPropertiesTakePrecedenceOverGenericRecoveryTemplate(t 
 		t.Fatal("qualified fallback rejected", e)
 	}
 }
+
+func TestUnifiedExynos990TWRPProductAcceptedOnlyWithExactIdentity(t *testing.T) {
+	c := Config{Models: []string{"SM-G980F"}, Bootloaders: []string{"G980FXXSNHYB7"}, Products: []string{"x1s", "x1slte"}}
+	if e := verifyIdentity(c, "SM-G980F", "G980FXXSNHYB7", "z3s", "exynos990", "0", "unlocked"); e != nil {
+		t.Fatal("unified TWRP on the exact S20 refused:", e)
+	}
+	if e := verifyIdentity(c, "SM-G988B", "G980FXXSNHYB7", "z3s", "exynos990", "0", "unlocked"); e == nil {
+		t.Fatal("unified TWRP on another model accepted")
+	}
+	if e := verifyIdentity(c, "SM-G980F", "G980FXXSNHYB7", "a52q", "exynos990", "0", "unlocked"); e == nil {
+		t.Fatal("non-Exynos-990 product accepted")
+	}
+}

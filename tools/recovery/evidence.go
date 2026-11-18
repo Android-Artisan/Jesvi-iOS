@@ -33,7 +33,9 @@ func verifyIdentity(c Config, model, bootloader, product, soc, locked, state str
 	if !hasModel(c.Models, model) || !hasModel(c.Bootloaders, bootloader) {
 		return fmt.Errorf("exact model/bootloader mismatch: model=%q bootloader=%q", model, bootloader)
 	}
-	if !hasModel(c.Products, product) {
+	// The product only names the TWRP build. Unified Exynos 990 builds (ExtremeROM/Artisan) report one
+	// family member (z3s) on every phone; the exact model and bootloader above are the real identity.
+	if !hasModel(c.Products, product) && !hasModel(exynos990TWRPProducts, product) {
 		return fmt.Errorf("unqualified recovery product: %s", product)
 	}
 	if soc != "exynos990" && soc != "exynos9830" {
@@ -63,5 +65,13 @@ func verifyRecoveryIdentity(c Config, get func(string) string) error {
 	if soc == "" {
 		soc = get("ro.hardware")
 	}
-	return verifyIdentity(c, model, bootloader, get("ro.product.device"), soc, get("ro.boot.flash.locked"), get("ro.boot.vbmeta.device_state"))
+	locked, state := get("ro.boot.flash.locked"), get("ro.boot.vbmeta.device_state")
+	// Some Samsung TWRP builds report neither; AVB's "orange" boot state is the bootloader's own word for unlocked.
+	if locked == "" && state == "" && get("ro.boot.verifiedbootstate") == "orange" {
+		state = "unlocked"
+	}
+	return verifyIdentity(c, model, bootloader, get("ro.product.device"), soc, locked, state)
 }
+
+// TWRP product names of the Exynos 990 family, accepted only after the exact model/bootloader match.
+var exynos990TWRPProducts = []string{"x1s", "x1slte", "y2s", "y2slte", "z3s", "z3slte", "c1s", "c2s", "r8s"}
