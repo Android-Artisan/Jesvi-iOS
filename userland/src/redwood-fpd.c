@@ -96,6 +96,7 @@ tee_ok(const char *cmd, const char *s)
 	const char *last = strstr(s, "\nlast: ");
 	last = last ? last + 7 : "";
 	if (!strcmp(cmd, "fp power")) return !strncmp(last, "fp power: configured, error 0", 29);
+	if (!strncmp(cmd, "fp 12:", 6)) return !strncmp(last, "fp 12 (", 7);
 	if (!strcmp(cmd, "fp prepare")) return !strncmp(last, "fp prepare: ", 12) && strstr(last, ": error 0") != NULL;
 	if (!strcmp(cmd, "fp cbgeefs")) return strstr(last, "2 factory slots read, load error 0") != NULL;
 	if (!strcmp(cmd, "fp idinit")) return !strncmp(last, "fp idinit: error 0 op ", 22);
@@ -279,6 +280,44 @@ step(const char *cmd, uint32_t g)
 	}
 }
 
+
+/* the opcode the TEE asks for next, from kern.redwood.tee's "last:" line ("... opcode 0x44 ..."), or -1 */
+static int
+tee_next_op(void)
+{
+	char s[2048];
+	if (tee_status(s, sizeof(s))) return -1;
+	const char *l = strstr(s, "\nlast: ");
+	const char *o = l ? strstr(l, " opcode ") : NULL;
+	return o ? (int)strtol(o + 8, NULL, 0) : -1;
+}
+
+/*
+ * Background calibration as Samsung's FPBAuthService::new_cbge_mode (libbauthserver 0x15abc0) does when the sensor
+ * raises its IPC line (CBGE_REQUIRED): CONTROL 69, then whatever opcode the TEE returns (68, 70 with its 10 ms
+ * timeout, 67), then CONTROL 71 until it answers 0. Without it every capture ran with "IPC line low" and the matcher
+ * rejected most images (PARTIAL / DUPLICATED / LIGHT_TOUCH); on the phone (2026-11-19) this chain set the line high.
+ */
+static void
+cbge_chain(uint32_t g)
+{
+	char c[32];
+	int op = 69;
+	for (int n = 0; n < 40 && op > 0 && op != 71 && g == gen; n++) {
+		snprintf(c, sizeof(c), "fp 12:%d", op);
+		if (step(c, g) && op != 67) break;              /* 67 answers 0x33 without slot data: go on */
+		int next = tee_next_op();
+		if (op == 70) usleep(10000);
+		if (next == op && op == 67) break;
+		op = next;
+	}
+	for (int n = 0; n < 8 && g == gen; n++) {
+		step("fp 12:71", g);
+		if (tee_next_op() == 0) break;
+	}
+	lg("background calibration done");
+}
+
 static void *
 run(void *arg)
 {
@@ -291,6 +330,7 @@ run(void *arg)
 	samples_seen = 0;
 	int bad = 0;
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
+	if (!bad) cbge_chain(g);
 	if (kind == 2) {
 		if (!bad) bad = step("fp idinit", g);
 		if (!bad) bad = step("fp run 6 1 15 0", g);
