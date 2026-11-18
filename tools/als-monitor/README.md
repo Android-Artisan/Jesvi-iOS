@@ -9,7 +9,7 @@ launch SSH or a phone process for every sample.
 From the repository root:
 
 ```sh
-xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot /Users/jesvi/theos/sdks/iPhoneOS16.5.sdk -O1 -framework CoreFoundation -framework IOKit -lobjc -o /tmp/als-readings tools/als-monitor/readings.c
+xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot $THEOS/sdks/iPhoneOS16.5.sdk -O1 -framework CoreFoundation -framework IOKit -lobjc -o /tmp/als-readings tools/als-monitor/readings.c
 scp -O /tmp/als-readings s20:/var/tmp/codex-als-live-readings
 python3 tools/als-monitor/server.py
 ```

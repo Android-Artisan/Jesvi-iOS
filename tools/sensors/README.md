@@ -3,7 +3,7 @@
 Build from the repository root, then run on the connected iOS phone:
 
 ```sh
-xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot /Users/jesvi/theos/sdks/iPhoneOS16.5.sdk -O1 -framework Foundation -framework CoreMotion -o /tmp/gyro-probe tools/sensors/gyro-probe.m
+xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot $THEOS/sdks/iPhoneOS16.5.sdk -O1 -framework Foundation -framework CoreMotion -o /tmp/gyro-probe tools/sensors/gyro-probe.m
 scp -O /tmp/gyro-probe s20:/var/tmp/gyro-probe
 ssh s20 /var/tmp/gyro-probe
 ```
@@ -56,7 +56,7 @@ contain it include `com.redwood.motion-wake.plist` for startup. Set
 For a bounded on-device test, build the same implementation from the wrapper:
 
 ```sh
-xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot /Users/jesvi/theos/sdks/iPhoneOS16.5.sdk -O1 -framework Foundation -framework CoreMotion -o /tmp/raise-probe tools/sensors/raise-probe.m
+xnu-deps/host/bin/xnu-clang -arch arm64 -isysroot $THEOS/sdks/iPhoneOS16.5.sdk -O1 -framework Foundation -framework CoreMotion -o /tmp/raise-probe tools/sensors/raise-probe.m
 scp -O /tmp/raise-probe s20:/var/tmp/raise-probe
 ssh s20 'DYLD_INSERT_LIBRARIES=/redwood/lib/libredwood.dylib /var/tmp/raise-probe --probe'
 # --probe only observes; --once requests one pickup wake (both run up to 120 s).

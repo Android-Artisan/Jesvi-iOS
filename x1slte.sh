@@ -47,7 +47,7 @@ EMBED=out/x1slte-embed.img
 PAYLOAD=out/x1slte-payload.bin
 PAYLOAD_AT=$((0x100870))                # FD at page + 112 = 0x870, payload at FD + 0x100000
 PAYLOAD_MAX=$((0x80000))
-DEFAULT_CMDLINE=$(cat x1slte.cmdline)   # tracked working profile, including software-passcode persistence
+DEFAULT_CMDLINE=$(cat devices/exynos990/x1slte/x1slte.cmdline)   # tracked working profile, including software-passcode persistence
 KERNEL_BUILD=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
 
 die() { echo "x1slte.sh: $*" >&2; exit 1; }
@@ -409,7 +409,7 @@ wait_ios() {
 # variation of the standard line, e.g. M2M_SET="cpumask=0xff dvfs_cl2=2304000"
 m2m_cmdline() {
 	local line pair key
-	line=" $(cat x1slte.cmdline) "
+	line=" $(cat devices/exynos990/x1slte/x1slte.cmdline) "
 	for pair in ${M2M_SET:-}; do
 		key=${pair%%=*}
 		if [[ "$line" == *" $key="* ]]; then
@@ -424,7 +424,7 @@ m2m_cmdline() {
 
 cmd_loop() {
 	local label=${1:-} host via=${M2M_VIA:-usb} i
-	[ -f x1slte.cmdline ] || die "no x1slte.cmdline (the standard Metal boot line)"
+	[ -f devices/exynos990/x1slte/x1slte.cmdline ] || die "no x1slte.cmdline (the standard Metal boot line)"
 	host=$(phone_host)
 	cmd_payload "$(m2m_cmdline)"
 	cmd_pack

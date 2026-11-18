@@ -7,7 +7,7 @@ IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-192.168.137.106}); R=logs/sndte
 grep -E "redwood_exynos_sound.c:[0-9]+:[0-9]+: (error|warning)" out/kernel-build.log && exit 1
 for k in "$@"; do
   echo; echo "=== try: $k"
-  ./x1slte.sh payload "$(cat x1slte.cmdline) $k" > /dev/null 2>&1 && ./x1slte.sh pack > /dev/null 2>&1 || { echo "pack failed"; exit 1; }
+  ./x1slte.sh payload "$(cat devices/exynos990/x1slte/x1slte.cmdline) $k" > /dev/null 2>&1 && ./x1slte.sh pack > /dev/null 2>&1 || { echo "pack failed"; exit 1; }
   tools/x1slte-auto.sh --recovery 2>&1 | grep -E "^\[auto\] (iOS is back|the phone|phone not)|uflash:" 
   sleep 20; ping -c1 -t1 $IP >/dev/null
   log=$(curl -s -m 90 http://$IP:8080/log | tr -d '\0')

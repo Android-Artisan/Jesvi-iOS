@@ -18,7 +18,7 @@ original Ghidra project is preserved. It never patches or resigns firmware.
 From the repository root, adjusting the local analysis-tool directory:
 
 ```sh
-RE_HOME=/Users/jesvi/ios-port-research/tools/re
+RE_HOME=<workspace>/tools/re
 export JAVA_HOME="$RE_HOME/jdk-25.0.5+8/Contents/Home"
 export RE_OUT="$RE_HOME/audit-out"
 mkdir -p "$RE_OUT"

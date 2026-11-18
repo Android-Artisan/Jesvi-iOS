@@ -28,7 +28,7 @@ def audit():
         reasons = []
         if p.suffix.lower() in BINARY_SUFFIXES or b'\x00' in data[:8192]:
             reasons.append('binary/artifact provenance review')
-        if name.startswith(('prebuilt/', 'proposals/', 'reference/')):
+        if name.startswith(('prebuilt/', 'docs/research/')):
             reasons.append('research/prebuilt publication review')
         if SECRET.search(data):
             reasons.append('possible credential; value redacted')

@@ -42,10 +42,10 @@ while read -r dst src; do
 	install -m 0644 "$SRC/$src" "$dst"
 	echo "$dst <- $src"
 done <<< "$MAP"
-# Sensor hub: built from Samsung's kernel-source firmware header (see proposals/sensors/mk-fw-sensors.py).
-if [ -f proposals/sensors/mk-fw-sensors.py ]; then
-	python3 proposals/sensors/mk-fw-sensors.py --out fw-sensors || echo "fw-sensors: see proposals/sensors/mk-fw-sensors.py --help"
+# Sensor hub: built from Samsung's kernel-source firmware header (see tools/sensors/mk-fw-sensors.py).
+if [ -f tools/sensors/mk-fw-sensors.py ]; then
+	python3 tools/sensors/mk-fw-sensors.py --out fw-sensors || echo "fw-sensors: see tools/sensors/mk-fw-sensors.py --help"
 else
-	echo "fw-sensors: run proposals/sensors/mk-fw-sensors.py (x1slte branch) to build bcm_sensorhub_a1.bin"
+	echo "fw-sensors: run tools/sensors/mk-fw-sensors.py (x1slte branch) to build bcm_sensorhub_a1.bin"
 fi
 exit $missing

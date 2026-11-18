@@ -1,7 +1,7 @@
 # S20 camera research handoff and preservation
 
 Saved 2026-11-14 on **`feat/s20-camera-research`** in
-`/Users/jesvi/ios-port-research/work/hackios-camera-improve`.
+`<workspace>/work/hackios-camera-improve`.
 The existing **`camera-improve`** branch remains at `20d25baf` with all three
 research implementation commits. This feature branch inherits those commits and
 adds the consolidated handoff and artifact manifest. Accepted main/master and
@@ -65,7 +65,7 @@ fingerprint work are unchanged. No push was attempted.
 
 Durable local research archive:
 
-`/Users/jesvi/ios-port-research/discovery/s20-camera-research/2026-11-14/`
+`<workspace>/discovery/s20-camera-research/2026-11-14/`
 
 This archive copies the decoded-value reports, container/table/control audit
 reports, partial disassemblies, schema-recovery output, exploratory analysis

@@ -81,7 +81,7 @@ Full pre-test recovery SHA256:
 `5f00a3dd1c2d809160eb4161cf96feaf79422a451daab8b5ad9cd6bd27f16165`.
 
 Private binaries, full image, manifests and logs are outside git in
-`/Users/jesvi/ios-port-research/build/camera-aux-latest-20261115/` (directory0700).
+`<workspace>/build/camera-aux-latest-20261115/` (directory0700).
 Never use earlier pre-idle-power candidates from camera-aux-20261115 for this test.
 
 Pending device test: after explicit NEW reboot approval, write only the kernel

@@ -19,7 +19,7 @@ class TargetTests(unittest.TestCase):
 
     def test_s20_boot_line_is_the_measured_one(self):
         line = targets.bootline(targets.load('x1slte'))
-        self.assertEqual(sorted(line.split()), sorted((ROOT / 'x1slte.cmdline').read_text().split()))
+        self.assertEqual(sorted(line.split()), sorted((ROOT / 'devices/exynos990/x1slte/x1slte.cmdline').read_text().split()))
         self.assertLessEqual(len(line), targets.BOOTLINE_MAX)
 
     def test_optional_mods_can_be_left_out(self):

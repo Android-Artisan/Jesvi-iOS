@@ -23,7 +23,7 @@ DECON completed-frame deltas are the refresh verification used above.
 ## Display presets: what each mode sets (2026-11-14)
 
 Pick a preset with `fb_mode=` in `x1slte.cmdline`, then rebuild the boot image and flash it:
-`./x1slte.sh payload "$(cat x1slte.cmdline)" && ./x1slte.sh pack && CLAUDE_SESSION=NAME tools/x1slte-auto.sh --recovery`.
+`./x1slte.sh payload "$(cat devices/exynos990/x1slte/x1slte.cmdline)" && ./x1slte.sh pack && CLAUDE_SESSION=NAME tools/x1slte-auto.sh --recovery`.
 One restart; everything below follows the mode automatically, with nothing set by hand.
 
 | `fb_mode` | Panel | iOS draws at | Scale | Touch scan |

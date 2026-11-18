@@ -1,5 +1,3 @@
-.CFLAGS
-.LDFLAGS
 bsd/dev/hakios.adreno.c
 bsd/dev/hakios.adsp.c
 bsd/dev/hakios.apfs_check.c
@@ -272,12 +270,8 @@ iokit/Kernel/SoftwareKeybag.h
 iokit/Kernel/hakios.battery.cpp
 iokit/Kernel/hakios.gpu.cpp
 iokit/Kernel/hakios.wlan.cpp
-lastkernelconstructor.d
-lastkerneldataconst.d
 libkern/amfi/miniamfi.c
 libkern/amfi/miniamfi_entitlements.cpp
-link.filelist
-nonlto.d
 osfmk/arm64/generic_arm64_support.c
 osfmk/arm64/gic_v2_irq.c
 osfmk/arm64/gic_v3_irq.c
@@ -293,4 +287,3 @@ osfmk/minicrypto/mc_aes.c
 osfmk/minicrypto/mc_digests.c
 osfmk/minicrypto/mc_provider.c
 osfmk/minicrypto/minicrypto.h
-version.d

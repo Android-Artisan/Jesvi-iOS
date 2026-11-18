@@ -20,7 +20,7 @@ for device in (None, 'x1slte'):
 r=config('redwood'); assert r.returncode == 0 and r.stdout == '0'
 r=config('x1slte', '0'); assert r.returncode == 0 and r.stdout == '0'
 assert config('x1slte', 'invalid').returncode != 0
-line=(repo/'x1slte.cmdline').read_text().strip()
+line=(repo/'devices/exynos990/x1slte/x1slte.cmdline').read_text().strip()
 assert 'softpasscode=1' in line.split() and 'autounlock=0' in line.split()
 line=line.replace('@ROOT_PART@','super').replace('@ROOT_OFF@','0').replace('@ROOT_LEN@','100000000')
 assert len(line+' bt_addr=00:00:00:00:00:00') <= 550

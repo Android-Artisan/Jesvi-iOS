@@ -2,7 +2,7 @@
 
 Branch: **`feat/s20-camera-quality`**, from research preservation commit `d5b02944`.
 The frozen `feat/s20-camera-research` and `camera-improve` branches are preserved.
-Worktree: `/Users/jesvi/ios-port-research/work/hackios-camera-improve`.
+Worktree: `<workspace>/work/hackios-camera-improve`.
 Status: host-tested and cross-built; **not deployed or optically validated**.
 
 ## Behavior changed

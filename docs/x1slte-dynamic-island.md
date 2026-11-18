@@ -11,7 +11,7 @@ User-verified 2026-11-12 (pill over the hole, home-bar swipe, touch normal).
 | `island=1` (**default**, in `x1slte.cmdline`) | Dynamic Island |
 | no `island=` / `island=0` | iPhone X notch layout, as before |
 
-Switch it by editing `x1slte.cmdline`, then `./x1slte.sh payload "$(cat x1slte.cmdline)"`,
+Switch it by editing `x1slte.cmdline`, then `./x1slte.sh payload "$(cat devices/exynos990/x1slte/x1slte.cmdline)"`,
 `./x1slte.sh pack`, `tools/x1slte-auto.sh --recovery`. One reboot; nothing else to do.
 
 ## What it changes

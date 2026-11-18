@@ -776,7 +776,7 @@ if [ -f ../fw-haptic/aw8697_haptic.bin ]; then
 	install -m 0644 ../fw-haptic/aw8697_haptic.bin root/fw/
 fi
 # x1slte: the sensor hub's firmware (bsd/dev/redwood_ssp.c, shub=4 and up), made by
-# proposals/sensors/mk-fw-sensors.py out of Samsung's picasso patch into ../fw-sensors (Samsung's/Broadcom's: never committed)
+# tools/sensors/mk-fw-sensors.py out of Samsung's picasso patch into ../fw-sensors (Samsung's/Broadcom's: never committed)
 if [ -f ../fw-sensors/bcm_sensorhub_a1.bin ]; then
 	mkdir -p root/fw
 	install -m 0644 ../fw-sensors/bcm_sensorhub_a1.bin root/fw/

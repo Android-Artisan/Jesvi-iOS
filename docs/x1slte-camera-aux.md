@@ -118,7 +118,7 @@ supply voltages. Local pinctrl phandle numbers differ between saved overlays
 compared module/CIS wiring and supply voltages agree.
 
 Private uninstalled candidate:
-`/Users/jesvi/ios-port-research/build/camera-aux-20261115/`.
+`<workspace>/build/camera-aux-20261115/`.
 Stripped kernel15196056bytes, SHA256
 `bc8e5120c206d404dba1b865a0fbe0e62197057960c62e60188de0d5493dfa54`.
 Padded16MiB slot SHA256

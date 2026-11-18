@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")/../../userland"
 if [ "$1" = off ]; then ssh s20 'rm -f /var/redwood/libredwood-media-dev.dylib; killall mediaserverd'; echo off; exit 0; fi
-OH=/Users/jesvi/ios-port-research/work/third-party/openh264
+OH=${OPENH264_SRC:-../third-party/openh264}
 ../xnu-deps/host-macos/bin/xnu-clang -arch arm64 -isysroot $HOME/theos/sdks/iPhoneOS16.5.sdk -O2 -DREDWOOD_DEV -I$OH/codec/api \
   -dynamiclib -install_name /var/redwood/libredwood-media-dev.dylib -framework CoreFoundation -framework CoreMedia \
   -framework CoreVideo -framework IOSurface -framework VideoToolbox -lobjc -lc++ -o obj/libredwood-media-dev.dylib \

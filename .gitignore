@@ -5,19 +5,14 @@
 !/.gitignore
 !/README.md
 !/CONTRIBUTING.md
-!/AGENTS.md
-!/handoff.md
 !/ci/
 !/.github/
 !/.editorconfig
 !/.gitattributes
 !/build.sh
-!/run.sh
 !/release.conf
 !/SECURITY.md
 !/SHIPPING.md
-!/README.uk.md
-!/README.zh.md
 !/Makefile
 !/LICENSE
 !/LICENSE.APSL
@@ -112,10 +107,6 @@ __pycache__/
 
 # y2sios overlay and the x1slte (SM-G980F) port
 !/common/
-!/uefi-y2s/
-!/reference/
-!/m2m.cmdline
-!/y2s.sh
 !/userland/build-gpu-y2s.sh
 !/userland/rc.*
 !/userland/*.plist
@@ -125,7 +116,6 @@ __pycache__/
 !/userland/mkeagl.py
 !/userland/libmini/
 !/x1slte.sh
-!/x1slte.cmdline
 /common/devices/*.local.conf
 
 # secrets and fetched prefixes (2026-11-06): never in the repository
