@@ -11,7 +11,7 @@ cd "$SRC"
 files=$(ls dyld_shared_cache_arm64 dyld_shared_cache_arm64.[0-9]* 2>/dev/null)
 [ -n "$files" ] || { echo "no cache in $SRC"; exit 1; }
 ssh s20 "mkdir -p $DST && chmod 755 /private/var/redwood $DST"
-remote=$(ssh s20 "cd $DST && for f in *; do [ -f \"\$f\" ] && shasum -a 256 \"\$f\" 2>/dev/null || true; done" || true)
+remote=$(ssh s20 "cd $DST && for f in *; do [ -f \"\$f\" ] && /var/jb/usr/bin/sha256sum \"\$f\" 2>/dev/null || true; done" || true)
 total=0; n=0
 for f in $files; do
 	want=$(shasum -a 256 "$f" | cut -d' ' -f1)
@@ -19,7 +19,7 @@ for f in $files; do
 	size=$(stat -f %z "$f"); total=$((total + size)); n=$((n + 1))
 	echo "$(date +%T) $f ($((size / 1048576)) MB)"
 	ssh -C s20 "cat > $DST/.$f.part && mv $DST/.$f.part $DST/$f && chmod 644 $DST/$f" < "$f"
-	got=$(ssh s20 "shasum -a 256 $DST/$f" | cut -d' ' -f1)
+	got=$(ssh s20 "/var/jb/usr/bin/sha256sum $DST/$f" | cut -d' ' -f1)
 	[ "$got" = "$want" ] || { echo "$f: checksum differs on the phone"; exit 1; }
 done
 echo "done: $n files, $((total / 1048576)) MB sent; cache at $DST"

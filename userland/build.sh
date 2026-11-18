@@ -225,6 +225,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# native Touch ID: our fingerprint stack behind RedwoodMesa's bridge (src/redwood-fpd.c; runs only with touchid=1)
 		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
 		$DYN -o obj/teetsd ../tools/fingerprint/teetsd.c
+		$DYN -o obj/dsc-exec src/dsc_exec.c
 		# iOS's Low Power Mode switch passed to the kernel's clock governor (src/lpmd.c)
 		$DYN -o obj/lpmd src/lpmd.c
 		$DYN -framework CoreFoundation -framework IOKit -o obj/softkeybag-init src/software_keybag_init.c
@@ -452,7 +453,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	done
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/thermald ] && cp obj/thermald root/bin/
-	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd root/bin/
+	[ -f obj/redwood-fpd ] && cp obj/redwood-fpd obj/teetsd obj/dsc-exec root/bin/
 	# the S20 modem service (com.redwood.cellular), built in the x1slte-cellular branch (tools/cellular/live-modem.c)
 	if [ -n "$PREBUILT" ]; then
 		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/

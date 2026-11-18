@@ -201,7 +201,7 @@ static TUNABLE(uint32_t, gFbModeLpRef, "fb_mode_lpref", 0);
  * with the swap waiting -- because what spaces the frames is the window server's own time, so the swap
  * waits again by default (fb_swapwait=1) and fb_swapwait=0 keeps the protocol for when that changes.
  */
-static TUNABLE(uint32_t, gSwapWait, "fb_swapwait", 1);
+static TUNABLE(uint32_t, gSwapWait, "fb_swapwait", 0);   /* 0 since 2026-11-18: what the S20 always ran with (its boot line said fb_swapwait=0) */
 #define SCALER_CH               5
 #define IDMA_IRQ_REG            0x0004
 #define  IDMA_IRQ_ERRORS        ((1u << 26) | (1u << 25) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 21) | (1u << 19) | (1u << 17))
@@ -509,7 +509,7 @@ static TUNABLE(uint32_t, gDiff, "fb_diff", 0);
  */
 static TUNABLE(uint32_t, gFilter, "fb_filter", 1);
 static TUNABLE(uint32_t, gRefreshHz, "fb_hz", kFBRefreshHz);
-static TUNABLE(uint32_t, gOnTheBeat, "fb_beat", 1);
+static TUNABLE(uint32_t, gOnTheBeat, "fb_beat", 0);       /* 0 since 2026-11-18: what the S20 always ran with (its boot line said fb_beat=0) */
 /*
  * Boot-arg fb_threads=N (1 to 8): so many processors scale a frame onto the panel together (see
  * drawRows()). Three by default: a frame is in the panel's memory 3 ms after its turn instead of 9

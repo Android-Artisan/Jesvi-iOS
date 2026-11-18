@@ -346,7 +346,7 @@ static void
 tee_up(void)
 {
 	char s[2048];
-	if (tee_status(s, sizeof(s)) == 0 && strstr(s, "state: up")) return;
+	if (tee_status(s, sizeof(s)) == 0 && strstr(s, "TEEGRIS: up")) return;
 	pid_t pid;
 	char *argv[] = { "/redwood/bin/teetsd", NULL };
 	if (access(argv[0], X_OK) == 0 && posix_spawn(&pid, argv[0], NULL, NULL, argv, environ) == 0) lg("teetsd started");
@@ -362,7 +362,7 @@ tee_up(void)
 		sleep(3);
 	}
 	if (d) closedir(d);
-	lg("TEEGRIS %s", tee_status(s, sizeof(s)) == 0 && strstr(s, "state: up") ? "up" : "did not come up");
+	lg("TEEGRIS %s", tee_status(s, sizeof(s)) == 0 && strstr(s, "TEEGRIS: up") ? "up" : "did not come up");
 }
 
 static void

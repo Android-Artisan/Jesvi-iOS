@@ -14,6 +14,8 @@
 	<string>com.apple.biometrickitd.mesa</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/redwood/bin/dsc-exec</string>
+		<string>/private/var/redwood/iphone8-dsc</string>
 		<string>/usr/libexec/biometrickitd</string>
 		<string>--launchd</string>
 		<string>-module</string>
@@ -24,13 +26,9 @@
 		<key>com.apple.biometrickitd</key>
 		<true/>
 	</dict>
-	<!-- Jesvi iOS: the iPhone 8's own dyld shared cache (same iOS build 20F66, same A11), where libBKDM1 lives; on the
-	     data volume (tools/touchid/push-iphone8-cache.sh). Only this process uses it (dyld maps it privately). -->
-	<key>EnvironmentVariables</key>
-	<dict>
-		<key>DYLD_SHARED_CACHE_DIR</key>
-		<string>/private/var/redwood/iphone8-dsc</string>
-	</dict>
+	<!-- Jesvi iOS: biometrickitd runs on the iPhone 8's own dyld shared cache (same iOS build 20F66, same A11), where
+	     libBKDM1 lives, on the data volume (tools/touchid/push-iphone8-cache.sh). launchd drops DYLD_* variables of
+	     this kind, so /redwood/bin/dsc-exec sets it and execs biometrickitd (src/dsc_exec.c). -->
 	<key>StandardErrorPath</key>
 	<string>/dev/console</string>
 	<key>StandardOutPath</key>
