@@ -2477,6 +2477,7 @@ tee_open_test_thread(__unused void *arg, __unused wait_result_t wr)
  *    9 VERIFY_PASSWORD 10 CANCEL 12 CONTROL_OP 13 HAT_OP 14 TEMPLATE_MIGRATION 16 TYPE_CHECK
  */
 #define FP_SHM_SIZE             0x2ee00cu
+#define FP_STORE_PATH           "fingerprint" /* Legacy enrollment binding; preserve for existing templates. */
 #define FP_TA_PATH              "/var/root/tee/00000000-0000-0000-0000-46494e474502"
 static struct tee_session fp_ses;
 static bool fp_open;
@@ -2486,6 +2487,8 @@ static uint32_t fp_handle;
 static char fp_cmd_text[300];
 LCK_MTX_DECLARE(fp_command_lock, &tee_lck_grp);
 static bool fp_command_active; /* protected by fp_command_lock */
+static bool fp_run_stopping; /* accessed with compiler atomics */
+static bool fp_stopping(void) { return __atomic_load_n(&fp_run_stopping, __ATOMIC_ACQUIRE); }
 
 static int
 fp_ensure(void)
@@ -2539,7 +2542,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 #define  FP_USI04_RSTNSYNC      0x20cc
 #define  FP_USI04_QCH           0x303c
 
-static void
+static int
 fp_power(void)
 {
 	static vm_offset_t cmu;
@@ -2549,6 +2552,7 @@ fp_power(void)
 
 	r = redwood_pmic_ldo_on(19, line, sizeof(line));
 	tee_say("fp power: %s (%d)\n", line, r);
+	if (r != 0) { return r; }
 	delay(10000);
 	if (cmu == 0) {
 		cmu = ml_io_map(FP_CMU_PERIC0, 0x4000);
@@ -2588,6 +2592,7 @@ fp_power(void)
 	}
 	tee_say("fp power: gpp2 con %08x dat %08x pud %08x\n", *(volatile uint32_t *)gpp2, *(volatile uint32_t *)(gpp2 + 4),
 	    *(volatile uint32_t *)(gpp2 + 8));
+	return 0;
 }
 
 /*
@@ -2595,11 +2600,12 @@ fp_power(void)
  * answered, until it answers 0, fails, or SECONDS pass. Op 4 waits for steady contact on the sensor's screen area.
  * Op 7 sleeps the requested timeout. Each step's response head is logged.
  */
-/* ENROLL_INIT as Samsung's enroll() sends it: user id "0", finger index IDX (1-4), 7, a name */
+/* ENROLL_INIT: user id "0", finger index IDX (1-4), type 7, stable logical storage path. */
 static uint32_t
 fp_einit(uint32_t idx)
 {
 	uint32_t e;
+	if (fp_stopping()) { return ECANCELED; }
 
 	bzero(fp_buf, 0x200);
 	bzero(fp_buf + 0x177000, 0x40);
@@ -2609,7 +2615,7 @@ fp_einit(uint32_t idx)
 	fp_buf[0x10] = '0';
 	*(uint32_t *)(fp_buf + 0x110) = idx;
 	*(uint32_t *)(fp_buf + 0x114) = 7;
-	memcpy(fp_buf + 0x118, "fingerprint", 11);
+	memcpy(fp_buf + 0x118, FP_STORE_PATH, sizeof(FP_STORE_PATH));
 	*(uint32_t *)(fp_buf + FP_WIRE_ERROR) = 0;
 	{
 		uint32_t origin = 0;
@@ -2629,6 +2635,7 @@ static uint32_t
 fp_call(uint32_t n, uint32_t op)
 {
 	uint32_t result, origin = 0;
+	if (fp_stopping()) { return ECANCELED; }
 
 	bzero(fp_buf, 0x10);
 	bzero(fp_buf + 0x177000, 0x40);
@@ -2722,6 +2729,7 @@ fp_tmpl_load(void)
 static void
 fp_tmpl_take(void)
 {
+	if (fp_stopping()) { return; }
 	uint32_t len = *(uint32_t *)(fp_buf + 0x1db024);
 
 	tee_say("fp template: enroll handed out %u bytes\n", len);
@@ -2747,6 +2755,7 @@ static uint32_t
 fp_idinit(uint32_t chunk)
 {
 	uint32_t result, origin = 0;
+	if (fp_stopping()) { return ECANCELED; }
 
 	if (chunk == 0 && fp_tmpl_load() != 0) {
 		return 0x3a;
@@ -2759,6 +2768,9 @@ fp_idinit(uint32_t chunk)
 	*(uint32_t *)(fp_buf + 0x8) = chunk;
 	*(uint32_t *)(fp_buf + 0xc) = 1;
 	fp_buf[0x10] = '0';
+	/* +0x118 during enrollment was a storage path, not a display name.
+	 * Restore the identical authenticated 100-byte field on every Init. */
+	memcpy(fp_buf + 0x6455d, FP_STORE_PATH, sizeof(FP_STORE_PATH));
 	if (chunk == 0) {
 		memcpy(fp_buf + 0x110, fp_tmpl, fp_tmpl_len);
 		*(uint32_t *)(fp_buf + 0x64110) = fp_tmpl_len;
@@ -2792,7 +2804,7 @@ fp_wait_lift(uint32_t n, uint64_t deadline)
 {
 	uint32_t off = 0;
 
-	while (mach_absolute_time() < deadline && off < 100) {
+	while (!fp_stopping() && mach_absolute_time() < deadline && off < 100) {
 		uint32_t x = redwood_touch_x, y = redwood_touch_y;
 		bool on = redwood_touch_mask != 0 && x > FP_X_MIN && x < FP_X_MAX && y > FP_Y_MIN && y < FP_Y_MAX;
 
@@ -2877,7 +2889,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 	tee_say("fp run %u: gpa1 con %08x dat %02x pud %08x\n", n, *(volatile uint32_t *)gpa1,
 	    *(volatile uint32_t *)(gpa1 + 4) & 0xff, *(volatile uint32_t *)(gpa1 + 8));
 	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
-	while (mach_absolute_time() < deadline) {
+	while (!fp_stopping() && mach_absolute_time() < deadline) {
 		uint32_t result, origin = 0, status, error, timeout;
 		uint32_t *r = (uint32_t *)(fp_buf + 0x177008);
 
@@ -2891,6 +2903,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 		lck_mtx_lock(&tee_client_lock);
 		result = tee_invoke_shm(&fp_ses, n, fp_shm_id, FP_SHM_SIZE, &origin);
 		lck_mtx_unlock(&tee_client_lock);
+		if (fp_stopping()) { break; }
 		status = *(uint32_t *)(fp_buf + 0x177004);
 		error = *(uint32_t *)(fp_buf + 0x2ee008);
 		timeout = r[2];
@@ -2998,7 +3011,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 			 */
 			uint32_t held = 0, logged_x = 0, logged_y = 0;
 
-			while (mach_absolute_time() < deadline && held < FP_HOLD_MS) {
+			while (!fp_stopping() && mach_absolute_time() < deadline && held < FP_HOLD_MS) {
 				uint32_t x = redwood_touch_x, y = redwood_touch_y;
 
 
@@ -3013,7 +3026,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 				held = on ? held + 5 : 0;
 				delay(5000);
 			}
-			if (mach_absolute_time() >= deadline) {
+			if (fp_stopping() || mach_absolute_time() >= deadline) {
 				break;
 			}
 			tee_say("fp run %u: finger held on the sensor: capture (IPC line %s)\n", n,
@@ -3022,6 +3035,7 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 			delay(timeout);
 		}
 	}
+	if (fp_stopping()) { tee_say("fp run %u: cancelled\n", n); }
 	fp_handle = last;
 	snprintf(tee_last, sizeof(tee_last), "fp run %u: %u steps, last op %u, %u bad images, %u accepted", n, steps, last, bad_quality, good);
 	tee_say("%s\n", tee_last);
@@ -3214,7 +3228,7 @@ fp_private_parent(void)
 {
  vnode_t vp = NULLVP;
  vfs_context_t ctx = vfs_context_kernel();
- int err = vnode_open(FP_RESEARCH_DIR, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+ int err = vnode_open(FP_RESEARCH_DIR, FREAD | O_NOFOLLOW | O_NONBLOCK, 0, 0, &vp, ctx);
 
  if (err == 0) {
   err = fp_private_attr(vp, VDIR, 0700, NULL);
@@ -3232,7 +3246,7 @@ fp_exchange_read(uint8_t **request)
  int resid = 0, err;
 
  *request = NULL;
- err = vnode_open(FP_REQUEST_PATH, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
+ err = vnode_open(FP_REQUEST_PATH, FREAD | O_NOFOLLOW | O_NONBLOCK, 0, 0, &vp, ctx);
  if (err != 0) {
   return err;
  }
@@ -3268,7 +3282,7 @@ fp_exchange_write(uint32_t result, uint32_t origin, uint32_t cmd)
  uint32_t header[5] = { 0x31525046, result, origin, cmd, FP_SHM_SIZE }; /* FPR1 */
  int resid = 0, err;
 
- err = vnode_open(FP_RESPONSE_PATH, FWRITE | O_CREAT | O_NOFOLLOW, 0600, 0, &vp, ctx);
+ err = vnode_open(FP_RESPONSE_PATH, FWRITE | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600, 0, &vp, ctx);
  if (err != 0) {
   return err;
  }
@@ -3343,7 +3357,8 @@ fp_cmd_execute(void)
 		return;
 	}
 	if (strncmp(p, "power", 5) == 0) {
-		fp_power();
+		int power_error = fp_power();
+		snprintf(tee_last, sizeof(tee_last), "fp power: configured, error %d", power_error);
 		return;
 	}
 	if (strncmp(p, "idinit", 6) == 0) {
@@ -3399,7 +3414,7 @@ fp_cmd_execute(void)
 		/*
 		 * ENROLL_INIT as Samsung's enroll() sends it (libbauthtzcommon BAuth_Enroll_Init): +0x10 the user id (a
 		 * string, <= 0x100), +0x110 the finger's index (1-4, BAuthUserInfo get_req_bioindex), +0x114 7, +0x118 a
-		 * name (<= 100). "einit [INDEX]".
+		 * storage path (<= 100). "einit [INDEX]".
 		 */
 		uint32_t idx = 0, e;
 
@@ -3495,7 +3510,7 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 	lck_mtx_lock(&fp_command_lock);
 	snprintf(out, sizeof(out), "%s\nsmcs %llu schedules %llu event irqs %llu panic irqs %llu cpu_mask %#x user_mask %#x "
 	    "pending cmds %d log lines %llu ree_time %llu\nstorage requests %llu unanswered %llu last cmd %u pending %d\n"
-	    "RPMB irqs %d requests %llu errors %llu\nfingerprint wire: exchange-v2 (research only), active %u\nlast: %s\n",
+	    "RPMB irqs %d requests %llu errors %llu\nfingerprint wire: exchange-v2 (research only), active %u\nfingerprint ui: reject-v1 (no authentication)\nlast: %s\n",
 	    tee_status, tee_smcs, tee_schedules, tz_events_irq, tz_panic_irq, tz_cpu_mask(), tz_user_cpu_mask(), tz_nr_cmds,
 	    iwlog_lines, ree_time_answers, ts_requests, ts_unanswered, ts_last_cmd, ts_pending, srpmb_irqs, srpmb_requests,
 	    srpmb_errors, fp_command_active ? 1 : 0, tee_last);
@@ -3521,10 +3536,18 @@ tee_sysctl(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int a
 			return ENXIO;
 		}
 		lck_mtx_lock(&fp_command_lock);
+		if (strcmp(in, "fp stop") == 0) {
+			/* Cooperative cancellation only. Never race a new TA call against
+			 * the worker, and never interpret cancellation as authentication. */
+			__atomic_store_n(&fp_run_stopping, true, __ATOMIC_RELEASE);
+			lck_mtx_unlock(&fp_command_lock);
+			return 0;
+		}
 		if (fp_command_active) {
 			lck_mtx_unlock(&fp_command_lock);
 			return EBUSY;
 		}
+		__atomic_store_n(&fp_run_stopping, false, __ATOMIC_RELEASE);
 		fp_command_active = true;
 		strlcpy(fp_cmd_text, in + 3, sizeof(fp_cmd_text));
 		snprintf(tee_last, sizeof(tee_last), "fp %s: in progress", fp_cmd_text);

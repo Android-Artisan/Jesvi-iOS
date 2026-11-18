@@ -55,6 +55,12 @@
   DTIM (`wifi_scroff=0` = as before; not yet observed on battery: the test phone was on the cable); wake_stats names
   each thread call. Details: proposals/idle-power/RESEARCH.md. Kernel flashed 11:35 (kernel slot only).
 
+## 2026-11-15 (11:10, A) — AOD at 30 % of the slider (user-chosen)
+- AOD level is now set in slider terms: 30 % of the slider position at AOD start (100 % -> 30 %, 50 % -> 15 %,
+  25 % -> 8 %), about 7 % of the light: clearly dimmer than the awake screen by the same step at every level.
+  (30 % of the nits looked ~2/3 as bright; 35 % of the slider still too close; user chose 3/10: "good like this".)
+  Live tuning without a reboot: `rwsys kern.redwood.poke "fb.aod PCT"` (10..60). Hold + 2x re-take unchanged.
+  Kernel flashed 11:06 (kernel slot only).
 ## 2026-11-14 — Camera correctness fixes staged on feat/s20-camera-quality (not deployed)
 - Frame-owned black/band correction and preview-cache identity remove reader/render global-state sharing.
 - Rear tap exposure uses the same correction as rendering; normal rear exposure rounds to even lines.
