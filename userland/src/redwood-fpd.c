@@ -339,7 +339,9 @@ run(void *arg)
 	for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]) && !bad; i++) bad = step(setup[i], g);
 	/* the kernel's fp cbge runs the same chain with CONTROL 67 per slot (slot byte + 0x96000 output), as Samsung's
 	 * update_cbge (0x14c794); the generic chain above left 67 without data and the next capture failed with 0x44 */
-	if (!bad) { step("fp cbge", g); lg("background calibration: fp cbge done"); }
+	/* only before an enrolment: a calibration taken while a finger rests on the sensor (Apple's phase 2 asks for the
+	 * next touch at once) becomes the "background", and identify's contamination check then fails every image (29) */
+	if (!bad && kind == 1) { step("fp cbge", g); lg("background calibration: fp cbge done"); }
 	if (kind == 2) {
 		if (!bad) bad = step("fp idinit", g);
 		if (!bad) bad = step("fp run 6 1 15 0", g);
