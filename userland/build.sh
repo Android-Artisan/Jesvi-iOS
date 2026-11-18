@@ -861,6 +861,13 @@ if [ -f root/bin/bluetool_stub ]; then
 	  codesign -s - -f root/bin/bluetool_stub 2>/dev/null; } ||
 		echo "build.sh: bluetool_stub is unsigned: launchd will panic on com.apple.BlueTool"
 fi
+# the same for dsc-exec, which starts biometrickitd under com.apple.biometrickitd.mesa (Touch ID): unsigned, launchd
+# panics ("unexpected exec of non-platform binary: /redwood/bin/dsc-exec", on the S20 2026-11-18)
+if [ -f root/bin/dsc-exec ]; then
+	{ ${LDID:-ldid} -Cadhoc -S root/bin/dsc-exec 2>/dev/null || codesign -s - -f root/bin/dsc-exec 2>/dev/null; } ||
+		{ echo "build.sh: dsc-exec is unsigned: launchd would panic on com.apple.biometrickitd.mesa; leaving its job out" >&2
+		  rm -f root/LaunchDaemons/com.apple.biometrickitd.mesa.plist; }
+fi
 # the image: zlib where it saves room (a small file whole in its attribute, as Apple keeps them); fw/
 # as it is, which the kernel's drivers use where it lies in memory (bsd/dev/redwood_image.c)
 # callservicesd runs from /var/jb/redwood, whatever wrote its job (mkjobs, or a stale one when the job section was
