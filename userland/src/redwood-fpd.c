@@ -382,6 +382,83 @@ start(int kind)
 	return FPCD_OK;
 }
 
+
+static int rep_u32(struct smb_reply *p, uint32_t v);
+
+/* ---- catacomb (Apple's saved list of enrolled fingers; RedwoodMesa 1206, kern.sweet_mesa_catacomb=1) ----
+ * biometrickitd keeps its enrolled identities in a catacomb file whose secure part the Secure Enclave seals. Here that
+ * part is a small SWCT record (fpcd_bridge.h) naming finger 1; Samsung's template itself stays in TEMPLATE. Without
+ * this, biometrickitd never saved the list and forgot the finger at every reboot. */
+static uint8_t cat_out[sizeof(struct swct_hdr)], cat_in[4096];
+static uint32_t cat_out_len, cat_in_len;
+
+static uint32_t
+crc32_le(const uint8_t *p, size_t n)
+{
+	uint32_t c = 0xffffffffu;
+	while (n--) {
+		c ^= *p++;
+		for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
+	}
+	return ~c;
+}
+
+static int
+cat_prepare(const struct smb_req *q, struct smb_reply *p)
+{
+	struct swct_hdr h = { .magic = SWCT_MAGIC, .version = SWCT_VERSION, .hdr_size = sizeof(h), .total = sizeof(h),
+	    .user = q->len >= 4 ? *(const uint32_t *)q->data : 501, .dbid = 0x4a45535649544944ull };
+	if (access(TEMPLATE, F_OK) == 0) {
+		h.nfids = 1;
+		h.fids[0] = FID;
+	}
+	strlcpy(h.ta, "finge", sizeof(h.ta));
+	h.crc = crc32_le((const uint8_t *)&h + 16, sizeof(h) - 16);
+	memcpy(cat_out, &h, sizeof(h));
+	cat_out_len = sizeof(h);
+	lg("catacomb: prepared %u bytes (%u finger)", cat_out_len, h.nfids);
+	return rep_u32(p, cat_out_len);
+}
+
+static int
+cat_get(const struct smb_req *q, struct smb_reply *p)
+{
+	uint32_t off = q->len >= 8 ? ((const uint32_t *)q->data)[0] : 0, max = q->len >= 8 ? ((const uint32_t *)q->data)[1] : 0;
+	if (off > cat_out_len) return FPCD_E_INVAL;
+	uint32_t n = cat_out_len - off;
+	if (n > max) n = max;
+	if (n > SMB_DATA_MAX) n = SMB_DATA_MAX;
+	memcpy(p->data, cat_out + off, n);
+	p->len = n;
+	return FPCD_OK;
+}
+
+static int
+cat_put(const struct smb_req *q, struct smb_reply *p)
+{
+	(void)p;
+	if (q->len < 8) return FPCD_E_INVAL;
+	uint32_t total = ((const uint32_t *)q->data)[0], off = ((const uint32_t *)q->data)[1], n = q->len - 8;
+	if (total > sizeof(cat_in) || off + n > total) return FPCD_E_INVAL;
+	memcpy(cat_in + off, q->data + 8, n);
+	cat_in_len = total;
+	return FPCD_OK;
+}
+
+static int
+cat_load(void)
+{
+	struct swct_hdr h;
+	if (cat_in_len < sizeof(h)) return FPCD_E_INVAL;
+	memcpy(&h, cat_in, sizeof(h));
+	if (h.magic != SWCT_MAGIC || h.crc != crc32_le(cat_in + 16, sizeof(h) - 16)) {
+		lg("catacomb: load refused (bad record)");
+		return FPCD_E_INVAL;
+	}
+	lg("catacomb: loaded (%u finger; template %s)", h.nfids, access(TEMPLATE, F_OK) ? "missing" : "present");
+	return FPCD_OK;
+}
+
 /* ---- requests from the kernel ---- */
 static int
 rep_u32(struct smb_reply *p, uint32_t v)
@@ -448,6 +525,11 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
 		return FPCD_OK;
 	}
+	case 61: return cat_prepare(q, p);                      /* PrepareSaveCatacomb */
+	case FPCD_CMD_CAT_GET: return cat_get(q, p);
+	case 63: return FPCD_OK;                                /* ConfirmSaveCatacomb */
+	case FPCD_CMD_CAT_PUT: return cat_put(q, p);
+	case 64: return cat_load();                             /* LoadCatacomb */
 	case FPCD_CMD_PING:
 		p->len = (uint32_t)snprintf((char *)p->data, SMB_DATA_MAX, "redwood-fpd 1") + 1;
 		return FPCD_OK;
@@ -501,6 +583,7 @@ main(void)
 	tee_up();
 	set("kern.sweet_mesa_match", 2);                        /* the TEE matcher's decision, token unverified */
 	set("kern.sweet_mesa_offline", 1);
+	set("kern.sweet_mesa_catacomb", 1);                     /* biometrickitd saves its finger list (cat_*) */
 	set("kern.sweet_mesa", 3);                              /* publish the persona + translate our events */
 	for (int i = 0; bridge_open(); i++) {
 		if (i == 50) {
