@@ -34,7 +34,7 @@ makeRingWindow(void)
 		w = [[UIWindow alloc] initWithFrame:screen];   /* SpringBoard may have no window scene of its own */
 	}
 	w.frame = screen;
-	w.windowLevel = UIWindowLevelStatusBar + 1000;
+	w.windowLevel = 10000000;          /* above the lock screen and every SpringBoard window */
 	w.userInteractionEnabled = NO;
 	w.backgroundColor = UIColor.clearColor;
 	w.rootViewController = [UIViewController new];

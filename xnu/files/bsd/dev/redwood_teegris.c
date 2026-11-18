@@ -3003,6 +3003,10 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 
 	tee_say("fp run %u: gpa1 con %08x dat %02x pud %08x\n", n, *(volatile uint32_t *)gpa1,
 	    *(volatile uint32_t *)(gpa1 + 4) & 0xff, *(volatile uint32_t *)(gpa1 + 8));
+	if (n == 6 && !(*(volatile uint32_t *)(gpa1 + 4) & 0x8)) {
+		tee_say("fp run 6: IPC line low at the start: background calibration\n");
+		fp_cbge();
+	}
 	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
 	while (!fp_stopping() && mach_absolute_time() < deadline) {
 		uint32_t result, origin = 0, status, error, timeout;
@@ -3059,6 +3063,13 @@ fp_run(uint32_t n, uint32_t op, uint32_t seconds, uint32_t recover)
 					tee_say("fp run 6: capture rejected (%#x): lift and press again, quality %08x\n", error, r[3]);
 				}
 				fp_wait_lift(n, deadline);
+				/* as Samsung's new_cbge_mode (libbauthserver 0x15abc0): the sensor raises its IPC line when its
+				 * background needs a new estimate; calibrate now, finger off, before the next capture. Without it
+				 * identify compared against a stale background: NO MATCH / contamination 0x1d (2026-11-19) */
+				if (!(*(volatile uint32_t *)(gpa1 + 4) & 0x8)) {
+					tee_say("fp run 6: IPC line low after the lift: background calibration\n");
+					fp_cbge();
+				}
 				e = fp_idinit(0xffffffffu);
 				if (e != 0) {
 					tee_say("fp run 6: re-arm failed (%#x): stop\n", e);
