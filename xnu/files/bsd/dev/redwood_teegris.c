@@ -2748,6 +2748,114 @@ fp_tmpl_take(void)
 }
 
 /*
+ * The matcher's sealed metadata (2026-11-18). Samsung's common_prepare (libbauthserver 0x14abbc) reads its saved
+ * metadata (type 0) and calls PREPARE with op 1 and that record (op 2 only for the very first initialization), then
+ * saves what PREPARE returns; BAuth_Identify_Init passes the same record at +0x64114 (length +0x64514). Before this,
+ * every session sent PREPARE op 2 (a fresh matcher) and identify got no metadata: a match then held only for the
+ * exact enrolment placement. BAuth_Prepare: input +0x10 / length +0xa010, output +0x177014 / length +0x181014.
+ */
+#define FP_META_PATH    "/var/root/fp-meta.bin"
+#define FP_META_MAX     0xa000u
+static uint8_t *fp_meta;
+static uint32_t fp_meta_len;
+
+static int
+fp_meta_save(const uint8_t *data, uint32_t len)
+{
+	vfs_context_t vctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	int resid = 0, err;
+
+	if (len == 0 || len > FP_META_MAX) {
+		return EINVAL;
+	}
+	if (fp_meta == NULL) {
+		fp_meta = kalloc_data(FP_META_MAX, Z_WAITOK | Z_ZERO);
+		if (fp_meta == NULL) {
+			return ENOMEM;
+		}
+	}
+	memcpy(fp_meta, data, len);
+	fp_meta_len = len;
+	if ((err = vnode_open(FP_META_PATH, FWRITE | O_CREAT | O_TRUNC, 0600, 0, &vp, vctx)) != 0) {
+		tee_say("fp metadata: open for writing %d\n", err);
+		return err;
+	}
+	err = vn_rdwr(UIO_WRITE, vp, (caddr_t)fp_meta, (int)fp_meta_len, 0, UIO_SYSSPACE, IO_NODELOCKED | IO_SYNC,
+	    vfs_context_ucred(vctx), &resid, vfs_context_proc(vctx));
+	vnode_close(vp, FWRITE, vctx);
+	if (err == 0 && resid != 0) {
+		err = EIO;
+	}
+	tee_say("fp metadata: saved %u bytes to %s (error %d)\n", fp_meta_len, FP_META_PATH, err);
+	return err;
+}
+
+static void
+fp_meta_load(void)
+{
+	size_t size = 0;
+	void *buf;
+
+	if (fp_meta != NULL && fp_meta_len != 0) {
+		return;
+	}
+	buf = tee_read_file(FP_META_PATH, &size);
+	if (buf == NULL || size == 0 || size > FP_META_MAX) {
+		if (buf != NULL) {
+			tz_free(buf, size);
+		}
+		return;
+	}
+	if (fp_meta == NULL) {
+		fp_meta = kalloc_data(FP_META_MAX, Z_WAITOK | Z_ZERO);
+	}
+	if (fp_meta != NULL) {
+		memcpy(fp_meta, buf, size);
+		fp_meta_len = (uint32_t)size;
+	}
+	tz_free(buf, size);
+}
+
+/* PREPARE as Samsung does it: op 1 with the saved metadata, op 2 only without any; the returned metadata is saved. */
+static uint32_t
+fp_prepare(uint32_t *op_used, uint32_t *out_len)
+{
+	uint32_t result, origin = 0, op, len;
+	if (fp_stopping()) { return ECANCELED; }
+
+	fp_meta_load();
+	op = fp_meta_len ? 1 : 2;
+	bzero(fp_buf, 0x10);
+	bzero(fp_buf + 0x177000, 0x40);
+	*(uint32_t *)(fp_buf + 0x0) = 1;
+	*(uint32_t *)(fp_buf + 0x4) = 1;
+	*(uint32_t *)(fp_buf + 0xc) = op;
+	if (fp_meta_len) {
+		memcpy(fp_buf + 0x10, fp_meta, fp_meta_len);
+	}
+	*(uint32_t *)(fp_buf + 0xa010) = fp_meta_len;
+	*(uint32_t *)(fp_buf + 0x181014) = 0;
+	*(uint32_t *)(fp_buf + 0x2ee008) = 0;
+	lck_mtx_lock(&tee_client_lock);
+	result = tee_invoke_shm(&fp_ses, 1, fp_shm_id, FP_SHM_SIZE, &origin);
+	lck_mtx_unlock(&tee_client_lock);
+	*op_used = op;
+	len = *(uint32_t *)(fp_buf + 0x181014);
+	*out_len = len;
+	if (result != 0) {
+		return result;
+	}
+	if (*(uint32_t *)(fp_buf + 0x2ee008) != 0) {
+		return *(uint32_t *)(fp_buf + 0x2ee008);
+	}
+	if (len > 0 && len <= FP_META_MAX) {
+		fp_meta_save(fp_buf + 0x177014, len);
+	}
+	return 0;
+}
+
+/*
  * IDENTIFY_INIT (command 5, op 1): CHUNK = 0 with the template (first attempt), 0xffffffff without data (re-arm
  * for the next touch, as FPBAuthService::identify does). The TA's error, or the invoke's result.
  */
@@ -2774,6 +2882,13 @@ fp_idinit(uint32_t chunk)
 	if (chunk == 0) {
 		memcpy(fp_buf + 0x110, fp_tmpl, fp_tmpl_len);
 		*(uint32_t *)(fp_buf + 0x64110) = fp_tmpl_len;
+		/* and the matcher's metadata, as BAuth_Identify_Init (see fp_prepare) */
+		fp_meta_load();
+		if (fp_meta_len != 0 && fp_meta_len <= 0x400) {
+			memcpy(fp_buf + 0x64114, fp_meta, fp_meta_len);
+			*(uint32_t *)(fp_buf + 0x64514) = fp_meta_len;
+		}
+		tee_say("fp idinit: template %u bytes, metadata %u bytes\n", fp_tmpl_len, fp_meta_len);
 	}
 	*(uint32_t *)(fp_buf + 0x2ee008) = 0;
 	lck_mtx_lock(&tee_client_lock);
@@ -3359,6 +3474,14 @@ fp_cmd_execute(void)
 	if (strncmp(p, "power", 5) == 0) {
 		int power_error = fp_power();
 		snprintf(tee_last, sizeof(tee_last), "fp power: configured, error %d", power_error);
+		return;
+	}
+	if (strncmp(p, "prepare", 7) == 0) {
+		uint32_t op = 0, out = 0, e = fp_prepare(&op, &out);
+
+		snprintf(tee_last, sizeof(tee_last), "fp prepare: op %u metadata in %u out %u: error %#x", op,
+		    op == 1 ? fp_meta_len : 0, out, e);
+		tee_say("%s\n", tee_last);
 		return;
 	}
 	if (strncmp(p, "idinit", 6) == 0) {

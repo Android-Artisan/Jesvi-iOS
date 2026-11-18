@@ -202,7 +202,8 @@ on_line(const char *l)
 	} else if (strstr(l, "lift and press again")) {
 		ev_send(FPCD_EV_IMAGE, 3, 0, 0, 0, 0, 0);
 	} else if (op == 1 && sscanf(l, "fp run 3: SAMPLE %u ACCEPTED: progress %u", &n, &v) == 2 && v <= 100) {
-		samples_seen = n;
+		samples_seen++;                 /* the driver counts per run; the enrolment runs on across runs */
+		n = samples_seen;
 		/* the TEE says how far, not how many are left: estimate from the touches so far */
 		uint32_t rem = v >= 100 ? 0 : (n < ENROL_TOUCHES ? ENROL_TOUCHES - n : 1);
 		ev_send(FPCD_EV_ENROL_PROGRESS, v >= 100 ? 0 : 1, 0, 0, rem ? rem : (v < 100), n, 0);
