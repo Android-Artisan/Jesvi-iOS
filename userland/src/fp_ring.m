@@ -76,34 +76,58 @@ makeRingWindow(void)
 	return w;
 }
 
-static void
-ringShow(BOOL on)
+/*
+ * A match runs also while Settings' Touch ID pane is open, on the passcode keypad and for a moment after an unlock:
+ * the ring belongs only to the lock screen itself (locked, keypad not shown). An enrolment (state 1) always shows it.
+ */
+static BOOL
+msgBool(id o, const char *sel)
 {
+	SEL s = sel_registerName(sel);
+	return o && [o respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(o, s);
+}
+
+static id
+msgId(id o, const char *sel)
+{
+	SEL s = sel_registerName(sel);
+	return o && [o respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(o, s) : nil;
+}
+
+static BOOL
+fingerWanted(void)
+{
+	id lsm = msgId((id)objc_getClass("SBLockScreenManager"), "sharedInstance");
+	if (!msgBool(lsm, "isUILocked")) {
+		return NO;
+	}
+	id cs = msgId(lsm, "coverSheetViewController");
+	return !msgBool(cs, "isPasscodeLockVisible") && !msgBool(cs, "isShowingPasscode") && !msgBool(lsm, "isPasscodeEntryVisible");
+}
+
+static uint64_t ringState;
+static NSTimer *ringTimer;
+
+static void
+ringUpdate(void)
+{
+	BOOL on = ringState == 1 || (ringState == 2 && fingerWanted());
 	if (on && ringWindow == nil) {
 		ringWindow = makeRingWindow();
+		ringWindow.alpha = 0;
 	}
 	if (ringWindow == nil) {
 		return;
 	}
-	ringWindow.hidden = !on;
-}
-
-/*
- * A match runs also while Settings' Touch ID & Passcode pane is open (Apple highlights the finger that matches): no ring
- * there. Shown for a match on the lock screen and over other apps (app prompts); always for an enrolment (state 1).
- */
-static BOOL
-fingerWanted(void)
-{
-	id app = UIApplication.sharedApplication;
-	id lsm = [objc_getClass("SBLockScreenManager") performSelector:@selector(sharedInstance)];
-	if ([lsm respondsToSelector:@selector(isUILocked)] && ((BOOL (*)(id, SEL))objc_msgSend)(lsm, @selector(isUILocked))) {
-		return YES;
+	if (on) {
+		ringWindow.hidden = NO;
 	}
-	id front = [app respondsToSelector:@selector(_accessibilityFrontMostApplication)] ?
-	    [app performSelector:@selector(_accessibilityFrontMostApplication)] : nil;
-	NSString *bid = [front respondsToSelector:@selector(bundleIdentifier)] ? [front performSelector:@selector(bundleIdentifier)] : nil;
-	return ![bid isEqualToString:@"com.apple.Preferences"];
+	CGFloat want = on ? 1 : 0;
+	if (ringWindow.alpha != want) {
+		[UIView animateWithDuration:0.25 animations:^{ ringWindow.alpha = want; } completion:^(BOOL done) {
+			if (done && ringWindow.alpha == 0) ringWindow.hidden = YES;
+		}];
+	}
 }
 
 __attribute__((constructor)) static void
@@ -118,6 +142,13 @@ fpRingInit(void)
 	notify_register_dispatch(RING_NOTIFY, &token, dispatch_get_main_queue(), ^(int t) {
 		uint64_t state = 0;
 		notify_get_state(t, &state);
-		ringShow(state == 1 || (state == 2 && fingerWanted()));
+		ringState = state;
+		ringUpdate();
+		if (state && ringTimer == nil) {
+			ringTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *tm) { ringUpdate(); }];
+		} else if (!state) {
+			[ringTimer invalidate];
+			ringTimer = nil;
+		}
 	});
 }
