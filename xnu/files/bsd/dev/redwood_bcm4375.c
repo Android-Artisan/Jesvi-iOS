@@ -3163,22 +3163,27 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 	lck_mtx_lock(&ring_lock);
 	ev_ssid = false;
 	ev_ssid_status = 0;
+	ev_link_up = false;
 	lck_mtx_unlock(&ring_lock);
 	bzero(ssid_le, sizeof(ssid_le));
 	memcpy(ssid_le, &sl, 4);
 	memcpy(ssid_le + 4, ssid, sl);
 	e_ssid = ioctl(WLC_SET_SSID, ssid_le, sizeof(ssid_le), sizeof(ssid_le));
-	for (unsigned i = 0; i < 60 && !got; i++) {     /* the SET_SSID event: up to 3 s */
+	/* an access point is confirmed by E_LINK (link flag) as in brcmfmac's brcmf_notify_connect_status_ap; some
+	 * firmwares also send E_SET_SSID. Neither came in 3 s on 18.41.117 when only SET_SSID was awaited (2026-11-19). */
+	bool link = false;
+	for (unsigned i = 0; i < 100 && !got; i++) {    /* up to 5 s */
 		delay(50000);
 		lck_mtx_lock(&ring_lock);
-		got = ev_ssid;
-		status = ev_ssid_status;
+		link = ev_link_up;
+		got = ev_ssid || link;
+		status = ev_ssid ? ev_ssid_status : 0;
 		lck_mtx_unlock(&ring_lock);
 	}
 	(void)zero;
 	snprintf(ap_result, sizeof(ap_result), "%s: ch %u %s; down %d infra %d ap %d chanspec %d wsec %d wpa_auth %d pmk %d up %d "
 	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, pl ? "WPA2" : "open", e_down, e_infra,
-	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, got ? "status" : "none", got ? status : 0);
+	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, !got ? "none" : link ? "link" : "set_ssid", got ? status : 0);
 	blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
 	if (!(got && status == 0)) {
 		uint32_t z = 0;
