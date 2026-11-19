@@ -23,6 +23,7 @@
 #include <os/log.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <notify.h>
 #include <pthread.h>
@@ -211,12 +212,166 @@ swap(Class c, const char *sel, IMP imp)
 	}
 }
 
+/*
+ * sharingd (B, 2026-11-19): it offers this phone's hotspot to the owner's other devices (Instant Hotspot, the Bluetooth
+ * "tethering source" advertisement) only if CoreTelephony says the SIM is ready and cellular data is on -- "Updated
+ * tethering support result = NO ... simStateReady = NO ... cell data enabled = NO" without CommCenter. Answered here.
+ */
+static NSString *
+sim_ready(void)                         /* CoreTelephony's own constant: sharingd may compare the pointer */
+{
+	NSString *const __unsafe_unretained *k = (NSString *const __unsafe_unretained *)dlsym(RTLD_DEFAULT, "kCTSIMSupportSIMStatusReady");
+
+	return k != NULL ? *k : @"kCTSIMSupportSIMStatusReady";
+}
+
+static void (*orig_cellularDataEnabled)(id, SEL, BOOL *, BOOL *);
+
+static void
+sd_cellularDataEnabled(id self, SEL _cmd, BOOL *enabled, BOOL *airplane)
+{
+	if (orig_cellularDataEnabled != NULL) {
+		orig_cellularDataEnabled(self, _cmd, enabled, airplane);
+	}
+	if (enabled != NULL) {
+		*enabled = YES;         /* (the modem service's mobile data is on whenever it has a data tunnel) */
+	}
+}
+
+static BOOL
+sd_simStateReady(id self, SEL _cmd)
+{
+	(void)self; (void)_cmd;
+	return YES;
+}
+
+/* sharingd's "cell data enabled": the C call, through its own import (interposed below) */
+typedef struct { int domain, error; } ct_error;
+extern ct_error _CTServerConnectionGetCellularDataSettings(void *connection, Boolean *enabled, Boolean *airplane);
+
+static ct_error
+rw_GetCellularDataSettings(void *connection, Boolean *enabled, Boolean *airplane)
+{
+	ct_error r = { 0, 0 };
+
+	(void)connection;
+	if (enabled != NULL) {
+		*enabled = 1;
+	}
+	if (airplane != NULL) {
+		*airplane = 0;
+	}
+	return r;
+}
+
+__attribute__((used, section("__DATA,__interpose"))) static const struct { const void *with, *instead; } rw_interpose[] = {
+	{ (const void *)rw_GetCellularDataSettings, (const void *)_CTServerConnectionGetCellularDataSettings },
+};
+
+static void
+ct_getSIMStatus(id self, SEL _cmd, id context, void (^done)(NSString *, NSError *))
+{
+	(void)self; (void)_cmd; (void)context;
+	if (done != nil) {
+		done(sim_ready(), nil);
+	}
+}
+
+static NSString *
+ct_getSIMStatusSync(id self, SEL _cmd, id context, NSError **error)
+{
+	(void)self; (void)_cmd; (void)context;
+	if (error != NULL) {
+		*error = nil;
+	}
+	return sim_ready();
+}
+
+static id
+ct_dataStatus(void)
+{
+	id s = [[objc_getClass("CTDataStatus") alloc] init];
+
+	if (s != nil) {
+		[s setValue:@YES forKey:@"attached"];
+		[s setValue:@YES forKey:@"dataSim"];
+		[s setValue:@YES forKey:@"cellularDataPossible"];
+		[s setValue:@YES forKey:@"inHomeCountry"];
+		[s setValue:@1 forKey:@"activeContexts"];
+		[s setValue:@1 forKey:@"totalActiveContexts"];
+		[s setValue:@7 forKey:@"radioTechnology"];      /* LTE */
+		[s setValue:@7 forKey:@"dataBearerTechnology"];
+		[s setValue:@5 forKey:@"indicator"];            /* LTE */
+	}
+	return s;
+}
+
+static void
+ct_getDataStatus(id self, SEL _cmd, id context, void (^done)(id, NSError *))
+{
+	(void)self; (void)_cmd; (void)context;
+	if (done != nil) {
+		done(ct_dataStatus(), nil);
+	}
+}
+
+static id
+ct_getDataStatusSync(id self, SEL _cmd, id context, NSError **error)
+{
+	(void)self; (void)_cmd; (void)context;
+	if (error != NULL) {
+		*error = nil;
+	}
+	return ct_dataStatus();
+}
+
+static void
+sharingd_init(void)
+{
+	Class ct = objc_getClass("CoreTelephonyClient");
+
+	if (ct == Nil) {
+		os_log(lg, "redwood-mis: sharingd without CoreTelephonyClient");
+		return;
+	}
+	if (class_getInstanceMethod(ct, sel_registerName("getSIMStatus:completion:"))) {
+		swap(ct, "getSIMStatus:completion:", (IMP)ct_getSIMStatus);
+	}
+	if (class_getInstanceMethod(ct, sel_registerName("getSIMStatus:error:"))) {
+		swap(ct, "getSIMStatus:error:", (IMP)ct_getSIMStatusSync);
+	}
+	if (class_getInstanceMethod(ct, sel_registerName("getDataStatus:completion:"))) {
+		swap(ct, "getDataStatus:completion:", (IMP)ct_getDataStatus);
+	}
+	if (class_getInstanceMethod(ct, sel_registerName("getDataStatus:error:"))) {
+		swap(ct, "getDataStatus:error:", (IMP)ct_getDataStatusSync);
+	}
+	{
+		Class m = objc_getClass("SDStatusMonitor");
+
+		Method cd = m != Nil ? class_getInstanceMethod(m, sel_registerName("cellularDataEnabled:airplaneMode:")) : NULL;
+
+		if (cd != NULL && strcmp(method_getTypeEncoding(cd), "v32@0:8^B16^B24") == 0) {
+			orig_cellularDataEnabled = (void (*)(id, SEL, BOOL *, BOOL *))method_setImplementation(cd,
+			    (IMP)sd_cellularDataEnabled);
+		}
+		if (m != Nil && class_getInstanceMethod(m, sel_registerName("simStateReady"))) {
+			swap(m, "simStateReady", (IMP)sd_simStateReady);
+		}
+	}
+	os_log(lg, "redwood-mis: sharingd's SIM and data answers come from the S20's modem service");
+}
+
 __attribute__((constructor)) static void
 mis_init(void)
 {
 	Class c = objc_getClass("misCTClientSharedInstance");
 
 	lg = os_log_create("com.redwood.mis", "ct");
+	if (strcmp(getprogname(), "sharingd") == 0) {
+		sharingd_init();
+		return;
+	}
 	if (c == Nil) {
 		return;                 /* not misd */
 	}

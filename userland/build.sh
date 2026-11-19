@@ -145,7 +145,7 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
 /var/jb/usr/lib/libredwood-duet.dylib duetexpertd
-/redwood/lib/libredwood-mis.dylib misd
+/redwood/lib/libredwood-mis.dylib misd sharingd
 /redwood/lib/libredwood-mgcell.dylib Preferences"}
 # (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
 #  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
