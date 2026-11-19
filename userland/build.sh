@@ -144,7 +144,9 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
-/var/jb/usr/lib/libredwood-duet.dylib duetexpertd"}
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/redwood/lib/libredwood-mis.dylib misd
+/redwood/lib/libredwood-mgcell.dylib Preferences"}
 # (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
 #  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
 #  CollectionsPoster with metalon. Add it live to kern.exec_inject when metal_props is switched on.)
@@ -358,6 +360,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
+		# Personal Hotspot: misd's carrier answers (src/mis_ct.m) and Settings' "cellular-data" (src/mg_cellular.c)
+		$DYN -fobjc-arc -dynamiclib -install_name /redwood/lib/libredwood-mis.dylib -framework Foundation -lobjc \
+			-o obj/libredwood-mis.dylib src/mis_ct.m
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-mgcell.dylib -framework CoreFoundation -lobjc \
+			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
 		# Files on the HFS+ data volume: target only its daemon and local provider.
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
 			-o obj/libredwood-files.dylib src/inject_files.c
@@ -579,6 +586,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
 	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
 	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
+	[ -f obj/libredwood-mis.dylib ] && cp obj/libredwood-mis.dylib root/lib/
+	[ -f obj/libredwood-mgcell.dylib ] && cp obj/libredwood-mgcell.dylib root/lib/
 	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/

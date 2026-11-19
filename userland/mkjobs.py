@@ -395,3 +395,12 @@ if rest:
             plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)
         count += 1
     print(f'  ... and {count} more jobs, started on demand only')
+    # iOS's DHCP server for Personal Hotspot (B, 2026-11-19): socket-activated, no MachServices, "Disabled" until
+    # misd enables it when the hotspot starts -- so the filter above never took it. Copied as Apple ships it.
+    if os.path.exists(f'{src}/bootps.plist') and present('/usr/libexec/bootpd'):
+        with open(f'{src}/bootps.plist', 'rb') as f:
+            job = plistlib.load(f)
+        job['StandardErrorPath'] = job['StandardOutPath'] = '/dev/console'
+        with open(f'{dest}/bootps.plist', 'wb') as f:
+            plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)
+        print('  job com.apple.bootpd (bootps.plist): socket-activated, enabled by misd')
