@@ -148,6 +148,10 @@ def wanted_file(path, size):
     # CallKit's executable must be prepared before the input snapshot is locked.
     if path == 'System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd':
         return True
+    # iCloud's device registry (B, 2026-11-19): sharingd offers Instant Hotspot only to the account's other devices,
+    # which it learns from identityservicesd (also iMessage/FaceTime/Handoff). 12 MB: over the framework limit.
+    if path == 'System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/identityservicesd':
+        return True
     lproj = re.search(r'/([^/]+)\.lproj/', path)
     if lproj and lproj.group(1) not in KEEP_LANG:
         return False
