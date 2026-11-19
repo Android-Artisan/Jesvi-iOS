@@ -9,7 +9,7 @@ import tarfile
 from manage import ROOT, profile
 
 KEYS = {'NAME': 'Jesvi-iOS', 'VERSION': '0.0.0', 'TARGETS': 'x1slte', 'OUTPUTS': 'twrp restore',
-        'MODE': 'choose', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release', 'MODS_DISABLE': ''}
+        'MODE': 'choose', 'IOS_DATA_GB': 'all', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release', 'MODS_DISABLE': ''}
 OUTPUTS = ('twrp', 'preflight', 'restore', 'tar')
 
 
@@ -50,6 +50,11 @@ def check(conf):
         raise ValueError(f'unknown OUTPUTS {bad}; use {", ".join(OUTPUTS)}')
     if conf['MODE'] not in ('choose', 'update', 'fresh'):
         raise ValueError('MODE: choose, update or fresh')
+    g = conf['IOS_DATA_GB'].strip().lower()
+    if g != 'all' and not (g.isdigit() and 16 <= int(g) <= 112):
+        raise ValueError('IOS_DATA_GB: all, or 16..112')
+    conf['IOS_DATA_GB'] = g
+    os.environ['JESVI_IOS_DATA_GB'] = g  # read by targets.data_bytes() in the image build and packaging
     if conf['WRITES'].lower() not in ('true', 'false'):
         raise ValueError('WRITES: true or false')
     conf['WRITES'] = conf['WRITES'].lower() == 'true'

@@ -39,7 +39,8 @@ type Config struct {
 	Files              map[string]Image `json:"files"`
 	KitSHA256          string           `json:"kit_sha256"`
 	KitBytes           int64            `json:"kit_bytes"`
-	Splash             SplashFile       `json:"splash"` // the power-on splash (splash.go); zero: none
+	DataBytes          int64            `json:"data_bytes"` // iOS's data volume (IOS_DATA_GB); 0: all of userdata
+	Splash             SplashFile       `json:"splash"`     // the power-on splash (splash.go); zero: none
 }
 type SplashFile struct {
 	Bytes  int64  `json:"bytes"`
@@ -102,6 +103,9 @@ func checkConfig(c Config) error {
 		}
 	}
 	sup := c.Partitions["super"]
+	if c.DataBytes != 0 && (c.DataBytes%4096 != 0 || c.DataBytes < 16e9 || c.DataBytes > c.Partitions["userdata"]) {
+		return errors.New("iOS data size must be 4096-aligned, at least 16 GB and inside userdata")
+	}
 	if c.SystemMaxBytes < 64<<20 || c.SystemMaxBytes > 4<<30 || c.SystemMaxBytes > sup {
 		return errors.New("invalid system window")
 	}
@@ -123,7 +127,15 @@ func applyConfig(c Config) {
 		capacities[k] = v
 	}
 	systemMax = c.SystemMaxBytes
+	dataBytes = capacities["userdata"]
+	if c.DataBytes > 0 {
+		dataBytes = c.DataBytes
+	}
 }
+
+// dataBytes: the size of iOS's HFSX data volume at the start of userdata. Smaller than the partition when
+// release.conf IOS_DATA_GB leaves the rest free (the kernel gets ufs_win=0:BLOCKS); the rest is never written.
+var dataBytes = capacities["userdata"]
 
 func sameSHA(got []byte, expected string) bool { return hex.EncodeToString(got) == expected }
 func readSmall(f *zip.File, max int64) ([]byte, error) {
@@ -248,7 +260,7 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	if c.KitBytes != int64(len(kit)) || !sameSHA(ksum[:], c.KitSHA256) {
 		return nil, errors.New("HFS kit integrity failure")
 	}
-	if _, e = parseKit(kit, capacities["userdata"]); e != nil {
+	if _, e = parseKit(kit, dataBytes); e != nil {
 		return nil, e
 	}
 	var splash []byte

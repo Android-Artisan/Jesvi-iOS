@@ -2355,6 +2355,10 @@ redwood_ufs_init(void)
 				total += e->blocks * e->block_size;
 			}
 		}
+		/* with ufs_win (IOS_DATA_GB in release.conf) the rest of userdata is not iOS's: leave it out of the capacity */
+		if (ufs_write_part >= 0 && ufs_write_end - ufs_write_first < UFS_Y2S_DATA_BLOCKS) {
+			total -= (UFS_Y2S_DATA_BLOCKS - (ufs_write_end - ufs_write_first)) * 4096ULL;
+		}
 		ufs_log("ufs: the storage: %llu MB in all, given to iOS as disk0\n", total >> 20);
 		RedwoodStorageReport(total);
 	}

@@ -105,6 +105,7 @@ __pycache__/
 !/userland/*.plist
 !/userland/m2m.tour
 !/userland/hfs-kit.bin
+!/userland/hfs-kit-*.bin
 !/userland/mkjobs.py
 !/userland/mkeagl.py
 !/userland/libmini/

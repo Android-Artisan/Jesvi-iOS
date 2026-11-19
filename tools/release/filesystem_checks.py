@@ -22,7 +22,7 @@ def verify(recovery, system, kit, device):
     for tool in ('/sbin/fsck_apfs', '/sbin/fsck_hfs', '/usr/bin/hdiutil'):
         if not Path(tool).is_file():
             raise ValueError('native macOS filesystem validation tool required: ' + tool)
-    hfs_kit(kit, device['partitions']['userdata'])
+    hfs_kit(kit, __import__('targets').data_bytes(device['partitions']['userdata']))
     work_root = ROOT / 'out/filesystem-checks'
     work_root.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='check-', dir=work_root))

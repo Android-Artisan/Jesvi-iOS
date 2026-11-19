@@ -82,7 +82,7 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 	if mode != "fresh" && mode != "update" {
 		return errors.New("installation mode must be explicit")
 	}
-	extents, e := parseKit(b.Kit, capacities["userdata"])
+	extents, e := parseKit(b.Kit, dataBytes)
 	if e != nil {
 		return e
 	}
@@ -197,7 +197,7 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 				return fmt.Errorf("userdata: %w", e)
 			}
 		}
-		if !initialized(targets["userdata"], capacities["userdata"]) {
+		if !initialized(targets["userdata"], dataBytes) {
 			return errors.New("new HFS geometry verification failed")
 		}
 	}

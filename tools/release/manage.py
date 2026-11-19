@@ -200,7 +200,10 @@ def main():
         from extraction import verify as verify_extraction
         verify_extraction(ROOT)
         verify()
-        hfs_kit(ROOT / 'userland/hfs-kit.bin', profile(a.device)['partitions']['userdata'])
+        import targets
+        userdata = profile(a.device)['partitions']['userdata']
+        data = targets.data_bytes(userdata)
+        hfs_kit(targets.kit_path(ROOT, data, userdata), data)
         env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1', JESVI_TARGET=a.device)
         env['HACKIOS_IMAGE_CACHE'] = str(Path(env.get('HACKIOS_IMAGE_CACHE', ROOT / '.cache/private-images')).resolve())
         # Build locally, never export xnu-src over the source under review.
@@ -216,8 +219,7 @@ def main():
         run('python3', 'tools/release/loader_font.py', env=env)
         run('bash', 'x1slte.sh', 'embed', env=env)
         # Boot line from the target config: platform + hardware + target + mods.
-        import targets
-        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split()), env=env)
+        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split(), data, userdata), env=env)
         run('bash', 'x1slte.sh', 'pack', env=env)
         verify()
         print('Private development images built. Next: build.sh package --output dist/CANDIDATE')

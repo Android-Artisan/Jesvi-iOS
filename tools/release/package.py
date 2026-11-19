@@ -30,7 +30,9 @@ def package(device, dest):
     apfs(system, d['layout']['system_max_bytes'])
     if system.stat().st_size > d['layout']['system_max_bytes']:
         raise ValueError('system image exceeds its slot')
-    hfs_kit(ROOT / 'userland/hfs-kit.bin', d['partitions']['userdata'])
+    import targets
+    _data = targets.data_bytes(d['partitions']['userdata'])
+    hfs_kit(targets.kit_path(ROOT, _data, d['partitions']['userdata']), _data)
     # An external tool/input ledger is mandatory even for private candidates.
     ledger = ROOT / 'inputs/private-inputs.lock.json'
     if not ledger.is_file():

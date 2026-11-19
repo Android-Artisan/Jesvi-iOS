@@ -11,6 +11,7 @@ def inventory():
              'sysimage/rootfs', 'sysimage/cryptex', 'sysimage/cryptex-app',
              'sysimage/20F66__iPhone10,3_6', 'sysimage/system.manifest',
              'sysimage/var.skel', 'sysimage/DeviceTree.d22ap.im4p', 'sysimage/extraction.json', 'userland/hfs-kit.bin']
+    paths += [str(p.relative_to(ROOT)) for p in sorted(ROOT.glob('userland/hfs-kit-*.bin'))]  # IOS_DATA_GB sizes
     paths += [str(p.relative_to(ROOT)) for p in sorted(ROOT.glob('fw-*')) if p.is_dir()]
     if (ROOT / 'jb').exists():
         paths.append('jb')

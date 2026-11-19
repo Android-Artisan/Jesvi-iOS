@@ -17,7 +17,7 @@ import (
 )
 
 func testKit() []byte {
-	size := capacities["userdata"]
+	size := dataBytes
 	primary := make([]byte, 4096)
 	backup := make([]byte, 4096)
 	header := func(h []byte) {
@@ -390,5 +390,26 @@ func TestRestoreWithoutSavedMapUsesMeasuredLayoutAndRefusesUnknownSuper(t *testi
 	d.files["super"].WriteAt(nx, 0)
 	if e := restoreAndroid(r, d, func(string) {}); e == nil {
 		t.Fatal("restore wrote while targets were mounted")
+	}
+}
+
+// IOS_DATA_GB=64: the volume ends at 64 GB and nothing after it (left for another OS) is written.
+func TestFreshInstallInsideA64GBWindow(t *testing.T) {
+	saved := dataBytes
+	dataBytes = 64e9
+	defer func() { dataBytes = saved }()
+	b, d := fixtureBundle(t), newFake(t)
+	mark := bytes.Repeat([]byte("ANDROID!"), 512)
+	d.files["userdata"].WriteAt(mark, 64e9+4096)
+	d.files["userdata"].WriteAt(mark, capacities["userdata"]-4096)
+	if e := perform(b, d, "fresh", func(string) {}); e != nil {
+		t.Fatal(e)
+	}
+	if !initialized(d.files["userdata"], dataBytes) || !validHFS(readBytes(t, d.files["userdata"], 64e9-1024, 512), dataBytes) {
+		t.Fatal("64 GB volume headers missing")
+	}
+	if !bytes.Equal(readBytes(t, d.files["userdata"], 64e9+4096, len(mark)), mark) ||
+		!bytes.Equal(readBytes(t, d.files["userdata"], capacities["userdata"]-4096, len(mark)), mark) {
+		t.Fatal("wrote past the iOS data window")
 	}
 }

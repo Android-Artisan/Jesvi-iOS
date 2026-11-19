@@ -22,6 +22,23 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(sorted(line.split()), sorted((ROOT / 'devices/exynos990/x1slte/x1slte.cmdline').read_text().split()))
         self.assertLessEqual(len(line), targets.BOOTLINE_MAX)
 
+    def test_ios_data_size_window(self):
+        import os
+        u = 116253523968
+        os.environ['JESVI_IOS_DATA_GB'] = '64'
+        try:
+            d = targets.data_bytes(u)
+            words = targets.bootline(targets.load('x1slte'), (), d, u).split()
+            self.assertEqual(d, 64000000000)
+            self.assertIn('ufs_win=0:15625000', words)
+            self.assertNotIn('ufs_userdata_all=1', words)
+            os.environ['JESVI_IOS_DATA_GB'] = 'all'
+            self.assertEqual(targets.data_bytes(u), u)
+            os.environ['JESVI_IOS_DATA_GB'] = '200'
+            self.assertRaises(ValueError, targets.data_bytes, u)
+        finally:
+            os.environ.pop('JESVI_IOS_DATA_GB', None)
+
     def test_optional_mods_can_be_left_out(self):
         conf = targets.load('x1slte')
         words = targets.bootline(conf, ['island']).split()

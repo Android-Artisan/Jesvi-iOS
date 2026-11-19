@@ -143,7 +143,7 @@ func run() error {
 		if valid {
 			mode = "update"
 		} else if recognizable {
-			return errors.New("existing HFS header is damaged; refusing automatic fresh install")
+			return errors.New("the iOS data here is damaged or a different size than this package (IOS_DATA_GB); refusing to erase it automatically: back it up, then use a fresh-install package")
 		} else {
 			mode = "fresh"
 		}

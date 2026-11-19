@@ -128,12 +128,14 @@ def package(bundle, output, mode='choose', experimental=False):
         raise ValueError('AVB tool inputs differ from reviewed input lock')
     subprocess.run(['python3', '-I', str(avb), 'verify_image', '--image', str(bundle / 'recovery.img'),
                     '--key', str(avb_key)], cwd=ROOT, check=True)
-    kit = ROOT / 'userland/hfs-kit.bin'
-    hfs_kit(kit, device['partitions']['userdata'])
+    import targets
+    kit = targets.kit_path(ROOT, targets.data_bytes(device['partitions']['userdata']), device['partitions']['userdata'])
+    hfs_kit(kit, __import__('targets').data_bytes(device['partitions']['userdata']))
     from filesystem_checks import verify as verify_filesystems
     verify_filesystems(bundle / 'recovery.img', bundle / 'system.apfs', kit, device)
     config = device_config(device, 'install', mode, experimental)
-    config.update(files=manifest['files'], kit_sha256=digest(kit), kit_bytes=kit.stat().st_size)
+    config.update(files=manifest['files'], kit_sha256=digest(kit), kit_bytes=kit.stat().st_size,
+                  data_bytes=__import__('targets').data_bytes(device['partitions']['userdata']))
     readme = (f'Jesvi iOS for {device["name"]} ({device["id"]}). Mode: {mode}. Writes enabled: {experimental}.\n'
               'HARDWARE QUALIFICATION PENDING. No partition-table changes, no automatic reboot.\n'
               'Works from TWRP whether the phone runs Jesvi iOS or an Android ROM (ExtremeROM, UN1CA, ...).\n'

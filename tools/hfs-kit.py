@@ -18,15 +18,15 @@ import sys
 import zlib
 
 BLOCK = 4096
-DEVICE = 116253523968                   # userdata: 28382208 blocks of 4096
-TOTAL = DEVICE // BLOCK
-CATALOG_FIRST = 319333
 
 
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else '/tmp/hfsfmt'
     here = os.path.dirname(os.path.abspath(__file__))
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(here, '..', 'userland', 'hfs-kit.bin')
+    sizefile = os.path.join(src, 'size')   # written by mk-userdata-hfs.sh (SIZE=...); default all of userdata
+    DEVICE = int(open(sizefile).read()) if os.path.exists(sizefile) else 116253523968
+    TOTAL = DEVICE // BLOCK
     head = open(os.path.join(src, 'head.img'), 'rb').read()
     cat = open(os.path.join(src, 'catalog.img'), 'rb').read()
     tail = open(os.path.join(src, 'tail.img'), 'rb').read()
@@ -37,7 +37,8 @@ def main():
     bsize, total = struct.unpack('>II', vh[40:48])
     assert sig == b'HX' and bsize == BLOCK and total == TOTAL, (sig, bsize, total)
     cat_ext = struct.unpack('>II', vh[272 + 16:272 + 24])
-    assert cat_ext == (CATALOG_FIRST, len(cat) // BLOCK), cat_ext
+    CATALOG_FIRST = cat_ext[0]
+    assert cat_ext[1] == len(cat) // BLOCK, cat_ext
 
     def block(b):
         if b < len(head) // BLOCK:
@@ -48,7 +49,9 @@ def main():
             return tail[(b - tail_first) * BLOCK:(b - tail_first + 1) * BLOCK]
         raise SystemExit('block %d is used but not in the copies' % b)
 
-    bitmap = head[BLOCK:BLOCK + 867 * BLOCK]
+    alloc_first, alloc_blocks = struct.unpack('>II', vh[112 + 16:112 + 24])   # the allocation bitmap's first extent
+    bitmap = head[alloc_first * BLOCK:(alloc_first + alloc_blocks) * BLOCK]
+    assert len(bitmap) * 8 >= TOTAL, 'allocation bitmap is not in head.img in one extent'
     used = [b for b in range(TOTAL) if (bitmap[b >> 3] >> (7 - (b & 7))) & 1]
     zero = bytes(BLOCK)
     entries, data = [], bytearray()
