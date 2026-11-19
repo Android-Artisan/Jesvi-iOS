@@ -344,7 +344,7 @@ run(void *arg)
 	uint32_t g = gen;
 	const char *setup[] = { "fp power", "fp prepare", "fp cbgeefs", "fp 10:1", "fp prepare" };
 	pthread_mutex_lock(&mx);
-	ring(1);
+	ring(kind);     /* 1 enrolment, 2 match: SpringBoard shows a match's ring only where a finger is asked for */
 	log_baseline();
 	if (kind == 1 && enrol_pct == 0) samples_seen = 0;
 	int bad = 0;

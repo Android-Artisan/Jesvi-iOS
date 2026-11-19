@@ -14,6 +14,7 @@
 #import <UIKit/UIKit.h>
 #include <notify.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 #define RING_NOTIFY "com.redwood.touchid.sensor"
 
@@ -87,6 +88,24 @@ ringShow(BOOL on)
 	ringWindow.hidden = !on;
 }
 
+/*
+ * A match runs also while Settings' Touch ID & Passcode pane is open (Apple highlights the finger that matches): no ring
+ * there. Shown for a match on the lock screen and over other apps (app prompts); always for an enrolment (state 1).
+ */
+static BOOL
+fingerWanted(void)
+{
+	id app = UIApplication.sharedApplication;
+	id lsm = [objc_getClass("SBLockScreenManager") performSelector:@selector(sharedInstance)];
+	if ([lsm respondsToSelector:@selector(isUILocked)] && ((BOOL (*)(id, SEL))objc_msgSend)(lsm, @selector(isUILocked))) {
+		return YES;
+	}
+	id front = [app respondsToSelector:@selector(_accessibilityFrontMostApplication)] ?
+	    [app performSelector:@selector(_accessibilityFrontMostApplication)] : nil;
+	NSString *bid = [front respondsToSelector:@selector(bundleIdentifier)] ? [front performSelector:@selector(bundleIdentifier)] : nil;
+	return ![bid isEqualToString:@"com.apple.Preferences"];
+}
+
 __attribute__((constructor)) static void
 fpRingInit(void)
 {
@@ -99,6 +118,6 @@ fpRingInit(void)
 	notify_register_dispatch(RING_NOTIFY, &token, dispatch_get_main_queue(), ^(int t) {
 		uint64_t state = 0;
 		notify_get_state(t, &state);
-		ringShow(state != 0);
+		ringShow(state == 1 || (state == 2 && fingerWanted()));
 	});
 }
