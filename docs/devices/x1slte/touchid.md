@@ -26,8 +26,12 @@ Branch `feat/s20-touchid` (worktree `work/hackios-touchid`) = `main` + `feat/s20
    only the user's component, so biometrickitd sent NoCatacomb instead of LoadCatacomb (now both, cap 16); and
    redwood-fpd now answers before TEEGRIS is up and restarts biometrickitd on the first unlock (never reopen the
    bridge mid-run: it stops receiving requests).
-3. Sensor ring hidden on the lock screen (seen only for a moment after unlock): fp_ring.m now uses a secure window
-   (_isSecure); to verify.
+3. ~~Ring on the lock screen~~ done (2026-11-19): drawn inside the cover sheet view (no window), faint, only while a
+   match waits on the lock screen itself; enrolment uses a secure window with its home indicator hidden.
+   A failed or rejected lock-screen capture shakes the lock (verified 2026-11-19 10:02).
+   The second grey home bar on the lock screen is NOT from the ring (seen with libredwood-touchid-ui unloaded); unsolved.
+6. Overheating (2026-11-19): 109 C big / 105 C little before PMIC resets (RST_STAT PINRESET + WTSR) a few minutes
+   after each of many back-to-back boots; 55 C with an external cooler. A stronger kernel thermal guard is needed.
 4. Popup text shows raw TOUCH_ID_ISSUE_* keys (strings only in a Touch ID iPhone's iOS).
 5. Screen-off / AOD unlock: needs the sensor's WUHB line (Samsung qbt2000_wuhb_irq_handler); we use the touch panel.
 
