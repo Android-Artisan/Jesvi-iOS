@@ -13,10 +13,27 @@
  */
 #import <UIKit/UIKit.h>
 #include <notify.h>
+#import <objc/runtime.h>
 
 #define RING_NOTIFY "com.redwood.touchid.sensor"
 
 static UIWindow *ringWindow;
+
+/* SpringBoard shows only "secure" windows while the device is locked (the ring flashed up only after an unlock) */
+static BOOL yes(id self, SEL _cmd) { return YES; }
+
+static Class
+secureWindowClass(void)
+{
+	static Class c;
+	if (c == Nil) {
+		c = objc_allocateClassPair(UIWindow.class, "RedwoodRingWindow", 0);
+		class_addMethod(c, sel_registerName("_isSecure"), (IMP)yes, "B@:");
+		class_addMethod(c, sel_registerName("_shouldCreateContextAsSecure"), (IMP)yes, "B@:");
+		objc_registerClassPair(c);
+	}
+	return c;
+}
 
 static UIWindow *
 makeRingWindow(void)
@@ -26,12 +43,12 @@ makeRingWindow(void)
 
 	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
 		if ([scene isKindOfClass:UIWindowScene.class]) {
-			w = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+			w = [[secureWindowClass() alloc] initWithWindowScene:(UIWindowScene *)scene];
 			break;
 		}
 	}
 	if (w == nil) {
-		w = [[UIWindow alloc] initWithFrame:screen];   /* SpringBoard may have no window scene of its own */
+		w = [[secureWindowClass() alloc] initWithFrame:screen];   /* SpringBoard may have no window scene of its own */
 	}
 	w.frame = screen;
 	w.windowLevel = 10000000;          /* above the lock screen and every SpringBoard window */
