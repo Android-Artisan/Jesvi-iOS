@@ -217,7 +217,7 @@ func perform(b *Bundle, device Device, mode string, log func(string)) error {
 		ui.begin("Installing the Apple logo at power-on")
 		saved := ui.total
 		ui.total = 0
-		e = applySplash(targets["up_param"], b.Splash, log)
+		e = applySplash(targets["up_param"], b.Splash, b.Pictures, log)
 		ui.total = saved
 		if e != nil {
 			return fmt.Errorf("power-on splash (iOS itself is installed; Samsung's splash may need its BL from Odin): %w", e)

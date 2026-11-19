@@ -169,6 +169,19 @@ def package(bundle, output, mode='choose', experimental=False):
         config['splash'] = {'bytes': len(data), 'sha256': digest(logo)}
         files['splash.jpg'] = data
         inventory = ENTRIES | {'splash.jpg'}
+        # iPhone's charging pictures for the phone-off screens (tools/bootlogo/mkcharging.py), when they were made
+        pics = {}
+        for name in ('lpm.jpg', 'low_battery_alert.jpg'):
+            pic = ROOT / 'out/bootlogo' / name
+            if pic.is_file():
+                d = pic.read_bytes()
+                if not d.startswith(b'\xff\xd8') or len(d) > 1 << 20:
+                    raise ValueError(f'out/bootlogo/{name} is not a JPEG of at most 1 MiB')
+                pics[name] = {'bytes': len(d), 'sha256': digest(pic)}
+                files[name] = d
+        if pics:
+            config['pictures'] = pics
+            inventory = inventory | set(pics)
     _build(output, config, files, readme, inventory, {
         'candidate_manifest_sha256': digest(bundle / 'manifest.json'),
         'avb_test_key_verification': True, 'native_apfs_checks': True, 'hfs_seed_fsck_check': True})

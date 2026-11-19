@@ -161,7 +161,7 @@ func TestInstallAndRestoreSplash(t *testing.T) {
 		t.Fatalf("installed pictures: %v", m)
 	}
 	for i, s := range log {
-		if s == "Setting the power-on splash (the phone's own logo kept for Jesvi-iOS-Restore)" {
+		if s == "Setting iPhone's power-on and charging pictures (the phone's own kept for Jesvi-iOS-Restore)" {
 			for _, later := range log[:i] {
 				if later == "Writing and verifying boot" {
 					goto ordered
@@ -183,5 +183,28 @@ ordered:
 	m = members(t, readBytes(t, d.files["up_param"], 0, 1<<20))
 	if m["logo.jpg"] != "samsung" || len(m) != 2 {
 		t.Fatalf("restored pictures: %v", m)
+	}
+}
+
+// The charging pictures go with the logo, each kept as .stock; one the phone lacks is skipped; Restore puts all back.
+func TestChargingPictures(t *testing.T) {
+	stock := pictures(t, 1<<20, [2]string{"logo.jpg", "samsung"}, [2]string{"lpm.jpg", "bolt"}, [2]string{"download.jpg", "dl"})
+	lpm := append([]byte{0xff, 0xd8}, []byte("iphone charging")...)
+	low := append([]byte{0xff, 0xd8}, []byte("iphone empty")...)
+	img, changed, e := withPictures(stock, jpeg, map[string][]byte{"lpm.jpg": lpm, "low_battery_alert.jpg": low})
+	if e != nil || !changed {
+		t.Fatal(e, changed)
+	}
+	m := members(t, img)
+	if m["lpm.jpg"] != string(lpm) || m["lpm.jpg.stock"] != "bolt" || m["logo.jpg.stock"] != "samsung" || m["low_battery_alert.jpg"] != "" {
+		t.Fatalf("installed: %v", m)
+	}
+	if _, _, e := withPictures(stock, jpeg, map[string][]byte{"download.jpg": lpm}); e == nil {
+		t.Fatal("only the charging pictures may be replaced")
+	}
+	back, changed, e := withoutSplash(img)
+	m = members(t, back)
+	if e != nil || !changed || m["lpm.jpg"] != "bolt" || m["logo.jpg"] != "samsung" || m["lpm.jpg.stock"] != "" || m["logo.jpg.stock"] != "" {
+		t.Fatalf("restored: %v %v", m, e)
 	}
 }

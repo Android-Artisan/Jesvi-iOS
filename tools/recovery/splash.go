@@ -20,8 +20,14 @@ import (
 const (
 	splashName  = "logo.jpg"
 	splashStock = "logo.jpg.stock"
+	stockSuffix = ".stock"
 	splashMax   = 1 << 20
 )
+
+// extraPictures: the other pictures S-Boot shows with the phone off, replaced with iPhone's (tools/bootlogo/mkcharging.py)
+// when the package carries them: charging (lpm.jpg) and battery empty (low_battery_alert.jpg). Each is optional on
+// the phone (another bootloader version may not have it) and kept once as <name>.stock like the logo.
+var extraPictures = map[string]bool{"lpm.jpg": true, "low_battery_alert.jpg": true}
 
 type tarMember struct {
 	Header tar.Header
@@ -111,27 +117,50 @@ func verifyPictures(img []byte, want []tarMember) error {
 
 // withSplash: up_param with logo.jpg = splash; the phone's own logo.jpg kept once as logo.jpg.stock.
 // changed false: it already shows this splash.
-func withSplash(img, splash []byte) ([]byte, bool, error) {
-	if len(splash) == 0 || len(splash) > splashMax || !bytes.HasPrefix(splash, []byte{0xff, 0xd8}) {
+func withSplash(img, splash []byte) ([]byte, bool, error) { return withPictures(img, splash, nil) }
+
+func isJPEG(p []byte) bool {
+	return len(p) > 0 && len(p) <= splashMax && bytes.HasPrefix(p, []byte{0xff, 0xd8})
+}
+
+// withPictures: logo.jpg = splash (required), and each extra picture the phone has; originals kept once as .stock.
+func withPictures(img, splash []byte, extra map[string][]byte) ([]byte, bool, error) {
+	if !isJPEG(splash) {
 		return nil, false, errors.New("splash is not a JPEG of at most 1 MiB")
+	}
+	for name, p := range extra {
+		if !extraPictures[name] || !isJPEG(p) {
+			return nil, false, fmt.Errorf("picture %q is not an allowed JPEG of at most 1 MiB", name)
+		}
 	}
 	ms, e := parsePictures(img)
 	if e != nil {
 		return nil, false, e
 	}
-	i := memberIndex(ms, splashName)
-	if i < 0 {
+	if memberIndex(ms, splashName) < 0 {
 		return nil, false, errors.New("up_param has no logo.jpg")
 	}
-	if bytes.Equal(ms[i].Data, splash) {
+	want := map[string][]byte{splashName: splash}
+	for name, p := range extra {
+		want[name] = p
+	}
+	changed := false
+	for _, name := range []string{splashName, "lpm.jpg", "low_battery_alert.jpg"} {
+		p, i := want[name], memberIndex(ms, name)
+		if p == nil || i < 0 || bytes.Equal(ms[i].Data, p) {
+			continue
+		}
+		if memberIndex(ms, name+stockSuffix) < 0 {
+			stock := ms[i]
+			stock.Header.Name = name + stockSuffix
+			ms = append(ms, tarMember{Header: stock.Header, Data: append([]byte(nil), ms[i].Data...)})
+		}
+		ms[i].Data = p
+		changed = true
+	}
+	if !changed {
 		return img, false, nil
 	}
-	if memberIndex(ms, splashStock) < 0 {
-		stock := ms[i]
-		stock.Header.Name = splashStock
-		ms = append(ms, tarMember{Header: stock.Header, Data: append([]byte(nil), ms[i].Data...)})
-	}
-	ms[i].Data = splash
 	out, e := buildPictures(ms, len(img))
 	if e != nil {
 		return nil, false, e
@@ -139,21 +168,29 @@ func withSplash(img, splash []byte) ([]byte, bool, error) {
 	return out, true, verifyPictures(out, ms)
 }
 
-// withoutSplash: logo.jpg back from logo.jpg.stock, which is then removed. changed false: nothing saved to restore.
+// withoutSplash: every picture back from its .stock copy (logo.jpg and the extras), which is then removed.
+// changed false: nothing saved to restore.
 func withoutSplash(img []byte) ([]byte, bool, error) {
 	ms, e := parsePictures(img)
 	if e != nil {
 		return nil, false, e
 	}
-	s, i := memberIndex(ms, splashStock), memberIndex(ms, splashName)
-	if s < 0 {
+	changed := false
+	for _, name := range []string{splashName, "lpm.jpg", "low_battery_alert.jpg"} {
+		s, i := memberIndex(ms, name+stockSuffix), memberIndex(ms, name)
+		if s < 0 {
+			continue
+		}
+		if i < 0 {
+			return nil, false, fmt.Errorf("up_param has a saved %s but no %s", name, name)
+		}
+		ms[i].Data = ms[s].Data
+		ms = append(ms[:s], ms[s+1:]...)
+		changed = true
+	}
+	if !changed {
 		return img, false, nil
 	}
-	if i < 0 {
-		return nil, false, errors.New("up_param has a saved logo but no logo.jpg")
-	}
-	ms[i].Data = ms[s].Data
-	ms = append(ms[:s], ms[s+1:]...)
 	out, e := buildPictures(ms, len(img))
 	if e != nil {
 		return nil, false, e
@@ -162,9 +199,9 @@ func withoutSplash(img []byte) ([]byte, bool, error) {
 }
 
 // applySplash / restoreSplash: read the whole partition, rewrite it, write it back with readback (transfer).
-func applySplash(t Target, splash []byte, log func(string)) error {
-	return rewritePictures(t, log, func(img []byte) ([]byte, bool, error) { return withSplash(img, splash) },
-		"Power-on splash already set", "Setting the power-on splash (the phone's own logo kept for Jesvi-iOS-Restore)")
+func applySplash(t Target, splash []byte, extra map[string][]byte, log func(string)) error {
+	return rewritePictures(t, log, func(img []byte) ([]byte, bool, error) { return withPictures(img, splash, extra) },
+		"Power-on pictures already set", "Setting iPhone's power-on and charging pictures (the phone's own kept for Jesvi-iOS-Restore)")
 }
 func restoreSplash(t Target, log func(string)) error {
 	return rewritePictures(t, log, withoutSplash,

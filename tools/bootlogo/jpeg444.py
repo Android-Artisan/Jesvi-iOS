@@ -70,8 +70,19 @@ def fdct(block):
     return [sum(C[v][y] * tmp[y][u] for y in range(8)) for v in range(8) for u in range(8)]
 
 
-def encode(w, h, grey, quality=95):
-    """grey: bytes of w*h; returns JPEG bytes"""
+def encode_rgb(w, h, rgb, quality=95):
+    """rgb: bytes of w*h*3; a colour picture (the charging screens' red battery), same 4:4:4 layout"""
+    y, cb, cr = bytearray(w * h), bytearray(w * h), bytearray(w * h)
+    for i in range(w * h):
+        r, g, b = rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]
+        y[i] = max(0, min(255, round(0.299 * r + 0.587 * g + 0.114 * b)))
+        cb[i] = max(0, min(255, round(128 - 0.168736 * r - 0.331264 * g + 0.5 * b)))
+        cr[i] = max(0, min(255, round(128 + 0.5 * r - 0.418688 * g - 0.081312 * b)))
+    return encode(w, h, bytes(y), quality, bytes(cb), bytes(cr))
+
+
+def encode(w, h, grey, quality=95, cb=None, cr=None):
+    """grey: bytes of w*h (the Y plane; with cb and cr a colour picture); returns JPEG bytes"""
     ql, qc = scaled(QL, quality), scaled(QC, quality)
     hdc_l, hac_l, hdc_c, hac_c = codes(DC_L), codes(AC_L), codes(DC_C), codes(AC_C)
     bits, pred = Bits(), [0, 0, 0]
@@ -100,16 +111,19 @@ def encode(w, h, grey, quality=95):
             bits.put(*hac[0x00])
 
     chroma = [0] * 64
+
+    def block(plane, bx, by):
+        vals = []
+        for y in range(8):
+            row = min(h - 1, by + y) * w
+            for x in range(8):
+                vals.append(plane[row + min(w - 1, bx + x)])
+        return vals
     for by in range(0, h, 8):
         for bx in range(0, w, 8):
-            vals = []
-            for y in range(8):
-                yy = min(h - 1, by + y); row = yy * w
-                for x in range(8):
-                    vals.append(grey[row + min(w - 1, bx + x)])
-            emit(block_coeffs(vals, ql), 0, hdc_l, hac_l)
-            emit(chroma, 1, hdc_c, hac_c)
-            emit(chroma, 2, hdc_c, hac_c)
+            emit(block_coeffs(block(grey, bx, by), ql), 0, hdc_l, hac_l)
+            emit(chroma if cb is None else block_coeffs(block(cb, bx, by), qc), 1, hdc_c, hac_c)
+            emit(chroma if cr is None else block_coeffs(block(cr, bx, by), qc), 2, hdc_c, hac_c)
     bits.flush()
 
     def seg(marker, body):

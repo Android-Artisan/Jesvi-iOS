@@ -112,6 +112,8 @@ cmd_payload() {
 	[ "$devmode" = 1 ] && echo "payload: dev mode (the JesviOS menu at boot)"
 	# (the UEFI's line under the logo reads "- JESVI -" in both modes; mkbootlogo --dev would keep Mu's "[Volume Up] Boot Manager")
 	python3 -I tools/bootlogo/mkbootlogo.py || echo "payload: no boot logo (tools/bootlogo/mkbootlogo.py failed)"
+	# iPhone's charging pictures for S-Boot's phone-off screens (Apple's art from the IPSW, fetched once)
+	python3 -I tools/bootlogo/mkcharging.py || echo "payload: no charging pictures (tools/bootlogo/mkcharging.py failed)"
 	# CELLULAR_RESERVE_CP=1 by default (2026-11-13: two flashes built without it left cellular with "IPC map refused":
 	# no LTE, no VoLTE). CELLULAR_RESERVE_CP= (empty) builds the loader without the CP reservation.
 	env GIC_V2=1 CELLULAR_RESERVE_CP="${CELLULAR_RESERVE_CP-1}" SUPER_TAIL_START="$SUPER_TAIL_START" ${ROOT_SUPER_LEN:+SUPER_ROOT_LEN="$(printf '0x%x' "$ROOT_SUPER_LEN")"} \

@@ -20,7 +20,7 @@ func TestComputerApproval(t *testing.T) {
 		{"abc keep", false, true},
 		{"abc erase", false, true},
 		{"abc erase", true, true},
-		{"abc keep", true, false},   // an update approval never covers an erase
+		{"abc keep", true, false},    // an update approval never covers an erase
 		{"other keep", false, false}, // another package's approval: keys (none on the host)
 		{"abc maybe", false, false},
 		{"", false, false},

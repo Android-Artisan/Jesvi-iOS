@@ -23,35 +23,37 @@ type Image struct {
 	SHA256    string `json:"sha256"`
 }
 type Config struct {
-	Schema             int              `json:"schema"`
-	Action             string           `json:"action"` // install | restore
-	Device             string           `json:"device"`
-	Mode               string           `json:"mode"`
-	AllowWrites        bool             `json:"allow_writes"`
-	InstallerValidated bool             `json:"installer_validated"`
-	Models             []string         `json:"models"`
-	Bootloaders        []string         `json:"bootloaders"`
-	Products           []string         `json:"products"`
-	Partitions         map[string]int64 `json:"partitions"`
-	SystemMaxBytes     int64            `json:"system_max_bytes"`
-	StashOffset        int64            `json:"stash_offset"`
-	AndroidSuper       AndroidSuper     `json:"android_super"`
-	Files              map[string]Image `json:"files"`
-	KitSHA256          string           `json:"kit_sha256"`
-	KitBytes           int64            `json:"kit_bytes"`
-	DataBytes          int64            `json:"data_bytes"` // iOS's data volume (IOS_DATA_GB); 0: all of userdata
-	Splash             SplashFile       `json:"splash"`     // the power-on splash (splash.go); zero: none
+	Schema             int                   `json:"schema"`
+	Action             string                `json:"action"` // install | restore
+	Device             string                `json:"device"`
+	Mode               string                `json:"mode"`
+	AllowWrites        bool                  `json:"allow_writes"`
+	InstallerValidated bool                  `json:"installer_validated"`
+	Models             []string              `json:"models"`
+	Bootloaders        []string              `json:"bootloaders"`
+	Products           []string              `json:"products"`
+	Partitions         map[string]int64      `json:"partitions"`
+	SystemMaxBytes     int64                 `json:"system_max_bytes"`
+	StashOffset        int64                 `json:"stash_offset"`
+	AndroidSuper       AndroidSuper          `json:"android_super"`
+	Files              map[string]Image      `json:"files"`
+	KitSHA256          string                `json:"kit_sha256"`
+	KitBytes           int64                 `json:"kit_bytes"`
+	DataBytes          int64                 `json:"data_bytes"`         // iOS's data volume (IOS_DATA_GB); 0: all of userdata
+	Splash             SplashFile            `json:"splash"`             // the power-on splash (splash.go); zero: none
+	Pictures           map[string]SplashFile `json:"pictures,omitempty"` // extraPictures (splash.go), with a splash only
 }
 type SplashFile struct {
 	Bytes  int64  `json:"bytes"`
 	SHA256 string `json:"sha256"`
 }
 type Bundle struct {
-	Config Config
-	Files  map[string]*zip.File
-	Kit    []byte
-	Staged map[string][]byte
-	Splash []byte
+	Config   Config
+	Files    map[string]*zip.File
+	Kit      []byte
+	Staged   map[string][]byte
+	Splash   []byte
+	Pictures map[string][]byte
 }
 
 var imageParts = map[string]string{"boot.img": "boot", "recovery.img": "recovery", "system.apfs": "super"}
@@ -95,6 +97,12 @@ func checkConfig(c Config) error {
 		hash, e := hex.DecodeString(s.SHA256)
 		if c.Action != "install" || !hasUp || s.Bytes <= 0 || s.Bytes > splashMax || e != nil || len(hash) != 32 {
 			return errors.New("invalid splash: install packages for profiles with up_param only, at most 1 MiB")
+		}
+	}
+	for name, p := range c.Pictures {
+		hash, e := hex.DecodeString(p.SHA256)
+		if !extraPictures[name] || c.Splash.Bytes == 0 || p.Bytes <= 0 || p.Bytes > splashMax || e != nil || len(hash) != 32 {
+			return errors.New("invalid picture: only lpm.jpg/low_battery_alert.jpg, with a splash, at most 1 MiB")
 		}
 	}
 	for _, p := range []string{"boot", "recovery", "super", "userdata"} {
@@ -157,6 +165,9 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 	files := make(map[string]*zip.File)
 	meta := map[string]bool{"installer.json": true, "README.txt": true, "META-INF/com/google/android/update-binary": true, "META-INF/com/google/android/updater-script": true}
 	payload := map[string]bool{"hfs-kit.bin": true, "candidate.json": true, "splash.jpg": true}
+	for name := range extraPictures {
+		payload[name] = true
+	}
 	for name := range imageParts {
 		payload[name] = true
 	}
@@ -168,7 +179,7 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 		if f.Name == "hfs-kit.bin" {
 			limit = 16 << 20
 		}
-		if f.Name == "splash.jpg" { // the power-on logo (splash.go): up to 1 MiB, not the 64 KiB of metadata
+		if f.Name == "splash.jpg" || extraPictures[f.Name] { // power-on pictures (splash.go): up to 1 MiB, not 64 KiB
 			limit = splashMax
 		}
 		if f.Name == "META-INF/com/google/android/update-binary" {
@@ -208,6 +219,7 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 		if c.Splash.Bytes == 0 {
 			want-- // (splash.jpg only with a splash in the configuration)
 		}
+		want -= len(extraPictures) - len(c.Pictures) // (each extra picture only when configured)
 	}
 	for name := range meta {
 		if files[name] == nil {
@@ -279,7 +291,25 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 			return nil, errors.New("splash integrity failure")
 		}
 	}
-	b := &Bundle{Config: c, Files: files, Kit: kit, Staged: staged, Splash: splash}
+	var pics map[string][]byte
+	for name, meta := range c.Pictures {
+		if files[name] == nil {
+			return nil, fmt.Errorf("%s missing", name)
+		}
+		p, e := readSmall(files[name], splashMax)
+		if e != nil {
+			return nil, e
+		}
+		psum := sha256.Sum256(p)
+		if int64(len(p)) != meta.Bytes || !sameSHA(psum[:], meta.SHA256) {
+			return nil, fmt.Errorf("%s integrity failure", name)
+		}
+		if pics == nil {
+			pics = make(map[string][]byte)
+		}
+		pics[name] = p
+	}
+	b := &Bundle{Config: c, Files: files, Kit: kit, Staged: staged, Splash: splash, Pictures: pics}
 	if e = checkImages(b); e != nil {
 		return nil, e
 	}
