@@ -166,8 +166,8 @@ ringUpdate(void)
 			lockSpot = makeSpot(UIScreen.mainScreen.bounds);
 			lockSpot.alpha = 0;
 			[host addSubview:lockSpot];
+			[host bringSubviewToFront:lockSpot];   /* once, when newly parented (not every poll) */
 		}
-		[lockSpot.superview bringSubviewToFront:lockSpot];
 	}
 	fade(lockSpot, lock);
 }
@@ -186,9 +186,11 @@ fpRingInit(void)
 		notify_get_state(t, &state);
 		ringState = state;
 		ringUpdate();
-		if (state && ringTimer == nil) {
-			ringTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *tm) { ringUpdate(); }];
-		} else if (!state) {
+		/* Only a lock-screen match (state 2) needs polling: fingerWanted() tracks passcode-keypad/unlock
+		 * transitions that send no notification. Enrolment (state 1) is a plain window and needs no poll. */
+		if (state == 2 && ringTimer == nil) {
+			ringTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *tm) { ringUpdate(); }];
+		} else if (state != 2) {
 			[ringTimer invalidate];
 			ringTimer = nil;
 		}
