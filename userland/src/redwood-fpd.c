@@ -34,6 +34,7 @@
 #include <spawn.h>
 #include <IOKit/IOKitLib.h>
 #include <notify.h>
+#include <dispatch/dispatch.h>
 #include "fpcd_bridge.h"
 
 #define TEMPLATE        "/var/root/fp-template.bin"
@@ -596,9 +597,23 @@ main(void)
 	 * must not meet a daemon still busy with tee_up(), or it answers NotReady and the finger list stays unloaded */
 	pthread_t tt;
 	if (pthread_create(&tt, NULL, (void *(*)(void *))tee_up, NULL) == 0) pthread_detach(tt);
+	/* biometrickitd reads its catacomb (the enrolled fingers) at boot, before the first unlock, when data protection
+	 * still hides the file: it answers NoCatacomb and drops the finger (S20, 2026-11-19). On the first unlock the
+	 * bridge is opened again, and RedwoodMesa's connect message (0xe3ff800d) makes biometrickitd re-read it. */
+	static volatile int first_unlock;
+	int fu_token;
+	notify_register_dispatch("com.apple.mobile.keybagd.first_unlock", &fu_token,
+	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) { (void)t; first_unlock = 1; });
 	static struct smb_req q;
 	static struct smb_reply p;
 	for (;;) {
+		if (first_unlock) {
+			first_unlock = 0;
+			IOServiceClose(conn);
+			conn = 0;
+			while (bridge_open()) usleep(200000);
+			lg("first unlock: bridge reopened, biometrickitd re-reads its catacomb");
+		}
 		uint64_t timeout = 1000;
 		size_t qn = sizeof(q);
 		kern_return_t k = IOConnectCallMethod(conn, SMB_SEL_WAIT, &timeout, 1, NULL, 0, NULL, NULL, &q, &qn);
