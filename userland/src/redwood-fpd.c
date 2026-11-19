@@ -35,6 +35,8 @@
 #include <IOKit/IOKitLib.h>
 #include <notify.h>
 #include <dispatch/dispatch.h>
+#include <signal.h>
+#include <libproc.h>
 #include "fpcd_bridge.h"
 
 #define TEMPLATE        "/var/root/fp-template.bin"
@@ -566,6 +568,22 @@ tee_up(void)
 	lg("TEEGRIS %s", tee_status(s, sizeof(s)) == 0 && strstr(s, "TEEGRIS: up") ? "up" : "did not come up");
 }
 
+
+/* biometrickitd loads its catacomb when it starts: stop it so launchd starts it again on demand */
+static void
+restart_biometrickitd(void)
+{
+	pid_t pids[2048];
+	int n = proc_listallpids(pids, sizeof(pids)) ;
+	for (int i = 0; i < n; i++) {
+		char path[PROC_PIDPATHINFO_MAXSIZE];
+		if (proc_pidpath(pids[i], path, sizeof(path)) > 0 && !strcmp(path, "/usr/libexec/biometrickitd")) {
+			kill(pids[i], SIGKILL);
+			lg("first unlock: biometrickitd (%d) restarted to load its catacomb", pids[i]);
+		}
+	}
+}
+
 static void
 set(const char *name, int v)
 {
@@ -612,7 +630,9 @@ main(void)
 			IOServiceClose(conn);
 			conn = 0;
 			while (bridge_open()) usleep(200000);
-			lg("first unlock: bridge reopened, biometrickitd re-reads its catacomb");
+			lg("first unlock: bridge reopened");
+			sleep(2);                       /* the keybag settles; then the catacomb file is readable */
+			restart_biometrickitd();
 		}
 		uint64_t timeout = 1000;
 		size_t qn = sizeof(q);
