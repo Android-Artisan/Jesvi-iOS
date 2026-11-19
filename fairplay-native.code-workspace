@@ -1,0 +1,14 @@
+{
+  "folders": [
+    { "name": "Native FairPlay — feat/s20-native-fairplay", "path": "." }
+  ],
+  "settings": {
+    "git.autoRepositoryDetection": true,
+    "git.openRepositoryInParentFolders": "never",
+    "search.exclude": {
+      "**/xnu-src/**/BUILD/**": true,
+      "**/out/**": true,
+      "**/sysimage/**": true
+    }
+  }
+}

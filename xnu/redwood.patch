@@ -2047,6 +2047,52 @@ index 28ea44c2ae9d..9c7a1fe9e23e 100644
  		    "only plain data types can be contained (consider using OSValueObject)");
  		return 0; // C++11 does not support void-returning constexpr functions
  	}
+diff --git a/libsa/bootstrap.cpp b/libsa/bootstrap.cpp
+index f0f770add668..dd65e789539e 100644
+--- a/libsa/bootstrap.cpp
++++ b/libsa/bootstrap.cpp
+@@ -30,6 +30,7 @@ extern "C" {
+ #include <libkern/kernel_mach_header.h>
+ #include <libkern/prelink.h>
+ #include <libkern/crypto/sha2.h>
++#include <pexpert/pexpert.h>
+ }
+ 
+ #define IOKIT_ENABLE_SHARED_PTR
+@@ -264,6 +265,33 @@ KLDBootstrap::readPrelinkedExtensions(kernel_mach_header_t *mh, kc_kind_t type)
+ 		return;
+ 	}
+ 
++	/* Redwood native FairPlay prototype: omit both modules unless explicitly
++	 * enabled. Filtering happens before OSKext creates objects or constructors
++	 * run. This argument does not alter purchase/licensing decisions.
++	 */
++	if (type == KCKindPrimary) {
++		int nativeFairPlay = 0;
++		PE_parse_boot_argn("fairplay_native", &nativeFairPlay, sizeof(nativeFairPlay));
++		OSArray *nativeArray = OSDynamicCast(OSArray,
++		    infoDict->getObject(kPrelinkInfoDictionaryKey));
++		unsigned int omitted = 0;
++		if (nativeArray && nativeFairPlay != 1) {
++			for (unsigned int i = nativeArray->getCount(); i > 0; i--) {
++				OSDictionary *entry = OSDynamicCast(OSDictionary, nativeArray->getObject(i - 1));
++				OSString *identifier = entry ? OSDynamicCast(OSString,
++				    entry->getObject("CFBundleIdentifier")) : NULL;
++				if (identifier &&
++				    (identifier->isEqualTo("com.apple.driver.FairPlayIOKit") ||
++				    identifier->isEqualTo("com.apple.IOTextEncryptionFamily"))) {
++					nativeArray->removeObject(i - 1);
++					omitted++;
++				}
++			}
++		}
++		IOLog("redwood_native_fairplay_gate_v1: enabled=%d omitted=%u\n",
++		    nativeFairPlay == 1, omitted);
++	}
++
+ 	/* Validate that the Kext Collection is prelinked to the loaded KC */
+ 	if (type == KCKindAuxiliary) {
+ 		if (OSKext::validateKCFileSetUUID(infoDict, KCKindAuxiliary) != 0) {
 diff --git a/makedefs/MakeInc.cmd b/makedefs/MakeInc.cmd
 index bc39e19b3b8e..0a72a2d43908 100644
 --- a/makedefs/MakeInc.cmd

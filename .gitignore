@@ -4,6 +4,7 @@
 /*
 !/.gitignore
 !/README.md
+!/fairplay-native.code-workspace
 !/ci/
 !/.github/
 !/.editorconfig
@@ -38,6 +39,7 @@ __pycache__/
 !/xnuloader/build.sh
 !/xnuloader/efi.h
 !/xnuloader/loader.c
+!/xnuloader/native_sidecar.h
 !/xnuloader/s20_memory.h
 !/xnuloader/s20_efi_memory.h
 !/xnuloader/mkidentity.py

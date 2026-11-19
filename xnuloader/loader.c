@@ -12,6 +12,7 @@
 #include "efi.h"
 #include "s20_memory.h"
 #include "s20_efi_memory.h"
+#include "native_sidecar.h"
 #ifdef CELLULAR_SPI_LOOPBACK
 #include "../tools/cellular/s5123-spi.h"
 #endif
@@ -2826,6 +2827,10 @@ install_exception_hook(void)
 
 struct payload_info {
 	const uint8_t *kernel;
+	uint32_t kernel_size;
+	const uint8_t *native_sidecar;
+	char fpart[32];
+	uint64_t foff, fsize;
 	const uint8_t *ramdisk;
 	uint32_t ramdisk_size;
 	const char *cmdline;
@@ -2882,6 +2887,7 @@ parse_payload(struct payload_info *pi, int verbose)
 			pi->ramdisk_size = e->size;
 		} else if (str_eq(e->name, "kernel")) {
 			pi->kernel = p + sizeof(*e);
+			pi->kernel_size = e->size;
 		} else if (str_eq(e->name, "cmdline")) {
 			pi->cmdline = text;
 		} else if (str_eq(e->name, "physbase")) {
@@ -2915,6 +2921,16 @@ parse_payload(struct payload_info *pi, int verbose)
 			pi->roff = parse_number(text, 16);
 		} else if (str_eq(e->name, "rsize")) {
 			pi->rsize = parse_number(text, 16);
+		} else if (str_eq(e->name, "fpart")) {
+			if (e->size < 2 || e->size > sizeof(pi->fpart) || text[e->size - 1] != 0) return 0;
+			if (!str_eq(text, "recovery")) return 0;
+			memcpy(pi->fpart, text, e->size);
+		} else if (str_eq(e->name, "foff") || str_eq(e->name, "fsize")) {
+			if (e->size < 2 || e->size > 17 || text[e->size - 1] != 0) return 0;
+			for (unsigned k = 0; k + 1 < e->size; k++)
+				if (!((text[k] >= '0' && text[k] <= '9') || (text[k] >= 'a' && text[k] <= 'f'))) return 0;
+			if (str_eq(e->name, "foff")) pi->foff = parse_number(text, 16);
+			else pi->fsize = parse_number(text, 16);
 		} else if (str_eq(e->name, "rdpart")) {
 			unsigned k = 0;
 			while (k + 1 < sizeof(pi->rdpart) && text[k] != 0) {
@@ -3333,6 +3349,31 @@ load_kernel_from_partition(const char *part, uint64_t off)
  * back (panic, checkpoint, early exception); the combined log is staged and
  * written to the log partition. Returns 0 if the kernel could not be started.
  */
+/* Optional native FairPlay bytes occupy recovery+24 MiB, outside the
+ * boot image, before the existing kernel slot. No other partition is accepted.
+ * Reserve source memory before choose_window so XNU cannot own the buffer.
+ */
+static uint64_t native_sidecar_base;
+static int
+load_native_sidecar(struct payload_info *pi)
+{
+	if (!pi->fpart[0]) return pi->fsize == 0 && pi->foff == 0;
+	if (!str_eq(pi->fpart, "recovery") || pi->foff != 0x01800000ULL ||
+	    pi->fsize < 32 || pi->fsize > 0x00400000ULL) return 0;
+	if (!native_sidecar_base && !allocate_low_dma(0x00400000ULL, 0x10000, &native_sidecar_base)) return 0;
+	uint64_t read_size = (pi->fsize + PAGE_SIZE_MAX - 1) & ~(PAGE_SIZE_MAX - 1);
+	if (!read_partition_into(pi->fpart, pi->foff, (void *)(uintptr_t)native_sidecar_base, read_size)) return 0;
+	pi->native_sidecar = (const uint8_t *)(uintptr_t)native_sidecar_base;
+	return 1;
+}
+
+static void
+copy_native_sidecar_piece(void *context, uint64_t address, const uint8_t *source, uint64_t length)
+{
+	uint64_t slide = *(uint64_t *)context;
+	memcpy((void *)(uintptr_t)(address + slide), source, length);
+}
+
 static int starts_with(const char *s, const char *prefix);
 
 static int
@@ -3355,6 +3396,7 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			return 0;
 		}
 		pi.kernel = (const uint8_t *)(uintptr_t)download_base;
+		pi.kernel_size = DOWNLOAD_MAX_SIZE;
 	}
 	if (pi.kernel == NULL) {
 		print("no kernel in payload\n");
@@ -3365,6 +3407,10 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 	}
 	if (!have_checkpoint) {
 		checkpoint = pi.checkpoint;
+	}
+	if (!load_native_sidecar(&pi)) {
+		print("native sidecar storage preparation failed\n");
+		return 0;
 	}
 	const uint8_t *kernel = pi.kernel;
 	const struct mach_header_64 *mh = (const struct mach_header_64 *)kernel;
@@ -3476,6 +3522,24 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 		}
 		memset((void *)(sg->vmaddr + slide), 0, sg->vmsize);
 		memcpy((void *)(sg->vmaddr + slide), kernel + sg->fileoff, sg->filesize);
+	}
+	if (pi.native_sidecar) {
+		unsigned copied = rwfp_apply(kernel, pi.kernel_size, pi.native_sidecar, pi.fsize,
+		    copy_native_sidecar_piece, &slide);
+		if (!copied) {
+			print("native sidecar validation failed; kernel not started\n");
+			return 0;
+		}
+		print("native sidecar: %d validated pieces copied, execution governed by fairplay_native\n", (uint64_t)copied);
+	} else {
+		lc = (const struct load_command *)(mh + 1);
+		for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const void *)((const uint8_t *)lc + lc->cmdsize)) {
+			const struct segment_command_64 *sg = (const void *)lc;
+			if (lc->cmd == LC_SEGMENT_64 && sg->vmsize && rwfp_group((const uint8_t *)sg->segname)) {
+				print("native sidecar required for populated prelink VM; kernel not started\n");
+				return 0;
+			}
+		}
 	}
 	print("kernel loaded at pa %x..%x\n", kern_lo, kern_hi);
 	if (rd_resident) {
