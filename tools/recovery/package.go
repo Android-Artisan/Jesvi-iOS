@@ -168,6 +168,9 @@ func loadBundle(z *zip.Reader, configDigest string) (*Bundle, error) {
 		if f.Name == "hfs-kit.bin" {
 			limit = 16 << 20
 		}
+		if f.Name == "splash.jpg" { // the power-on logo (splash.go): up to 1 MiB, not the 64 KiB of metadata
+			limit = splashMax
+		}
 		if f.Name == "META-INF/com/google/android/update-binary" {
 			limit = 32 << 20
 		}
