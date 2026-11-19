@@ -29,7 +29,13 @@ Branch `feat/s20-touchid` (worktree `work/hackios-touchid`) = `main` + `feat/s20
 3. ~~Ring on the lock screen~~ done (2026-11-19): drawn inside the cover sheet view (no window), faint, only while a
    match waits on the lock screen itself; enrolment uses a secure window with its home indicator hidden.
    A failed or rejected lock-screen capture shakes the lock (verified 2026-11-19 10:02).
-   The second grey home bar on the lock screen is NOT from the ring (seen with libredwood-touchid-ui unloaded); unsolved.
+   The second grey home bar on the lock screen is NOT from the ring (seen with libredwood-touchid-ui unloaded) nor
+   from libredwood-alwayson. A view dump of SpringBoard (2026-11-19 10:10) shows CSHomeAffordanceView (alpha 0) with
+   MTLumaDodgePillView and CSAlwaysOnHomeAffordancePillView hidden but MTStaticColorPillView visible (alpha 1) at the
+   home bar's place: the likely grey bar. Hooking CSHomeAffordanceView layoutSubviews to hide it or set alpha 0 made
+   SpringBoard abort at every start (userabort, no reason logged; auto-restored). Next: find why (try the hook in the
+   image build instead of a /var/mobile copy; check whether loading any rebuilt copy from /var/mobile aborts), or find
+   which SpringBoard setting picks the static pill (luma dodge unsupported by the GL renderer?).
 6. Overheating (2026-11-19): 109 C big / 105 C little before PMIC resets (RST_STAT PINRESET + WTSR) a few minutes
    after each of many back-to-back boots; 55 C with an external cooler. A stronger kernel thermal guard is needed.
 4. Popup text shows raw TOUCH_ID_ISSUE_* keys (strings only in a Touch ID iPhone's iOS).
