@@ -144,7 +144,9 @@ INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd cont
 /redwood/lib/libredwood-eagl.dylib ${EAGL_APPS-AngryBirdsSpace Leos_fortune}
 /var/jb/redwood/lib/libredwood-calls.dylib callservicesd
 /var/jb/usr/lib/libredwood-metalon.dylib PhotosPosterProvider GradientPosterExtension EmojiPosterExtension
-/var/jb/usr/lib/libredwood-duet.dylib duetexpertd"}
+/var/jb/usr/lib/libredwood-duet.dylib duetexpertd
+/redwood/lib/libredwood-mis.dylib misd sharingd
+/redwood/lib/libredwood-mgcell.dylib Preferences"}
 # (libredwood-metaloff is NOT in the boot list (B, 2026-11-14): it only matters while metal_props is on, and its
 #  IORegistry hooks were the common factor of two stack overflows -- mediaserverd SIGBUS at its guard page, and
 #  CollectionsPoster with metalon. Add it live to kern.exec_inject when metal_props is switched on.)
@@ -358,6 +360,22 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
+		# Personal Hotspot: misd's carrier answers (src/mis_ct.m) and Settings' "cellular-data" (src/mg_cellular.c)
+		$DYN -fobjc-arc -fblocks -dynamiclib -install_name /redwood/lib/libredwood-mis.dylib -framework Foundation -lobjc \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreTelephony \
+			-o obj/libredwood-mis.dylib src/mis_ct.m
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-mgcell.dylib -framework CoreFoundation -lobjc \
+			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
+		# ... and the network behind the access point (tools/hotspot: addresses, NAT, CLAT46; misctl for tests)
+		mkdir -p obj/hotspot-inc/net obj/hotspot-inc/libkern
+		cp ../xnu-src/xnu-8796.121.2/bsd/net/pfvar.h ../xnu-src/xnu-8796.121.2/bsd/net/radix.h obj/hotspot-inc/net/
+		cp ../xnu-src/xnu-8796.121.2/libkern/libkern/tree.h obj/hotspot-inc/libkern/
+		for p in rwdhcpd rwpf clat-test; do $DYN -Iobj/hotspot-inc -o obj/$p ../tools/hotspot/$p.c; done
+		# rwsys NAME [VALUE] (sysctl strings): the Store account boot job uses it (it was copied below but never built)
+		$DYN -o obj/rwsys src/rwsys.c
+		$DYN -fobjc-arc -framework Foundation -F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
+			-framework MobileWiFi -o obj/misctl ../tools/hotspot/misctl.m &&
+			{ ${LDID:-ldid} -S../tools/hotspot/misctl.ent obj/misctl 2>/dev/null || echo "build.sh: no ldid: misctl unsigned"; }
 		# Files on the HFS+ data volume: target only its daemon and local provider.
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
 			-o obj/libredwood-files.dylib src/inject_files.c
@@ -579,6 +597,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
 	[ -f obj/libredwood-files.dylib ] && cp obj/libredwood-files.dylib root/lib/
 	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
+	[ -f obj/libredwood-mis.dylib ] && cp obj/libredwood-mis.dylib root/lib/
+	[ -f obj/libredwood-mgcell.dylib ] && cp obj/libredwood-mgcell.dylib root/lib/
+	for p in rwdhcpd rwpf clat-test misctl; do [ ! -f obj/$p ] || cp obj/$p root/bin/; done
+	cp ../tools/hotspot/hotspot-up.sh root/bin/ && chmod 755 root/bin/hotspot-up.sh
 	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
@@ -681,6 +703,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
     # Shared graphics is automatic for normal applications. GRAPHICS_COMPAT=0

@@ -45,6 +45,8 @@
 
 #include "lx_wpa.h"
 
+extern kern_return_t thread_terminate(thread_t thread);     /* (as hakios.buttons.c: not in a BSD header) */
+
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
 extern void loader_log_line(const char *line);
 extern const uint8_t *redwood_adsp_fw_file(const char *name, uint64_t *size);
@@ -139,6 +141,7 @@ void redwood_bcm4375_run(const struct redwood_bcm_bus *bus);
 #define RING_RX_COMPLETE        4
 #define RINGS                   5
 #define RING_MEM_SZ             16
+static void apple_ie_log(const struct redwood_sta_bss *b);   /* (Personal Hotspot: below) */
 static const uint16_t ring_items[RINGS] = { 64, 1024, 64, 1024, 1024 };
 static const uint16_t ring_item_len[RINGS] = { 40, 32, 24, 24, 40 };            /* shared version 7 */
 static const uint16_t ring_item_len_pre7[RINGS] = { 40, 32, 24, 16, 32 };
@@ -1007,6 +1010,7 @@ bss_fill(struct redwood_sta_bss *b, const uint8_t *bi, uint32_t avail)
 	if (ie_offset >= 126 && ie_offset <= length && ie_length <= length - ie_offset) {
 		b->elements_length = (uint16_t)(ie_length > REDWOOD_STA_ELEMENTS_MOST ? REDWOOD_STA_ELEMENTS_MOST : ie_length);
 		memcpy(b->elements, bi + ie_offset, b->elements_length);
+		apple_ie_log(b);
 	}
 	return true;
 }
@@ -1042,6 +1046,34 @@ heard_one(const uint8_t *bi, uint32_t avail)
 
 /* brcmf_fweh_process_event(): an Ethernet frame of type 0x886c, Broadcom's event header (big-endian) [fweh]215..248 */
 static volatile bool ap_on;     /* the chip is an access point (Personal Hotspot): client mode refused */
+static uint8_t ap_ssid[32], ap_ssid_length;     /* the access point's name and channel, for state() */
+static uint16_t ap_channel;
+static uint8_t ap_bssid[6];                     /* our address (bcm_ops.address, set at attach) */
+
+/*
+ * WPA2 as an access point: the firmware has no authenticator (WLC_SET_WSEC_PMK -23), so the four-way handshake
+ * with each station is ours (lx_wpa_ap_*). E_ASSOC_IND queues the station; ap_thread() sends message 1 and says
+ * messages 1 and 3 again when no answer comes; eapol_handle() takes messages 2 and 4; after message 4 the station's
+ * pairwise key goes to the firmware. The group key is made at start and installed as the primary (transmit) key.
+ * State under eapol_lock; the join/leave queue under state_lock (event() runs inside the ring poll).
+ */
+#define AP_STATIONS     8
+#define AP_TRIES        4
+static struct ap_station {
+	bool used, secured;
+	uint8_t mac[6];
+	unsigned tries;
+	uint64_t sent;                  /* mach_absolute_time of our last message */
+	struct lx_wpa_ap w;
+} ap_sta[AP_STATIONS];
+static volatile bool ap_wpa;                    /* WPA2 on the access point */
+static uint8_t ap_pmk[32], ap_gtk[16];
+/* our RSN element as the firmware beacons it (WPA2-PSK, CCMP; capabilities = iovar wpa_cap, 0x000c on 18.41.117) */
+static uint8_t ap_rsn[22] = { 0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00,
+	                      0x00, 0x0f, 0xac, 0x02, 0x0c, 0x00 };
+static struct { uint8_t mac[6]; bool join; } ap_q[8];
+static unsigned ap_qn;
+static volatile bool ap_thread_on;
 
 static void
 event(const uint8_t *frame, uint32_t len)
@@ -1094,6 +1126,18 @@ event(const uint8_t *frame, uint32_t len)
 		blog("ap: %s %02x:%02x:%02x:%02x:%02x:%02x status %u reason %u", type == E_AUTH_IND ? "client authenticating" :
 		    type == E_ASSOC_IND ? "CLIENT JOINED" : type == E_REASSOC_IND ? "client rejoined" : "client left",
 		    frame[48], frame[49], frame[50], frame[51], frame[52], frame[53], status, reason);
+		if (type != E_AUTH_IND && (type == E_DEAUTH_IND || type == E_DISASSOC_IND || !ap_wpa)) {
+			redwood_apple80211_station(type == E_ASSOC_IND || type == E_REASSOC_IND, frame + 48);
+		}
+		if (ap_wpa && type != E_AUTH_IND) {     /* the handshake starts (again) or ends: ap_thread() */
+			lck_spin_lock(&state_lock);
+			if (ap_qn < sizeof(ap_q) / sizeof(ap_q[0])) {
+				memcpy(ap_q[ap_qn].mac, frame + 48, 6);
+				ap_q[ap_qn].join = type == E_ASSOC_IND || type == E_REASSOC_IND;
+				ap_qn++;
+			}
+			lck_spin_unlock(&state_lock);
+		}
 	}
 	if (type == E_IF && datalen >= 5) {
 		blog("event IF: ifidx %u action %u flags %u bsscfg %u role %u", data[0], data[1], data[2], data[3], data[4]);
@@ -1301,6 +1345,8 @@ static unsigned bcm_poll(void);
  * go out before the keys are set (else the firmware would cipher it), then the pairwise key and the group
  * key go to the firmware. A group key handshake later sets the new group key.
  */
+static void ap_eapol(const uint8_t *frame, unsigned length);
+
 static void
 eapol_handle(void)
 {
@@ -1325,6 +1371,10 @@ eapol_handle(void)
 		memmove(&eapol_q[0], &eapol_q[1], sizeof(eapol_q[0]) * (EAPOL_QUEUE - 1));
 		eapol_n--;
 		lck_spin_unlock(&state_lock);
+		if (ap_wpa && length > 14) {
+			ap_eapol(frame, length);
+			continue;
+		}
 		if (!wpa_on || length <= 14) {
 			continue;
 		}
@@ -1406,7 +1456,7 @@ bcm_poll(void)
 	for (unsigned i = 0; i < n; i++) {
 		const uint8_t *frame = rx_buf[q[i].buf] + q[i].offset;
 
-		if (frame[12] == ETHERTYPE_EAPOL_HI && frame[13] == ETHERTYPE_EAPOL_LO && wpa_on) {
+		if (frame[12] == ETHERTYPE_EAPOL_HI && frame[13] == ETHERTYPE_EAPOL_LO && (wpa_on || ap_wpa)) {
 			lck_spin_lock(&state_lock);
 			if (eapol_n == EAPOL_QUEUE) {
 				memmove(&eapol_q[0], &eapol_q[1], sizeof(eapol_q[0]) * (EAPOL_QUEUE - 1));
@@ -2161,6 +2211,70 @@ static struct redwood_sta_bss join_bss;
  */
 static int wifi_rssi_now, wifi_noise_now;
 SYSCTL_DECL(_kern_redwood);
+
+/*
+ * Apple's vendor elements (OUI 00:17:f2) of the networks a scan hears, to the log once each (B, 2026-11-19): an
+ * iPhone's Personal Hotspot marks itself with one, and the devices on it then treat it as mobile data (macOS:
+ * IsExpensive). kern.redwood.wifi_ap_vendor_ie = the element's body in hex (OUI first): sent in our access point's
+ * beacons and probe answers (Broadcom "vndr_ie", as brcmfmac's brcmf_vif_set_mgmt_ie), now and at every start.
+ */
+static void
+apple_ie_log(const struct redwood_sta_bss *b)
+{
+	static uint32_t seen[16];
+	static unsigned seen_n;
+
+	for (unsigned at = 0; at + 2 <= b->elements_length && at + 2 + b->elements[at + 1] <= b->elements_length;
+	    at += 2 + b->elements[at + 1]) {
+		const uint8_t *e = b->elements + at;
+		char hex[2 * 64 + 1];
+		uint32_t h = 2166136261u;
+		unsigned l = e[1] > 64 ? 64 : e[1], i;
+
+		if (e[0] != 221 || e[1] < 4 || e[2] != 0x00 || e[3] != 0x17 || e[4] != 0xf2) {
+			continue;
+		}
+		for (i = 0; i < 6; i++) {
+			h = (h ^ b->bssid[i]) * 16777619u;
+		}
+		for (i = 0; i < l; i++) {
+			h = (h ^ e[2 + i]) * 16777619u;
+			snprintf(hex + 2 * i, 3, "%02x", e[2 + i]);
+		}
+		hex[2 * l] = 0;
+		for (i = 0; i < seen_n && seen[i] != h; i++) {
+		}
+		if (i < seen_n) {
+			continue;
+		}
+		seen[seen_n++ % 16] = h;
+		if (seen_n > 16) {
+			seen_n = 16;
+		}
+		blog("scan: apple element from \"%.*s\" (%u bytes): %s", b->ssid_length, b->ssid, e[1], hex);
+	}
+}
+
+static uint8_t ap_vie[64];
+static unsigned ap_vie_len;
+
+static void
+ap_vie_apply(const char *cmd)
+{
+	uint8_t buf[4 + 4 + 4 + 2 + sizeof(ap_vie)] = { 0 };
+	uint32_t one = 1, flags = 0x1 | 0x2;            /* beacons and probe answers */
+
+	if (ap_vie_len < 3) {
+		return;
+	}
+	strlcpy((char *)buf, cmd, 4);
+	memcpy(buf + 4, &one, 4);
+	memcpy(buf + 8, &flags, 4);
+	buf[12] = 221;
+	buf[13] = (uint8_t)ap_vie_len;
+	memcpy(buf + 14, ap_vie, ap_vie_len);
+	blog("ap: vendor element %s: %d", cmd, iovar(true, "vndr_ie", buf, 14 + ap_vie_len));
+}
 SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_rssi, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_rssi_now, 0,
     "the joined network's signal in dBm, live (0: not joined)");
 SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_noise, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_noise_now, 0,
@@ -2850,6 +2964,15 @@ sta_get_state(struct redwood_sta_state *state)
 	}
 	lck_spin_lock(&state_lock);
 	*state = sta_state;
+	if (ap_on) {                    /* our own access point: what wifid asks of "the network" is about it */
+		state->ap = true;
+		bzero(&state->bss, sizeof(state->bss));
+		memcpy(state->bss.ssid, ap_ssid, ap_ssid_length);
+		state->bss.ssid_length = ap_ssid_length;
+		memcpy(state->bss.bssid, ap_bssid, 6);
+		state->bss.frequency = (uint16_t)(ap_channel > 14 ? 5000 + 5 * ap_channel : ap_channel == 14 ? 2484 :
+		    2407 + 5 * ap_channel);
+	}
 	lck_spin_unlock(&state_lock);
 }
 
@@ -2992,12 +3115,15 @@ link_transmit(mbuf_t packet, size_t length)
 	return true;
 }
 
+static int sta_ap(const struct redwood_sta_ap *what);
+
 static struct redwood_sta_ops bcm_ops = {
 	.power = sta_power,
 	.scan = sta_scan,
 	.heard = sta_heard,
 	.join = sta_join,
 	.leave = sta_leave,
+	.ap = sta_ap,
 	.state = sta_get_state,
 	.channels = sta_channels,
 };
@@ -3018,6 +3144,7 @@ service_start(void)
 	int err;
 
 	memcpy(bcm_ops.address, mac, 6);
+	memcpy(ap_bssid, mac, 6);
 	memcpy(bcm_link.address, mac, 6);
 	state_set(REDWOOD_STA_IDLE, NULL, 0);
 	link_attached = redwood_net_attach(&bcm_link);
@@ -3101,8 +3228,8 @@ redwood_bcm4375_run(const struct redwood_bcm_bus *b)
  * interface (and Samsung's dhd): client mode left, DOWN, INFRA 1, AP 1, chanspec, security, UP, SET_SSID; E_LINK up
  * (or E_SET_SSID status 0) says the network is on the air. Then a flow ring towards broadcast and en0's link up.
  * While it is up the client-mode calls (scan, join, power) answer EBUSY, so wifid cannot undo it.
- * WPA2: firmware 18.41.117 has no authenticator of its own (WLC_SET_WSEC_PMK -23); until the host does the
- * four-way handshake a passphrase is refused (ENOTSUP) rather than a network nobody can join.
+ * WPA2: firmware 18.41.117 has no authenticator of its own (WLC_SET_WSEC_PMK -23): the host does the four-way
+ * handshake with each station (lx_wpa_ap_*, ap_thread(), ap_eapol()).
  * Root-only switches for now; iOS's Personal Hotspot comes on top in later stages:
  *   sysctl -w kern.redwood.wifi_ap="start <channel> <name> [passphrase]"     sysctl -w kern.redwood.wifi_ap=stop
  *   (fields may be separated by tabs instead, for a name or passphrase with spaces)
@@ -3112,36 +3239,207 @@ redwood_bcm4375_run(const struct redwood_bcm_bus *b)
 static char ap_result[160] = "off";
 static volatile SInt32 ap_busy;         /* one start/stop at a time (sysctl writers) */
 
+static void
+ap_send(struct ap_station *st, const uint8_t *msg, unsigned len, const char *what)
+{
+	uint8_t f[14 + LX_WPA_REPLY_MOST];
+	unsigned slot;
+
+	if (len > LX_WPA_REPLY_MOST) {
+		return;
+	}
+	memcpy(f, st->mac, 6);
+	memcpy(f + 6, mac, 6);
+	f[12] = ETHERTYPE_EAPOL_HI;
+	f[13] = ETHERTYPE_EAPOL_LO;
+	memcpy(f + 14, msg, len);
+	st->sent = mach_absolute_time();
+	if (!tx_raw(f, 14 + len, &slot)) {
+		blog("ap: %02x:%02x:%02x:..: %s could not be sent", st->mac[0], st->mac[1], st->mac[2], what);
+	}
+	bzero(f, sizeof(f));
+}
+
+static struct ap_station *
+ap_find(const uint8_t *m)
+{
+	for (unsigned i = 0; i < AP_STATIONS; i++) {
+		if (ap_sta[i].used && memcmp(ap_sta[i].mac, m, 6) == 0) {
+			return &ap_sta[i];
+		}
+	}
+	return NULL;
+}
+
+static void
+ap_forget(struct ap_station *st)
+{
+	bzero(st, sizeof(*st));
+}
+
+/* under eapol_lock: a station's message 2 or 4 (from eapol_handle) */
+static void
+ap_eapol(const uint8_t *frame, unsigned length)
+{
+	struct ap_station *st = ap_find(frame + 6);
+	uint8_t reply[LX_WPA_REPLY_MOST];
+	unsigned rl = 0;
+	const char *why = NULL;
+	int what;
+
+	if (st == NULL || st->secured) {
+		return;
+	}
+	what = lx_wpa_ap_message(&st->w, frame + 14, length - 14, reply, &rl, &why);
+	if (what == LX_WPA_ANSWER) {
+		st->tries = 0;
+		ap_send(st, reply, rl, "message 3");
+	} else if (what == LX_WPA_KEYS) {
+		int e = key_install(st->w.pairwise, 16, 0, st->mac, NULL);
+
+		st->secured = e == 0;
+		if (e == 0) {
+			redwood_apple80211_station(true, st->mac);  /* (WPA2: counted once its keys are in) */
+		}
+		blog("ap: %02x:%02x:%02x:%02x:%02x:%02x %s (pairwise key %d)", st->mac[0], st->mac[1], st->mac[2], st->mac[3],
+		    st->mac[4], st->mac[5], e == 0 ? "CLIENT SECURED (WPA2)" : "the firmware refused its key", e);
+		bzero(st->w.kck, sizeof(st->w.kck));
+		bzero(st->w.kek, sizeof(st->w.kek));
+		bzero(st->w.pairwise, sizeof(st->w.pairwise));
+	} else if (what == LX_WPA_BAD) {
+		blog("ap: %02x:%02x:%02x:..: a key message refused: %s", st->mac[0], st->mac[1], st->mac[2], why ? why : "");
+	}
+	bzero(reply, sizeof(reply));
+}
+
+/*
+ * While WPA2 is on: stations that joined get message 1; a message 1 or 3 not answered in a second is said again
+ * (a new counter), up to AP_TRIES times, then the station is forgotten (it times out and joins again).
+ */
+static void
+ap_thread(__unused void *p, __unused wait_result_t w)
+{
+	while (ap_wpa) {
+		struct { uint8_t mac[6]; bool join; } q[8];
+		unsigned n;
+		uint64_t now, second;
+
+		lck_spin_lock(&state_lock);
+		n = ap_qn;
+		memcpy(q, ap_q, n * sizeof(q[0]));
+		ap_qn = 0;
+		lck_spin_unlock(&state_lock);
+
+		lck_mtx_lock(&eapol_lock);
+		for (unsigned i = 0; i < n; i++) {
+			struct ap_station *st = ap_find(q[i].mac);
+
+			if (st != NULL) {
+				ap_forget(st);
+			}
+			if (!q[i].join) {
+				continue;
+			}
+			for (unsigned k = 0; k < AP_STATIONS && st == NULL; k++) {
+				if (!ap_sta[k].used) {
+					st = &ap_sta[k];
+				}
+			}
+			if (st == NULL) {
+				blog("ap: no room for another WPA2 station");
+				continue;
+			}
+			uint8_t m1[LX_WPA_REPLY_MOST];
+			unsigned l1 = 0;
+
+			st->used = true;
+			memcpy(st->mac, q[i].mac, 6);
+			memcpy(st->w.pmk, ap_pmk, 32);
+			memcpy(st->w.own, mac, 6);
+			memcpy(st->w.peer, q[i].mac, 6);
+			read_random(st->w.own_nonce, sizeof(st->w.own_nonce));
+			st->w.rsn = ap_rsn;
+			st->w.rsn_length = sizeof(ap_rsn);
+			st->w.group = ap_gtk;
+			st->w.group_length = sizeof(ap_gtk);
+			st->w.group_index = 1;
+			if (lx_wpa_ap_first(&st->w, m1, &l1) == LX_WPA_ANSWER) {
+				ap_send(st, m1, l1, "message 1");
+			}
+		}
+		now = mach_absolute_time();
+		nanoseconds_to_absolutetime(NSEC_PER_SEC, &second);
+		for (unsigned i = 0; i < AP_STATIONS; i++) {
+			struct ap_station *st = &ap_sta[i];
+			uint8_t m[LX_WPA_REPLY_MOST];
+			unsigned l = 0;
+
+			if (!st->used || st->secured || now - st->sent < second) {
+				continue;
+			}
+			if (++st->tries > AP_TRIES) {
+				blog("ap: %02x:%02x:%02x:..: no answer to message %d, given up", st->mac[0], st->mac[1], st->mac[2],
+				    st->w.stage);
+				ap_forget(st);
+				continue;
+			}
+			if (lx_wpa_ap_again(&st->w, m, &l) == LX_WPA_ANSWER) {
+				ap_send(st, m, l, "a message again");
+			}
+		}
+		lck_mtx_unlock(&eapol_lock);
+		delay(200000);
+	}
+	lck_mtx_lock(&eapol_lock);
+	for (unsigned i = 0; i < AP_STATIONS; i++) {
+		ap_forget(&ap_sta[i]);
+	}
+	lck_mtx_unlock(&eapol_lock);
+	ap_thread_on = false;
+	thread_terminate(current_thread());
+}
+
 /* back to client mode: the AP off, open security, the chip up again for wifid */
 static void
 ap_down(void)
 {
 	uint32_t one = 1, zero = 0;
 
+	redwood_apple80211_stations_clear();
+
 	(void)ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
 	(void)ioctl(WLC_SET_AP, &zero, sizeof(zero), sizeof(zero));
 	(void)iovar_int("wsec", 0);
 	(void)iovar_int("wpa_auth", 0);
 	(void)ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
+	ap_wpa = false;                 /* ap_thread() ends and forgets the stations */
+	bzero(ap_pmk, sizeof(ap_pmk));
+	bzero(ap_gtk, sizeof(ap_gtk));
 	ap_on = false;
 }
 
 static int
-ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
+ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl, const uint8_t *pmk)
 {
 	static const uint8_t ap_events[] = { E_AUTH_IND, E_ASSOC_IND, E_REASSOC_IND, E_DEAUTH_IND, E_DISASSOC_IND };
 	uint32_t one = 1, status = ~0U;
 	uint8_t ssid_le[36], mask[16];
 	int32_t chanspec;
-	int e_down, e_infra, e_ap, e_chan, e_wsec, e_auth, e_pmk = 0, e_up, e_ssid;
+	int e_down, e_infra, e_ap, e_chan, e_wsec, e_auth, e_pmk = 0, e_up, e_ssid;     /* e_pmk: 0 (the host holds the PMK) */
 	bool got = false;
 
 	if (sl == 0 || sl > 32 || (pl != 0 && (pl < 8 || pl > 63)) || channel == 0 || channel > 165) {
 		return EINVAL;
 	}
+	if (pmk != NULL) {              /* the key itself (wifid): WPA2 as with a passphrase, without making the key */
+		pl = 0;
+	}
 	if (sta_state.phase == REDWOOD_STA_JOINED || sta_state.phase == REDWOOD_STA_JOINING) {
 		sta_leave();
 	}
+	memcpy(ap_ssid, ssid, sl);
+	ap_ssid_length = (uint8_t)sl;
+	ap_channel = (uint16_t)channel;
 	ap_on = true;                   /* from here wifid's scans/joins are refused */
 	e_down = ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
 	(void)iovar_int("apsta", 0);    /* a dedicated access point, no client interface beside it */
@@ -3159,28 +3457,21 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		(void)iovar(true, "event_msgs", mask, sizeof(mask));
 	}
 	(void)iovar_int("mfp", MFP_NONE);
-	e_wsec = iovar_int("wsec", pl ? AES_ENABLED : 0);
-	e_auth = iovar_int("wpa_auth", pl ? WPA2_AUTH_PSK : 0);
+	bool secure = pl != 0 || pmk != NULL;
+	e_wsec = iovar_int("wsec", secure ? AES_ENABLED : 0);
+	e_auth = iovar_int("wpa_auth", secure ? WPA2_AUTH_PSK : 0);
 	(void)iovar_int("auth", AUTH_OPEN);
-	if (pl) {
-		uint8_t *pmk = kalloc_data(PMK_STRUCT_SIZE, Z_WAITOK | Z_ZERO);
-		uint16_t kl = (uint16_t)pl, fl = WSEC_PASSPHRASE;
+	if (secure) {                   /* the key of the name and passphrase: ours to hold (no firmware authenticator) */
+		int32_t caps = 0;
 
-		if (pmk == NULL) {
-			ap_down();
-			return ENOMEM;
+		if (pmk != NULL) {
+			memcpy(ap_pmk, pmk, 32);
+		} else {
+			lx_wpa_pmk((const unsigned char *)pass, pl, (const unsigned char *)ssid, sl, ap_pmk);
 		}
-		memcpy(pmk, &kl, 2);
-		memcpy(pmk + 2, &fl, 2);
-		memcpy(pmk + 4, pass, pl);
-		e_pmk = ioctl(WLC_SET_WSEC_PMK, pmk, PMK_STRUCT_SIZE, PMK_STRUCT_SIZE);
-		bzero(pmk, PMK_STRUCT_SIZE);
-		kfree_data(pmk, PMK_STRUCT_SIZE);
-		if (e_pmk != 0) {
-			snprintf(ap_result, sizeof(ap_result), "REFUSED: WPA2 needs the host's authenticator (firmware PMK %d)", e_pmk);
-			blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
-			ap_down();
-			return ENOTSUP;
+		if (iovar(false, "wpa_cap", &caps, sizeof(caps)) == 0) {
+			ap_rsn[20] = (uint8_t)caps;     /* the RSN element in message 3 must be the beacon's */
+			ap_rsn[21] = (uint8_t)(caps >> 8);
 		}
 	}
 	e_up = ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
@@ -3205,12 +3496,29 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		lck_mtx_unlock(&ring_lock);
 	}
 	snprintf(ap_result, sizeof(ap_result), "%s: ch %u %s; down %d infra %d ap %d chanspec %d wsec %d wpa_auth %d pmk %d up %d "
-	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, pl ? "WPA2" : "open", e_down, e_infra,
+	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, secure ? "WPA2" : "open", e_down, e_infra,
 	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, !got ? "none" : link ? "link" : "set_ssid", got ? status : 0);
 	blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
 	if (!(got && status == 0)) {
 		ap_down();
 		return EIO;
+	}
+	ap_vie_apply("add");
+	if (secure) {                   /* the group key: random, the primary (transmit) key; then the handshakes */
+		thread_t t;
+		int e_gtk;
+
+		read_random(ap_gtk, sizeof(ap_gtk));
+		e_gtk = key_install(ap_gtk, sizeof(ap_gtk), 1, NULL, NULL);
+		for (unsigned i = 0; i < 20 && ap_thread_on; i++) {
+			delay(100000);          /* a stop just before: its thread is still forgetting the stations */
+		}
+		ap_wpa = true;
+		if (!ap_thread_on && kernel_thread_start(ap_thread, NULL, &t) == KERN_SUCCESS) {
+			ap_thread_on = true;
+			thread_deallocate(t);
+		}
+		blog("ap: WPA2: group key %d, RSN capabilities %02x%02x, handshakes by the host", e_gtk, ap_rsn[21], ap_rsn[20]);
 	}
 	/* (A, 2026-11-19) the client-mode flow ring was towards the joined router; as an access point frames go to
 	 * the clients: one ring towards broadcast (brcmfmac maps multicast to ff:ff..; unicast per station comes next
@@ -3295,7 +3603,35 @@ sysctl_wifi_ap SYSCTL_HANDLER_ARGS
 			(void)ap_stop();
 		}
 		err = ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
-		    pass ? (uint32_t)strlen(pass) : 0);
+		    pass ? (uint32_t)strlen(pass) : 0, NULL);
+	}
+	ap_busy = 0;
+	return err;
+}
+
+/* wifid's Personal Hotspot (HOST_AP_MODE), through the station thread: start (or restart) or stop the access point. */
+static int
+sta_ap(const struct redwood_sta_ap *what)
+{
+	char name[33], pass[64];
+	int err;
+
+	if (!OSCompareAndSwap(0, 1, &ap_busy)) {
+		return EBUSY;
+	}
+	if (ap_on) {
+		(void)ap_stop();
+	}
+	if (what == NULL) {
+		err = 0;
+	} else {
+		bzero(name, sizeof(name));
+		bzero(pass, sizeof(pass));
+		memcpy(name, what->ssid, what->ssid_length > 32 ? 32 : what->ssid_length);
+		memcpy(pass, what->passphrase, what->passphrase_length > 63 ? 63 : what->passphrase_length);
+		err = ap_start(what->channel != 0 ? what->channel : 6, name, (uint32_t)strlen(name), pass, (uint32_t)strlen(pass),
+		    what->has_pmk ? what->pmk : NULL);
+		bzero(pass, sizeof(pass));
 	}
 	ap_busy = 0;
 	return err;
@@ -3337,5 +3673,38 @@ sysctl_wifi_iovar SYSCTL_HANDLER_ARGS
 
 SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_ap, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_ap, "A",
     "Personal Hotspot access point: \"start <channel> <name> [passphrase]\" | \"stop\"");
+static int
+sysctl_ap_vie SYSCTL_HANDLER_ARGS
+{
+	char hex[2 * sizeof(ap_vie) + 1] = "";
+	int err;
+	unsigned i, n;
+
+	for (i = 0; i < ap_vie_len; i++) {
+		snprintf(hex + 2 * i, 3, "%02x", ap_vie[i]);
+	}
+	err = sysctl_handle_string(oidp, hex, sizeof(hex), req);
+	if (err != 0 || req->newptr == USER_ADDR_NULL) {
+		return err;
+	}
+	if (ap_on) {
+		ap_vie_apply("del");
+	}
+	for (n = 0; n < sizeof(ap_vie) && hex[2 * n] && hex[2 * n + 1]; n++) {
+		unsigned v = 0;
+
+		for (i = 0; i < 2; i++) {
+			char c = hex[2 * n + i];
+			v = v * 16 + (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
+		}
+		ap_vie[n] = (uint8_t)v;
+	}
+	ap_vie_len = n;
+	if (ap_on) {
+		ap_vie_apply("add");
+	}
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_ap_vendor_ie, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_ap_vie, "A", "");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_iovar, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_iovar,
     "A", "a firmware iovar: \"get <name>\" | \"set <name> <int>\" (answers in the log)");

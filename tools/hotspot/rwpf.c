@@ -1,6 +1,7 @@
 /*
  * rwpf: the hotspot's NAT, loaded straight through /dev/pf (A, 2026-11-19). iOS ships no pfctl; this does what
- *   pfctl -f with "nat on EXT inet from NET to any -> ADDR" does: one rule in the main NAT ruleset (replacing it),
+ *   pfctl -f with "scrub on EXT inet all max-mss 1400" + "nat on EXT inet from NET to any -> ADDR" does (replacing both
+ *   rulesets),
  *   pf enabled, IPv4 forwarding on. The filter ruleset is left alone (empty = pass).
  *
  *   rwpf nat EXT ADDR NET/LEN     e.g. rwpf nat utun1 192.0.0.2 172.20.10.0/28
@@ -27,20 +28,31 @@
 
 static int dev;
 
+/* one transaction over the scrub and the NAT ruleset: ticket[0] scrub, ticket[1] NAT */
 static int
-xact(unsigned long cmd, u_int32_t *ticket)
+xact(unsigned long cmd, u_int32_t ticket[2])
 {
-	struct pfioc_trans_e e = { .rs_num = PF_RULESET_NAT };
-	struct pfioc_trans t = { .size = 1, .esize = sizeof(e), .array = &e };
+	struct pfioc_trans_e e[2] = { { .rs_num = PF_RULESET_SCRUB }, { .rs_num = PF_RULESET_NAT } };
+	struct pfioc_trans t = { .size = 2, .esize = sizeof(e[0]), .array = e };
 
 	if (cmd == DIOCXCOMMIT) {
-		e.ticket = *ticket;
+		e[0].ticket = ticket[0];
+		e[1].ticket = ticket[1];
 	}
 	if (ioctl(dev, cmd, &t) < 0) {
 		return -1;
 	}
-	*ticket = e.ticket;
+	ticket[0] = e[0].ticket;
+	ticket[1] = e[1].ticket;
 	return 0;
+}
+
+/* every rule gets a pool ticket (an empty pool for one that translates to nothing): DIOCBEGINADDRS */
+static int
+pool_begin(struct pfioc_pooladdr *pp)
+{
+	memset(pp, 0, sizeof(*pp));
+	return ioctl(dev, DIOCBEGINADDRS, pp);
 }
 
 static void
@@ -52,7 +64,7 @@ forwarding(int on)
 int
 main(int argc, char **argv)
 {
-	u_int32_t ticket = 0;
+	u_int32_t ticket[2] = { 0, 0 };
 
 	dev = open("/dev/pf", O_RDWR);
 	if (dev < 0) {
@@ -60,12 +72,12 @@ main(int argc, char **argv)
 		return 1;
 	}
 	if (argc == 2 && !strcmp(argv[1], "flush")) {
-		if (xact(DIOCXBEGIN, &ticket) || xact(DIOCXCOMMIT, &ticket)) {
+		if (xact(DIOCXBEGIN, ticket) || xact(DIOCXCOMMIT, ticket)) {
 			perror("rwpf: flush");
 			return 1;
 		}
 		forwarding(0);
-		printf("rwpf: NAT rules flushed, forwarding off\n");
+		printf("rwpf: scrub and NAT rules flushed, forwarding off\n");
 		return 0;
 	}
 	if (argc != 5 || strcmp(argv[1], "nat")) {
@@ -85,14 +97,39 @@ main(int argc, char **argv)
 		return 2;
 	}
 
-	if (xact(DIOCXBEGIN, &ticket)) {
+	if (xact(DIOCXBEGIN, ticket)) {
 		perror("rwpf: DIOCXBEGIN");
 		return 1;
 	}
-	/* the translation address: a one-address pool */
 	struct pfioc_pooladdr pp;
-	memset(&pp, 0, sizeof(pp));
-	if (ioctl(dev, DIOCBEGINADDRS, &pp) < 0) {
+	struct pfioc_rule pr;
+
+	/*
+	 * scrub on EXT inet all max-mss 1400: CLAT46 makes a 1500-byte IPv4 packet a 1520-byte IPv6 one, more than the
+	 * cellular link takes; TCP segments are kept small from the SYN on (both ways), so pages do not stall until path
+	 * MTU discovery catches up (a client's first page took long, 2026-11-19).
+	 */
+	if (pool_begin(&pp) < 0) {
+		perror("rwpf: DIOCBEGINADDRS (scrub)");
+		return 1;
+	}
+	memset(&pr, 0, sizeof(pr));
+	pr.action = PF_CHANGE_NONE;
+	pr.ticket = ticket[0];
+	pr.pool_ticket = pp.ticket;
+	pr.rule.action = PF_SCRUB;
+	pr.rule.af = AF_INET;
+	strlcpy(pr.rule.ifname, argv[2], sizeof(pr.rule.ifname));
+	pr.rule.src.addr.type = PF_ADDR_ADDRMASK;
+	pr.rule.dst.addr.type = PF_ADDR_ADDRMASK;
+	pr.rule.max_mss = 1400;
+	if (ioctl(dev, DIOCADDRULE, &pr) < 0) {
+		perror("rwpf: DIOCADDRULE (scrub)");
+		return 1;
+	}
+
+	/* the translation address: a one-address pool */
+	if (pool_begin(&pp) < 0) {
 		perror("rwpf: DIOCBEGINADDRS");
 		return 1;
 	}
@@ -104,10 +141,9 @@ main(int argc, char **argv)
 		perror("rwpf: DIOCADDADDR");
 		return 1;
 	}
-	struct pfioc_rule pr;
 	memset(&pr, 0, sizeof(pr));
 	pr.action = PF_CHANGE_NONE;
-	pr.ticket = ticket;
+	pr.ticket = ticket[1];
 	pr.pool_ticket = pp.ticket;
 	pr.rule.action = PF_NAT;
 	pr.rule.af = AF_INET;
@@ -123,7 +159,7 @@ main(int argc, char **argv)
 		perror("rwpf: DIOCADDRULE");
 		return 1;
 	}
-	if (xact(DIOCXCOMMIT, &ticket)) {
+	if (xact(DIOCXCOMMIT, ticket)) {
 		perror("rwpf: DIOCXCOMMIT");
 		return 1;
 	}
@@ -132,6 +168,7 @@ main(int argc, char **argv)
 		return 1;
 	}
 	forwarding(1);
-	printf("rwpf: nat on %s inet from %s/%d to any -> %s; pf on, forwarding on\n", argv[2], nb, len, argv[3]);
+	printf("rwpf: scrub on %s max-mss 1400; nat on %s inet from %s/%d to any -> %s; pf on, forwarding on\n", argv[2], argv[2],
+	    nb, len, argv[3]);
 	return 0;
 }
