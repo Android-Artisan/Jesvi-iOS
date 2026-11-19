@@ -1,7 +1,7 @@
 # S20 native calls (VoLTE on iOS's own Phone)
 
 Status 2026-11-15 (A, from B's `feat/native-calls`, merged into `x1slte` `ad93a151`): **native only**, on at boot.
-Incoming, outgoing, hold, swap (two calls), DTMF, speaker, mute verified on Jio (S20 +91 70104 93945 <-> +91 90801 57822).
+Incoming, outgoing, hold, swap (two calls), DTMF, speaker, mute verified on Jio (S20 <-> a second phone).
 
 ## How it fits together
 

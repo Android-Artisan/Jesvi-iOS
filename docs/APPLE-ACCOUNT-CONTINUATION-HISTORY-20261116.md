@@ -502,7 +502,7 @@ Stop asking for repeated retries without a specific new test or change.
 
 ## Workspace, authorization and coordination
 
-- Worktree `/Users/jesvi/ios-port-research/work/hackios-apple-account`, branch
+- Worktree `~/ios-port-research/work/hackios-apple-account`, branch
   `feat/s20-apple-account`. Source tools and task docs are currently UNTRACKED,
   not committed; preserve them. Do not run git clean or discard this worktree.
 - User explicitly transferred this experiment from codex-gps and authorized the

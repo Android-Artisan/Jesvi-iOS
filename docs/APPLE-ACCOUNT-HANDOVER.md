@@ -346,8 +346,8 @@ agent should not undo original global SSH config (it was never changed).
 User confirmed Wi-Fi dropped; all three devices now on hotspot. Host en0 has
 IPv6 + NAT64/clat46 and translated192.0.0.2/32. That IPv4 is NOT a peer identifier.
 Discovered Bonjour SSH service, verified two IPv6 peers against existing keys:
-Hackintosh fe80::4b2:1c1d:f5bf:27a3%en0, stable Bonjour jesvis-MacBook-Pro.local;
-S20 fe80::1:debf:6819:d70f%en0. Both match original pinned host keys. A candidate
+Hackintosh <link-local IPv6>%en0, stable Bonjour <hackintosh>.local;
+S20 <link-local IPv6>%en0. Both match original pinned host keys. A candidate
 rejected by Hackintosh key was then separately confirmed against S20's own pin;
 no keys changed/host-check disabling. USB10.77.0.2 currently not reachable.
 
@@ -631,7 +631,7 @@ restart if needed. Do not restart a comparison while a user attempt is pending.
 This note supersedes the old statement that the phone lock is released below.
 
 
-Native S20 iCloud sign-in is still NOT working. User requested handoff to a new session. Worktree: `/Users/jesvi/ios-port-research/work/hackios-apple-account`, branch `feat/s20-apple-account`. The user's default cwd is the unrelated `hackios-cellular` worktree; do not edit its GPS/cellular work. Most account tools/docs are untracked; never clean them. No commits made during this continuation.
+Native S20 iCloud sign-in is still NOT working. User requested handoff to a new session. Worktree: `~/ios-port-research/work/hackios-apple-account`, branch `feat/s20-apple-account`. The user's default cwd is the unrelated `hackios-cellular` worktree; do not edit its GPS/cellular work. Most account tools/docs are untracked; never clean them. No commits made during this continuation.
 
 ## Read first: what is established
 
@@ -717,7 +717,7 @@ Recent-signing endpoint in machine broker is bearer-only loopback GET `/v1/recen
 - `docs/APPLE-ACCOUNT-BINARY-NOTES.md`: native credential provenance and static analysis.
 - [Detailed continuation history](APPLE-ACCOUNT-CONTINUATION-HISTORY-20261116.md) preserves experiments, false starts and addresses. Older research history remains separate.
 
-Compile phone standalone CLI with `clang -target arm64-apple-ios16.5 -isysroot /Users/jesvi/theos/sdks/iPhoneOS16.5.sdk -fobjc-arc -fblocks -Wno-deprecated-declarations -framework Foundation -framework Accounts -Wl,-no_fixup_chains ...`, then `ldid -Stools/apple-account/anisette-fetch-ios.entitlements ...`. Mac uses x86_64-apple-macos13. Use a NEW immutable artifact filename for every changed binary.
+Compile phone standalone CLI with `clang -target arm64-apple-ios16.5 -isysroot ~/theos/sdks/iPhoneOS16.5.sdk -fobjc-arc -fblocks -Wno-deprecated-declarations -framework Foundation -framework Accounts -Wl,-no_fixup_chains ...`, then `ldid -Stools/apple-account/anisette-fetch-ios.entitlements ...`. Mac uses x86_64-apple-macos13. Use a NEW immutable artifact filename for every changed binary.
 
 ## Critical traps and preservation
 

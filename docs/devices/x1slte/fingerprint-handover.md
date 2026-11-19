@@ -82,7 +82,7 @@ as part of this handover without the user's approval.
 
 ## Branch, installed image, prepared image
 
-Repository: `/Users/jesvi/ios-port-research/work/hackios-cellular`
+Repository: `~/ios-port-research/work/hackios-cellular`
 
 Branch: `feat/s20-fingerprint`. Main/master/release worktrees were not switched or
 modified. Current branch HEAD contains the automatic storage-path fix and host
@@ -203,7 +203,7 @@ Useful TA functions (Ghidra image base +0x100000):
 - Client `0x151a7c`: identify; `0x14abbc`: common_prepare;
   `0x106038`: BAuth_Control_OP; `0x106780`: genuine HAT command13 packing.
 
-Ghidra projects: `/Users/jesvi/ios-port-research/tools/re/proj/{finge,bauth,tzc}`.
+Ghidra projects: `~/ios-port-research/tools/re/proj/{finge,bauth,tzc}`.
 Existing/new decompiles: `tools/re/out/`, `tools/re/audit-out/` at workspace root.
 Use `tools/fingerprint/reverse/DecompileOutlined.java` with `-readOnly` for the
 split functions; it changes the analysis model temporarily, not signed firmware.
