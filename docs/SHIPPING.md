@@ -1,3 +1,17 @@
+## 2026-11-19 (B) — Native Touch ID on the under-display sensor (boot argument touchid=1)
+
+- What: Apple's own Touch ID UI drives the S20's ultrasonic sensor (QBT2000 in TEEGRIS). Settings → Touch ID & Passcode
+  enrols a finger with Apple's screens (two phases); the lock screen offers "Touch ID or Enter Passcode", shows a faint
+  ring over the sensor, captures, and shakes on a failed or rejected try; iOS's rules (passcode after boot, 48 h, 5
+  tries) apply. The enrolled finger survives reboots (catacomb: master + user components, loaded on the first unlock).
+- Pieces: RedwoodMesa (redfin's SweetMesa port, MIT), redwood-fpd, dsc-exec + the iPhone 8 dyld cache for libBKDM1,
+  /arm-io/mesa, kernel fp prepare/cbge/run, libredwood-touchid-ui (ring). Handoff: docs/devices/x1slte/touchid.md.
+- Boot args: touchid=1 (off: nothing changes).
+- Tested on the phone 2026-11-19: enrolment to completion; persistence across a clean reboot; ring on the lock screen;
+  shake on failure.
+- Open: unlocking with the finger (Samsung's matcher returns NO MATCH / 0x1d), haptic on failure, Settings switch for
+  the ring, screen-off unlock. Overheating with many back-to-back boots (PMIC reset at ~109 C).
+
 ## 2026-11-16 — Shared Maps graphics and Photos/UI compatibility deployed
 - User confirmed Apple/Google Maps portrait/landscape and Photos previews/albums after the corrected cold boot. SpringBoard, backboardd and mediaserverd retained PIDs 9/21/57 throughout the postboot checks; no core fault seen in those captures.
 - Shared driver fixes cover blend state, packed formats, sparse argument IDs, bounded resource-slot allocation, numeric vertex conversion and depth uploads. Common Metal-layer presentation helper requires no Maps app list.
