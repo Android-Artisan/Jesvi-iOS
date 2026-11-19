@@ -36,7 +36,10 @@
 #include <notify.h>
 #include <dispatch/dispatch.h>
 #include <signal.h>
-#include <libproc.h>
+/* libproc (in libSystem; no header in the iOS SDK) */
+int proc_listallpids(void *buffer, int buffersize);
+int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+#define PROC_PIDPATHINFO_MAXSIZE 4096
 #include "fpcd_bridge.h"
 
 #define TEMPLATE        "/var/root/fp-template.bin"
