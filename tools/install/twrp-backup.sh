@@ -20,9 +20,10 @@ exec python3 -I - "$out" "${SKIP:-}" <<'PY'
 import hashlib, json, os, shutil, subprocess, sys, time, zipfile
 out, skip = sys.argv[1], set(sys.argv[2].split())
 sh = lambda c: subprocess.run(['adb', 'shell', c], capture_output=True, text=True, check=True).stdout.replace('\r', '')
-names = sorted(n for n in sh('ls /dev/block/by-name').split() if n not in skip)
+names = sorted(n for n in sh('ls /dev/block/by-name').split()   # TWRP also lists whole disks (sda: 119 GiB) there
+               if n not in skip and not (len(n) == 3 and n.startswith('sd')))
 size = {n: int(sh(f'blockdev --getsize64 /dev/block/by-name/{n}').strip()) for n in names}
-disks = [d for d in ('sda', 'sdb', 'sdc', 'sdd', 'sde', 'sdf') if sh(f'[ -b /dev/block/{d} ] && echo y').strip() == 'y']
+disks = [d for d in ('sda', 'sdb', 'sdc', 'sdd', 'sde', 'sdf') if sh(f'[ -b /dev/block/{d} ] && echo y; true').strip() == 'y']
 total = sum(size.values())
 free = shutil.disk_usage(os.path.dirname(out)).free
 print(f'{len(names)} partitions, {total/2**30:.1f} GiB raw; {free/2**30:.0f} GiB free here')
