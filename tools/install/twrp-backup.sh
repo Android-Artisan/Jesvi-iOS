@@ -4,11 +4,15 @@
 # partition tables, read with dd over the USB cable. Nothing on the phone is written. Each image is stored
 # compressed (deflate, level 1) inside the zip with its SHA-256 in SHA256SUMS, checked while it streams.
 # Restore: tools/install/twrp-restore.sh ZIP (never writes EFS, modem or bootloader partitions).
+# Default folder: /Volumes/Jesvi SSD/BACKUPS/S20 when that drive is in, else ~/S20-backups.
 # SKIP="userdata super" leaves partitions out. Needs adb and python3.
 set -euo pipefail
-dest=${1:-"/Volumes/Jesvi SSD/BACKUPS/S20"}
+case "${1:-}" in -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
+command -v adb >/dev/null || { echo "adb is missing: brew install android-platform-tools (or Android's platform-tools)"; exit 1; }
+dflt="$HOME/S20-backups"; [ -d "/Volumes/Jesvi SSD" ] && dflt="/Volumes/Jesvi SSD/BACKUPS/S20"
+dest=${1:-$dflt}
+adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB (boot TWRP, plug it straight into this computer)"; exit 1; }
 mkdir -p "$dest"
-adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB"; exit 1; }
 model=$(adb shell getprop ro.product.model | tr -d '\r')
 out="$dest/S20-full-backup_${model}_$(date +%Y%m%d-%H%M%S).zip"
 echo "backing up $model into $out"

@@ -5,9 +5,13 @@
 # Each partition is streamed in, then read back on the phone and its SHA-256 compared with the backup's.
 # Note: restoring recovery replaces TWRP; it is written last so a failure earlier still leaves TWRP.
 set -euo pipefail
-zip=${1:?usage: twrp-restore.sh BACKUP.zip [partition ...]}; shift
+case "${1:-}" in -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
+command -v adb >/dev/null || { echo "adb is missing: brew install android-platform-tools (or Android's platform-tools)"; exit 1; }
+[ $# -ge 1 ] || { echo "usage: twrp-restore.sh BACKUP.zip [partition ...]   (--help for more)"; exit 2; }
+zip=$1; shift
 parts=${*:-"boot super userdata up_param dtbo vbmeta vbmeta_samsung metadata misc cache recovery"}
-adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB"; exit 1; }
+[ -f "$zip" ] || { echo "no such file: $zip"; exit 1; }
+adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB (boot TWRP, plug it straight into this computer)"; exit 1; }
 exec python3 -I - "$zip" $parts <<'PY'
 import subprocess, sys, zipfile
 NEVER = {'efs', 'sec_efs', 'cpefs', 'radio', 'cp_debug', 'param', 'bota', 'keydata', 'keyrefuge', 'keystorage',

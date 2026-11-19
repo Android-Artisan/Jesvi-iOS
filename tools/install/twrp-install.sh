@@ -5,7 +5,10 @@
 # the installer there, detached: after the copy the cable no longer matters.
 # Needs: adb, the phone in TWRP 3.7.1 or newer, the cable straight into the computer (not a hub).
 set -euo pipefail
-zip=${1:?usage: twrp-install.sh Jesvi-iOS_<version>_<device>.zip}
+case "${1:-}" in -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0;; esac
+command -v adb >/dev/null || { echo "adb is missing: brew install android-platform-tools (or Android's platform-tools)"; exit 1; }
+[ $# -ge 1 ] || { echo "usage: twrp-install.sh Jesvi-iOS_<version>_<device>.zip   (--help for more)"; exit 2; }
+zip=$1
 [ -f "$zip" ] || { echo "no such file: $zip"; exit 1; }
 adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB (plug it straight into the computer)"; exit 1; }
 echo "copying $(du -h "$zip" | cut -f1) into TWRP's memory..."
