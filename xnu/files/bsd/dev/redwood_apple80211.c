@@ -65,6 +65,13 @@ static unsigned long long caps_extra;
 static bool ap_secured;                 /* our access point (HOST_AP_MODE) asks for WPA2 */
 static unsigned log_said;
 SYSCTL_DECL(_kern_redwood);
+/*
+ * While our access point runs, en0 is not joined to anything (B, 2026-11-19): answered as joined to the access point,
+ * wifid showed the phone itself "connected to Jesvi IOS" in Settings > Wi-Fi (an iPhone's access point is ap1, and en0
+ * stays free). kern.redwood.wifi_ap_as_joined=1: the old answer, for a test.
+ */
+static int ap_as_joined;
+SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_ap_as_joined, CTLFLAG_RW | CTLFLAG_LOCKED, &ap_as_joined, 0, "");
 SYSCTL_QUAD(_kern_redwood, OID_AUTO, wifi_caps_extra, CTLFLAG_RW | CTLFLAG_LOCKED, &caps_extra,
     "more APPLE80211_CAP_* bits for wifid (bit n = capability n)");
 static int
@@ -439,7 +446,7 @@ get(struct apple80211req *request)
 		return ENOMEM;
 	}
 	redwood_sta_state(state);
-	if (state->ap) {                /* our own access point is "the network" (its name, our address, its channel) */
+	if (state->ap && ap_as_joined) {        /* our own access point as "the network" (its name, our address, its channel) */
 		state->phase = REDWOOD_STA_JOINED;
 	}
 	switch (request->req_type) {
@@ -829,7 +836,7 @@ redwood_apple80211_event(enum redwood_sta_event event, int status)
 		post(EVENT_ASSOC_DONE, NULL, 0);
 		break;
 	case REDWOOD_STA_AP: {          /* our access point up (1) or down: the link, as wifid sees en0 */
-		struct apple80211_link_changed link = { .down = status != 1 };
+		struct apple80211_link_changed link = { .down = status != 1 || !ap_as_joined };  /* (station side: not joined) */
 
 		post(EVENT_SSID_CHANGED, NULL, 0);
 		post(EVENT_BSSID_CHANGED, NULL, 0);
