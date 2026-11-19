@@ -10,7 +10,7 @@ hotspot_tell(void)
 	static Class owner;
 	static bool looked;
 	SEL sel = sel_registerName("_setIsNetworkTethering:withNumberOfDevices:");
-	char ap[32] = "";
+	char ap[160] = "";
 	size_t n = sizeof(ap) - 1;
 	unsigned stations = 0;
 	size_t sn = sizeof(stations);
