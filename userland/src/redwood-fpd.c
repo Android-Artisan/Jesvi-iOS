@@ -234,7 +234,7 @@ on_line(const char *l)
 		/* a rejected image (0x1d contamination, partial...) is a failed try for the user: shake the lock, as a
 		 * bad read does on an iPhone, instead of silence that looked like a dead sensor (2026-11-19) */
 		ev_send(FPCD_EV_NOMATCH, 0x20, 0, 0, 0, 1, 0);
-	} else if (strstr(l, "lift and press again")) {
+	} else if (strstr(l, "lift and press again") && !(op == 2 && grip_phase)) {   /* phase 2: the touch already counted */
 		ev_send(FPCD_EV_IMAGE, 3, 0, 0, 0, 0, 0);
 	} else if (op == 1 && sscanf(l, "fp run 3: SAMPLE %u ACCEPTED: progress %u", &n, &v) == 2 && v <= 100) {
 		samples_seen++;                 /* the driver counts per run; the enrolment runs on across runs */
@@ -354,7 +354,8 @@ run(void *arg)
 	uint32_t g = gen;
 	const char *setup[] = { "fp power", "fp prepare", "fp cbgeefs", "fp 10:1", "fp prepare" };
 	pthread_mutex_lock(&mx);
-	ring(kind);     /* 1 enrolment, 2 match: SpringBoard shows a match's ring only where a finger is asked for */
+	ring(kind == 2 && grip_phase ? 1 : kind);       /* 1 enrolment (and Apple's phase 2), 2 match: SpringBoard shows
+	                                                 * a match's ring only where a finger is asked for */
 	log_baseline();
 	if (kind == 1 && enrol_pct == 0) samples_seen = 0;
 	int bad = 0;
@@ -368,10 +369,14 @@ run(void *arg)
 	 * next touch at once) becomes the "background", and identify's contamination check then fails every image (29) */
 	if (!bad && kind == 1) { step("fp cbge", g); calibrated = 1; lg("background calibration: fp cbge done"); }
 	if (kind == 2) {
-		/* one 15 s run per MatchMode: a loop of runs while the lock screen waited (2026-11-19 09:10) was followed by
-		 * hard resets (RST_STAT PINRESET, PMIC WTSR) a few minutes after each boot; reverted pending a safer design */
-		if (!bad) bad = step("fp idinit", g);
-		if (!bad) bad = step("fp run 6 1 15 0", g);
+		/* iOS sends MatchMode once and waits (the lock screen, Apple's phase 2): listen in 15 s runs while it still
+		 * waits, up to 8 runs (2 minutes), then stop until iOS asks again. One run only stopped phase 2 after 3-5
+		 * touches (2026-11-19). (The resets once blamed on a loop here were thermal: PMIC WTSR at 109 C.) */
+		for (int runs = 0; !bad && op == 2 && g == gen && runs < 8; runs++) {
+			if (runs) usleep(300000);
+			bad = step("fp idinit", g);
+			if (!bad) bad = step("fp run 6 1 15 0", g);
+		}
 	} else {
 		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
 		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
