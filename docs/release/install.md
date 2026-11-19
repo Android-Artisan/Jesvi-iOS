@@ -5,7 +5,7 @@ anything; another model or bootloader is refused.
 
 | Path | Tested on a real phone |
 |---|---|
-| Update an S20 already on Jesvi iOS | **Yes**, 2026-11-18 ([record](qualification-x1slte.md)) |
+| Update an S20 already on Jesvi iOS | **Yes**, 2026-11-18 ([record](qualification-x1slte.md)); from the computer with no key press 2026-11-20 |
 | Android ROM (ExtremeROM, UN1CA, stock...) → Jesvi iOS | Not yet (same installer; tested on simulated partitions) |
 | Jesvi iOS → back to Android | Not yet (tested on simulated partitions, against this S20's real partition map) |
 
@@ -24,25 +24,42 @@ anything; another model or bootloader is refused.
 Booting TWRP on an S20: phone off or in Download Mode, hold **Volume Down + Power** until the screen goes black, then
 at once **Volume Up + Power** until TWRP appears.
 
+**From a phone running Jesvi iOS, no buttons:** `tools/install/flash-twrp.sh` (cable in). It sends the phone to
+Download Mode, writes TWRP into recovery and lets the phone restart, which then starts TWRP by itself (Jesvi iOS keeps
+the "boot into recovery" flag set). Without the script: Odin → AP: TWRP, then let it restart.
+
+**Two ways to confirm an install:**
+- **From the computer** (`twrp-install.sh`): you type `yes` there once, before anything is copied (`ERASE` for
+  anything that erases data, with `--erase`). Then it runs by itself, with **no key presses on the phone**, shows
+  each step on the computer and on TWRP's screen, and restarts the phone into iOS when done (`--no-reboot` to stay).
+- **On the phone** (TWRP → *Install*): the screen explains what will happen and asks you to **hold Volume Up for 3
+  seconds** (Volume Down or Power cancels). Nothing is written before that.
+
 ## A. From Android (ExtremeROM or any ROM) to iOS
 
 1. Boot TWRP.
 2. Either
-   - **with a computer:** `tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip`, or
+   - **with a computer:** `tools/install/twrp-install.sh --erase Jesvi-iOS_<version>_x1slte.zip` and type `ERASE`
+     (this erases the phone's data), or
    - **without one:** put the ZIP on a **microSD card or USB-C stick** (never internal storage: it is about to be
-     wiped), then TWRP → *Install* → pick the ZIP.
-3. **Hold Volume Up for 3 seconds** when asked to confirm the install, and again when asked to confirm initializing
-   the data partition. Volume Down or Power cancels; nothing is written before the first confirmation.
-4. Before it writes iOS, the installer saves your ROM's partition map at the end of `super` (used by the way back).
-5. Reboot: the Apple logo from power-on, then iOS's first setup.
+     wiped), then TWRP → *Install* → pick the ZIP, and **hold Volume Up for 3 seconds** when asked to confirm the
+     install, and again for initializing the data partition.
+3. Before it writes iOS, the installer saves your ROM's partition map at the end of `super` (used by the way back).
+4. It also puts iPhone's pictures into Samsung's power-on screens (the Apple logo, the charging and battery-empty
+   screens), keeping Samsung's own for the way back.
+5. Reboot (the script does it): the Apple logo from power-on, then iOS's first setup.
 
 ## B. Update an S20 that already runs Jesvi iOS
 
 Your data, apps and settings are kept.
 
-1. Boot TWRP (iOS lives where TWRP was, so flash TWRP with Odin first if it is not there).
-2. `tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip` (cable straight into the computer).
-3. Hold **Volume Up** when asked. Then `adb reboot`.
+1. `tools/install/flash-twrp.sh` (iOS lives where TWRP was; this puts TWRP back and boots it, no buttons).
+2. `tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip` (cable straight into the computer), type `yes`.
+3. It installs, checks every byte and restarts into iOS by itself.
+
+The ZIP's iOS data size must match the phone's: a 64 GB package (`IOS_DATA_GB=64`) refuses a phone whose iOS data
+uses all of userdata, and the other way round. It stops before writing anything; use the matching package, or a fresh
+install (erases data).
 
 On a phone running iOS, TWRP's own *Install* button and *ADB Sideload* do not work: Install stops before the ZIP runs
 ("Unable to find partition for path '/system_root'": there is no Android system any more), and Sideload streams
@@ -54,11 +71,11 @@ installer there, so after the copy the cable no longer matters.
 Nothing was resized or repartitioned: the same partitions only held iOS's contents. EFS, modem, bootloader and the
 partition table were never touched.
 
-1. **Odin → AP: TWRP** (iOS's runtime took recovery's place). Boot TWRP.
+1. `tools/install/flash-twrp.sh` (or **Odin → AP: TWRP**: iOS's runtime took recovery's place). Boot TWRP.
 2. Run the restore ZIP **with the script** (on an iOS phone TWRP's Install button refuses every ZIP):
-   `tools/install/twrp-install.sh Jesvi-iOS-Restore_<version>_x1slte.zip`, hold Volume Up.
-   It puts the saved Android partition map back into `super` (or Samsung's stock layout if none was saved) and clears
-   the iOS data headers. BOOT and recovery are left alone.
+   `tools/install/twrp-install.sh Jesvi-iOS-Restore_<version>_x1slte.zip`, type `ERASE`.
+   It puts the saved Android partition map back into `super` (or Samsung's stock layout if none was saved), clears
+   the iOS data headers and puts Samsung's own power-on pictures back. BOOT and recovery are left alone.
 3. Without rebooting: TWRP → *Wipe → Format Data* → type `yes`.
 4. Flash the ROM ZIP (ExtremeROM etc.) as usual. It rebuilds system/vendor/product inside `super` and writes its own boot.
 5. Reboot into Android. From here it is a normal Android phone for any ROM.
@@ -78,15 +95,19 @@ partition table were never touched.
 - **Computer does not see the phone in TWRP:** cable straight into the computer, another port or cable; in TWRP
   *Mount → Enable MTP*; unplug and plug again.
 - **"battery must report at least 50 percent":** charge in TWRP and run it again.
-- **"physical confirmation timed out":** you have 45 seconds to hold Volume Up for 3 seconds; run it again.
+- **"physical confirmation timed out"** (TWRP's Install button only): you have 45 seconds to hold Volume Up for 3
+  seconds; run it again. From the computer there is no key press.
+- **"the iOS data here is damaged or a different size than this package":** the package's iOS data size
+  (`IOS_DATA_GB`) differs from the phone's; nothing was written. Use the matching package.
 - **"unqualified recovery product" or "model/bootloader mismatch":** not an SM-G980F on G980FXXSNHYB7: not supported.
 - **The phone runs hot in TWRP:** let it cool; TWRP has none of iOS's thermal control.
 
 ## Build it yourself
 
-Most people should use the release ZIPs. To build: [building](building.md) and [local build](local-build.md).
-iOS 16.5 is downloaded from Apple automatically; the Samsung firmware comes from your own phone
-(`tools/s20-firmware.sh --adb`, while it runs Android or TWRP) and a few board inputs are listed in the build guide.
+One command from a fresh Mac: `tools/install/jesvi-ios.sh` (clone, iOS 16.5 from Apple, inputs, check, build,
+backup, install). The board inputs are fetched or cut from your own phone by `tools/install/get-inputs.sh`: AOSP's
+AVB tool, our UEFI, and Samsung's device tree table from your phone's boot partition (phone in TWRP). Details:
+[building](building.md) and [local build](local-build.md).
 
 ---
 

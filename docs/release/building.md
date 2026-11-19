@@ -5,15 +5,16 @@
 1. Xcode Command Line Tools, Homebrew, ~25 GB free. `make doctor` lists what is missing.
 2. **iOS 16.5 is fetched for you:** the build downloads only the parts it needs of the 20F66 firmware from Apple's
    servers, checks them and caches them. You never handle an IPSW.
-3. **What you supply once** (Samsung's and board files cannot be in the repository):
+3. **What you supply once** (Samsung's and board files cannot be in the repository). `tools/install/get-inputs.sh`
+   does all of the `inputs/` rows for you, checked against known hashes (phone in TWRP over USB for the DT table):
 
    | Input | How |
    |---|---|
    | `fw-wifi`, `fw-sound`, `fw-haptic`, `fw-sensors` | from your own phone on Android or TWRP: `tools/s20-firmware.sh --adb` |
    | `inputs/x1slte/Mu-x1slte.img` | the UEFI: the `x1slte-uefi` artifact of the g980f-uefi repository |
-   | `inputs/x1slte/boot-dtb.img` | Samsung's DT table, cut from your stock `boot.img` |
-   | `inputs/tools/avbtool.py`, `inputs/tools/testkey_rsa4096.pem` | from AOSP (`external/avb`) |
-   | `inputs/toolchain.json` | tool versions and hashes (see below) |
+   | `inputs/x1slte/boot-dtb.img` | Samsung's DT table, cut from your phone's `boot` partition (or `JESVI_BOOT_IMG=boot.img`) |
+   | `inputs/tools/avbtool.py`, `inputs/tools/testkey_rsa4096.pem` | AOSP `external/avb`, pinned commit `76117860` |
+   | `inputs/toolchain.json` | this computer's compiler and the inputs' hashes (written by get-inputs.sh) |
 
 4. `make check`, then `make release` → `dist/release/Jesvi-iOS_<version>_<date>_x1slte.zip` and the restore ZIP.
 5. Install as in the [install guide](install.md).
