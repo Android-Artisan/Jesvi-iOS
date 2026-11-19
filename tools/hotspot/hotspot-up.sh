@@ -5,11 +5,11 @@
 #   Wi-Fi     the chip as an access point (kern.redwood.wifi_ap), the phone 172.20.10.1/28 on en0
 #   clients   rwdhcpd (addresses), rwpf (NAT from 172.20.10.0/28 to 192.0.0.2), IPv4 forwarding
 #
-# With a PASSWORD (8-63 characters): WPA2, the driver doing the handshakes. Tools in /var/root (rwdhcpd, rwpf, clat-test) and
+# With a PASSWORD (8-63 characters): WPA2, the driver doing the handshakes. Tools in /redwood/bin (rwdhcpd, rwpf, clat-test) and
 # /var/jb (ifconfig, route: Procursus network-cmds).
 setopt err_return 2>/dev/null
 export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/bin:/bin:/usr/sbin:/sbin	# (misd starts it with none)
-B=/var/root
+B=/redwood/bin		# (the image's; /var/root by hand before 2026-11-19)
 IFC=/var/jb/usr/sbin/ifconfig
 RT=/var/jb/usr/sbin/route
 SC=/var/jb/usr/sbin/sysctl
@@ -36,7 +36,7 @@ start)
 	$SC -w kern.redwood.wifi_ap="start	$CHAN	$NAME${PASS:+	$PASS}" >/dev/null || { echo "hotspot: $($SC -n kern.redwood.wifi_ap)"; return 1; }
 	echo "hotspot: $($SC -n kern.redwood.wifi_ap)"
 	$IFC en0 inet 172.20.10.1 netmask 255.255.255.240 alias
-	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/root/rwdhcpd.log 2>&1 </dev/null &)
+	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/tmp/rwdhcpd.log 2>&1 </dev/null &)
 	$B/rwpf nat $C 192.0.0.2 172.20.10.0/28
 	MODE=open; [ -z "$PASS" ] || MODE=WPA2
 	echo "hotspot: \"$NAME\" on channel $CHAN ($MODE), internet through $C"
@@ -57,8 +57,10 @@ net-start)	# iOS's own switch already put the access point on the air (wifid): t
 	$RT -n add -inet default -interface $C >/dev/null
 	$IFC en0 | grep -q "inet 172.20.10.1 " || $IFC en0 inet 172.20.10.1 netmask 255.255.255.240 alias
 	$RT -n add -host 255.255.255.255 -interface en0 >/dev/null 2>&1
-	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/root/rwdhcpd.log 2>&1 </dev/null &)
+	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/tmp/rwdhcpd.log 2>&1 </dev/null &)
 	$B/rwpf nat $C 192.0.0.2 172.20.10.0/28
+	# Apple's "this is a phone's hotspot" element (devices then treat it as mobile data): kept in /var/db/redwood-hotspot-ie
+	[ ! -s /var/db/redwood-hotspot-ie ] || $SC -w kern.redwood.wifi_ap_vendor_ie="$(cat /var/db/redwood-hotspot-ie)" >/dev/null
 	echo "hotspot: network up, internet through $C"
 	;;
 net-stop)

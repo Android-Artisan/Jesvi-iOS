@@ -134,7 +134,7 @@ extern char **environ;
 static int
 hotspot_net(const char *what)
 {
-	char *argv[] = { "zsh", "/var/root/hotspot-up.sh", (char *)what, NULL };
+	char *argv[] = { "zsh", "/redwood/bin/hotspot-up.sh", (char *)what, NULL };
 	pid_t pid;
 	int st;
 

@@ -365,6 +365,14 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/libredwood-mis.dylib src/mis_ct.m
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-mgcell.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
+		# ... and the network behind the access point (tools/hotspot: addresses, NAT, CLAT46; misctl for tests)
+		mkdir -p obj/hotspot-inc/net obj/hotspot-inc/libkern
+		cp ../xnu-src/xnu-8796.121.2/bsd/net/pfvar.h ../xnu-src/xnu-8796.121.2/bsd/net/radix.h obj/hotspot-inc/net/
+		cp ../xnu-src/xnu-8796.121.2/libkern/libkern/tree.h obj/hotspot-inc/libkern/
+		for p in rwdhcpd rwpf clat-test; do $DYN -Iobj/hotspot-inc -o obj/$p ../tools/hotspot/$p.c; done
+		$DYN -fobjc-arc -framework Foundation -F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
+			-framework MobileWiFi -o obj/misctl ../tools/hotspot/misctl.m &&
+			{ ${LDID:-ldid} -S../tools/hotspot/misctl.ent obj/misctl 2>/dev/null || echo "build.sh: no ldid: misctl unsigned"; }
 		# Files on the HFS+ data volume: target only its daemon and local provider.
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-files.dylib -lobjc -lsandbox \
 			-o obj/libredwood-files.dylib src/inject_files.c
@@ -588,6 +596,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-finder.dylib ] && cp obj/libredwood-finder.dylib root/lib/
 	[ -f obj/libredwood-mis.dylib ] && cp obj/libredwood-mis.dylib root/lib/
 	[ -f obj/libredwood-mgcell.dylib ] && cp obj/libredwood-mgcell.dylib root/lib/
+	for p in rwdhcpd rwpf clat-test misctl; do [ ! -f obj/$p ] || cp obj/$p root/bin/; done
+	cp ../tools/hotspot/hotspot-up.sh root/bin/ && chmod 755 root/bin/hotspot-up.sh
 	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/

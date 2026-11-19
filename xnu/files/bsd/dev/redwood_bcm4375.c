@@ -141,6 +141,7 @@ void redwood_bcm4375_run(const struct redwood_bcm_bus *bus);
 #define RING_RX_COMPLETE        4
 #define RINGS                   5
 #define RING_MEM_SZ             16
+static void apple_ie_log(const struct redwood_sta_bss *b);   /* (Personal Hotspot: below) */
 static const uint16_t ring_items[RINGS] = { 64, 1024, 64, 1024, 1024 };
 static const uint16_t ring_item_len[RINGS] = { 40, 32, 24, 24, 40 };            /* shared version 7 */
 static const uint16_t ring_item_len_pre7[RINGS] = { 40, 32, 24, 16, 32 };
@@ -1009,6 +1010,7 @@ bss_fill(struct redwood_sta_bss *b, const uint8_t *bi, uint32_t avail)
 	if (ie_offset >= 126 && ie_offset <= length && ie_length <= length - ie_offset) {
 		b->elements_length = (uint16_t)(ie_length > REDWOOD_STA_ELEMENTS_MOST ? REDWOOD_STA_ELEMENTS_MOST : ie_length);
 		memcpy(b->elements, bi + ie_offset, b->elements_length);
+		apple_ie_log(b);
 	}
 	return true;
 }
@@ -2209,6 +2211,70 @@ static struct redwood_sta_bss join_bss;
  */
 static int wifi_rssi_now, wifi_noise_now;
 SYSCTL_DECL(_kern_redwood);
+
+/*
+ * Apple's vendor elements (OUI 00:17:f2) of the networks a scan hears, to the log once each (B, 2026-11-19): an
+ * iPhone's Personal Hotspot marks itself with one, and the devices on it then treat it as mobile data (macOS:
+ * IsExpensive). kern.redwood.wifi_ap_vendor_ie = the element's body in hex (OUI first): sent in our access point's
+ * beacons and probe answers (Broadcom "vndr_ie", as brcmfmac's brcmf_vif_set_mgmt_ie), now and at every start.
+ */
+static void
+apple_ie_log(const struct redwood_sta_bss *b)
+{
+	static uint32_t seen[16];
+	static unsigned seen_n;
+
+	for (unsigned at = 0; at + 2 <= b->elements_length && at + 2 + b->elements[at + 1] <= b->elements_length;
+	    at += 2 + b->elements[at + 1]) {
+		const uint8_t *e = b->elements + at;
+		char hex[2 * 64 + 1];
+		uint32_t h = 2166136261u;
+		unsigned l = e[1] > 64 ? 64 : e[1], i;
+
+		if (e[0] != 221 || e[1] < 4 || e[2] != 0x00 || e[3] != 0x17 || e[4] != 0xf2) {
+			continue;
+		}
+		for (i = 0; i < 6; i++) {
+			h = (h ^ b->bssid[i]) * 16777619u;
+		}
+		for (i = 0; i < l; i++) {
+			h = (h ^ e[2 + i]) * 16777619u;
+			snprintf(hex + 2 * i, 3, "%02x", e[2 + i]);
+		}
+		hex[2 * l] = 0;
+		for (i = 0; i < seen_n && seen[i] != h; i++) {
+		}
+		if (i < seen_n) {
+			continue;
+		}
+		seen[seen_n++ % 16] = h;
+		if (seen_n > 16) {
+			seen_n = 16;
+		}
+		blog("scan: apple element from \"%.*s\" (%u bytes): %s", b->ssid_length, b->ssid, e[1], hex);
+	}
+}
+
+static uint8_t ap_vie[64];
+static unsigned ap_vie_len;
+
+static void
+ap_vie_apply(const char *cmd)
+{
+	uint8_t buf[4 + 4 + 4 + 2 + sizeof(ap_vie)] = { 0 };
+	uint32_t one = 1, flags = 0x1 | 0x2;            /* beacons and probe answers */
+
+	if (ap_vie_len < 3) {
+		return;
+	}
+	strlcpy((char *)buf, cmd, 4);
+	memcpy(buf + 4, &one, 4);
+	memcpy(buf + 8, &flags, 4);
+	buf[12] = 221;
+	buf[13] = (uint8_t)ap_vie_len;
+	memcpy(buf + 14, ap_vie, ap_vie_len);
+	blog("ap: vendor element %s: %d", cmd, iovar(true, "vndr_ie", buf, 14 + ap_vie_len));
+}
 SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_rssi, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_rssi_now, 0,
     "the joined network's signal in dBm, live (0: not joined)");
 SYSCTL_INT(_kern_redwood, OID_AUTO, wifi_noise, CTLFLAG_RD | CTLFLAG_LOCKED, &wifi_noise_now, 0,
@@ -3437,6 +3503,7 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		ap_down();
 		return EIO;
 	}
+	ap_vie_apply("add");
 	if (secure) {                   /* the group key: random, the primary (transmit) key; then the handshakes */
 		thread_t t;
 		int e_gtk;
@@ -3606,5 +3673,38 @@ sysctl_wifi_iovar SYSCTL_HANDLER_ARGS
 
 SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_ap, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_ap, "A",
     "Personal Hotspot access point: \"start <channel> <name> [passphrase]\" | \"stop\"");
+static int
+sysctl_ap_vie SYSCTL_HANDLER_ARGS
+{
+	char hex[2 * sizeof(ap_vie) + 1] = "";
+	int err;
+	unsigned i, n;
+
+	for (i = 0; i < ap_vie_len; i++) {
+		snprintf(hex + 2 * i, 3, "%02x", ap_vie[i]);
+	}
+	err = sysctl_handle_string(oidp, hex, sizeof(hex), req);
+	if (err != 0 || req->newptr == USER_ADDR_NULL) {
+		return err;
+	}
+	if (ap_on) {
+		ap_vie_apply("del");
+	}
+	for (n = 0; n < sizeof(ap_vie) && hex[2 * n] && hex[2 * n + 1]; n++) {
+		unsigned v = 0;
+
+		for (i = 0; i < 2; i++) {
+			char c = hex[2 * n + i];
+			v = v * 16 + (c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0);
+		}
+		ap_vie[n] = (uint8_t)v;
+	}
+	ap_vie_len = n;
+	if (ap_on) {
+		ap_vie_apply("add");
+	}
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_ap_vendor_ie, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_ap_vie, "A", "");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_iovar, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_iovar,
     "A", "a firmware iovar: \"get <name>\" | \"set <name> <int>\" (answers in the log)");
