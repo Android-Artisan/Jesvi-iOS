@@ -21,9 +21,8 @@ Branch `feat/s20-touchid` (worktree `work/hackios-touchid`) = `main` + `feat/s20
    - TA identify, `init_identify_stub_d` in finge.elf around 0x12146c (decompiled in tools/re/out), returns 0x20
      from several branches: find which one fires;
    - the TA's own log (FUN_00144604) would show it: find where TEEGRIS keeps it.
-2. ~~Enrolled finger forgotten at reboot~~ **fixed and verified (2026-11-19):** catacomb support (redwood-fpd cat_*,
-   kern.sweet_mesa_catacomb=1). After the reboot biometrickitd found the catacomb, loaded it once redwood-fpd
-   connected (GetIdentitiesList: finger 1) and the lock screen started Touch ID matching again.
+2. Enrolled finger forgotten at reboot: catacomb support added (redwood-fpd cat_*, kern.sweet_mesa_catacomb=1), the
+   save works (61/62/63), but at boot biometrickitd asks before redwood-fpd is connected (NotReady) and does not load.
 3. The sensor ring (libredwood-touchid-ui in SpringBoard) is not visible on the lock screen.
 4. Popup text shows raw TOUCH_ID_ISSUE_* keys (strings only in a Touch ID iPhone's iOS).
 5. Screen-off / AOD unlock: needs the sensor's WUHB line (Samsung qbt2000_wuhb_irq_handler); we use the touch panel.
