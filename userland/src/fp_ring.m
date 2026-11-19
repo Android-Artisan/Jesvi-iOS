@@ -63,11 +63,11 @@ makeRingWindow(void)
 	UIView *spot = [[UIView alloc] initWithFrame:CGRectMake(c.x - d / 2, c.y - d / 2, d, d)];
 	spot.userInteractionEnabled = NO;
 	spot.layer.cornerRadius = d / 2;
-	spot.layer.borderWidth = 2.5;
-	spot.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.9].CGColor;
-	spot.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+	spot.layer.borderWidth = 1.5;
+	spot.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
+	spot.backgroundColor = [UIColor colorWithWhite:1 alpha:0.06];   /* faint: blends with any wallpaper */
 	UIImageView *glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"touchid"]];
-	glyph.tintColor = UIColor.whiteColor;
+	glyph.tintColor = [UIColor colorWithWhite:1 alpha:0.4];
 	glyph.contentMode = UIViewContentModeScaleAspectFit;
 	glyph.frame = CGRectInset(spot.bounds, d * 0.2, d * 0.2);
 	[spot addSubview:glyph];
