@@ -32,6 +32,7 @@ struct rw_prefix { struct in6_addr p; uint32_t len; };
 struct rw_nat64req { char name[IFNAMSIZ]; struct rw_prefix p[NAT64_MAX_NUM_PREFIXES]; };
 struct rw_clat46req { char name[IFNAMSIZ]; struct { struct in6_addr a; uint32_t len; } a6; };
 #define RW_SIOCAIFADDR_IN6      _IOW('i', 26, struct rw_aliasreq)
+#define RW_SIOCDIFADDR_IN6      _IOW('i', 25, struct rw_ifreq6)
 #define RW_SIOCCLAT46_START     _IOWR('i', 189, struct rw_ifreq6)
 #define RW_SIOCCLAT46_STOP      _IOWR('i', 190, struct rw_ifreq6)
 #define RW_SIOCSIFNAT64PREFIX   _IOWR('i', 194, struct rw_nat64req)
@@ -133,6 +134,11 @@ main(int argc, char **argv)
 	ar.mask.sin6_family = AF_INET6;
 	memset(&ar.mask.sin6_addr, 0xff, 8);
 	ar.flags = IN6_IFF_AUTOCONF;
+	/* re-adding a known address keeps its prefix's flags: delete it first, so the prefix is made again with raf_auto */
+	struct rw_ifreq6 dr = { 0 };
+	strlcpy(dr.name, argv[2], sizeof(dr.name));
+	dr.u.a = *g;
+	printf("DIFADDR_IN6: %s\n", ioctl(s, RW_SIOCDIFADDR_IN6, &dr) ? strerror(errno) : "ok");
 	ar.lt.ia6t_vltime = ar.lt.ia6t_pltime = 0xffffffff;
 	printf("AIFADDR_IN6 autoconf: %s\n", ioctl(s, RW_SIOCAIFADDR_IN6, &ar) ? strerror(errno) : "ok");
 	freeifaddrs(ifa);
@@ -142,7 +148,7 @@ main(int argc, char **argv)
 	strlcpy(nr.name, argv[2], sizeof(nr.name));
 	strlcpy(pfx, argv[3], sizeof(pfx));
 	char *slash = strchr(pfx, '/');
-	nr.p[0].len = slash ? (uint32_t)atoi(slash + 1) : 96;
+	nr.p[0].len = (slash ? (uint32_t)atoi(slash + 1) : 96) / 8;      /* the kernel wants bytes (NAT64_PREFIX_LEN_96 == 12) */
 	if (slash) {
 		*slash = 0;
 	}
@@ -150,7 +156,7 @@ main(int argc, char **argv)
 		printf("bad prefix %s\n", argv[3]);
 		return 1;
 	}
-	printf("SIFNAT64PREFIX %s/%u: %s\n", pfx, nr.p[0].len, ioctl(s, RW_SIOCSIFNAT64PREFIX, &nr) ? strerror(errno) : "ok");
+	printf("SIFNAT64PREFIX %s/%u: %s\n", pfx, nr.p[0].len * 8, ioctl(s, RW_SIOCSIFNAT64PREFIX, &nr) ? strerror(errno) : "ok");
 	/* 3. CLAT46 */
 	printf("CLAT46_START: %s\n", ioctl(s, RW_SIOCCLAT46_START, &ir) ? strerror(errno) : "ok");
 	struct rw_clat46req cr = { 0 };
