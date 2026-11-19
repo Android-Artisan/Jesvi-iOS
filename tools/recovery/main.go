@@ -120,7 +120,7 @@ func run() error {
 	if b.Config.Action == "restore" {
 		log("RESTORE: puts back Android's partition map and clears iOS data headers.")
 		log("ALL iOS DATA WILL BE LOST. BOOT and TWRP stay as they are.")
-		if e = confirmKeys("Erase iOS and prepare the phone for an Android ROM?", log); e != nil {
+		if e = confirm("Erase iOS and prepare the phone for an Android ROM?", true, log); e != nil {
 			return e
 		}
 		ui.begin("Freeing the storage")
@@ -157,11 +157,11 @@ func run() error {
 		log("FRESH INSTALL: ALL ANDROID/iOS USERDATA WILL BE LOST. This is not a secure erase.")
 	}
 	log("Use verified OFF-DEVICE backups and tested Download Mode rescue. TWRP will be overwritten.")
-	if e = confirmKeys("Confirm backups/rescue and installation of this experimental candidate.", log); e != nil {
+	if e = confirm("Confirm backups/rescue and installation of this experimental candidate.", mode == "fresh", log); e != nil {
 		return e
 	}
 	if mode == "fresh" {
-		if e = confirmKeys("SECOND CONFIRMATION: erase userdata and initialize HFSX?", log); e != nil {
+		if e = confirm("SECOND CONFIRMATION: erase userdata and initialize HFSX?", true, log); e != nil {
 			return e
 		}
 	}
@@ -196,11 +196,14 @@ func reportFailure(message string) {
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
+			dropApproval()
 			reportFailure(fmt.Sprint(r))
 			os.Exit(1)
 		}
 	}()
-	if e := run(); e != nil {
+	e := run()
+	dropApproval() // one run only (approve.go)
+	if e != nil {
 		reportFailure(e.Error())
 		os.Exit(1)
 	}
