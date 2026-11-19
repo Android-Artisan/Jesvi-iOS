@@ -2892,6 +2892,15 @@ sta_get_state(struct redwood_sta_state *state)
 	}
 	lck_spin_lock(&state_lock);
 	*state = sta_state;
+	if (ap_on) {                    /* our own access point: what wifid asks of "the network" is about it */
+		state->ap = true;
+		bzero(&state->bss, sizeof(state->bss));
+		memcpy(state->bss.ssid, ap_ssid, ap_ssid_length);
+		state->bss.ssid_length = ap_ssid_length;
+		memcpy(state->bss.bssid, bcm_ops.address, 6);
+		state->bss.frequency = (uint16_t)(ap_channel > 14 ? 5000 + 5 * ap_channel : ap_channel == 14 ? 2484 :
+		    2407 + 5 * ap_channel);
+	}
 	lck_spin_unlock(&state_lock);
 }
 
@@ -3034,12 +3043,15 @@ link_transmit(mbuf_t packet, size_t length)
 	return true;
 }
 
+static int sta_ap(const struct redwood_sta_ap *what);
+
 static struct redwood_sta_ops bcm_ops = {
 	.power = sta_power,
 	.scan = sta_scan,
 	.heard = sta_heard,
 	.join = sta_join,
 	.leave = sta_leave,
+	.ap = sta_ap,
 	.state = sta_get_state,
 	.channels = sta_channels,
 };
@@ -3328,6 +3340,9 @@ ap_down(void)
 	ap_on = false;
 }
 
+static uint8_t ap_ssid[32], ap_ssid_length;     /* the access point's name and channel, for state() */
+static uint16_t ap_channel;
+
 static int
 ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
 {
@@ -3344,6 +3359,9 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 	if (sta_state.phase == REDWOOD_STA_JOINED || sta_state.phase == REDWOOD_STA_JOINING) {
 		sta_leave();
 	}
+	memcpy(ap_ssid, ssid, sl);
+	ap_ssid_length = (uint8_t)sl;
+	ap_channel = (uint16_t)channel;
 	ap_on = true;                   /* from here wifid's scans/joins are refused */
 	e_down = ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
 	(void)iovar_int("apsta", 0);    /* a dedicated access point, no client interface beside it */
@@ -3502,6 +3520,33 @@ sysctl_wifi_ap SYSCTL_HANDLER_ARGS
 		}
 		err = ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
 		    pass ? (uint32_t)strlen(pass) : 0);
+	}
+	ap_busy = 0;
+	return err;
+}
+
+/* wifid's Personal Hotspot (HOST_AP_MODE), through the station thread: start (or restart) or stop the access point. */
+static int
+sta_ap(const struct redwood_sta_ap *what)
+{
+	char name[33], pass[64];
+	int err;
+
+	if (!OSCompareAndSwap(0, 1, &ap_busy)) {
+		return EBUSY;
+	}
+	if (ap_on) {
+		(void)ap_stop();
+	}
+	if (what == NULL) {
+		err = 0;
+	} else {
+		bzero(name, sizeof(name));
+		bzero(pass, sizeof(pass));
+		memcpy(name, what->ssid, what->ssid_length > 32 ? 32 : what->ssid_length);
+		memcpy(pass, what->passphrase, what->passphrase_length > 63 ? 63 : what->passphrase_length);
+		err = ap_start(what->channel != 0 ? what->channel : 6, name, (uint32_t)strlen(name), pass, (uint32_t)strlen(pass));
+		bzero(pass, sizeof(pass));
 	}
 	ap_busy = 0;
 	return err;

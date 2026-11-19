@@ -46,6 +46,9 @@ static bool sta_on;                             /* the radio's power, as last as
 
 /* what has been asked for and not begun */
 static bool asked_power, asked_power_on, asked_scan, asked_join, asked_leave;
+static bool asked_ap;                   /* an access point: start (asked_ap_what) or stop (asked_ap_on false) */
+static bool asked_ap_on;
+static struct redwood_sta_ap asked_ap_what;
 static struct redwood_sta_scan asked_scan_what;
 static struct redwood_sta_join asked_join_what;
 static struct redwood_sta_join standing;        /* the network joined whenever the radio comes on (ssid_length 0: none) */
@@ -87,11 +90,12 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 
 	for (;;) {
 		const struct redwood_sta_ops *ops;
-		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false;
+		bool power = false, power_on = false, leave = false, do_join = false, do_scan = false, do_ap = false, ap_on = false;
+		static struct redwood_sta_ap ap;
 		int error = 0;
 
 		lck_mtx_lock(&sta_lock);
-		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan)) {
+		while (sta_ops == NULL || !(asked_power || asked_leave || asked_join || asked_scan || asked_ap)) {
 			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_ops, THREAD_UNINT);
 		}
 		ops = sta_ops;
@@ -100,6 +104,12 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 			power = true;
 			power_on = asked_power_on;
 			asked_power = false;
+		} else if (asked_ap) {
+			do_ap = true;
+			ap_on = asked_ap_on;
+			ap = asked_ap_what;
+			bzero(&asked_ap_what, sizeof(asked_ap_what));
+			asked_ap = false;
 		} else if (asked_leave) {
 			leave = true;
 			asked_leave = false;
@@ -136,6 +146,10 @@ sta_runs(__unused void *parameter, __unused wait_result_t result)
 				asked_join = true;
 			}
 			lck_mtx_unlock(&sta_lock);
+		} else if (do_ap) {
+			error = ops->ap == NULL ? ENOTSUP : ops->ap(ap_on ? &ap : NULL);
+			bzero(&ap, sizeof(ap));
+			redwood_apple80211_event(REDWOOD_STA_AP, error != 0 ? error : ap_on ? 1 : 0);
 		} else if (leave) {
 			ops->leave();
 			redwood_apple80211_event(REDWOOD_STA_LINK, 0);
@@ -197,7 +211,7 @@ redwood_sta_attach(const struct redwood_sta_ops *ops)
 	if (ops == NULL) {
 		lck_mtx_lock(&sta_lock);
 		sta_ops = NULL;
-		asked_power = asked_scan = asked_join = asked_leave = false;
+		asked_power = asked_scan = asked_join = asked_leave = asked_ap = false;
 		while (sta_calls || sta_reads != 0) {
 			lck_mtx_sleep(&sta_lock, LCK_SLEEP_DEFAULT, (event_t)&sta_calls, THREAD_UNINT);
 		}
@@ -340,6 +354,27 @@ redwood_sta_ask_leave(void)
 	asked_join = false;
 	bzero(&asked_join_what, sizeof(asked_join_what));
 	bzero(&fallback, sizeof(fallback));
+	lck_mtx_unlock(&sta_lock);
+	thread_wakeup((event_t)&sta_ops);
+	return 0;
+}
+
+/* Personal Hotspot: our own access point (what), or none (NULL). A client network waiting to be joined is let go. */
+int
+redwood_sta_ask_ap(const struct redwood_sta_ap *what)
+{
+	lck_mtx_lock(&sta_lock);
+	if (sta_ops == NULL) {
+		lck_mtx_unlock(&sta_lock);
+		return ENXIO;
+	}
+	asked_ap = true;
+	asked_ap_on = what != NULL;
+	if (what != NULL) {
+		asked_ap_what = *what;
+		asked_join = false;
+		bzero(&asked_join_what, sizeof(asked_join_what));
+	}
 	lck_mtx_unlock(&sta_lock);
 	thread_wakeup((event_t)&sta_ops);
 	return 0;

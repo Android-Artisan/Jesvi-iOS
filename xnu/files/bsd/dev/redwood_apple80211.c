@@ -43,6 +43,7 @@
 #include <sys/redwood_sta.h>
 #include <sys/sockio.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
 
 #define SIOCSA80211             0x802869c8u     /* _IOW('i', 200, struct apple80211req) */
 #define SIOCGA80211             0xc02869c9u     /* _IOWR('i', 201, struct apple80211req) */
@@ -54,6 +55,31 @@ struct apple80211req {
 	uint32_t req_len;
 	user_addr_t req_data __attribute__((aligned(8)));
 };
+
+/*
+ * Bring-up switches (A, 2026-11-19, Personal Hotspot): kern.redwood.wifi_caps_extra, more APPLE80211_CAP_* bits in
+ * CARD_CAPABILITIES (bit n of the value = capability n; 8 is HOSTAP), and kern.redwood.wifi_a80211_log = N, the
+ * next N requests said in the log again (the first 800 of a run are).
+ */
+static unsigned long long caps_extra;
+static bool ap_secured;                 /* our access point (HOST_AP_MODE) asks for WPA2 */
+static unsigned log_said;
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_QUAD(_kern_redwood, OID_AUTO, wifi_caps_extra, CTLFLAG_RW | CTLFLAG_LOCKED, &caps_extra,
+    "more APPLE80211_CAP_* bits for wifid (bit n = capability n)");
+static int
+sysctl_a80211_log SYSCTL_HANDLER_ARGS
+{
+#pragma unused(arg1, arg2)
+	int n = 0, err = sysctl_handle_int(oidp, &n, 0, req);
+
+	if (err == 0 && req->newptr != USER_ADDR_NULL && n > 0) {
+		log_said = n < 800 ? 800 - (unsigned)n : 0;
+	}
+	return err;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_a80211_log, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0,
+    sysctl_a80211_log, "I", "log the next N Apple80211 requests");
 
 /* (as far as they have come by: the names help reading the log) */
 static const char *
@@ -312,10 +338,15 @@ get(struct apple80211req *request)
 		 * for a WPA2 network ("Unable to join").
 		 */
 		uint8_t bits[13] = { 0 };
-		static const uint8_t has[] = { 2, 3, 6, 9, 10, 14, 17, 19 };
+		static const uint8_t has[] = { 2, 3, 6, 7, 9, 10, 14, 17, 19 };     /* 7: HOSTAP (wifid's Personal Hotspot) */
 
 		for (unsigned i = 0; i < sizeof(has); i++) {
 			bits[has[i] / 8] |= (uint8_t)(1u << (has[i] % 8));
+		}
+		for (unsigned i = 0; i < 64; i++) {
+			if (caps_extra & (1ULL << i)) {
+				bits[i / 8] |= (uint8_t)(1u << (i % 8));
+			}
 		}
 		return give(request, bits, sizeof(bits));
 	}
@@ -326,9 +357,18 @@ get(struct apple80211req *request)
 
 		return give(request, &answer, sizeof(answer));
 	}
-	case 15:                                /* the mode: a station (APPLE80211_M_STA) */
-		request->req_val = 1;
+	case 15: {                              /* the mode: a station (APPLE80211_M_STA 1), or our own access point (_HOSTAP 8) */
+		struct redwood_sta_state *now = kalloc_data(sizeof(*now), Z_WAITOK | Z_ZERO);
+
+		if (now != NULL) {
+			redwood_sta_state(now);
+		}
+		request->req_val = now != NULL && now->ap ? 8 : 1;
+		if (now != NULL) {
+			kfree_data(now, sizeof(*now));
+		}
 		return 0;
+	}
 	case 27:
 	case 254: {                             /* the channels the radio may tune to */
 		struct apple80211_channels *answer;
@@ -399,6 +439,9 @@ get(struct apple80211req *request)
 		return ENOMEM;
 	}
 	redwood_sta_state(state);
+	if (state->ap) {                /* our own access point is "the network" (its name, our address, its channel) */
+		state->phase = REDWOOD_STA_JOINED;
+	}
 	switch (request->req_type) {
 	case 13:                                /* the state: APPLE80211_S_INIT 0, _SCAN 1, _AUTH 2, _ASSOC 3, _RUN 4 */
 		request->req_val = state->phase == REDWOOD_STA_JOINED ? 4 : state->phase == REDWOOD_STA_JOINING ? 2 :
@@ -455,6 +498,10 @@ get(struct apple80211req *request)
 		struct {
 			uint32_t version, lower, upper, extended;
 		} answer = { .version = 1, .lower = 1, .upper = 8 };
+
+		if (state->ap) {
+			answer.upper = ap_secured ? 8 : 0;
+		}
 
 		error = state->phase != REDWOOD_STA_JOINED ? ENXIO : give(request, &answer, sizeof(answer));
 		break;
@@ -582,6 +629,75 @@ out:
 	return error;
 }
 
+/*
+ * HOST_AP_MODE (25), wifid's Personal Hotspot (A, 2026-11-19): value 1 and an apple80211_network_data (1500 bytes):
+ * version 0, mode 4, authentication lower 6 / upper 8, channel {version, channel, flags} at 12, name length 24, name
+ * 28 (32), key {version 60, length 64, cipher 68, flags 72, index 74, bytes 76 (64)} (IO80211's layout, as itlwm
+ * has it). Value 2 (or 0): stop. The password is never logged: of the key only its length and kind, and of the rest
+ * of the block only where it is not zero.
+ */
+static int
+set_host_ap(const struct apple80211req *request, char *said, size_t said_size)
+{
+	uint8_t *d;
+	struct redwood_sta_ap *ap;
+	uint32_t length = request->req_len < 1500 ? request->req_len : 1500, name_length, key_length, cipher, channel;
+	char where[160] = "";
+	size_t used = 0;
+	int error;
+
+	if (request->req_val != 1) {
+		snprintf(said, said_size, " (host AP: stop)");
+		ap_secured = false;
+		return redwood_sta_ask_ap(NULL);
+	}
+	if (length < 140 || request->req_data == USER_ADDR_NULL) {
+		return EINVAL;
+	}
+	d = kalloc_data(1500, Z_WAITOK | Z_ZERO);
+	ap = kalloc_data(sizeof(*ap), Z_WAITOK | Z_ZERO);
+	if (d == NULL || ap == NULL || (error = copyin(request->req_data, d, length)) != 0) {
+		error = d == NULL || ap == NULL ? ENOMEM : error;
+		goto out;
+	}
+	memcpy(&channel, d + 16, 4);
+	memcpy(&name_length, d + 24, 4);
+	memcpy(&key_length, d + 64, 4);
+	memcpy(&cipher, d + 68, 4);
+	for (uint32_t i = 140; i < length && used + 12 < sizeof(where); i++) {
+		if (d[i] != 0 && (i == 140 || d[i - 1] == 0)) {
+			used += (size_t)snprintf(where + used, sizeof(where) - used, " %u", i);
+		}
+	}
+	printf("apple80211: host AP: version %u mode %u auth %u/%u channel %u flags %#x name %u bytes \"%.*s\" key %u bytes "
+	    "cipher %u; not zero after 140 at:%s\n", *(uint32_t *)d, *(uint16_t *)(d + 4), *(uint16_t *)(d + 6),
+	    *(uint16_t *)(d + 8), channel, *(uint32_t *)(d + 20), name_length, name_length <= 32 ? (int)name_length : 0, d + 28,
+	    key_length, cipher, where);
+	if (name_length == 0 || name_length > 32 || channel > 165 || (key_length != 0 && (key_length < 8 || key_length > 63))) {
+		error = EINVAL;
+		goto out;
+	}
+	memcpy(ap->ssid, d + 28, name_length);
+	ap->ssid_length = (uint8_t)name_length;
+	ap->channel = (uint16_t)channel;
+	memcpy(ap->passphrase, d + 76, key_length);
+	ap->passphrase_length = (uint8_t)key_length;
+	ap_secured = key_length != 0;
+	snprintf(said, said_size, " (host AP: \"%.*s\" channel %u, %s)", (int)name_length, ap->ssid, channel,
+	    key_length ? "WPA2" : "open");
+	error = redwood_sta_ask_ap(ap);
+out:
+	if (d != NULL) {
+		bzero(d, 1500);
+		kfree_data(d, 1500);
+	}
+	if (ap != NULL) {
+		bzero(ap, sizeof(*ap));
+		kfree_data(ap, sizeof(*ap));
+	}
+	return error;
+}
+
 static int
 set(const struct apple80211req *request, char *said, size_t said_size)
 {
@@ -604,6 +720,8 @@ set(const struct apple80211req *request, char *said, size_t said_size)
 	}
 	case 10:
 		return set_scan(request, said, said_size);
+	case 25:
+		return set_host_ap(request, said, said_size);
 	default:
 		return EOPNOTSUPP;
 	}
@@ -637,7 +755,8 @@ redwood_apple80211_event(enum redwood_sta_event event, int status)
 	if (said < 200) {
 		said++;
 		printf("apple80211: the station says: %s, %d\n", event == REDWOOD_STA_POWER ? "power" : event == REDWOOD_STA_SCAN_DONE ?
-		    "a scan is over" : event == REDWOOD_STA_JOIN_DONE ? "a join is over" : "the link", status);
+		    "a scan is over" : event == REDWOOD_STA_JOIN_DONE ? "a join is over" : event == REDWOOD_STA_AP ? "our access point" :
+		    "the link", status);
 	}
 	switch (event) {
 	case REDWOOD_STA_POWER:
@@ -655,6 +774,14 @@ redwood_apple80211_event(enum redwood_sta_event event, int status)
 		lck_mtx_unlock(&apple80211_lock);
 		post(EVENT_ASSOC_DONE, NULL, 0);
 		break;
+	case REDWOOD_STA_AP: {          /* our access point up (1) or down: the link, as wifid sees en0 */
+		struct apple80211_link_changed link = { .down = status != 1 };
+
+		post(EVENT_SSID_CHANGED, NULL, 0);
+		post(EVENT_BSSID_CHANGED, NULL, 0);
+		post(EVENT_LINK_CHANGED, &link, sizeof(link));
+		break;
+	}
 	case REDWOOD_STA_LINK: {
 		struct apple80211_link_changed link = { .down = status != 1, .involuntary = status != 1 && status != 0,
 			                                .reason = status != 1 && status != 0 ? 4 : 0 };      /* (4: gone, not asked) */
@@ -732,7 +859,7 @@ redwood_apple80211_summary(void)
 errno_t
 redwood_apple80211_ioctl(u_long command, void *data)
 {
-	static unsigned said;
+	unsigned *said_p = &log_said;
 	struct apple80211req *request = data;
 	char who[32] = "?", what[200] = "";
 	bool is_set = command == SIOCSA80211;
@@ -745,8 +872,8 @@ redwood_apple80211_ioctl(u_long command, void *data)
 	error = is_set ? set(request, what, sizeof(what)) : get(request);
 	note(request, is_set, error);
 	/* (a request that is repeated for ever is said a few hundred times) */
-	if (said < 800) {
-		said++;
+	if (*said_p < 800) {
+		(*said_p)++;
 		printf("apple80211: %s %s %d (%s), value %d, %u bytes%s: %s", who, is_set ? "sets" : "gets", request->req_type,
 		    type_name(request->req_type), request->req_val, request->req_len, what, error == 0 ? "answered\n" : error ==
 		    EOPNOTSUPP ? "REFUSED\n" : "");
