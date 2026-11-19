@@ -3098,21 +3098,39 @@ redwood_bcm4375_run(const struct redwood_bcm_bus *b)
 /* Access point (Personal Hotspot, stage 1, 2026-11-19)                     */
 /*
  * The chip as an access point, as brcmfmac's brcmf_cfg80211_start_ap() does for a dedicated AP on the primary
- * interface (and Samsung's dhd): client mode left, DOWN, INFRA 1, AP 1, chanspec, security (open, or WPA2-PSK by the
- * firmware's own authenticator), UP, SET_SSID; the SET_SSID event with status 0 says the network is on the air.
+ * interface (and Samsung's dhd): client mode left, DOWN, INFRA 1, AP 1, chanspec, security, UP, SET_SSID; E_LINK up
+ * (or E_SET_SSID status 0) says the network is on the air. Then a flow ring towards broadcast and en0's link up.
  * While it is up the client-mode calls (scan, join, power) answer EBUSY, so wifid cannot undo it.
+ * WPA2: firmware 18.41.117 has no authenticator of its own (WLC_SET_WSEC_PMK -23); until the host does the
+ * four-way handshake a passphrase is refused (ENOTSUP) rather than a network nobody can join.
  * Root-only switches for now; iOS's Personal Hotspot comes on top in later stages:
  *   sysctl -w kern.redwood.wifi_ap="start <channel> <name> [passphrase]"     sysctl -w kern.redwood.wifi_ap=stop
+ *   (fields may be separated by tabs instead, for a name or passphrase with spaces)
  *   sysctl kern.redwood.wifi_ap                                               (the last result)
  *   sysctl -w kern.redwood.wifi_iovar="get <name>" | "set <name> <int>"      (the answer goes to the log)
  */
 static char ap_result[160] = "off";
+static volatile SInt32 ap_busy;         /* one start/stop at a time (sysctl writers) */
+
+/* back to client mode: the AP off, open security, the chip up again for wifid */
+static void
+ap_down(void)
+{
+	uint32_t one = 1, zero = 0;
+
+	(void)ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
+	(void)ioctl(WLC_SET_AP, &zero, sizeof(zero), sizeof(zero));
+	(void)iovar_int("wsec", 0);
+	(void)iovar_int("wpa_auth", 0);
+	(void)ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
+	ap_on = false;
+}
 
 static int
 ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
 {
 	static const uint8_t ap_events[] = { E_AUTH_IND, E_ASSOC_IND, E_REASSOC_IND, E_DEAUTH_IND, E_DISASSOC_IND };
-	uint32_t one = 1, zero = 0, status = ~0U;
+	uint32_t one = 1, status = ~0U;
 	uint8_t ssid_le[36], mask[16];
 	int32_t chanspec;
 	int e_down, e_infra, e_ap, e_chan, e_wsec, e_auth, e_pmk = 0, e_up, e_ssid;
@@ -3149,7 +3167,7 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		uint16_t kl = (uint16_t)pl, fl = WSEC_PASSPHRASE;
 
 		if (pmk == NULL) {
-			ap_on = false;
+			ap_down();
 			return ENOMEM;
 		}
 		memcpy(pmk, &kl, 2);
@@ -3158,6 +3176,12 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		e_pmk = ioctl(WLC_SET_WSEC_PMK, pmk, PMK_STRUCT_SIZE, PMK_STRUCT_SIZE);
 		bzero(pmk, PMK_STRUCT_SIZE);
 		kfree_data(pmk, PMK_STRUCT_SIZE);
+		if (e_pmk != 0) {
+			snprintf(ap_result, sizeof(ap_result), "REFUSED: WPA2 needs the host's authenticator (firmware PMK %d)", e_pmk);
+			blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
+			ap_down();
+			return ENOTSUP;
+		}
 	}
 	e_up = ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
 	lck_mtx_lock(&ring_lock);
@@ -3180,19 +3204,25 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		status = ev_ssid ? ev_ssid_status : 0;
 		lck_mtx_unlock(&ring_lock);
 	}
-	(void)zero;
 	snprintf(ap_result, sizeof(ap_result), "%s: ch %u %s; down %d infra %d ap %d chanspec %d wsec %d wpa_auth %d pmk %d up %d "
 	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, pl ? "WPA2" : "open", e_down, e_infra,
 	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, !got ? "none" : link ? "link" : "set_ssid", got ? status : 0);
 	blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
 	if (!(got && status == 0)) {
-		uint32_t z = 0;
-
-		(void)ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
-		(void)ioctl(WLC_SET_AP, &z, sizeof(z), sizeof(z));
-		(void)ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
-		ap_on = false;
+		ap_down();
 		return EIO;
+	}
+	/* (A, 2026-11-19) the client-mode flow ring was towards the joined router; as an access point frames go to
+	 * the clients: one ring towards broadcast (brcmfmac maps multicast to ff:ff..; unicast per station comes next
+	 * if the firmware wants it), en0's link up so iOS sends at all, and the rx log re-armed to see client frames. */
+	{
+		static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+		bool f = flow_create(bcast);
+
+		rx_logged = 0;
+		tx_logged = 0;
+		redwood_net_link_state(true);
+		blog("ap: flow ring towards broadcast: %s; en0 link up", f ? "up" : "FAILED");
 	}
 	return 0;
 }
@@ -3200,38 +3230,33 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 static int
 ap_stop(void)
 {
-	uint32_t one = 1, zero = 0;
-	int e_down, e_ap, e_up;
-
 	if (!ap_on) {
 		return 0;
 	}
-	e_down = ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
-	e_ap = ioctl(WLC_SET_AP, &zero, sizeof(zero), sizeof(zero));
-	(void)iovar_int("wsec", 0);
-	(void)iovar_int("wpa_auth", 0);
-	e_up = ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
-	ap_on = false;
+	flow_delete();
+	redwood_net_link_state(false);
+	ap_down();
 	state_set(REDWOOD_STA_IDLE, NULL, 0);
-	snprintf(ap_result, sizeof(ap_result), "off (stop: down %d ap 0 %d up %d)", e_down, e_ap, e_up);
+	snprintf(ap_result, sizeof(ap_result), "off");
 	blog("ap: %s", ap_result);
 	return 0;
 }
 
-/* "word word ..." in place: the next word, NUL-terminated; *rest after it */
+/* "word word ..." in place: the next word, NUL-terminated; *rest after it. With a tab anywhere in the string the
+ * fields are tab-separated (a name or passphrase with spaces). */
 static char *
 ap_word(char **rest)
 {
-	char *s = *rest, *w;
+	char *s = *rest, *w, sep = strchr(s, '\t') ? '\t' : ' ';
 
-	while (*s == ' ') {
+	while (*s == ' ' || *s == sep) {
 		s++;
 	}
 	if (*s == 0) {
 		return NULL;
 	}
 	w = s;
-	while (*s != 0 && *s != ' ') {
+	while (*s != 0 && *s != sep) {
 		s++;
 	}
 	if (*s != 0) {
@@ -3257,18 +3282,23 @@ sysctl_wifi_ap SYSCTL_HANDLER_ARGS
 	if (cmd == NULL) {
 		return EINVAL;
 	}
+	if (!OSCompareAndSwap(0, 1, &ap_busy)) {
+		return EBUSY;
+	}
 	if (strcmp(cmd, "stop") == 0) {
-		return ap_stop();
+		err = ap_stop();
+	} else if (strcmp(cmd, "start") != 0 || (ch = ap_word(&rest)) == NULL || (name = ap_word(&rest)) == NULL) {
+		err = EINVAL;
+	} else {
+		pass = ap_word(&rest);
+		if (ap_on) {
+			(void)ap_stop();
+		}
+		err = ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
+		    pass ? (uint32_t)strlen(pass) : 0);
 	}
-	if (strcmp(cmd, "start") != 0 || (ch = ap_word(&rest)) == NULL || (name = ap_word(&rest)) == NULL) {
-		return EINVAL;
-	}
-	pass = ap_word(&rest);
-	if (ap_on) {
-		(void)ap_stop();
-	}
-	return ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
-	    pass ? (uint32_t)strlen(pass) : 0);
+	ap_busy = 0;
+	return err;
 }
 
 static int

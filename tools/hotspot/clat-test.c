@@ -4,8 +4,8 @@
  * to the carrier's NAT64. On a real iPhone configd/CommCenter do these steps; here nobody does.
  *
  *   clat-test nat64 [DNS]           AAAA of ipv4only.arpa (RFC 7050): the carrier's NAT64 prefix
- *   clat-test start IF PREFIX/96    re-add IF's global IPv6 address with IN6_IFF_AUTOCONF (CLAT46 needs an autoconf
- *                                   prefix), set the NAT64 prefix, SIOCCLAT46_START, print the CLAT46 address
+ *   clat-test start IF PREFIX/96    set the NAT64 prefix, SIOCCLAT46_START, print the CLAT46 address (IF's prefix
+ *                                   must be autonomous: the cellular service adds its address as autoconf)
  *   clat-test stop IF               SIOCCLAT46_STOP
  */
 #include <arpa/inet.h>
@@ -112,36 +112,8 @@ main(int argc, char **argv)
 	if (strcmp(argv[1], "start") || argc < 4) {
 		return 2;
 	}
-	/* 1. the interface's global address again, now flagged autoconf: in6.c creates an ND prefix with raf_auto */
-	struct ifaddrs *ifa, *i;
-	struct sockaddr_in6 *g = NULL;
-	getifaddrs(&ifa);
-	for (i = ifa; i; i = i->ifa_next) {
-		if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET6 && !strcmp(i->ifa_name, argv[2]) &&
-		    !IN6_IS_ADDR_LINKLOCAL(&((struct sockaddr_in6 *)i->ifa_addr)->sin6_addr)) {
-			g = (struct sockaddr_in6 *)i->ifa_addr;
-			break;
-		}
-	}
-	if (!g) {
-		printf("%s: no global IPv6 address\n", argv[2]);
-		return 1;
-	}
-	struct rw_aliasreq ar = { 0 };
-	strlcpy(ar.name, argv[2], sizeof(ar.name));
-	ar.addr = *g;
-	ar.mask.sin6_len = sizeof(ar.mask);
-	ar.mask.sin6_family = AF_INET6;
-	memset(&ar.mask.sin6_addr, 0xff, 8);
-	ar.flags = IN6_IFF_AUTOCONF;
-	/* re-adding a known address keeps its prefix's flags: delete it first, so the prefix is made again with raf_auto */
-	struct rw_ifreq6 dr = { 0 };
-	strlcpy(dr.name, argv[2], sizeof(dr.name));
-	dr.u.a = *g;
-	printf("DIFADDR_IN6: %s\n", ioctl(s, RW_SIOCDIFADDR_IN6, &dr) ? strerror(errno) : "ok");
-	ar.lt.ia6t_vltime = ar.lt.ia6t_pltime = 0xffffffff;
-	printf("AIFADDR_IN6 autoconf: %s\n", ioctl(s, RW_SIOCAIFADDR_IN6, &ar) ? strerror(errno) : "ok");
-	freeifaddrs(ifa);
+	/* the cellular service adds its address as autoconf (live-modem.c tun_open), so the /64 prefix is autonomous,
+	 * which CLAT46 needs; check with ndp -p (flags A...) */
 	/* 2. the NAT64 prefix */
 	struct rw_nat64req nr = { 0 };
 	char pfx[64];

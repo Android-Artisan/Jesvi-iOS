@@ -1,23 +1,30 @@
 /*
  * rwdhcpd: the hotspot's DHCP server (A, 2026-11-19). iOS's bootpd exits at once when not started by Personal Hotspot,
  * so the S20's access point hands out addresses with this: 172.20.10.2-14 on IF (the phone is 172.20.10.1, as on an
- * iPhone hotspot), router 172.20.10.1, DNS as given. Leases live in memory (by MAC), 1 hour.
+ * iPhone hotspot), router 172.20.10.1, DNS as given.
  *
- *   rwdhcpd IF [DNS]          e.g. rwdhcpd en0 172.20.10.1
+ *   rwdhcpd IF [DNS]          e.g. rwdhcpd en0 8.8.8.8
+ *
+ * - Only requests that arrive on IF are answered (not the USB link to a computer, say).
+ * - Replies go out as raw Ethernet frames through BPF, as iOS's bootpd does: a UDP socket gets EHOSTUNREACH for
+ *   255.255.255.255 here, and clients ignore an offer to the subnet broadcast.
+ * - Leases (by MAC, 1 hour) are kept in /var/db/rwdhcpd.leases, so a restart of the phone or of this server gives a
+ *   client back its address instead of handing it to the next one (two clients on one address, seen 2026-11-19).
+ *   An expired lease is reused only when no free address is left.
  */
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
-#include <net/if_dl.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
+#include <net/if_dl.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,25 +35,59 @@
 #define FIRST   2
 #define LAST    14
 #define LEASE   3600
+#define LEASES  "/var/db/rwdhcpd.leases"
 
-static uint8_t lease_mac[LAST + 1][6];
+static struct lease { uint8_t mac[6]; uint8_t pad[2]; int64_t until; } leases[LAST + 1];
+static int bpf = -1;
+static uint8_t self_mac[6];
 
-static int
-pick(const uint8_t *mac)
+static void
+leases_load(void)
 {
+	FILE *f = fopen(LEASES, "rb");
+	if (f) {
+		if (fread(leases, sizeof(leases), 1, f) != 1) {
+			memset(leases, 0, sizeof(leases));
+		}
+		fclose(f);
+	}
+}
+
+static void
+leases_save(void)
+{
+	FILE *f = fopen(LEASES ".new", "wb");
+	if (f && fwrite(leases, sizeof(leases), 1, f) == 1 && fclose(f) == 0) {
+		rename(LEASES ".new", LEASES);
+	} else if (f) {
+		fclose(f);
+	}
+}
+
+/* the client's address: its own lease, else a never-used one, else the longest-expired one */
+static int
+pick(const uint8_t *mac, int64_t now)
+{
+	static const uint8_t zero[6];
+	int fresh = 0, stale = 0;
+
 	for (int i = FIRST; i <= LAST; i++) {
-		if (!memcmp(lease_mac[i], mac, 6)) {
+		if (!memcmp(leases[i].mac, mac, 6)) {
 			return i;
 		}
-	}
-	for (int i = FIRST; i <= LAST; i++) {
-		static const uint8_t zero[6];
-		if (!memcmp(lease_mac[i], zero, 6)) {
-			memcpy(lease_mac[i], mac, 6);
-			return i;
+		if (!fresh && !memcmp(leases[i].mac, zero, 6)) {
+			fresh = i;
+		}
+		if (leases[i].until < now && (!stale || leases[i].until < leases[stale].until)) {
+			stale = i;
 		}
 	}
-	return 0;
+	int h = fresh ? fresh : stale;
+	if (h) {
+		memcpy(leases[h].mac, mac, 6);
+		leases[h].until = 0;
+	}
+	return h;
 }
 
 static uint8_t *
@@ -57,11 +98,6 @@ opt(uint8_t *o, uint8_t code, uint8_t len, const void *data)
 	memcpy(o, data, len);
 	return o + len;
 }
-
-/* replies go out as raw Ethernet frames through BPF, as iOS's bootpd does: a UDP socket gets EHOSTUNREACH for
- * 255.255.255.255 here, and clients ignore an offer to the subnet broadcast */
-static int bpf = -1;
-static uint8_t self_mac[6];
 
 static int
 bpf_open(const char *ifname)
@@ -77,16 +113,19 @@ bpf_open(const char *ifname)
 	struct ifreq ifr = { 0 };
 	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
 	if (ioctl(bpf, BIOCSETIF, &ifr) < 0) {
+		close(bpf);
+		bpf = -1;
 		return -1;
 	}
 	struct ifaddrs *ia, *i;
-	getifaddrs(&ia);
-	for (i = ia; i; i = i->ifa_next) {
-		if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && !strcmp(i->ifa_name, ifname)) {
-			memcpy(self_mac, LLADDR((struct sockaddr_dl *)i->ifa_addr), 6);
+	if (getifaddrs(&ia) == 0) {
+		for (i = ia; i; i = i->ifa_next) {
+			if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && !strcmp(i->ifa_name, ifname)) {
+				memcpy(self_mac, LLADDR((struct sockaddr_dl *)i->ifa_addr), 6);
+			}
 		}
+		freeifaddrs(ia);
 	}
-	freeifaddrs(ia);
 	return 0;
 }
 
@@ -112,6 +151,7 @@ send_raw(const uint8_t *dhcp, size_t n)
 {
 	uint8_t f[1600];
 	if (n + 42 > sizeof(f)) {
+		errno = EMSGSIZE;
 		return -1;
 	}
 	memset(f, 0xff, 6);
@@ -146,57 +186,87 @@ main(int argc, char **argv)
 		return 2;
 	}
 	uint32_t dns = htonl(SELF);
-	if (argc > 2) {
-		inet_pton(AF_INET, argv[2], &dns);
+	if (argc > 2 && inet_pton(AF_INET, argv[2], &dns) != 1) {
+		fprintf(stderr, "rwdhcpd: bad DNS address %s\n", argv[2]);
+		return 2;
+	}
+	unsigned idx = if_nametoindex(argv[1]);
+	if (idx == 0) {
+		fprintf(stderr, "rwdhcpd: no interface %s\n", argv[1]);
+		return 1;
 	}
 	int s = socket(AF_INET, SOCK_DGRAM, 0), one = 1;
-	unsigned idx = if_nametoindex(argv[1]);
 	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-	setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
-	/* not IP_BOUND_IF: a socket pinned to IF looks 255.255.255.255 up in IF's scoped table and gets EHOSTUNREACH;
-	 * the unscoped host route (route add -host 255.255.255.255 -interface IF) sends the offers out IF */
+	setsockopt(s, IPPROTO_IP, IP_RECVIF, &one, sizeof(one));
 	struct sockaddr_in sa = { .sin_len = sizeof(sa), .sin_family = AF_INET, .sin_port = htons(67) };
 	if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
 		perror("rwdhcpd: bind :67");
 		return 1;
 	}
 	if (bpf_open(argv[1]) < 0) {
-		perror("rwdhcpd: bpf (replies by UDP instead)");
+		perror("rwdhcpd: bpf");
+		return 1;
 	}
+	leases_load();
 	printf("rwdhcpd: on %s (index %u), 172.20.10.%d-%d\n", argv[1], idx, FIRST, LAST);
 	fflush(stdout);
 	for (;;) {
-		uint8_t p[1500];
-		ssize_t n = recv(s, p, sizeof(p), 0);
-		if (n < 240 || p[0] != 1 || p[236] != 99 || p[237] != 130 || p[238] != 83 || p[239] != 99) {
+		uint8_t p[1500], cbuf[64];
+		struct iovec iov = { p, sizeof(p) };
+		struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = cbuf, .msg_controllen = sizeof(cbuf) };
+		ssize_t n = recvmsg(s, &mh, 0);
+		unsigned rif = 0;
+		for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
+			if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_RECVIF) {
+				rif = ((struct sockaddr_dl *)CMSG_DATA(c))->sdl_index;
+			}
+		}
+		/* BOOTREQUEST over Ethernet (htype 1, hlen 6) with the DHCP magic cookie, on IF only */
+		if (rif != idx || n < 240 || p[0] != 1 || p[1] != 1 || p[2] != 6 ||
+		    p[236] != 99 || p[237] != 130 || p[238] != 83 || p[239] != 99) {
 			continue;
 		}
 		uint8_t type = 0, *mac = p + 28;
-		uint32_t want = 0;
+		uint32_t want = 0, server = 0;
 		for (ssize_t i = 240; i + 1 < n && p[i] != 255;) {
 			if (p[i] == 0) {
 				i++;
 				continue;
 			}
+			if (i + 2 + p[i + 1] > n) {
+				break;
+			}
 			if (p[i] == 53 && p[i + 1] >= 1) {
 				type = p[i + 2];
-			}
-			if (p[i] == 50 && p[i + 1] == 4) {
+			} else if (p[i] == 50 && p[i + 1] == 4) {
 				memcpy(&want, p + i + 2, 4);
+			} else if (p[i] == 54 && p[i + 1] == 4) {
+				memcpy(&server, p + i + 2, 4);
 			}
 			i += 2 + p[i + 1];
 		}
-		if (type != 1 && type != 3) {           /* DISCOVER, REQUEST */
+		if (type == 3 && server && server != htonl(SELF)) {
+			continue;                       /* a REQUEST that chose another server's offer */
+		}
+		if (type == 3 && !want) {               /* RENEWING/REBINDING: the address is in ciaddr */
+			memcpy(&want, p + 12, 4);
+		}
+		if (type != 1 && type != 3) {           /* only DISCOVER and REQUEST need an answer */
 			continue;
 		}
-		int host = pick(mac);
+		int64_t now = time(NULL);
+		int host = pick(mac, now);
 		if (!host) {
-			printf("rwdhcpd: pool full\n");
+			printf("rwdhcpd: no free address\n");
 			fflush(stdout);
 			continue;
 		}
 		uint32_t yi = htonl(NET | (uint32_t)host), self = htonl(SELF), mask = htonl(0xfffffff0), lt = htonl(LEASE);
 		bool nak = type == 3 && want && want != yi;
+		if (type == 3 && !nak) {
+			leases[host].until = now + LEASE;
+			leases_save();
+		}
 		p[0] = 2;                               /* BOOTREPLY; xid, flags, chaddr kept */
 		memset(p + 12, 0, 4);                   /* ciaddr */
 		memcpy(p + 16, nak ? (uint8_t[4]){ 0 } : (uint8_t *)&yi, 4);
@@ -211,9 +281,7 @@ main(int argc, char **argv)
 			o = opt(o, 6, 4, &dns);
 		}
 		*o++ = 255;
-		struct sockaddr_in to = { .sin_len = sizeof(to), .sin_family = AF_INET, .sin_port = htons(68),
-			.sin_addr.s_addr = htonl(INADDR_BROADCAST) };   /* needs: route add -host 255.255.255.255 -interface IF (clients ignore a subnet-broadcast offer) */
-		ssize_t w = bpf >= 0 ? send_raw(p, (size_t)(o - p)) : sendto(s, p, (size_t)(o - p), 0, (struct sockaddr *)&to, sizeof(to));
+		ssize_t w = send_raw(p, (size_t)(o - p));
 		printf("rwdhcpd: %s %02x:%02x:%02x:%02x:%02x:%02x -> %s 172.20.10.%d (%s)\n", type == 1 ? "DISCOVER" : "REQUEST",
 		    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], nak ? "NAK" : type == 1 ? "OFFER" : "ACK", host,
 		    w < 0 ? strerror(errno) : "sent");
