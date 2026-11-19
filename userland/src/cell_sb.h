@@ -254,12 +254,90 @@ cell_notify(void)
 	    cell_state.bars, cell_state.max, cell_state.op, n);
 }
 
+/*
+ * Airplane mode as the modem's reset (B, 2026-11-19). There is no CommCenter to turn the radio off, so airplane mode
+ * did nothing to the modem, and a modem that had not come up stayed down until a reboot. Here, from the 3 s tick:
+ * airplane on  -> "airplane" on the modem service's command pipe (it parks the modem and exits);
+ * airplane off -> "restart" on the pipe, or, when the service is not running (no reader), the kick file that
+ *                 launchd watches (com.redwood.cellular WatchPaths) starts a fresh bring-up.
+ * AirplaneMode is read from SystemConfiguration's radios plist only when its time stamp changes.
+ */
+static int
+cell_airplane_read(void)
+{
+	static struct timespec seen;
+	static int last = -1;
+	struct stat st;
+	const char *path = "/var/preferences/SystemConfiguration/com.apple.radios.plist";
+
+	if (stat(path, &st) != 0) {
+		return last;
+	}
+	if (st.st_mtimespec.tv_sec == seen.tv_sec && st.st_mtimespec.tv_nsec == seen.tv_nsec) {
+		return last;
+	}
+	seen = st.st_mtimespec;
+	CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+	CFReadStreamRef stream = url ? CFReadStreamCreateWithFile(NULL, url) : NULL;
+	if (stream && CFReadStreamOpen(stream)) {
+		CFPropertyListRef plist = CFPropertyListCreateWithStream(NULL, stream, 0, kCFPropertyListImmutable, NULL, NULL);
+		if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+			CFTypeRef v = CFDictionaryGetValue((CFDictionaryRef)plist, CFSTR("AirplaneMode"));
+			last = v && CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)v) : 0;
+		}
+		if (plist) {
+			CFRelease(plist);
+		}
+		CFReadStreamClose(stream);
+	}
+	if (stream) {
+		CFRelease(stream);
+	}
+	if (url) {
+		CFRelease(url);
+	}
+	return last;
+}
+
+static void
+cell_airplane_tick(void)
+{
+	static int was = -1;
+	int now = cell_airplane_read();
+
+	if (now < 0 || now == was) {
+		return;
+	}
+	if (was >= 0) {             /* a change (not the first look after SpringBoard starts) */
+		const char *cmd = now ? "airplane\n" : "restart\n";
+		const char *how = now ? "no modem service" : "kick failed";
+		int fd = open("/var/tmp/redwood-cell/cmd", O_WRONLY | O_NONBLOCK);
+		if (fd >= 0) {
+			how = now ? "modem parked" : "modem restart asked";
+			(void)write(fd, cmd, strlen(cmd));
+			close(fd);
+		} else if (!now) {      /* no service reading the pipe: let launchd start one */
+			fd = open("/var/tmp/redwood-cell-kick", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+			if (fd >= 0) {
+				char t[24];
+				int n = snprintf(t, sizeof(t), "%ld\n", (long)time(NULL));
+				(void)write(fd, t, (size_t)n);
+				close(fd);
+				how = "modem service started";
+			}
+		}
+		say("redwood: cellular: airplane mode %s: %s\n", now ? "on" : "off", how);
+	}
+	was = now;
+}
+
 static void
 cell_tick(void *context)
 {
 	static id told;
 
 	(void)context;
+	cell_airplane_tick();
 	if (cell_read() || (cell_provider != nil && cell_provider != told)) {
 		cell_notify();
 		told = cell_provider;

@@ -998,6 +998,9 @@ static void ctl_line(char *l)
         cell_verbose=!strcmp(l+8,"on");printf("cellular: verbose log %s\n",cell_verbose?"on":"off");fflush(stdout);
     } else if (!strcmp(l,"restart")) {      /* restart: a clean modem restart, as the watchdogs do (exec of /var/root's binary) */
         printf("cellular: restart asked on the command pipe\n");fflush(stdout);restart_wanted=1;stopped=1;
+    } else if (!strcmp(l,"airplane")) {     /* (B, 2026-11-19) airplane mode on (SpringBoard, cell_sb.h): park the modem and
+                                             * exit without a retry; airplane mode off starts a fresh bring-up */
+        printf("cellular: airplane mode: modem off\n");fflush(stdout);unlink("/var/tmp/redwood-cell/state");stopped=1;
     } else if (!strncmp(l,"nodata",6)) {
         data_off=1;close(open("/var/root/cell-nodata",O_CREAT|O_WRONLY,0644));utun_down();cell_publish();
     } else if (!strncmp(l,"data",4) && data_off) {
@@ -1082,7 +1085,7 @@ static int online_handshake(unsigned seconds)
                 else if (cmd==0x08) {
                     phase("CP: PHONE_START -> IPC link (magic AA, queues zero) and INIT_END");
                     for (uint32_t o=8;o<0x28;o+=4) ipc_store(o,0);
-                    ipc_store(4,1);ipc_store(0,0xaa);ap2cp(0x02);online=1;setpriority(PRIO_PROCESS,0,0);   /* boot priority no longer needed */
+                    ipc_store(4,1);ipc_store(0,0xaa);ap2cp(0x02);online=1;unsetenv("REDWOOD_CELL_TRY");setpriority(PRIO_PROCESS,0,0);   /* boot priority no longer needed */
                 }
                 else if (cmd==0x07 || cmd==0x09) phase("CP: CRASH");
             }
@@ -1542,10 +1545,23 @@ int main(int argc,char **argv)
         error=s5123_boot_once(&ops,&result,image,length,fields[2]);
     }
     if (restart_wanted && result.cleanup_safe && saved_argv) {
+        unsetenv("REDWOOD_CELL_TRY");       /* a watchdog/asked restart is not a failed bring-up */
         printf("cellular: watchdog restart: exec %s\n",saved_argv[0]);fflush(stdout);sleep(3);execv(saved_argv[0],saved_argv);
     }
     printf("cellular live BOOT: error %d attempted %u power_requested %u phase %u completed %u cleanup_verified %u; acceptance unproven\n",
         error,result.attempted,result.power_requested,result.phase,result.spi_completed,result.cleanup_safe);fflush(stdout);
+    /* (B, 2026-11-19) a bring-up that ends without a stop (the firmware download's stage 5 got no reply in 5 s right
+     * after a thermal shutdown: "no modem" until a reboot) is retried as a whole, 3 tries 15 s apart. Still no loop
+     * on a real modem fault: after 3 tries it stays off; airplane mode off (or a reboot) starts it again. */
+    if (stay_mode && !stopped && result.cleanup_safe && saved_argv) {
+        const char *t=getenv("REDWOOD_CELL_TRY");int tries=t?atoi(t):1;
+        if (tries<3) {
+            char n[8];snprintf(n,sizeof(n),"%d",tries+1);setenv("REDWOOD_CELL_TRY",n,1);
+            printf("cellular: the modem did not stay up (try %d of 3): a fresh bring-up in 15 s\n",tries);fflush(stdout);
+            sleep(15);execv(saved_argv[0],saved_argv);
+        }
+        printf("cellular: the modem did not come up in 3 tries: left off (airplane mode off/on tries again)\n");fflush(stdout);
+    }
     return result.attempted && result.cleanup_safe ? (error?1:0):2;
 }
 #endif
