@@ -580,7 +580,6 @@ main(void)
 	if (!strstr(args, "touchid=1")) return 0;               /* off unless asked for at boot */
 	if (getuid() != 0) return 1;
 	umask(0077);
-	tee_up();
 	set("kern.sweet_mesa_match", 2);                        /* the TEE matcher's decision, token unverified */
 	set("kern.sweet_mesa_offline", 1);
 	set("kern.sweet_mesa_catacomb", 1);                     /* biometrickitd saves its finger list (cat_*) */
@@ -593,6 +592,10 @@ main(void)
 		usleep(200000);
 	}
 	lg("bridge open; template %s", access(TEMPLATE, F_OK) ? "none" : "present");
+	/* TEEGRIS starts meanwhile: biometrickitd's first questions at boot (catacomb load, identities) need no TEE and
+	 * must not meet a daemon still busy with tee_up(), or it answers NotReady and the finger list stays unloaded */
+	pthread_t tt;
+	if (pthread_create(&tt, NULL, (void *(*)(void *))tee_up, NULL) == 0) pthread_detach(tt);
 	static struct smb_req q;
 	static struct smb_reply p;
 	for (;;) {
