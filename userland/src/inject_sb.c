@@ -1590,6 +1590,7 @@ control_center_fades(const char *arguments)
 #include "cell_sb.h"
 #include "statusbar_shift.h"
 #include "phone_dial.h"
+#include "hotspot_sb.h"
 
 /*
  * Open the tweak loader of the package manager's prefix, when there is one. Nothing here depends on
@@ -1793,6 +1794,9 @@ redwood_springboard_init(void)
 		    sysctl_int("kern.redwood.battery_soc"), sysctl_int("kern.redwood.battery_present"),
 		    sysctl_int("kern.redwood.battery_charger_present"), sysctl_int("kern.redwood.battery_charging"));
 		battery_post_notifications();
+	});
+	notify_register_dispatch("com.redwood.hotspot", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		hotspot_tell();
 	});
 	notify_register_dispatch("com.redwood.unlock", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		unlock();

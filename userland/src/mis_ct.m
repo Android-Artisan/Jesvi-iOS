@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <notify.h>
 #include <pthread.h>
 #include <spawn.h>
 #include <string.h>
@@ -176,6 +177,20 @@ ap_watch(void *arg)
 			os_log(lg, "redwood-mis: access point off");
 			hotspot_net("net-stop");
 			up = false;
+		}
+		{                                       /* SpringBoard's status bar (hotspot_sb.h): on and how many */
+			static unsigned said = ~0u;
+			unsigned stations = 0;
+			size_t sn = sizeof(stations);
+
+			(void)sysctlbyname("kern.redwood.wifi_ap_stations", &stations, &sn, NULL, 0);
+			if (!on) {
+				stations = 0;
+			}
+			if (stations != said) {
+				said = stations;
+				notify_post("com.redwood.hotspot");
+			}
 		}
 		if (retry != 0) {
 			retry--;
