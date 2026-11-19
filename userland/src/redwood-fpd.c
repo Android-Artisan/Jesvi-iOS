@@ -630,10 +630,7 @@ main(void)
 	for (;;) {
 		if (first_unlock) {
 			first_unlock = 0;
-			IOServiceClose(conn);
-			conn = 0;
-			while (bridge_open()) usleep(200000);
-			lg("first unlock: bridge reopened");
+			/* (closing and reopening the bridge here left it deaf: requests were never picked up) */
 			sleep(2);                       /* the keybag settles; then the catacomb file is readable */
 			restart_biometrickitd();
 		}
