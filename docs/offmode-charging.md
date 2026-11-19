@@ -9,8 +9,20 @@ sec_debug_reset_reason.c: bit0 PWRON (power key), bit1 JIGONB, bit2 ACOKB (charg
 bit6 SMPL, bit7 WTSR. The kernel already reads and logs it at boot (xnu/files/bsd/dev/redwood_exynos_sound.c,
 "reset: last run ended by RST_STAT ... PMIC on 0x.. ( .. )"). ACOKB without PWRON = a charger start.
 
+Measured 2026-11-20 (cable in, menu Power off, no button): S-Boot showed lpm.jpg, then our loader started and booted
+iOS; the kernel logged "RST_STAT 0x40010000 (PINRESET PORESET); PMIC on 0x8 (MRST)". Not ACOKB: S-Boot's charging
+restart looks like a manual reset, which a long Volume Down + Power hold also gives. So MRST alone is not enough.
+
+Design
+- power_off() (menu, and iOS Shut Down in release mode) first writes a note: misc block 1 "jesvi-off <RTC seconds>".
+- At start the loader reads and clears the note. Note younger than 60 s and PWRONSRC without PWRON (the kernel reads
+  it; or the loader through speedy) = the charger brought it back: boot the kernel with charge=1.
+- Kernel, charge=1: before launchd, draw iPhone's battery (Apple's art: outline, fill by the real level, bolt; red
+  low, green charging) from the battery driver, dim after 5 s; Power key = continue into iOS; charger out = power off
+  (PS_HOLD low). Keeps the CPU on the small cores at the lowest clock meanwhile.
+
 Plan
-1. Measure: power off with the cable in, read the boot log's "PMIC on" line (expect ACOKB).
+1. Measure: done (MRST, above).
 2. Loader: read PWRONSRC itself (port redwood_pmic_read / speedy to xnuloader), and on a charger start show
    iPhone's charging screen (the battery art, level from the charger), screen off after a few seconds, Power = boot
    iOS, cable out = power off (PS_HOLD low).
