@@ -848,7 +848,7 @@ static void sc_publish(void)
     printf("cellular: configd service redwood-cell %s (IPv6 %s, DNS %s on %s)\n",ok?"published":"REFUSED",a,d,utun_name);fflush(stdout);
     CFRelease(all);CFRelease(dns);CFRelease(ip6);CFRelease(aa);CFRelease(pa);CFRelease(da);CFRelease(pn);CFRelease(sa);CFRelease(sd);CFRelease(ifn);
 }
-static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name)
+static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name,int autoconf)
 {
     int fd=socket(PF_SYSTEM,SOCK_DGRAM,SYSPROTO_CONTROL);if (fd<0) {perror("cellular: utun socket");return -1;}
     struct ctl_info ci;memset(&ci,0,sizeof(ci));strlcpy(ci.ctl_name,"com.apple.net.utun_control",sizeof(ci.ctl_name));
@@ -857,11 +857,17 @@ static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name)
     if (connect(fd,(struct sockaddr *)&sc,sizeof(sc))<0) {perror("cellular: utun connect");close(fd);return -1;}
     socklen_t nl=sizeof(utun_name);getsockopt(fd,SYSPROTO_CONTROL,UTUN_OPT_IFNAME,utun_name,&nl);
     fcntl(fd,F_SETFL,O_NONBLOCK);
+    /* (A, 2026-11-19) close-on-exec: the IMS client (posix_spawn) and the exec restart inherited the tunnel, so an old
+     * utun outlived the service with the default route on it (no data after a restart until a reboot) */
+    fcntl(fd,F_SETFD,FD_CLOEXEC);
     int s6=socket(AF_INET6,SOCK_DGRAM,0);
     struct rw_in6_aliasreq ar;memset(&ar,0,sizeof(ar));strlcpy(ar.ifra_name,utun_name,IFNAMSIZ);
     ar.ifra_addr.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_addr.sin6_family=AF_INET6;memcpy(&ar.ifra_addr.sin6_addr,ip6,16);
     ar.ifra_prefixmask.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_prefixmask.sin6_family=AF_INET6;memset(&ar.ifra_prefixmask.sin6_addr,0xff,8);
     ar.ifra_lifetime.ia6t_vltime=ar.ifra_lifetime.ia6t_pltime=0xffffffff;
+    /* (A, 2026-11-19) the data PDN's address as autoconf (IN6_IFF_AUTOCONF): its /64 prefix is then autonomous, which
+     * iOS's CLAT46 needs (in6ctl_clat46start) for IPv4 over IPv6-only Jio, for apps and the hotspot */
+    if (autoconf) ar.ifra_flags=0x40;
     if (ioctl(s6,RW_SIOCAIFADDR_IN6,&ar)<0) perror("cellular: SIOCAIFADDR_IN6");
     struct ifreq ifr;memset(&ifr,0,sizeof(ifr));strlcpy(ifr.ifr_name,utun_name,IFNAMSIZ);ifr.ifr_mtu=(int)(mtu?mtu:1500);
     if (ioctl(s6,SIOCSIFMTU,&ifr)<0) perror("cellular: SIOCSIFMTU");
@@ -873,7 +879,7 @@ static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name)
 static void utun_up(void)
 {
     if (utun_fd>=0 || !pdn.up) return;
-    int fd=tun_open(pdn.ip6,pdn.mtu,utun_name);if (fd<0) return;
+    int fd=tun_open(pdn.ip6,pdn.mtu,utun_name,1);if (fd<0) return;
     /* IPv6 default route through the interface (fails harmlessly if Wi-Fi already holds one) */
     int rs=socket(PF_ROUTE,SOCK_RAW,0);
     if (rs>=0) {
@@ -917,7 +923,7 @@ static void tun_route6(const char *ifn,const uint8_t *dst,int host)
 static void ims_up(void)
 {
     if (ims_fd>=0 || !ims.up) return;
-    ims_fd=tun_open(ims.ip6,1500,ims_name);if (ims_fd<0) return;
+    ims_fd=tun_open(ims.ip6,1500,ims_name,0);if (ims_fd<0) return;
     for (int k=0;k<ims.npcscf;k++) tun_route6(ims_name,ims.pcscf[k],1);
     printf("cellular: IMS %s up (cid %d, ch %d, %d P-CSCF)\n",ims_name,IMS_CID,IMS_CH,ims.npcscf);fflush(stdout);ims_write();
 }

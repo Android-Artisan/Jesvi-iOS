@@ -1192,6 +1192,48 @@ index e00012622e77..4f993b3cd47f 100644
  			}
  		}
  
+diff --git a/bsd/net/dlil.c b/bsd/net/dlil.c
+index 78791d945f74..15164e5f8735 100644
+--- a/bsd/net/dlil.c
++++ b/bsd/net/dlil.c
+@@ -6161,6 +6161,19 @@ dlil_input_packet_list_common(struct ifnet *ifp_param, struct mbuf *m,
+ 			goto next;
+ 		}
+ 
++		/*
++		 * (Jesvi iOS, 2026-11-19) a utun keeps its 4-byte address-family header in front of the packet until
++		 * utun_proto_input strips it. CLAT46 was written for pdp_ip (no such header) and read the IPv6 header
++		 * 4 bytes early: every packet dropped as "too short". The S20's cellular data is a utun (the modem
++		 * service), so step past the header here and put one back (of the family after translation) below.
++		 */
++		boolean_t clat_utun = FALSE;
++		if (protocol_family == PF_INET6 && IS_INTF_CLAT46(ifp) && ifp->if_family == IFNET_FAMILY_UTUN &&
++		    m_pktlen(m) > (int)sizeof(uint32_t)) {
++			m_adj(m, sizeof(uint32_t));
++			clat_utun = TRUE;
++		}
++
+ 		/* Translate the packet if it is received on CLAT interface */
+ 		if (protocol_family == PF_INET6 && IS_INTF_CLAT46(ifp)
+ 		    && dlil_is_clat_needed(protocol_family, m)) {
+@@ -6217,6 +6230,17 @@ dlil_input_packet_list_common(struct ifnet *ifp_param, struct mbuf *m,
+ 			}
+ 		}
+ skip_clat:
++		if (clat_utun) {
++			uint32_t utun_af = htonl(protocol_family == PF_INET ? AF_INET : AF_INET6);
++
++			M_PREPEND(m, sizeof(uint32_t), M_DONTWAIT, 1);
++			if (m == NULL) {
++				ip6stat.ip6s_clat464_in_drop++;
++				goto next;
++			}
++			bcopy(&utun_af, mtod(m, caddr_t), sizeof(uint32_t));
++			frame_header = mtod(m, char *);
++		}
+ 		/*
+ 		 * Match the wake packet against the list of ports that has been
+ 		 * been queried by the driver before the device went to sleep
 diff --git a/bsd/nfs/nfs_serv.c b/bsd/nfs/nfs_serv.c
 index 6ae9b6bc3fde..58556c324b67 100644
 --- a/bsd/nfs/nfs_serv.c

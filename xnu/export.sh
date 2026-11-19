@@ -22,7 +22,7 @@ mv "$HERE/redwood.patch.new" "$HERE/redwood.patch"
 rm -rf "$HERE/files.new"
 mkdir "$HERE/files.new"
 { git diff --no-renames --name-only --diff-filter=A "$BASE" -- .; git ls-files --others --exclude-standard; } |
-	sort -u | grep -Ev "$JUNK" > "$HERE/files.list"
+	LC_ALL=C sort -u | grep -Ev "$JUNK" > "$HERE/files.list"
 while IFS= read -r f; do
 	[ -f "$f" ] || [ -L "$f" ] || continue      # added in a commit, deleted since
 	mkdir -p "$HERE/files.new/$(dirname "$f")"
