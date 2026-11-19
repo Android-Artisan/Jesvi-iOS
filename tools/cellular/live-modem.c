@@ -1048,6 +1048,31 @@ static void ctl_line(char *l)
         int e=sbd_send(1,f,(uint32_t)n);if (e || verbose()) printf("cellular: IPC -> %02x %02x %02x (%zu data bytes) %s\n",g,i,t,d,e?"(send failed)":"");fflush(stdout);
     }
 }
+/* (B, 2026-11-19) iOS airplane mode (SystemConfiguration's radios plist). SpringBoard (cell_sb.h) also sends
+ * "airplane" on the pipe, but only to a service already reading it: this covers a boot with airplane mode on and a
+ * switch to on during the ~30 s bring-up. The plist is parsed only when its time stamp changes. */
+static int airplane_on(void)
+{
+    static struct timespec seen;static int last;struct stat st;
+    const char *path="/var/preferences/SystemConfiguration/com.apple.radios.plist";
+    if (stat(path,&st)) return 0;
+    if (st.st_mtimespec.tv_sec==seen.tv_sec && st.st_mtimespec.tv_nsec==seen.tv_nsec) return last;
+    seen=st.st_mtimespec;last=0;
+    CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8 *)path,(CFIndex)strlen(path),false);
+    CFReadStreamRef s=url?CFReadStreamCreateWithFile(NULL,url):NULL;
+    if (s && CFReadStreamOpen(s)) {
+        CFPropertyListRef p=CFPropertyListCreateWithStream(NULL,s,0,kCFPropertyListImmutable,NULL,NULL);
+        if (p && CFGetTypeID(p)==CFDictionaryGetTypeID()) {
+            CFTypeRef v=CFDictionaryGetValue((CFDictionaryRef)p,CFSTR("AirplaneMode"));
+            last=v && CFGetTypeID(v)==CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)v);
+        }
+        if (p) CFRelease(p);
+        CFReadStreamClose(s);
+    }
+    if (s) CFRelease(s);
+    if (url) CFRelease(url);
+    return last;
+}
 static void ctl_poll(void)
 {
     static char buf[4096];static size_t have;
@@ -1092,6 +1117,12 @@ static int online_handshake(unsigned seconds)
             last=m;lastu=u;lastmsi=msi;
         }
         if (online && stay_mode) ctl_poll();
+        if (stay_mode && !stopped) {   /* airplane mode switched on while no one sent "airplane" (bring-up window) */
+            static uint64_t looked;uint64_t t=now_us(NULL);
+            if (t-looked>3000000ull) {looked=t;
+                if (airplane_on()) {printf("cellular: airplane mode on: modem off\n");fflush(stdout);unlink("/var/tmp/redwood-cell/state");stopped=1;}
+            }
+        }
         if (online && stay_mode && pdn.up) {if (!data_off) utun_up();pp_poll();utun_poll();}
         if (online && stay_mode && ims.up) {ims_up();ims_poll();}
         if (online && stay_mode && ims_fd>=0) {
@@ -1499,6 +1530,7 @@ int main(int argc,char **argv)
     if (argc==8 && !strcmp(argv[7],"--stay")) {
         char args[1024]="";size_t al=sizeof(args)-1;
         if (!sysctlbyname("kern.bootargs",args,&al,NULL,0) && strstr(args,"cellular=0")) {puts("cellular=0: modem left off");return 0;}
+        if (airplane_on()) {unlink("/var/tmp/redwood-cell/state");puts("cellular: airplane mode on: modem left off");return 0;}
         stay_mode=1;{struct stat nd;data_off=!stat("/var/root/cell-nodata",&nd);}argc=7;
         {   /* (A, 2026-11-14) the call screen's app: LaunchServices forgets /var/jb's apps at every boot, and CallKit
              * refuses a provider whose app it cannot find ("bundleIdentifier: (null)"): register it again, in the background */
