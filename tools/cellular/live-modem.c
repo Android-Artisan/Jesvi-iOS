@@ -857,6 +857,9 @@ static int tun_open(const uint8_t ip6[16],unsigned mtu,char *utun_name,int autoc
     if (connect(fd,(struct sockaddr *)&sc,sizeof(sc))<0) {perror("cellular: utun connect");close(fd);return -1;}
     socklen_t nl=sizeof(utun_name);getsockopt(fd,SYSPROTO_CONTROL,UTUN_OPT_IFNAME,utun_name,&nl);
     fcntl(fd,F_SETFL,O_NONBLOCK);
+    /* (A, 2026-11-19) close-on-exec: the IMS client (posix_spawn) and the exec restart inherited the tunnel, so an old
+     * utun outlived the service with the default route on it (no data after a restart until a reboot) */
+    fcntl(fd,F_SETFD,FD_CLOEXEC);
     int s6=socket(AF_INET6,SOCK_DGRAM,0);
     struct rw_in6_aliasreq ar;memset(&ar,0,sizeof(ar));strlcpy(ar.ifra_name,utun_name,IFNAMSIZ);
     ar.ifra_addr.sin6_len=sizeof(struct sockaddr_in6);ar.ifra_addr.sin6_family=AF_INET6;memcpy(&ar.ifra_addr.sin6_addr,ip6,16);
