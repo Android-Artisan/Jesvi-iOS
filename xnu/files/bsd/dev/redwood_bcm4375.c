@@ -182,6 +182,10 @@ static const uint16_t ring_item_len_pre7[RINGS] = { 40, 32, 24, 16, 32 };
 #define WLC_GET_VAR             262
 #define WLC_SET_VAR             263
 #define WLC_SET_WSEC_PMK        268
+#define WLC_SET_AP              118             /* BRCMF_C_SET_AP */
+#define E_AUTH_IND              4               /* a client authenticating to our access point */
+#define E_ASSOC_IND             8
+#define E_REASSOC_IND           10
 #define E_SET_SSID              0
 #define E_AUTH                  3
 #define E_DEAUTH                5
@@ -1037,6 +1041,8 @@ heard_one(const uint8_t *bi, uint32_t avail)
 }
 
 /* brcmf_fweh_process_event(): an Ethernet frame of type 0x886c, Broadcom's event header (big-endian) [fweh]215..248 */
+static volatile bool ap_on;     /* the chip is an access point (Personal Hotspot): client mode refused */
+
 static void
 event(const uint8_t *frame, uint32_t len)
 {
@@ -1082,6 +1088,12 @@ event(const uint8_t *frame, uint32_t len)
 				break;
 			}
 		}
+	}
+	if (ap_on && (type == E_AUTH_IND || type == E_ASSOC_IND || type == E_REASSOC_IND || type == E_DEAUTH_IND ||
+	    type == E_DISASSOC_IND)) {
+		blog("ap: %s %02x:%02x:%02x:%02x:%02x:%02x status %u reason %u", type == E_AUTH_IND ? "client authenticating" :
+		    type == E_ASSOC_IND ? "CLIENT JOINED" : type == E_REASSOC_IND ? "client rejoined" : "client left",
+		    frame[48], frame[49], frame[50], frame[51], frame[52], frame[53], status, reason);
 	}
 	if (type == E_IF && datalen >= 5) {
 		blog("event IF: ifidx %u action %u flags %u bsscfg %u role %u", data[0], data[1], data[2], data[3], data[4]);
@@ -2422,6 +2434,9 @@ sta_power(bool on)
 	uint32_t one = 1;
 	int err;
 
+	if (ap_on) {
+		return EBUSY;          /* the chip is an access point (Personal Hotspot) */
+	}
 	if (!on) {
 		if (sta_state.phase == REDWOOD_STA_JOINED || sta_state.phase == REDWOOD_STA_JOINING) {
 			sta_leave();
@@ -2444,6 +2459,9 @@ sta_scan(const struct redwood_sta_scan *what)
 	enum redwood_sta_phase was = sta_state.phase;
 	int err;
 
+	if (ap_on) {
+		return EBUSY;          /* the chip is an access point (Personal Hotspot) */
+	}
 	if (was == REDWOOD_STA_OFF) {
 		return ENETDOWN;
 	}
@@ -2487,6 +2505,9 @@ sta_join(const struct redwood_sta_join *what)
 	bool sae = false, host_sup = false;
 	uint64_t deadline;
 
+	if (ap_on) {
+		return EBUSY;          /* the chip is an access point (Personal Hotspot) */
+	}
 	if (sta_state.phase == REDWOOD_STA_OFF) {
 		return ENETDOWN;
 	}
@@ -3072,3 +3093,214 @@ redwood_bcm4375_run(const struct redwood_bcm_bus *b)
 		    security_name(&found[i]), found[i].ssid_length, found[i].ssid);
 	}
 }
+
+/* ------------------------------------------------------------------------ */
+/* Access point (Personal Hotspot, stage 1, 2026-11-19)                     */
+/*
+ * The chip as an access point, as brcmfmac's brcmf_cfg80211_start_ap() does for a dedicated AP on the primary
+ * interface (and Samsung's dhd): client mode left, DOWN, INFRA 1, AP 1, chanspec, security (open, or WPA2-PSK by the
+ * firmware's own authenticator), UP, SET_SSID; the SET_SSID event with status 0 says the network is on the air.
+ * While it is up the client-mode calls (scan, join, power) answer EBUSY, so wifid cannot undo it.
+ * Root-only switches for now; iOS's Personal Hotspot comes on top in later stages:
+ *   sysctl -w kern.redwood.wifi_ap="start <channel> <name> [passphrase]"     sysctl -w kern.redwood.wifi_ap=stop
+ *   sysctl kern.redwood.wifi_ap                                               (the last result)
+ *   sysctl -w kern.redwood.wifi_iovar="get <name>" | "set <name> <int>"      (the answer goes to the log)
+ */
+static char ap_result[160] = "off";
+
+static int
+ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
+{
+	static const uint8_t ap_events[] = { E_AUTH_IND, E_ASSOC_IND, E_REASSOC_IND, E_DEAUTH_IND, E_DISASSOC_IND };
+	uint32_t one = 1, zero = 0, status = ~0U;
+	uint8_t ssid_le[36], mask[16];
+	int32_t chanspec;
+	int e_down, e_infra, e_ap, e_chan, e_wsec, e_auth, e_pmk = 0, e_up, e_ssid;
+	bool got = false;
+
+	if (sl == 0 || sl > 32 || (pl != 0 && (pl < 8 || pl > 63)) || channel == 0 || channel > 165) {
+		return EINVAL;
+	}
+	if (sta_state.phase == REDWOOD_STA_JOINED || sta_state.phase == REDWOOD_STA_JOINING) {
+		sta_leave();
+	}
+	ap_on = true;                   /* from here wifid's scans/joins are refused */
+	e_down = ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
+	(void)iovar_int("apsta", 0);    /* a dedicated access point, no client interface beside it */
+	e_infra = ioctl(WLC_SET_INFRA, &one, sizeof(one), sizeof(one));
+	e_ap = ioctl(WLC_SET_AP, &one, sizeof(one), sizeof(one));
+	(void)iovar_int("mpc", 0);
+	/* d11ac chanspec: 20 MHz (0x1000), band 2.4 GHz (0x0000) up to channel 14, else 5 GHz (0xc000) */
+	chanspec = (int32_t)(channel | 0x1000 | (channel > 14 ? 0xc000 : 0));
+	e_chan = iovar_int("chanspec", chanspec);
+	bzero(mask, sizeof(mask));
+	if (iovar(false, "event_msgs", mask, sizeof(mask)) == 0) {
+		for (unsigned i = 0; i < sizeof(ap_events); i++) {
+			mask[ap_events[i] / 8] |= (uint8_t)(1 << (ap_events[i] % 8));
+		}
+		(void)iovar(true, "event_msgs", mask, sizeof(mask));
+	}
+	(void)iovar_int("mfp", MFP_NONE);
+	e_wsec = iovar_int("wsec", pl ? AES_ENABLED : 0);
+	e_auth = iovar_int("wpa_auth", pl ? WPA2_AUTH_PSK : 0);
+	(void)iovar_int("auth", AUTH_OPEN);
+	if (pl) {
+		uint8_t *pmk = kalloc_data(PMK_STRUCT_SIZE, Z_WAITOK | Z_ZERO);
+		uint16_t kl = (uint16_t)pl, fl = WSEC_PASSPHRASE;
+
+		if (pmk == NULL) {
+			ap_on = false;
+			return ENOMEM;
+		}
+		memcpy(pmk, &kl, 2);
+		memcpy(pmk + 2, &fl, 2);
+		memcpy(pmk + 4, pass, pl);
+		e_pmk = ioctl(WLC_SET_WSEC_PMK, pmk, PMK_STRUCT_SIZE, PMK_STRUCT_SIZE);
+		bzero(pmk, PMK_STRUCT_SIZE);
+		kfree_data(pmk, PMK_STRUCT_SIZE);
+	}
+	e_up = ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
+	lck_mtx_lock(&ring_lock);
+	ev_ssid = false;
+	ev_ssid_status = 0;
+	lck_mtx_unlock(&ring_lock);
+	bzero(ssid_le, sizeof(ssid_le));
+	memcpy(ssid_le, &sl, 4);
+	memcpy(ssid_le + 4, ssid, sl);
+	e_ssid = ioctl(WLC_SET_SSID, ssid_le, sizeof(ssid_le), sizeof(ssid_le));
+	for (unsigned i = 0; i < 60 && !got; i++) {     /* the SET_SSID event: up to 3 s */
+		delay(50000);
+		lck_mtx_lock(&ring_lock);
+		got = ev_ssid;
+		status = ev_ssid_status;
+		lck_mtx_unlock(&ring_lock);
+	}
+	(void)zero;
+	snprintf(ap_result, sizeof(ap_result), "%s: ch %u %s; down %d infra %d ap %d chanspec %d wsec %d wpa_auth %d pmk %d up %d "
+	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, pl ? "WPA2" : "open", e_down, e_infra,
+	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, got ? "status" : "none", got ? status : 0);
+	blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
+	if (!(got && status == 0)) {
+		uint32_t z = 0;
+
+		(void)ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
+		(void)ioctl(WLC_SET_AP, &z, sizeof(z), sizeof(z));
+		(void)ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
+		ap_on = false;
+		return EIO;
+	}
+	return 0;
+}
+
+static int
+ap_stop(void)
+{
+	uint32_t one = 1, zero = 0;
+	int e_down, e_ap, e_up;
+
+	if (!ap_on) {
+		return 0;
+	}
+	e_down = ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
+	e_ap = ioctl(WLC_SET_AP, &zero, sizeof(zero), sizeof(zero));
+	(void)iovar_int("wsec", 0);
+	(void)iovar_int("wpa_auth", 0);
+	e_up = ioctl(WLC_UP, &one, sizeof(one), sizeof(one));
+	ap_on = false;
+	state_set(REDWOOD_STA_IDLE, NULL, 0);
+	snprintf(ap_result, sizeof(ap_result), "off (stop: down %d ap 0 %d up %d)", e_down, e_ap, e_up);
+	blog("ap: %s", ap_result);
+	return 0;
+}
+
+/* "word word ..." in place: the next word, NUL-terminated; *rest after it */
+static char *
+ap_word(char **rest)
+{
+	char *s = *rest, *w;
+
+	while (*s == ' ') {
+		s++;
+	}
+	if (*s == 0) {
+		return NULL;
+	}
+	w = s;
+	while (*s != 0 && *s != ' ') {
+		s++;
+	}
+	if (*s != 0) {
+		*s++ = 0;
+	}
+	*rest = s;
+	return w;
+}
+
+static int
+sysctl_wifi_ap SYSCTL_HANDLER_ARGS
+{
+#pragma unused(arg1, arg2)
+	char buf[160], *rest = buf, *cmd, *ch, *name, *pass;
+	int err;
+
+	strlcpy(buf, ap_result, sizeof(buf));
+	err = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (err != 0 || req->newptr == USER_ADDR_NULL) {
+		return err;
+	}
+	cmd = ap_word(&rest);
+	if (cmd == NULL) {
+		return EINVAL;
+	}
+	if (strcmp(cmd, "stop") == 0) {
+		return ap_stop();
+	}
+	if (strcmp(cmd, "start") != 0 || (ch = ap_word(&rest)) == NULL || (name = ap_word(&rest)) == NULL) {
+		return EINVAL;
+	}
+	pass = ap_word(&rest);
+	if (ap_on) {
+		(void)ap_stop();
+	}
+	return ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
+	    pass ? (uint32_t)strlen(pass) : 0);
+}
+
+static int
+sysctl_wifi_iovar SYSCTL_HANDLER_ARGS
+{
+#pragma unused(arg1, arg2)
+	char buf[96] = "", *rest = buf, *op, *name, *val;
+	uint8_t data[64];
+	int err;
+
+	err = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (err != 0 || req->newptr == USER_ADDR_NULL) {
+		return err;
+	}
+	op = ap_word(&rest);
+	name = ap_word(&rest);
+	if (op == NULL || name == NULL) {
+		return EINVAL;
+	}
+	if (strcmp(op, "set") == 0 && (val = ap_word(&rest)) != NULL) {
+		err = iovar_int(name, (int32_t)strtol(val, NULL, 0));
+		blog("iovar set %s %s: %d", name, val, err);
+		return 0;
+	}
+	if (strcmp(op, "get") != 0) {
+		return EINVAL;
+	}
+	bzero(data, sizeof(data));
+	err = iovar(false, name, data, sizeof(data));
+	blog("iovar get %s: %d: %.64s", name, err, (const char *)data);
+	blog("iovar get %s: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x", name,
+	    data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+	    data[12], data[13], data[14], data[15]);
+	return 0;
+}
+
+SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_ap, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_ap, "A",
+    "Personal Hotspot access point: \"start <channel> <name> [passphrase]\" | \"stop\"");
+SYSCTL_PROC(_kern_redwood, OID_AUTO, wifi_iovar, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_wifi_iovar,
+    "A", "a firmware iovar: \"get <name>\" | \"set <name> <int>\" (answers in the log)");
