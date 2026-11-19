@@ -501,7 +501,7 @@ Updated: 2026-11-16. No successful native account sign-in has been demonstrated.
 
 ## Workspace and scope
 
-- Worktree: `/Users/jesvi/ios-port-research/work/hackios-apple-account`
+- Worktree: `~/ios-port-research/work/hackios-apple-account`
 - Branch: `feat/s20-apple-account`, based on accepted graphics commit `9e0d7cbe`.
 - Research documentation and tools are currently untracked/uncommitted. Review `git status` before integrating; do not overwrite unrelated work.
 - Detailed design and probe instructions: [x1slte-apple-account.md](x1slte-apple-account.md).

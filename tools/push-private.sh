@@ -22,9 +22,25 @@ hits=$(git rev-list --branches --tags --objects | git cat-file --batch-check='%(
 	LC_ALL=C grep -aoE 'ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|wpa_passphrase|psk="[^"]{8,}' | sort -u || true)
 [ -z "$hits" ] || { echo "REFUSED, secrets found:"; echo "$hits" | sed -E 's/(.{8}).*/\1.../'; exit 1; }
 
+# personal details (phone numbers, this Mac's user folder and name, link-local addresses) in the current files of
+# every branch; old history may still hold some (rewrite separately). Add the owner's own strings in
+# ~/.config/jesvi/personal-patterns (one extended regex per line, kept off the repo).
+pp='\+91[ -]?[6-9][0-9]{4} ?[0-9]{5}|/Users/[a-z]+/|[a-z]+s-MacBook[-A-Za-z]*\.local|fe80::[0-9a-f]{1,4}:[0-9a-f]{1,4}:[0-9a-f]{1,4}:'
+[ -f "$HOME/.config/jesvi/personal-patterns" ] && pp="$pp|$(grep -v '^#' "$HOME/.config/jesvi/personal-patterns" | paste -sd'|' -)"
+for br in $(git for-each-ref --format='%(refname:short)' refs/heads); do
+	# allowed: Jio's SMS centre (a carrier number) and the placeholder test sender
+	p=$(git grep -I -o -E "$pp" "$br" -- . ':!tools/push-private.sh' ':!*.patch' 2>/dev/null | grep -v -E ':\+917012075009$|:\+919999999999$' || true)
+	[ -z "$p" ] && continue
+	# main refuses; a feature branch only warns (its owner cleans it when merging main)
+	if [ "$br" = main ]; then echo "REFUSED, personal details in main:"; echo "$p" | head -10; exit 1; fi
+	echo "warning: personal details in $br ($(echo "$p" | wc -l | tr -d ' ') places): merge main into it"
+done
+
 api() { curl -sS -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
 code=$(api -o /dev/null -w '%{http_code}' "https://api.github.com/repos/$OWNER/$REPO")
-if [ "$code" = 404 ]; then
+if [ "$code" = 404 ] && [ "${CREATE:-0}" != 1 ]; then
+	echo "REFUSED: $OWNER/$REPO does not exist (the argument is a REPOSITORY name, not a branch). CREATE=1 to make it."; exit 1
+elif [ "$code" = 404 ]; then
 	api -X POST https://api.github.com/user/repos \
 		-d "{\"name\":\"$REPO\",\"private\":true,\"description\":\"iOS 16.5 on Exynos 990 Galaxy phones (S20 first): XNU, loader, userland, release tooling\"}" >/dev/null
 	echo "created private $OWNER/$REPO"

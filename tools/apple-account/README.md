@@ -86,8 +86,8 @@ the active native setup without a justified experiment.
 Check workspace coordination before device changes:
 
 ```sh
-/Users/jesvi/ios-port-research/tools/team.sh who
-/Users/jesvi/ios-port-research/tools/phone-lock.sh status
+~/ios-port-research/tools/team.sh who
+~/ios-port-research/tools/phone-lock.sh status
 ```
 
 A new agent should acquire/claim using its own session name after checking current
@@ -144,7 +144,7 @@ old evidence artifact. The helper and bridge must share the same schema header;
 the Python broker independently mirrors that validator.
 
 ```sh
-AA_LAB_SDK=/Users/jesvi/theos/sdks/iPhoneOS16.5.sdk
+AA_LAB_SDK=~/theos/sdks/iPhoneOS16.5.sdk
 clang -target arm64-apple-ios16.5 -isysroot "$AA_LAB_SDK" -dynamiclib -fobjc-arc -fblocks -framework Foundation -Wl,-no_fixup_chains -Wall -Wextra tools/apple-account/anisette-lab-bridge.m -o out/apple-account/private/anisette-lab-bridge-v13.dylib
 ldid -S out/apple-account/private/anisette-lab-bridge-v13.dylib
 clang -target arm64-apple-ios16.5 -isysroot "$AA_LAB_SDK" -dynamiclib -fobjc-arc -fblocks -framework Foundation -Wl,-no_fixup_chains -Wall -Wextra tools/apple-account/network-error-probe.m -o out/apple-account/private/network-error-probe-v5.dylib

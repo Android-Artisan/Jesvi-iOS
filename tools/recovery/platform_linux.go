@@ -249,7 +249,7 @@ func (d *linuxDevice) CheckData() error {
 		d.parts["userdata"] = p
 		d.dataLocked = true
 	}
-	if !initialized(d.parts["userdata"].Read, capacities["userdata"]) {
+	if !initialized(d.parts["userdata"].Read, dataBytes) {
 		return errors.New("existing HFSX userdata is missing/damaged; update will not format it")
 	}
 	return nil
@@ -259,7 +259,7 @@ func (d *linuxDevice) dataState() (bool, bool, error) {
 	if _, e := d.parts["userdata"].Read.ReadAt(h, 1024); e != nil {
 		return false, false, e
 	}
-	return validHFS(h, capacities["userdata"]), string(h[:2]) == "HX" || string(h[:2]) == "H+", nil
+	return validHFS(h, dataBytes), string(h[:2]) == "HX" || string(h[:2]) == "H+", nil
 }
 func (d *linuxDevice) Close() error {
 	for _, f := range d.writes {

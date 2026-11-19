@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/../.."
-AA_LAYER_SDK=${AA_LAYER_SDK:-/Users/jesvi/theos/sdks/iPhoneOS16.5.sdk}
+AA_LAYER_SDK=${AA_LAYER_SDK:-$HOME/theos/sdks/iPhoneOS16.5.sdk}
 AA_LAYER_OUT=${AA_LAYER_OUT:-out/apple-account/private}
 mkdir -p "$AA_LAYER_OUT"
 AA_LAYER_HASH=$(cat tools/apple-account/build-shared-layer.sh tools/apple-account/anisette-lab-bridge.m tools/apple-account/icloud-public-session.m tools/apple-account/icloud-delegate-session.m tools/apple-account/media-error-probe.m tools/apple-account/media-response-probe.m tools/apple-account/media-error-boundary.m tools/apple-account/media-signing-bridge.m tools/apple-account/*.h | shasum -a 256 | cut -c1-16)

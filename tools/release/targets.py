@@ -165,7 +165,25 @@ def active_modules(conf, disabled=()):
     return out
 
 
-def bootline(conf, disabled=()):
+def data_bytes(device_userdata):
+    """iOS's data volume size in bytes: JESVI_IOS_DATA_GB (release.conf IOS_DATA_GB) GB, 4096-aligned; or all of userdata."""
+    import os
+    g = os.environ.get('JESVI_IOS_DATA_GB', 'all').strip().lower()
+    if g in ('', 'all'):
+        return device_userdata
+    n = int(g) * 10**9 // 4096 * 4096
+    if not 16 * 10**9 <= n <= device_userdata:
+        raise ValueError(f'IOS_DATA_GB={g} does not fit userdata ({device_userdata // 10**9} GB)')
+    return n
+
+
+def kit_path(root, data, userdata):
+    """The HFSX format kit for this data size: userland/hfs-kit.bin (all of userdata) or userland/hfs-kit-<bytes>.bin
+    (SIZE=<bytes> tools/mk-userdata-hfs.sh, then tools/hfs-kit.py /tmp/hfsfmt userland/hfs-kit-<bytes>.bin)."""
+    return root / 'userland' / ('hfs-kit.bin' if data == userdata else f'hfs-kit-{data}.bin')
+
+
+def bootline(conf, disabled=(), data=None, userdata=None):
     """Boot line: platform args, hardware-derived args, target args, then mod args (last word wins)."""
     words = conf['PLATFORM_BOOTARGS'].split()
     if conf['TARGET_HAPTIC_CHIP']:
@@ -181,6 +199,10 @@ def bootline(conf, disabled=()):
     merged = {}
     for w in words:
         merged[w.split('=', 1)[0]] = w   # a later word overrides an earlier key
+    if data is not None and userdata is not None and data < userdata:
+        # only a window of userdata is iOS's (bsd/dev/redwood_ufs.c ufs_win=FIRST:BLOCKS, /dev/ufs_var)
+        merged.pop('ufs_userdata_all', None)
+        merged['ufs_win'] = f'ufs_win=0:{data // 4096}'
     line = ' '.join(merged.values())
     if len(line) > BOOTLINE_MAX:
         raise ValueError(f'{conf["TARGET_CODENAME"]}: boot line is {len(line)} characters (max {BOOTLINE_MAX})')

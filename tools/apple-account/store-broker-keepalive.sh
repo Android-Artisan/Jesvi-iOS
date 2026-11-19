@@ -5,7 +5,7 @@
 # the broker (Mac<->Hackintosh signing) and the phone tunnel (reverse forward over USB).
 # KeepAlive in the launch agent restarts this wrapper if it exits.
 set -u
-ROOT=/Users/jesvi/ios-port-research/work/hackios-apple-account
+ROOT=${ROOT:-$HOME/ios-port-research/work/hackios-apple-account}
 P=$ROOT/out/apple-account/private
 CONF=$P/account-hotspot-ssh.conf
 KH=$P/hackintosh-known-hosts
