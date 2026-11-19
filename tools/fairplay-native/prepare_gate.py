@@ -11,11 +11,35 @@ GATE = '''\t/* Redwood native FairPlay prototype: omit both modules unless expli
 \t */
 \tif (type == KCKindPrimary) {
 \t\tint nativeFairPlay = 0;
-\t\tPE_parse_boot_argn("fairplay_native", &nativeFairPlay, sizeof(nativeFairPlay));
+\t\tif (!PE_parse_boot_argn("fairplay_native", &nativeFairPlay, sizeof(nativeFairPlay))) {
+\t\t\tPE_parse_boot_argn("fplay_native", &nativeFairPlay, sizeof(nativeFairPlay));
+\t\t}
 \t\tOSArray *nativeArray = OSDynamicCast(OSArray,
 \t\t    infoDict->getObject(kPrelinkInfoDictionaryKey));
-\t\tunsigned int omitted = 0;
-\t\tif (nativeArray && nativeFairPlay != 1) {
+\t\tunsigned int omitted = 0, nativeSeen = 0, nativeHeaders = 0;
+\t\tkernel_segment_command_t *nativeText = getsegbynamefromheader(mh, kPrelinkTextSegment);
+\t\tif (nativeArray) {
+\t\t\tfor (unsigned int i = 0; i < nativeArray->getCount(); i++) {
+\t\t\t\tOSDictionary *entry = OSDynamicCast(OSDictionary, nativeArray->getObject(i));
+\t\t\t\tOSString *identifier = entry ? OSDynamicCast(OSString, entry->getObject("CFBundleIdentifier")) : NULL;
+\t\t\t\tif (!identifier || (!identifier->isEqualTo("com.apple.driver.FairPlayIOKit") &&
+\t\t\t\t    !identifier->isEqualTo("com.apple.IOTextEncryptionFamily"))) {
+\t\t\t\t\tcontinue;
+\t\t\t\t}
+\t\t\t\tnativeSeen++;
+\t\t\t\tOSNumber *location = OSDynamicCast(OSNumber, entry->getObject("_PrelinkExecutableLoadAddr"));
+\t\t\t\tuint64_t address = location ? location->unsigned64BitValue() : 0;
+\t\t\t\tif (nativeText && address >= nativeText->vmaddr && address - nativeText->vmaddr <= nativeText->vmsize &&
+\t\t\t\t    sizeof(kernel_mach_header_t) <= nativeText->vmsize - (address - nativeText->vmaddr)) {
+\t\t\t\t\tconst kernel_mach_header_t *header = (const kernel_mach_header_t *)(uintptr_t)address;
+\t\t\t\t\tif (header->magic == MH_MAGIC_64 && header->cputype == CPU_TYPE_ARM64 && header->filetype == MH_KEXT_BUNDLE) {
+\t\t\t\t\t\tnativeHeaders++;
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t}
+\t\tbool nativeAllowed = nativeFairPlay == 1 && nativeSeen == 2 && nativeHeaders == 2;
+\t\tif (nativeArray && !nativeAllowed) {
 \t\t\tfor (unsigned int i = nativeArray->getCount(); i > 0; i--) {
 \t\t\t\tOSDictionary *entry = OSDynamicCast(OSDictionary, nativeArray->getObject(i - 1));
 \t\t\t\tOSString *identifier = entry ? OSDynamicCast(OSString,
@@ -28,8 +52,8 @@ GATE = '''\t/* Redwood native FairPlay prototype: omit both modules unless expli
 \t\t\t\t}
 \t\t\t}
 \t\t}
-\t\tIOLog("redwood_native_fairplay_gate_v1: enabled=%d omitted=%u\\n",
-\t\t    nativeFairPlay == 1, omitted);
+\t\tIOLog("redwood_native_fairplay_gate_v1: requested=%d enabled=%d omitted=%u headers=%u/%u\\n",
+\t\t    nativeFairPlay == 1, nativeAllowed, omitted, nativeHeaders, nativeSeen);
 \t}
 
 '''

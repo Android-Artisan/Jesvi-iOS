@@ -355,6 +355,18 @@ print(d)"
 cmd_uflash() {
 	local out
 	fb_wait
+	# The native sidecar occupies 24 MiB, inside the region the legacy split
+	# write deliberately skips. Only an explicitly selected, validated layout
+	# trial uses a whole-RECOVERY write. Never update BOOT on this path.
+	if [ "${FAIRPLAY_LAYOUT_TRIAL:-0}" = 1 ]; then
+		python3 tools/fairplay-native/flash_preflight.py out/x1slte-recovery.img out/fairplay-layout-manifest.json ||
+			die "native layout trial preflight failed"
+		"$FASTBOOT" stage out/x1slte-recovery.img > /dev/null 2>&1 || die "stage failed (no recovery write attempted)"
+		out=$("$FASTBOOT" oem write recovery 0 2>&1)
+		echo "$out" | grep -q "written and read back" || die "native layout recovery: $out"
+		echo "uflash: whole layout-trial RECOVERY written and read back; BOOT unchanged"
+		return 0
+	fi
 	# in two pieces around the log (16..32 MB), so that flashing keeps the last run's log
 	python3 -c "
 d = open('out/x1slte-recovery.img', 'rb').read()

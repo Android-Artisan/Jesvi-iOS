@@ -2090,7 +2090,7 @@ index 28ea44c2ae9d..9c7a1fe9e23e 100644
  		return 0; // C++11 does not support void-returning constexpr functions
  	}
 diff --git a/libsa/bootstrap.cpp b/libsa/bootstrap.cpp
-index f0f770add668..dd65e789539e 100644
+index f0f770add668..8d806a060b97 100644
 --- a/libsa/bootstrap.cpp
 +++ b/libsa/bootstrap.cpp
 @@ -30,6 +30,7 @@ extern "C" {
@@ -2101,7 +2101,7 @@ index f0f770add668..dd65e789539e 100644
  }
  
  #define IOKIT_ENABLE_SHARED_PTR
-@@ -264,6 +265,33 @@ KLDBootstrap::readPrelinkedExtensions(kernel_mach_header_t *mh, kc_kind_t type)
+@@ -264,6 +265,57 @@ KLDBootstrap::readPrelinkedExtensions(kernel_mach_header_t *mh, kc_kind_t type)
  		return;
  	}
  
@@ -2111,11 +2111,35 @@ index f0f770add668..dd65e789539e 100644
 +	 */
 +	if (type == KCKindPrimary) {
 +		int nativeFairPlay = 0;
-+		PE_parse_boot_argn("fairplay_native", &nativeFairPlay, sizeof(nativeFairPlay));
++		if (!PE_parse_boot_argn("fairplay_native", &nativeFairPlay, sizeof(nativeFairPlay))) {
++			PE_parse_boot_argn("fplay_native", &nativeFairPlay, sizeof(nativeFairPlay));
++		}
 +		OSArray *nativeArray = OSDynamicCast(OSArray,
 +		    infoDict->getObject(kPrelinkInfoDictionaryKey));
-+		unsigned int omitted = 0;
-+		if (nativeArray && nativeFairPlay != 1) {
++		unsigned int omitted = 0, nativeSeen = 0, nativeHeaders = 0;
++		kernel_segment_command_t *nativeText = getsegbynamefromheader(mh, kPrelinkTextSegment);
++		if (nativeArray) {
++			for (unsigned int i = 0; i < nativeArray->getCount(); i++) {
++				OSDictionary *entry = OSDynamicCast(OSDictionary, nativeArray->getObject(i));
++				OSString *identifier = entry ? OSDynamicCast(OSString, entry->getObject("CFBundleIdentifier")) : NULL;
++				if (!identifier || (!identifier->isEqualTo("com.apple.driver.FairPlayIOKit") &&
++				    !identifier->isEqualTo("com.apple.IOTextEncryptionFamily"))) {
++					continue;
++				}
++				nativeSeen++;
++				OSNumber *location = OSDynamicCast(OSNumber, entry->getObject("_PrelinkExecutableLoadAddr"));
++				uint64_t address = location ? location->unsigned64BitValue() : 0;
++				if (nativeText && address >= nativeText->vmaddr && address - nativeText->vmaddr <= nativeText->vmsize &&
++				    sizeof(kernel_mach_header_t) <= nativeText->vmsize - (address - nativeText->vmaddr)) {
++					const kernel_mach_header_t *header = (const kernel_mach_header_t *)(uintptr_t)address;
++					if (header->magic == MH_MAGIC_64 && header->cputype == CPU_TYPE_ARM64 && header->filetype == MH_KEXT_BUNDLE) {
++						nativeHeaders++;
++					}
++				}
++			}
++		}
++		bool nativeAllowed = nativeFairPlay == 1 && nativeSeen == 2 && nativeHeaders == 2;
++		if (nativeArray && !nativeAllowed) {
 +			for (unsigned int i = nativeArray->getCount(); i > 0; i--) {
 +				OSDictionary *entry = OSDynamicCast(OSDictionary, nativeArray->getObject(i - 1));
 +				OSString *identifier = entry ? OSDynamicCast(OSString,
@@ -2128,8 +2152,8 @@ index f0f770add668..dd65e789539e 100644
 +				}
 +			}
 +		}
-+		IOLog("redwood_native_fairplay_gate_v1: enabled=%d omitted=%u\n",
-+		    nativeFairPlay == 1, omitted);
++		IOLog("redwood_native_fairplay_gate_v1: requested=%d enabled=%d omitted=%u headers=%u/%u\n",
++		    nativeFairPlay == 1, nativeAllowed, omitted, nativeHeaders, nativeSeen);
 +	}
 +
  	/* Validate that the Kext Collection is prelinked to the loaded KC */

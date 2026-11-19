@@ -20,7 +20,7 @@ BASES = ('__ZN8OSObject9MetaClassC2Ev', '__ZN9IOService9MetaClassC2Ev',
 STACK, SENTINEL = 0x600000000, 0x610000000
 
 
-def inspect_calls(path, roots, allowed, extra_images=()):
+def inspect_calls(path, roots, allowed, extra_images=(), service_probes=None):
     data = path.read_bytes()
     cpu = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
     names = symbols(data)
@@ -52,11 +52,14 @@ def inspect_calls(path, roots, allowed, extra_images=()):
     cpu.mem_map(SENTINEL, 4096)
     records = []
     local_classes = {}
+    class_objects = {}
+    mode, events = 'initializers', []
+    heap_next = STACK + 0x140000
     stopped = None
     returned = False
 
     def hook(machine, address, size, userdata):
-        nonlocal stopped, returned
+        nonlocal stopped, returned, heap_next
         if address == SENTINEL:
             returned = True
             machine.emu_stop()
@@ -70,8 +73,64 @@ def inspect_calls(path, roots, allowed, extra_images=()):
             records.append(dict(name=text, declared_size=class_size,
                                 superclass=names.get(parent, []) or ([local_classes[parent]] if parent in local_classes else [])))
             local_classes[obj] = text
+            class_objects[text] = obj
             machine.reg_write(UC_ARM64_REG_X0, obj)
             machine.reg_write(UC_ARM64_REG_PC, machine.reg_read(UC_ARM64_REG_LR))
+            return
+        if mode != 'initializers' and address in names:
+            labels = names[address]
+            label = labels[0]
+            args = [machine.reg_read(r) for r in (UC_ARM64_REG_X0, UC_ARM64_REG_X1,
+                                                 UC_ARM64_REG_X2, UC_ARM64_REG_X3)]
+            modeled = False
+            result = 0
+            if '_OSObject_typed_operator_new' in labels or '_IOMallocTypeImpl' in labels:
+                # arm64 kalloc_type_view: zone_view32 + signature8 + flags4,
+                # followed by kt_size; the high byte is the packed zone index.
+                amount = args[1] if '_OSObject_typed_operator_new' in labels else struct.unpack('<I', machine.mem_read(args[0] + 44, 4))[0] & 0xffffff
+                if not 0 < amount <= 65536:
+                    raise ValueError('Unexpected modeled allocation size')
+                result = heap_next
+                heap_next += (amount + 15) & ~15
+                if heap_next > STACK + 0x170000:
+                    raise ValueError('Modeled heap exhausted')
+                machine.mem_write(result, b'\0' * amount)
+                modeled = True
+            elif any(n in labels for n in ('__ZN9IOServiceC1EPK11OSMetaClass', '__ZN9IOServiceC2EPK11OSMetaClass')):
+                # Ordinary base construction is omitted, not claimed correct.
+                # This trace only identifies imports reached by native startup.
+                result, modeled = args[0], True
+            elif '__ZN9IOService5startEPS_' in labels:
+                result, modeled = 1, True  # The source implementation returns true.
+            elif any(n in labels for n in ('_IOLockAlloc', '_IORWLockAlloc')):
+                result, modeled = heap_next, True
+                heap_next += 64
+                machine.mem_write(result, b'\0' * 64)
+            elif any(n in labels for n in ('_memset', '_secure_memset', '_memcpy', '_memmove')):
+                if args[2] > 0x100000:
+                    raise ValueError('Modeled memory operation exceeds its bound')
+                block = bytes([args[1] & 255]) * args[2] if any(n in labels for n in ('_memset', '_secure_memset')) else bytes(machine.mem_read(args[1], args[2]))
+                machine.mem_write(args[0], block)
+                result, modeled = args[0], True
+            elif any(n in labels for n in ('_IOLockLock', '_IOLockUnlock', '_IORWLockRead', '_IORWLockWrite',
+                                           '_IORWLockUnlock', '_IOLog', '_IOLogv',
+                                           '__ZNK11OSMetaClass19instanceConstructedEv',
+                                           '__ZN9IOService15registerServiceEj', '_text_crypter_create_hook_set')):
+                modeled = True
+            if modeled:
+                events.append(dict(api=label, model='ordinary startup scaffolding only'))
+                machine.reg_write(UC_ARM64_REG_X0, result)
+                machine.reg_write(UC_ARM64_REG_PC, machine.reg_read(UC_ARM64_REG_LR))
+                return
+            details = dict(address=hex(address), symbols=labels)
+            if any(n in labels for n in ('__ZN9IOService15serviceMatchingEPKcP12OSDictionary',
+                                         '_kernel_sysctlbyname', '_sysctlbyname')):
+                value = bytes(machine.mem_read(args[0], 128)).split(b'\0', 1)[0]
+                if value and all(32 <= c < 127 for c in value):
+                    details['query'] = value.decode('ascii')
+            events.append(dict(api=label, unmodeled=True))
+            stopped = details
+            machine.emu_stop()
             return
         if not any(base <= address < base + length for base, length in allowed):
             stopped = dict(address=hex(address), symbols=names.get(address, []))
@@ -93,6 +152,45 @@ def inspect_calls(path, roots, allowed, extra_images=()):
         outcomes.append(dict(root=hex(root), returned=returned, stopped=stopped,
                              error=error, pc=hex(cpu.reg_read(UC_ARM64_REG_PC)),
                              classes=records[before:]))
+    if service_probes is not None:
+        def call_probe(entry, object_address, provider=0):
+            nonlocal stopped, returned
+            stopped, returned = None, False
+            cpu.reg_write(UC_ARM64_REG_SP, STACK + 0x100000)
+            cpu.reg_write(UC_ARM64_REG_X0, object_address)
+            cpu.reg_write(UC_ARM64_REG_X1, provider)
+            cpu.reg_write(UC_ARM64_REG_LR, SENTINEL)
+            error = None
+            try:
+                cpu.emu_start(entry, SENTINEL + 4, timeout=2000000, count=200000)
+            except UcError as exc:
+                error = str(exc)
+            return dict(returned=returned, stopped=stopped, error=error,
+                        pc=hex(cpu.reg_read(UC_ARM64_REG_PC))), cpu.reg_read(UC_ARM64_REG_X0)
+
+        for class_name in ('com_apple_driver_FairPlayIOKit', 'AppleFairplayTextCrypter'):
+            if class_name not in class_objects:
+                continue
+            events = []
+            mode = 'allocate'
+            meta = class_objects[class_name]
+            vtable = struct.unpack('<Q', cpu.mem_read(meta, 8))[0]
+            # ABI check: OSMetaClass alloc is slot15 in table, address point+13.
+            entry = struct.unpack('<Q', cpu.mem_read(vtable + 13 * 8, 8))[0]
+            allocation, object_address = call_probe(entry, meta)
+            report = dict(name=class_name, allocation=allocation, events=events)
+            if allocation['returned'] and object_address:
+                mode = 'service_start'
+                provider = STACK + 0x190000
+                provider_vtable = by_name.get('__ZTV11IOResources', 0)
+                cpu.mem_write(provider, struct.pack('<Q', provider_vtable + 16))
+                object_vtable = struct.unpack('<Q', cpu.mem_read(object_address, 8))[0]
+                # IOService start is slot88 in table, address point+86.
+                start = struct.unpack('<Q', cpu.mem_read(object_vtable + 86 * 8, 8))[0]
+                report['start'], result = call_probe(start, object_address, provider)
+                report['start']['return_register'] = result
+            report['limitation'] = 'Dependency trace with omitted base construction; not real driver initialization or licensing.'
+            service_probes.append(report)
     return outcomes
 
 
@@ -145,6 +243,7 @@ if __name__ == '__main__':
     parser.add_argument('inventory', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--staged', type=Path)
+    parser.add_argument('--probe-service-start', action='store_true')
     args = parser.parse_args()
     report = dict(model='OSMetaClass constructor records arguments only; all other externals stop')
     for label, path in (('stock_bases', args.stock), ('custom_bases', args.custom)):
@@ -160,7 +259,8 @@ if __name__ == '__main__':
             r, a = standalone_roots(path)
             roots.extend(r)
             allowed.extend(a)
-        report['staged_module_initializers'] = inspect_calls(args.custom, roots, allowed, paths)
+        probes = [] if args.probe_service_start else None
+        report['staged_module_initializers'] = inspect_calls(args.custom, roots, allowed, paths, probes)
     outcomes = [outcome for key, values in report.items() if key != 'model' for outcome in values]
     report['all_returned_without_unknown_external'] = all(o['returned'] and not o['error'] and not o['stopped'] for o in outcomes)
     report['base_declared_sizes_match'] = ([o['classes'] for o in report['stock_bases']] ==
@@ -168,9 +268,15 @@ if __name__ == '__main__':
     if args.staged:
         report['staged_class_records_match'] = ([o['classes'] for o in report['stock_module_initializers']] ==
                                                 [o['classes'] for o in report['staged_module_initializers']])
+        if probes is not None:
+            report['service_start_dependency_probes'] = probes
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     for label in report:
         if not isinstance(report[label], list):
+            continue
+        if label == 'service_start_dependency_probes':
+            for result in report[label]:
+                print(label, result['name'], 'allocation', result['allocation'], 'start', result.get('start'))
             continue
         for result in report[label]:
             print(label, 'returned', result['returned'], 'classes', result['classes'],
