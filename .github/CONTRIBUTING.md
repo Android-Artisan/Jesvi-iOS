@@ -4,6 +4,14 @@ Start with [the build guide](../docs/release/building.md) and
 [device porting guide](../docs/release/porting.md). Use a branch/worktree per task. Keep
 changes small enough to review and explain the observable behavior, tests and limitations.
 
+## Branches
+
+- `x1slte` is the working branch. All day-to-day work lands here.
+- Feature branches (`feat/...`) start from `x1slte` and merge back into `x1slte`, never straight
+  into `main`. Delete a feature branch (local and GitHub) once it is merged.
+- `main` is the release branch. It only gets `x1slte` merged into it when a release is ready, so it
+  can be behind `x1slte`.
+
 Kernel work is represented by `xnu/redwood.patch` and `xnu/files/`. If editing a
 private `xnu-src` tree, export from the exact current base before committing. Do
 not export an older kernel tree over another developer's changes. The release
