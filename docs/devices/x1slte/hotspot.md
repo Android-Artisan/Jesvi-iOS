@@ -19,8 +19,9 @@ a Mac, an iPhone and the S20 itself browsed over Jio LTE through the phone (2026
 
 - `networksetup -setairportnetwork` on macOS 15 cannot see network names over SSH (no location permission): switch
   the Hackintosh by hand when testing it as a client. Its only network is Wi-Fi, so joining the hotspot cuts SSH.
-- Restarting the cellular service in place (exec) leaves its old utun alive with the default route: reboot (or stop it
-  fully: `echo airplane > /var/tmp/redwood-cell/cmd`, then touch /var/tmp/redwood-cell-kick).
+- Fixed (cb0719b9): restarting the cellular service left its old utun alive with the default route (the IMS client,
+  started with posix_spawn, inherited the tunnel). The tunnels are close-on-exec now; verified: `echo restart >
+  /var/tmp/redwood-cell/cmd` keeps the same interfaces and data comes back by itself. After it, run hotspot-up.sh start.
 - Many back-to-back reboots overheat the phone (PMIC reset, black screen): use the cooler.
 
 ## Next
