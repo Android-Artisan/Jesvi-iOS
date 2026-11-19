@@ -368,8 +368,12 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
 		# ... and the network behind the access point (tools/hotspot: addresses, NAT, CLAT46; misctl for tests)
 		mkdir -p obj/hotspot-inc/net obj/hotspot-inc/libkern
-		cp ../xnu-src/xnu-8796.121.2/bsd/net/pfvar.h ../xnu-src/xnu-8796.121.2/bsd/net/radix.h obj/hotspot-inc/net/
-		cp ../xnu-src/xnu-8796.121.2/libkern/libkern/tree.h obj/hotspot-inc/libkern/
+		# XNU's headers: the developer tree, or (a release checkout has none) the release kernel's prepared tree
+		xs=../xnu-src/xnu-8796.121.2
+		[ -f $xs/bsd/net/pfvar.h ] || xs=$(ls -td ../.cache/release-kernel/*/ 2>/dev/null | while read -r d; do [ -f "$d/bsd/net/pfvar.h" ] && { echo "${d%/}"; break; }; done)
+		[ -n "$xs" ] && [ -f "$xs/bsd/net/pfvar.h" ] || { echo "hotspot: no XNU headers (run ./build.sh kernel first)"; exit 1; }
+		cp "$xs/bsd/net/pfvar.h" "$xs/bsd/net/radix.h" obj/hotspot-inc/net/
+		cp "$xs/libkern/libkern/tree.h" obj/hotspot-inc/libkern/
 		for p in rwdhcpd rwpf clat-test; do $DYN -Iobj/hotspot-inc -o obj/$p ../tools/hotspot/$p.c; done
 		# rwsys NAME [VALUE] (sysctl strings): the Store account boot job uses it (it was copied below but never built)
 		$DYN -o obj/rwsys src/rwsys.c
