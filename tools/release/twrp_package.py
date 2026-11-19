@@ -29,13 +29,22 @@ def _sources():
     return sources
 
 
+def _partitions(device):
+    """The four iOS destinations, plus up_param (Samsung's power-on pictures) when the profile measured it: the
+    install puts iOS's boot logo there, Jesvi-iOS-Restore puts the phone's own logo back (tools/recovery/splash.go)."""
+    parts = dict(device['partitions'])
+    if device.get('splash_partition_bytes'):
+        parts['up_param'] = device['splash_partition_bytes']
+    return parts
+
+
 def device_config(device, action, mode, experimental):
     """Installer config from the measured device profile (bound into the binary)."""
     l = device['layout']
     return {'schema': 2, 'action': action, 'device': device['id'], 'mode': mode,
             'allow_writes': experimental, 'installer_validated': False,
             'models': device['models'], 'bootloaders': device['bootloaders'],
-            'products': device['recovery_products'], 'partitions': device['partitions'],
+            'products': device['recovery_products'], 'partitions': _partitions(device),
             'system_max_bytes': l['system_max_bytes'], 'stash_offset': l['android_stash_offset'],
             'android_super': device['android_super'], 'files': {}, 'kit_sha256': '', 'kit_bytes': 0}
 
@@ -150,7 +159,17 @@ def package(bundle, output, mode='choose', experimental=False):
               'This is not an authenticated public release. See docs/release/twrp.md and rollback.md.\n')
     files = {'candidate.json': bundle / 'manifest.json', 'hfs-kit.bin': kit,
              'boot.img': bundle / 'boot.img', 'recovery.img': bundle / 'recovery.img', 'system.apfs': bundle / 'system.apfs'}
-    _build(output, config, files, readme, ENTRIES, {
+    inventory = ENTRIES
+    if 'up_param' in config['partitions']:
+        # the power-on splash: iOS's boot logo, made by tools/bootlogo/mkbootlogo.py in the payload step
+        logo = ROOT / 'out/bootlogo/logo.jpg'
+        data = logo.read_bytes() if logo.is_file() else b''
+        if not data.startswith(b'\xff\xd8') or len(data) > 1 << 20:
+            raise ValueError('out/bootlogo/logo.jpg missing or not a JPEG of at most 1 MiB (tools/bootlogo/mkbootlogo.py)')
+        config['splash'] = {'bytes': len(data), 'sha256': digest(logo)}
+        files['splash.jpg'] = data
+        inventory = ENTRIES | {'splash.jpg'}
+    _build(output, config, files, readme, inventory, {
         'candidate_manifest_sha256': digest(bundle / 'manifest.json'),
         'avb_test_key_verification': True, 'native_apfs_checks': True, 'hfs_seed_fsck_check': True})
     print(f'TWRP ZIP: {output}; writes={experimental}; hardware qualification pending')

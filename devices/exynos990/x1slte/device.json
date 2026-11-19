@@ -33,5 +33,6 @@
     "root_offset": 54525952,
     "super_log_offset": 8198832128
   },
-  "evidence": "docs/release/device-evidence.md"
+  "evidence": "docs/release/device-evidence.md",
+  "splash_partition_bytes": 8388608
 }
