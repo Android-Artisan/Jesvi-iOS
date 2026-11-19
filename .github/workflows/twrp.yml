@@ -1,0 +1,59 @@
+# Our TWRP for the Galaxy S20 (x1s / SM-G980F), built on GitHub's machines (the Mac has no room for the ~40 GB tree).
+# Source: TWRP's minimal manifest (twrp-11) + TeamWin's official x1s tree (prebuilt kernel), with our changes from
+# tools/twrp/ applied on top (tools/twrp/apply.sh). Output: recovery.img and an Odin AP tar, as a workflow artifact.
+name: TWRP
+on:
+  push:
+    branches: [feat/twrp-x1s]
+    paths: ['tools/twrp/**', '.github/workflows/twrp.yml']
+  workflow_dispatch:
+concurrency: {group: twrp, cancel-in-progress: true}
+permissions: {contents: read}
+jobs:
+  recovery:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false, sparse-checkout: tools/twrp}
+      - name: Free disk space (the TWRP tree needs ~40 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/share/swift /usr/local/.ghcup /usr/lib/jvm || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get -qq remove --purge '^llvm-.*' '^dotnet-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell >/dev/null 2>&1 || true
+          df -h /
+      - name: Build tools
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev libc6-dev-i386 \
+            libncurses5 lib32z1-dev libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 ccache rsync
+          mkdir -p ~/bin && curl -sSL https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo && chmod +x ~/bin/repo
+          git config --global user.name ci && git config --global user.email ci@localhost
+      - name: Sync TWRP (shallow)
+        run: |
+          mkdir -p ~/twrp && cd ~/twrp
+          ~/bin/repo init --depth=1 -q -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11
+          ~/bin/repo sync -q -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+          git clone -q --depth=1 -b android-11 https://github.com/TeamWin/android_device_samsung_x1s.git device/samsung/x1s
+          bash "$GITHUB_WORKSPACE/tools/twrp/apply.sh" ~/twrp
+          df -h /
+      - name: Build recovery.img
+        run: |
+          cd ~/twrp
+          export ALLOW_MISSING_DEPENDENCIES=true USE_CCACHE=1
+          source build/envsetup.sh
+          lunch twrp_x1s-eng
+          mka -j"$(nproc)" recoveryimage
+          ls -la out/target/product/x1s/recovery.img
+      - name: Odin tar
+        run: |
+          cd ~/twrp/out/target/product/x1s
+          tar -H ustar -cf twrp-x1s.tar recovery.img
+          sha256sum recovery.img twrp-x1s.tar | tee SHA256SUMS
+          mkdir -p "$GITHUB_WORKSPACE/out" && cp recovery.img twrp-x1s.tar SHA256SUMS "$GITHUB_WORKSPACE/out/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: twrp-x1s
+          path: out/
+          retention-days: 30
