@@ -225,6 +225,10 @@ on_line(const char *l)
 		ev_send(FPCD_EV_FINGER_DOWN, 0, 0, 0, 0, 0, 0);
 	} else if (strstr(l, ": finger lifted")) {
 		ev_send(FPCD_EV_FINGER_UP, 0, 0, 0, 0, 0, 0);
+	} else if (op == 2 && !grip_phase && strstr(l, "fp run 6: capture rejected")) {
+		/* a rejected image (0x1d contamination, partial...) is a failed try for the user: shake the lock, as a
+		 * bad read does on an iPhone, instead of silence that looked like a dead sensor (2026-11-19) */
+		ev_send(FPCD_EV_NOMATCH, 0x20, 0, 0, 0, 1, 0);
 	} else if (strstr(l, "lift and press again")) {
 		ev_send(FPCD_EV_IMAGE, 3, 0, 0, 0, 0, 0);
 	} else if (op == 1 && sscanf(l, "fp run 3: SAMPLE %u ACCEPTED: progress %u", &n, &v) == 2 && v <= 100) {
@@ -257,10 +261,6 @@ on_line(const char *l)
 	} else if (op == 2 && sscanf(l, "fp run 6: SENSOR MATCH candidate (bio %u score %u", &b, &sc) == 2) {
 		ev_send(FPCD_EV_MATCH, 0, FID, (int32_t)sc, 0, 1, 0);
 		op = 0;
-	} else if (op == 2 && !grip_phase && strstr(l, "fp run 6: capture rejected")) {
-		/* a rejected image (0x1d contamination, partial...) is a failed try for the user: shake the lock, as a
-		 * bad read does on an iPhone, instead of silence that looked like a dead sensor (2026-11-19) */
-		ev_send(FPCD_EV_NOMATCH, 0x20, 0, 0, 0, 1, 0);
 	} else if (op == 2 && !strcmp(l, "fp run 6: NO MATCH")) {
 		ev_send(FPCD_EV_NOMATCH, 0x20, 0, 0, 0, 1, 0);
 	} else if (strstr(l, "invalid response") || strstr(l, "re-arm failed") || strstr(l, "capture error 0x44") ||

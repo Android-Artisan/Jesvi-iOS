@@ -36,6 +36,19 @@ secureWindowClass(void)
 	return c;
 }
 
+/* the window's controller hides its home indicator: a second, grey home bar showed under SpringBoard's own */
+static Class
+ringControllerClass(void)
+{
+	static Class c;
+	if (c == Nil) {
+		c = objc_allocateClassPair(UIViewController.class, "RedwoodRingController", 0);
+		class_addMethod(c, @selector(prefersHomeIndicatorAutoHidden), (IMP)yes, "B@:");
+		objc_registerClassPair(c);
+	}
+	return c;
+}
+
 static UIWindow *
 makeRingWindow(void)
 {
@@ -55,7 +68,7 @@ makeRingWindow(void)
 	w.windowLevel = 10000000;          /* above the lock screen and every SpringBoard window */
 	w.userInteractionEnabled = NO;
 	w.backgroundColor = UIColor.clearColor;
-	w.rootViewController = [UIViewController new];
+	w.rootViewController = [ringControllerClass() new];
 	w.rootViewController.view.userInteractionEnabled = NO;
 	w.rootViewController.view.backgroundColor = UIColor.clearColor;
 
