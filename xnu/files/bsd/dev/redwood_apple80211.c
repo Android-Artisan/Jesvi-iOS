@@ -219,7 +219,7 @@ _Static_assert(sizeof(struct apple80211_scan_result) == 1164 && offsetof(struct 
 
 /* Apple80211's events (APPLE80211_M_...) */
 enum { EVENT_POWER_CHANGED = 1, EVENT_SSID_CHANGED = 2, EVENT_BSSID_CHANGED = 3, EVENT_LINK_CHANGED = 4, EVENT_ASSOC_DONE = 9,
-       EVENT_SCAN_DONE = 10 };
+       EVENT_SCAN_DONE = 10, EVENT_STA_ARRIVE = 12, EVENT_STA_LEAVE = 13 };
 
 static const char interface_name[16] = "en0";   /* (bsd/dev/redwood_net.c makes one interface, and that is its name) */
 
@@ -750,6 +750,50 @@ post(uint32_t code, const void *data, uint32_t length)
 		message.dv[1].data_ptr = __DECONST(void *, data);
 	}
 	kev_post_msg(&message);
+}
+
+/*
+ * Personal Hotspot: the devices on our access point (B, 2026-11-19). wifid hears APPLE80211_M_STA_ARRIVE / _LEAVE (the
+ * device's address) and tells misd, which is what Settings' "1 Connection", the status bar's hotspot bubble and Control
+ * Center count. kern.redwood.wifi_ap_stations: how many now.
+ */
+static uint8_t stations[8][6];
+static unsigned station_count;
+SYSCTL_UINT(_kern_redwood, OID_AUTO, wifi_ap_stations, CTLFLAG_RD | CTLFLAG_LOCKED, &station_count, 0, "");
+
+void
+redwood_apple80211_station(bool joined, const uint8_t *mac)
+{
+	unsigned i;
+	bool changed = false;
+
+	lck_mtx_lock(&apple80211_lock);
+	for (i = 0; i < station_count && memcmp(stations[i], mac, 6) != 0; i++) {
+	}
+	if (joined && i == station_count && station_count < 8) {
+		memcpy(stations[station_count++], mac, 6);
+		changed = true;
+	} else if (!joined && i < station_count) {
+		memmove(stations[i], stations[i + 1], (station_count - i - 1) * 6);
+		station_count--;
+		changed = true;
+	}
+	lck_mtx_unlock(&apple80211_lock);
+	if (changed) {
+		post(joined ? EVENT_STA_ARRIVE : EVENT_STA_LEAVE, mac, 6);
+		printf("apple80211: host AP: %s, %u connected\n", joined ? "a device arrived" : "a device left", station_count);
+	}
+}
+
+void
+redwood_apple80211_stations_clear(void)
+{
+	while (station_count != 0) {
+		uint8_t mac[6];
+
+		memcpy(mac, stations[station_count - 1], 6);
+		redwood_apple80211_station(false, mac);
+	}
 }
 
 /* What the station side says has happened (bsd/dev/redwood_sta.c calls this, on its thread or the station's). */

@@ -130,7 +130,9 @@ bool     redwood_sta_address(uint8_t *address);
 
 /* ---- the listener: bsd/dev/redwood_apple80211.c ---- */
 void     redwood_apple80211_event(enum redwood_sta_event event, int status);
-void     redwood_apple80211_summary(void);                              /* what was asked in this run, to the log */
+void     redwood_apple80211_summary(void);
+void     redwood_apple80211_station(bool joined, const uint8_t *mac);      /* our access point: a device came / went */
+void     redwood_apple80211_stations_clear(void);                       /* ... the access point stopped */                              /* what was asked in this run, to the log */
 #endif
 
 #endif

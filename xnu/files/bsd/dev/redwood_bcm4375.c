@@ -1124,6 +1124,9 @@ event(const uint8_t *frame, uint32_t len)
 		blog("ap: %s %02x:%02x:%02x:%02x:%02x:%02x status %u reason %u", type == E_AUTH_IND ? "client authenticating" :
 		    type == E_ASSOC_IND ? "CLIENT JOINED" : type == E_REASSOC_IND ? "client rejoined" : "client left",
 		    frame[48], frame[49], frame[50], frame[51], frame[52], frame[53], status, reason);
+		if (type != E_AUTH_IND && (type == E_DEAUTH_IND || type == E_DISASSOC_IND || !ap_wpa)) {
+			redwood_apple80211_station(type == E_ASSOC_IND || type == E_REASSOC_IND, frame + 48);
+		}
 		if (ap_wpa && type != E_AUTH_IND) {     /* the handshake starts (again) or ends: ap_thread() */
 			lck_spin_lock(&state_lock);
 			if (ap_qn < sizeof(ap_q) / sizeof(ap_q[0])) {
@@ -3229,6 +3232,9 @@ ap_eapol(const uint8_t *frame, unsigned length)
 		int e = key_install(st->w.pairwise, 16, 0, st->mac, NULL);
 
 		st->secured = e == 0;
+		if (e == 0) {
+			redwood_apple80211_station(true, st->mac);  /* (WPA2: counted once its keys are in) */
+		}
 		blog("ap: %02x:%02x:%02x:%02x:%02x:%02x %s (pairwise key %d)", st->mac[0], st->mac[1], st->mac[2], st->mac[3],
 		    st->mac[4], st->mac[5], e == 0 ? "CLIENT SECURED (WPA2)" : "the firmware refused its key", e);
 		bzero(st->w.kck, sizeof(st->w.kck));
@@ -3332,6 +3338,8 @@ static void
 ap_down(void)
 {
 	uint32_t one = 1, zero = 0;
+
+	redwood_apple80211_stations_clear();
 
 	(void)ioctl(WLC_DOWN, &one, sizeof(one), sizeof(one));
 	(void)ioctl(WLC_SET_AP, &zero, sizeof(zero), sizeof(zero));
