@@ -1081,6 +1081,19 @@ bt_send(__unused kern_ctl_ref ref, __unused u_int32_t unit, __unused void *uniti
 				if (bt_vendor_said++ < 40) bt_log("bt: bluetoothd sends vendor command %#06x, %u bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
 				    op, plen, have > 0 ? h[4] : 0, have > 1 ? h[5] : 0, have > 2 ? h[6] : 0, have > 3 ? h[7] : 0,
 				    have > 4 ? h[8] : 0, have > 5 ? h[9] : 0, have > 6 ? h[10] : 0, have > 7 ? h[11] : 0);
+				/* Apple's advertising commands, whole (B, 2026-11-19: the chip refuses 0xfce9/0xfce2, so nothing is
+				 * advertised -- Continuity, Instant Hotspot; their layout is read from these) */
+				static uint32_t adv_said;
+				if ((op == 0xfce9 || op == 0xfce2) && adv_said++ < 400) {
+					char hex[3 * 96 + 1];
+					uint32_t n = have < 96 ? have : 96, i;
+
+					for (i = 0; i < n; i++) {
+						snprintf(hex + 3 * i, 4, "%02x ", h[4 + i]);
+					}
+					hex[3 * n] = 0;
+					bt_log("bt: adv %#06x %u: %s\n", op, plen, hex);
+				}
 			}
 		}
 	}
