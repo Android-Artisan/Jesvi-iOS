@@ -14,6 +14,11 @@ cmdline (`devices/exynos990/x1slte/x1slte.cmdline`); remove it to turn Touch ID 
 
 ## Not working yet
 
+0. ~~Matching~~ **UNLOCK WORKS (user-verified on the lock screen, 2026-11-19 ~22:15)** after a fresh enrolment with
+   the phase-2 fixes (main 279fef5d): Apple's phase 2 kept open through its Cancels, no "bad image" after an accepted
+   phase-2 touch, listening kept up (8 x 15 s runs) while iOS waits. The log of that first match is still to be read
+   (the phone was offline right after); the leads below were for the NO MATCH before it.
+
 1. **Matching.** Identify with good images and IPC line high still returns NO MATCH (TA error 0x20), sometimes
    0x1d (contamination). Leads, most likely first:
    - the secure user ID / auth token Samsung binds at enrolment (CONTROL 0x2d SAVE_SECAUTH_ID refused: "sid is 0");

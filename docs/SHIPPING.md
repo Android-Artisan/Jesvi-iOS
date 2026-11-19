@@ -1,3 +1,12 @@
+## 2026-11-19 (B, ~22:15) — Touch ID UNLOCKS from the lock screen
+
+- What: a finger unlocks the phone on the lock screen (user-verified). Made it work: Apple's phase 2 ("adjust your
+  grip") is no longer ended by Apple's Cancel between steps (2-minute window), an accepted phase-2 touch is not
+  followed by a "bad image" event, the sensor keeps listening while iOS waits (8 x 15 s runs, then stops until asked
+  again), the ring shows during phase 2 and has a faint shadow for bright wallpapers. Re-enrol once after updating.
+- Commits: 54c892f1, 279fef5d (main). Boot args: touchid=1 (default).
+- Open: read the log of the first matches; the 5-try lockout counting 0x1d rejections.
+
 ## 2026-11-19 (A) — Touch ID: the lock screen is safe right after enrolment
 
 - What: Apple's phase 2 ("adjust your grip") counts any touch on the sensor, without matching. Its window (2 min,
