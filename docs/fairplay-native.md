@@ -47,8 +47,11 @@ Its kernel returned to Log access during early VM startup, before the admission
 gate could be observed. The captured loader log lacks the sidecar-copy marker and
 added gate argument, despite both existing in the prepared RECOVERY payload;
 the active boot loader/payload selection must be verified before another trial.
-The controller is restoring the verified pre-test RECOVERY. Native execution was
-never enabled.
+The controller restored and read back the verified pre-test RECOVERY; the original
+iOS returned over USB at 21:34. A read-only BOOT prefix comparison confirms its
+loader matches the original RECOVERY loader and lacks the sidecar implementation.
+The trial therefore ran with a different loader payload than prepared. Resolve boot
+selection before any further layout test. Native execution was never enabled.
 
 Original 20F66 iPhone10,3 kernelcache fetched from the same Apple CDN IPSW used
 by sysimage/fetch-from-ipsw.py. Firmware and generated bundles stay in workspace
