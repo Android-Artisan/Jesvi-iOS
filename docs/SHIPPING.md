@@ -1,3 +1,12 @@
+## 2026-11-19 (A) — Touch ID: the lock screen is safe right after enrolment
+
+- What: Apple's phase 2 ("adjust your grip") counts any touch on the sensor, without matching. Its window (2 min,
+  renewed by every touch) outlived Settings: locking right after enrolment let any touch (any finger) unlock the phone,
+  and the lock-screen fingerprint icon was hidden. Now locking the phone (com.apple.springboard.lockcomplete) ends
+  phase 2 at once, and each 15 s sensor run re-sets the icon (userland/src/redwood-fpd.c, main a15c830d).
+- Tested on the phone 2026-11-19 (user): enrol, lock -> icon shown, no unlock without a real check.
+- Open: real matching on the lock screen (SENSOR MATCH) still mostly NO MATCH.
+
 ## 2026-11-19 (B) — Apple account relay survives reboots; Continuity groundwork (parked)
 
 - What: the App Store / Apple account relay now starts at every boot (its job is in the image; rwsys is built). It
