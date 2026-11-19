@@ -16,60 +16,81 @@ for a in "$@"; do case "$a" in
 	--erase) erase=1;; --yes) yes=1;; --no-reboot) reboot=0;;
 	-*) echo "unknown option: $a (try --help)"; exit 2;;
 	*) zip=$a;; esac; done
-B=$'\033[1m' R=$'\033[1;31m' G=$'\033[32m' N=$'\033[0m'; [ -t 1 ] || B= R= G= N=
+STEPS=5; source "$(dirname "$0")/ui.sh"
 [ -n "$zip" ] || { echo "usage: twrp-install.sh [--erase] [--yes] [--no-reboot] Jesvi-iOS_<version>_<device>.zip   (--help)"; exit 2; }
-[ -f "$zip" ] || { echo "no such file: $zip"; exit 1; }
-command -v adb >/dev/null || { echo "adb is missing: brew install android-platform-tools (or Android's platform-tools)"; exit 1; }
-adb get-state 2>/dev/null | grep -q recovery || { echo "no phone in TWRP over USB (boot TWRP, plug it straight into the computer)"; exit 1; }
+title "Jesvi iOS installer: $(basename "$zip")"
 
-# what this package is, and the approval the installer will accept (bound to this exact package)
-meta=$(unzip -p "$zip" installer.json) || { echo "$zip: not a Jesvi iOS package (no installer.json)"; exit 1; }
+step "Checking the package and the phone"
+[ -f "$zip" ] || die "no such file: $zip"
+command -v adb >/dev/null || die "adb is missing: brew install android-platform-tools"
+meta=$(unzip -p "$zip" installer.json 2>/dev/null) || die "$zip is not a Jesvi iOS package (no installer.json)"
 sha=$(unzip -p "$zip" installer.json | shasum -a 256 | cut -d' ' -f1)   # exact bytes: what the installer was built with
 action=$(printf '%s' "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["action"])')
 [ "$action" = restore ] && erase=1
-printf '\n%sJesvi iOS: %s%s\n' "$B" "$(basename "$zip")" "$N"
+ok "package: $([ "$action" = restore ] && echo "back to Android (Restore)" || echo "Jesvi iOS install"), $(du -h "$zip" | cut -f1)"
+adb get-state 2>/dev/null | grep -q recovery || die "no phone in TWRP over USB: boot TWRP (tools/install/flash-twrp.sh), cable straight into the computer"
+ok "phone in TWRP $(adb shell getprop ro.twrp.version 2>/dev/null | tr -d '\r'), battery $(adb shell cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d '\r') %, $(( $(adb shell cat /sys/class/power_supply/battery/temp 2>/dev/null | tr -d '\r' || echo 0) / 10 )) C"
+
+step "Your confirmation"
 if [ $erase = 1 ]; then
-	if [ "$action" = restore ]; then echo "This puts Android's layout back: ALL iOS DATA ON THE PHONE WILL BE ERASED."
-	else echo "Install. If the phone has no usable iOS data, ALL DATA ON THE PHONE WILL BE ERASED (fresh install)."; fi
-	printf '%sBack up first (tools/install/twrp-backup.sh).%s Type ERASE to continue: ' "$R" "$N"
-	read -r a; [ "$a" = ERASE ] || { echo "cancelled: nothing was copied or written"; exit 1; }
+	if [ "$action" = restore ]; then warn "This puts Android's layout back: ALL iOS DATA ON THE PHONE WILL BE ERASED."
+	else warn "Fresh install if the phone has no usable iOS data: ALL DATA ON THE PHONE WILL BE ERASED."; fi
+	info "Back up first if you need anything (tools/install/twrp-backup.sh)."
+	printf '      Type %sERASE%s to continue: ' "$B" "$N"; read -r a
+	[ "$a" = ERASE ] || die "cancelled: nothing was copied or written"
 	kind=erase
 else
-	echo "Update: iOS's system is replaced; your data, apps and settings are kept."
-	echo "(A phone without iOS data is NOT erased: the installer stops; use --erase for a fresh install.)"
-	if [ $yes = 0 ]; then read -r -p "Type yes to install: " a; [ "$a" = yes ] || { echo "cancelled: nothing was copied or written"; exit 1; }; fi
+	say "Update: iOS's system is replaced; your data, apps and settings are kept."
+	info "A phone without iOS data is NOT erased: the installer stops (--erase for a fresh install)."
+	if [ $yes = 0 ]; then printf '      Type %syes%s to install: ' "$B" "$N"; read -r a; [ "$a" = yes ] || die "cancelled: nothing was copied or written"; fi
 	kind=keep
 fi
+ok "confirmed ($kind); no key presses needed on the phone from here"
 
-echo; echo "copying $(du -h "$zip" | cut -f1) into TWRP's memory (about a minute; leave the cable alone)..."
-adb push "$zip" /tmp/jesvi.zip
+step "Copying the package to the phone"
+info "about a minute; leave the cable alone"
+adb push "$zip" /tmp/jesvi.zip 2>&1 | tr '\r' '\n' | grep -E "pushed|error" | sed 's/^.*: //' | sed 's/^/      /' || true
 want=$(shasum -a 256 "$zip" | cut -d' ' -f1); have=$(adb shell sha256sum /tmp/jesvi.zip | cut -d' ' -f1)
-[ "$want" = "$have" ] || { echo "copy damaged (checksum differs): try again"; exit 1; }
+[ "$want" = "$have" ] || die "the copy is damaged (checksum differs): run it again"
+ok "copied and checked (SHA-256)"
 adb shell "echo '$sha $kind' > /tmp/jesvi.approve"
-adb shell "twrp print 'Jesvi iOS: installing from the computer (progress here and on the computer)'" >/dev/null 2>&1 || true
+adb shell "twrp print 'Jesvi iOS: installing from the computer'" >/dev/null 2>&1 || true
+
+step "Installing"
+info "progress here and on the phone's screen; do not unplug"
 adb shell 'cd /tmp && rm -rf ub && mkdir ub && cd ub && unzip -o /tmp/jesvi.zip META-INF/com/google/android/update-binary >/dev/null && chmod 755 META-INF/com/google/android/update-binary && rm -f /tmp/jesvi.out && (nohup sh -c "./META-INF/com/google/android/update-binary 3 3 /tmp/jesvi.zip 3>/dev/null >/tmp/jesvi.out 2>&1; echo EXIT=\$? >> /tmp/jesvi.out" >/dev/null 2>&1 &)'
-echo "installing (no need to touch the phone):"
 seen=0 l=
 while :; do
 	out=$(adb shell 'cat /tmp/jesvi.out 2>/dev/null' 2>/dev/null | tr -d '\r' || true)
 	n=$(printf '%s\n' "$out" | grep -c . || true)
 	if [ "$n" -gt "$seen" ]; then
 		new=$(printf '%s\n' "$out" | grep . | tail -n +$((seen + 1))); seen=$n
-		printf '%s\n' "$new" | sed 's/^/  /'
-		# the same lines on the phone: TWRP's console (OpenRecoveryScript "print"); best effort, the install goes on
-		printf '%s\n' "$new" | grep -v '^EXIT=' | tr -d "'\"\\\\" | while IFS= read -r m; do
-			adb shell "twrp print '$m'" </dev/null >/dev/null 2>&1 || true; done
+		printf '%s\n' "$new" | grep -v '^EXIT=' | while IFS= read -r m; do
+			case "$m" in
+				"INSTALL STOPPED"*|*"STOPPED:"*) printf '      %s✗ %s%s\n' "$R" "$m" "$N";;
+				"Writing"*|"Setting"*|"Putting"*|"Clearing"*|"Installing"*) printf '      %s→%s %s\n' "$C" "$N" "$m";;
+				"All written"*|"Every written"*|"Approved"*|*"passed"*|"Package OK"*) ok "$m";;
+				"Battery warm"*|"FRESH INSTALL"*|"ALL "*) warn "$m";;
+				*) info "$m";;
+			esac
+			# the same line on the phone: TWRP's console (OpenRecoveryScript "print"); best effort
+			adb shell "twrp print '$(printf '%s' "$m" | tr -d "'\"\\\\")'" </dev/null >/dev/null 2>&1 || true
+		done
 	fi
 	l=$(printf '%s\n' "$out" | grep . | tail -1)
 	case "$l" in EXIT=*) break;; esac
 	sleep 2
 done
 adb shell 'rm -f /tmp/jesvi.approve' 2>/dev/null || true
-printf '%s\n' "$out" > "jesvi-install-$(date +%Y%m%d-%H%M%S).log"
-if [ "$l" = EXIT=0 ]; then
-	if [ $reboot = 1 ] && [ "$action" != restore ]; then
-		printf '%sdone:%s restarting the phone into iOS\n' "$G" "$N"; adb reboot
-	else printf '%sdone%s\n' "$G" "$N"; fi
-	exit 0
+log="jesvi-install-$(date +%Y%m%d-%H%M%S).log"; printf '%s\n' "$out" > "$log"
+
+step "Finishing"
+[ "$l" = EXIT=0 ] || die "the installer stopped (log: $log); it writes nothing before the approval"
+ok "every written byte read back and checked (log: $log)"
+if [ $reboot = 1 ] && [ "$action" != restore ]; then
+	adb reboot; done_ "Done: the phone restarts into iOS (the Apple logo, then iOS)"
+elif [ "$action" = restore ]; then
+	done_ "Done: now Wipe > Format Data, then install your Android ROM (TWRP stays open)"
+else
+	done_ "Done: restart when you like (adb reboot)"
 fi
-echo "the installer stopped (its log is next to you); it writes nothing before the approval"; exit 1
