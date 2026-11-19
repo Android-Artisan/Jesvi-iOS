@@ -183,7 +183,8 @@ func run() error {
 		return e
 	}
 	log("Every written byte was read back and checked. Log: /tmp/jesvi-install.log")
-	ui.finish("Jesvi iOS is installed", "", "Reboot > System", "First boot shows the Apple logo,", "then iOS setup.")
+	ui.finish("Jesvi iOS is installed", "", "Reboot > System", "First boot shows the Apple logo,", "then iOS setup.", "",
+		"TWRP may now show 'Failed to mount'", "errors: expected, iOS replaced", "Android's partitions. Ignore them.")
 	return nil
 }
 func reportFailure(message string) {

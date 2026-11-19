@@ -48,6 +48,8 @@ the "boot into recovery" flag set). Without the script: Odin → AP: TWRP, then 
 4. It also puts iPhone's pictures into Samsung's power-on screens (the Apple logo, the charging and battery-empty
    screens), keeping Samsung's own for the way back.
 5. Reboot (the script does it): the Apple logo from power-on, then iOS's first setup.
+   After the install TWRP re-reads its Android partitions and may print **"Failed to mount '/system_root'"** and
+   similar errors: they are expected (iOS now holds those partitions) and can be ignored.
 
 ## B. Update an S20 that already runs Jesvi iOS
 
