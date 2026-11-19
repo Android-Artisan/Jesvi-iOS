@@ -358,8 +358,12 @@ run(void *arg)
 	 * next touch at once) becomes the "background", and identify's contamination check then fails every image (29) */
 	if (!bad && kind == 1) { step("fp cbge", g); calibrated = 1; lg("background calibration: fp cbge done"); }
 	if (kind == 2) {
-		if (!bad) bad = step("fp idinit", g);
-		if (!bad) bad = step("fp run 6 1 15 0", g);
+		/* a run ends after 15 s without a held finger; the lock screen still waits, so capture again until a result
+		 * (op 0), an error or a cancel (gen): one run and silence left touches unanswered, no shake (2026-11-19) */
+		while (!bad && op == 2 && g == gen) {
+			bad = step("fp idinit", g);
+			if (!bad) bad = step("fp run 6 1 15 0", g);
+		}
 	} else {
 		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
 		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
