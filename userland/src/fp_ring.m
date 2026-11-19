@@ -49,6 +49,10 @@ makeSpot(CGRect screen)
 	spot.backgroundColor = [UIColor colorWithWhite:1 alpha:0.06];   /* faint: blends with any wallpaper */
 	UIImageView *glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"touchid"]];
 	glyph.tintColor = [UIColor colorWithWhite:1 alpha:0.4];
+	glyph.layer.shadowColor = UIColor.blackColor.CGColor;
+	glyph.layer.shadowOpacity = 0.15;
+	glyph.layer.shadowRadius = 0.75;
+	glyph.layer.shadowOffset = CGSizeMake(0, 0.5);
 	glyph.contentMode = UIViewContentModeScaleAspectFit;
 	glyph.frame = CGRectInset(spot.bounds, d * 0.2, d * 0.2);
 	[spot addSubview:glyph];
