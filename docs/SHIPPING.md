@@ -1,3 +1,14 @@
+## 2026-11-20 (A) — 0.1.1 installed on the phone through TWRP (update path, data kept)
+
+- What: TWRP (Artisan 3.7.1) put into recovery with heimdall from Download Mode; backup of every partition except
+  userdata to the SSD (7.7 GiB, 9 min); `twrp-install.sh` with the full-size 0.1.1 ZIP (IOS_DATA_GB=all, main 724e65cd):
+  super, recovery, boot written and read back; iOS up 40 s after `adb reboot`, fingerprint template and data kept.
+- Found and fixed on the way: twrp-backup.sh copied the whole disk twice (TWRP lists sda under by-name) and crashed
+  without sdf; the Volume Up prompt never shows on the phone (now bell + spoken prompt on the computer); the 64 GB ZIP
+  correctly refuses a phone with a full-size data volume (fresh install only); CI kernel job: macos-15 + GNU tar.
+- Open: the release ZIP does not carry the Apple splash (installer supports it, tools/release never sets it); a fresh
+  clone cannot build without the private inputs (docs/release/building.md); our own TWRP (feat/twrp-x1s).
+
 ## 2026-11-19 (B, ~22:15) — Touch ID UNLOCKS from the lock screen
 
 - What: a finger unlocks the phone on the lock screen (user-verified). Made it work: Apple's phase 2 ("adjust your
