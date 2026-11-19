@@ -42,7 +42,13 @@ headers must be present. The controller verifies ownership, backs up RECOVERY
 again in Log access, checks it against the template, writes and reads back only
 RECOVERY, and attempts rollback on failure. Native hotspot controls restart an
 active hotspot if needed. No successful download/install is established.
-No FairPlay image has yet been flashed.
+The first layout image was written and read back on 2026-11-19 at 21:28.
+Its kernel returned to Log access during early VM startup, before the admission
+gate could be observed. The captured loader log lacks the sidecar-copy marker and
+added gate argument, despite both existing in the prepared RECOVERY payload;
+the active boot loader/payload selection must be verified before another trial.
+The controller is restoring the verified pre-test RECOVERY. Native execution was
+never enabled.
 
 Original 20F66 iPhone10,3 kernelcache fetched from the same Apple CDN IPSW used
 by sysimage/fetch-from-ipsw.py. Firmware and generated bundles stay in workspace

@@ -63,7 +63,8 @@ class Trial:
         return False
 
     def wait_ios(self, seconds=240):
-        until = time.monotonic() + seconds
+        started = time.monotonic()
+        until = started + seconds
         while time.monotonic() < until:
             try:
                 response = self.ssh('uname -v', timeout=6, check=False)
@@ -71,6 +72,9 @@ class Trial:
                     return response.stdout.decode(errors='replace').strip()
             except subprocess.TimeoutExpired:
                 pass
+            if time.monotonic() - started >= 45 and self.fastboot_ready():
+                self.event('Kernel returned to Log access before iOS startup')
+                return None
             time.sleep(3)
         return None
 
@@ -143,8 +147,13 @@ class Trial:
         result = dict(status='STARTED', native_execution=False, image_sha256=manifest['image_sha256'])
         try:
             self.entered = True
-            with urllib.request.urlopen('http://10.77.0.2:8080/menu?to=1', timeout=12) as response:
-                response.read(4096)
+            try:
+                with urllib.request.urlopen('http://10.77.0.2:8080/menu?to=1', timeout=12) as response:
+                    response.read(4096)
+            except OSError:
+                # Handback tears down HTTP before it can send a reply. Only
+                # actual USB fastboot enumeration below confirms the transition.
+                self.event('HTTP handback ended; checking USB Log access')
             if not self.wait_fastboot():
                 raise RuntimeError('Phone did not reach Log access')
             self.event('Log access ready; backing up RECOVERY before any write')
