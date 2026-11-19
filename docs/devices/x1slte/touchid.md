@@ -1,7 +1,7 @@
 # Native Touch ID on the S20 — status and handoff (2026-11-19)
 
-Branch `feat/s20-touchid` (worktree `work/hackios-touchid`) = `main` + `feat/s20-fingerprint` + this work. Boot argument
-**`touchid=1`** switches everything on; without it nothing changes. Plan and background:
+Merged into `main` (2026-11-19). Boot argument **`touchid=1`** switches everything on and is in the default
+cmdline (`devices/exynos990/x1slte/x1slte.cmdline`); remove it to turn Touch ID off. Plan and background:
 [docs/research/proposals/touchid/README.md](../../research/proposals/touchid/README.md).
 
 ## What works (verified on the phone)
