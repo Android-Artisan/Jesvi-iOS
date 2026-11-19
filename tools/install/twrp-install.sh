@@ -46,13 +46,20 @@ adb push "$zip" /tmp/jesvi.zip
 want=$(shasum -a 256 "$zip" | cut -d' ' -f1); have=$(adb shell sha256sum /tmp/jesvi.zip | cut -d' ' -f1)
 [ "$want" = "$have" ] || { echo "copy damaged (checksum differs): try again"; exit 1; }
 adb shell "echo '$sha $kind' > /tmp/jesvi.approve"
+adb shell "twrp print 'Jesvi iOS: installing from the computer (progress here and on the computer)'" >/dev/null 2>&1 || true
 adb shell 'cd /tmp && rm -rf ub && mkdir ub && cd ub && unzip -o /tmp/jesvi.zip META-INF/com/google/android/update-binary >/dev/null && chmod 755 META-INF/com/google/android/update-binary && rm -f /tmp/jesvi.out && (nohup sh -c "./META-INF/com/google/android/update-binary 3 3 /tmp/jesvi.zip 3>/dev/null >/tmp/jesvi.out 2>&1; echo EXIT=\$? >> /tmp/jesvi.out" >/dev/null 2>&1 &)'
 echo "installing (no need to touch the phone):"
 seen=0 l=
 while :; do
 	out=$(adb shell 'cat /tmp/jesvi.out 2>/dev/null' 2>/dev/null | tr -d '\r' || true)
 	n=$(printf '%s\n' "$out" | grep -c . || true)
-	[ "$n" -gt "$seen" ] && { printf '%s\n' "$out" | grep . | tail -n +$((seen + 1)) | sed 's/^/  /'; seen=$n; }
+	if [ "$n" -gt "$seen" ]; then
+		new=$(printf '%s\n' "$out" | grep . | tail -n +$((seen + 1))); seen=$n
+		printf '%s\n' "$new" | sed 's/^/  /'
+		# the same lines on the phone: TWRP's console (OpenRecoveryScript "print"); best effort, the install goes on
+		printf '%s\n' "$new" | grep -v '^EXIT=' | tr -d "'\"\\\\" | while IFS= read -r m; do
+			adb shell "twrp print '$m'" </dev/null >/dev/null 2>&1 || true; done
+	fi
 	l=$(printf '%s\n' "$out" | grep . | tail -1)
 	case "$l" in EXIT=*) break;; esac
 	sleep 2
