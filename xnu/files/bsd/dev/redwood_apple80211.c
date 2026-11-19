@@ -780,7 +780,11 @@ redwood_apple80211_station(bool joined, const uint8_t *mac)
 	}
 	lck_mtx_unlock(&apple80211_lock);
 	if (changed) {
-		post(joined ? EVENT_STA_ARRIVE : EVENT_STA_LEAVE, mac, 6);
+		/* wifid's reading (__WiFiDeviceProcessSTAArriveEvent): the address, at 8 how many are on now, at 12 capabilities */
+		struct { uint8_t mac[6], pad[2], count, pad2[3]; uint32_t capabilities; } said = { .count = (uint8_t)station_count };
+
+		memcpy(said.mac, mac, 6);
+		post(joined ? EVENT_STA_ARRIVE : EVENT_STA_LEAVE, &said, sizeof(said));
 		printf("apple80211: host AP: %s, %u connected\n", joined ? "a device arrived" : "a device left", station_count);
 	}
 }
