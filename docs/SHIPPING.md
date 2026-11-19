@@ -6,7 +6,7 @@
   tries) apply. The enrolled finger survives reboots (catacomb: master + user components, loaded on the first unlock).
 - Pieces: RedwoodMesa (redfin's SweetMesa port, MIT), redwood-fpd, dsc-exec + the iPhone 8 dyld cache for libBKDM1,
   /arm-io/mesa, kernel fp prepare/cbge/run, libredwood-touchid-ui (ring). Handoff: docs/devices/x1slte/touchid.md.
-- Boot args: touchid=1 (off: nothing changes).
+- Boot args: touchid=1 — now ENABLED BY DEFAULT in x1slte.cmdline (2026-11-19). Remove the arg to disable.
 - Tested on the phone 2026-11-19: enrolment to completion; persistence across a clean reboot; ring on the lock screen;
   shake on failure.
 - Open: unlocking with the finger (Samsung's matcher returns NO MATCH / 0x1d), haptic on failure, Settings switch for
