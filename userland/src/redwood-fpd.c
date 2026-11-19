@@ -374,6 +374,7 @@ run(void *arg)
 		 * touches (2026-11-19). (The resets once blamed on a loop here were thermal: PMIC WTSR at 109 C.) */
 		for (int runs = 0; !bad && op == 2 && g == gen && runs < 8; runs++) {
 			if (runs) usleep(300000);
+			ring(grip_phase ? 1 : 2);       /* the lock closed phase 2 mid-loop: show the lock-screen ring again */
 			bad = step("fp idinit", g);
 			if (!bad) bad = step("fp run 6 1 15 0", g);
 		}
@@ -641,6 +642,16 @@ main(void)
 	int fu_token;
 	notify_register_dispatch("com.apple.mobile.keybagd.first_unlock", &fu_token,
 	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) { (void)t; first_unlock = 1; });
+	/* Phase 2's "any touch counts" is for Settings only. Its window (2 min, renewed by every touch) outlived Settings:
+	 * locking right after enrolment let ANY touch unlock the phone (score 0, no matching) and hid the lock-screen ring
+	 * (2026-11-19 22:00). Locking the phone ends phase 2. */
+	int lk_token;
+	notify_register_dispatch("com.apple.springboard.lockcomplete", &lk_token,
+	    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int t) {
+		(void)t;
+		if (grip_phase) lg("locked: phase 2 window closed");
+		grip_until = 0;
+	});
 	static struct smb_req q;
 	static struct smb_reply p;
 	for (;;) {
