@@ -361,7 +361,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
 		# Personal Hotspot: misd's carrier answers (src/mis_ct.m) and Settings' "cellular-data" (src/mg_cellular.c)
-		$DYN -fobjc-arc -dynamiclib -install_name /redwood/lib/libredwood-mis.dylib -framework Foundation -lobjc \
+		$DYN -fobjc-arc -fblocks -dynamiclib -install_name /redwood/lib/libredwood-mis.dylib -framework Foundation -lobjc \
+			-F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" -framework CoreTelephony \
 			-o obj/libredwood-mis.dylib src/mis_ct.m
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-mgcell.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-mgcell.dylib src/mg_cellular.c
