@@ -1,3 +1,17 @@
+## 2026-11-19 (B, from A's start) — Native Personal Hotspot
+
+- What: iOS's own Personal Hotspot works on the S20. Settings → Personal Hotspot / Control Center switch it; "Jesvi IOS"
+  with WPA2; devices get 172.20.10.x and internet over Jio (CLAT46 + NAT); the Dynamic Island shows the hotspot icon
+  while devices are connected; Macs treat it as a phone hotspot (mobile data). Comes back by itself after a reboot.
+- Pieces: driver AP + WPA2 host authenticator (redwood_bcm4375.c), apple80211 HOST_AP_MODE + STA arrive/leave + vendor
+  element (redwood_apple80211.c), libredwood-mis (misd: CommCenter answers + network watcher), libredwood-mgcell
+  (Settings row), hotspot_sb.h (island icon), /redwood/bin helpers (rwdhcpd, rwpf, clat-test, hotspot-up.sh, misctl).
+  Handoff: docs/devices/x1slte/hotspot.md.
+- Tested on the phone 2026-11-19: Mac + iPhone clients, WPA2, browsing, island icon, Wi-Fi page "Not Connected", Mac
+  IsExpensive, after reboots.
+- Open: battery/signal in a Mac's menu (Instant Hotspot = Bluetooth Continuity); airplane-mode toggle did not restart
+  the modem once after a SIM swap (it recovered by itself a minute later).
+
 ## 2026-11-19 (B) — Cellular survives a slow modem; airplane mode resets the modem
 
 - What: redwood-cellulard retried only the SPI boot; a firmware-download timeout (stage 5, no reply in 5 s, seen
