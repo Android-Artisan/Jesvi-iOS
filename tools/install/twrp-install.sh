@@ -16,11 +16,15 @@ adb push "$zip" /tmp/jesvi.zip
 want=$(shasum -a 256 "$zip" | cut -d' ' -f1); have=$(adb shell sha256sum /tmp/jesvi.zip | cut -d' ' -f1)
 [ "$want" = "$have" ] || { echo "copy damaged (checksum differs): try again"; exit 1; }
 adb shell 'cd /tmp && rm -rf ub && mkdir ub && cd ub && unzip -o /tmp/jesvi.zip META-INF/com/google/android/update-binary >/dev/null && chmod 755 META-INF/com/google/android/update-binary && rm -f /tmp/jesvi.out && (nohup sh -c "./META-INF/com/google/android/update-binary 3 3 /tmp/jesvi.zip 3>/dev/null >/tmp/jesvi.out 2>&1; echo EXIT=\$? >> /tmp/jesvi.out" >/dev/null 2>&1 &)'
-echo "installer started: when the phone asks, hold VOLUME UP for 3 seconds"
+echo "installer started: it checks the package (about a minute), then asks HERE, not on the phone, for VOLUME UP"
 last=""
 while :; do
 	l=$(adb shell 'tail -1 /tmp/jesvi.out 2>/dev/null' 2>/dev/null | tr -d '\r' || true)
-	[ -n "$l" ] && [ "$l" != "$last" ] && { echo "  $l"; last=$l; }
+	[ -n "$l" ] && [ "$l" != "$last" ] && { echo "  $l"; last=$l
+		case "$l" in *"Hold VOLUME UP"*)   # the phone's screen does not show the installer's text: say it here
+			printf '\a\n\033[1;33m  >>> NOW: hold VOLUME UP on the phone for 3 seconds (45 s to do it) <<<\033[0m\n\n'
+			command -v say >/dev/null && (say "Hold volume up on the phone now" &) ;;
+		esac; }
 	case "$l" in EXIT=*) break;; esac
 	sleep 2
 done
