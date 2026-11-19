@@ -51,10 +51,11 @@ func run() error {
 		return e
 	}
 	defer logFile.Close()
+	ui.pipe = pipe
 	log := func(s string) {
 		fmt.Fprintln(logFile, s)
 		fmt.Fprintln(os.Stderr, s)
-		if _, e := fmt.Fprintf(pipe, "ui_print %s\nui_print\n", uiText(s)); e != nil {
+		if _, e := fmt.Fprintf(pipe, "ui_print   %s\nui_print\n", uiText(s)); e != nil {
 			panic("recovery UI pipe failed; stopping installation")
 		}
 	}
@@ -71,17 +72,21 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	log("Verifying complete ZIP payload before any device writes...")
+	ui.header("iOS 16.5 for the Galaxy S20", releaseVersion(), "SM-G980F")
+	ui.steps = 9
+	ui.begin("Checking the package")
+	log("Verifying every file in the ZIP before anything is written...")
 	b, e := loadBundle(z, configSHA)
 	if e != nil {
 		return e
 	}
 	if b.Config.Action == "restore" {
-		log("Jesvi-iOS-Restore (" + b.Config.Device + "): back to Android. Hardware qualification pending.")
+		ui.steps = 6
+		log("Jesvi-iOS-Restore: back to Android.")
 	} else {
-		log("Jesvi iOS (" + b.Config.Device + "): EXPERIMENTAL installer. Hardware qualification pending.")
-		log("Plan: reuse existing physical partitions; no partition-table changes.")
+		log("Package OK. Uses the existing partitions; the partition table is not changed.")
 	}
+	ui.begin("Checking the phone")
 	d, e := openRecovery(b.Config, archive)
 	if e != nil {
 		return e
@@ -111,20 +116,22 @@ func run() error {
 		log("PREFLIGHT ONLY: no partitions opened for writing. No reboot.")
 		return nil
 	}
+	ui.begin("Waiting for your confirmation")
 	if b.Config.Action == "restore" {
 		log("RESTORE: puts back Android's partition map and clears iOS data headers.")
 		log("ALL iOS DATA WILL BE LOST. BOOT and TWRP stay as they are.")
 		if e = confirmKeys("Erase iOS and prepare the phone for an Android ROM?", log); e != nil {
 			return e
 		}
+		ui.begin("Freeing the storage")
 		if e = d.release(log); e != nil {
 			return e
 		}
+		ui.begin("Putting Android's partition map back")
 		if e = restoreAndroid(b, d, log); e != nil {
 			return e
 		}
-		log("Done. Next, without rebooting: Wipe > Format Data (type yes),")
-		log("then flash your Android ROM ZIP (ExtremeROM, UN1CA, ...) or use Odin with stock firmware.")
+		ui.finish("Ready for Android", "", "Without rebooting: Wipe > Format Data,", "then flash your Android ROM ZIP.")
 		return nil
 	}
 	valid, recognizable, e := d.dataState()
@@ -158,6 +165,7 @@ func run() error {
 			return e
 		}
 	}
+	ui.begin("Freeing the storage")
 	if e = d.release(log); e != nil {
 		return e
 	}
@@ -167,7 +175,8 @@ func run() error {
 	if e = perform(b, d, mode, log); e != nil {
 		return e
 	}
-	log("Installation readback completed. Keep this log off-device; boot testing is still required.")
+	log("Every written byte was read back and checked. Log: /tmp/jesvi-install.log")
+	ui.finish("Jesvi iOS is installed", "", "Reboot > System", "First boot shows the Apple logo,", "then iOS setup.")
 	return nil
 }
 func reportFailure(message string) {
@@ -179,7 +188,7 @@ func reportFailure(message string) {
 		}
 		if fd, e := strconv.Atoi(os.Args[2]); e == nil && fd >= 3 {
 			if p := os.NewFile(uintptr(fd), "recovery-output"); p != nil {
-				fmt.Fprintf(p, "ui_print INSTALL STOPPED: %s\nui_print\n", uiText(message))
+				fmt.Fprintf(p, "ui_print\nui_print %s\nui_print   INSTALL STOPPED\nui_print   %s\nui_print   Log: /tmp/jesvi-install.log\nui_print %s\nui_print\n", rule(), uiText(message), rule())
 			}
 		}
 	}

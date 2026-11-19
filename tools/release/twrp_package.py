@@ -61,7 +61,10 @@ def _build(output, config, files, readme, inventory, extra_build=None):
         work = Path(work)
         binary = work / 'update-binary'
         base = environment()
-        flags = ['-p', '4', '-trimpath', '-buildvcs=false', '-ldflags', f'-s -w -buildid= -X main.configSHA={sha}']
+        parts = Path(output).name.removesuffix('.zip').split('_')  # NAME_VERSION_DATE_target
+        shown = f'v{parts[1]} ({parts[2][:4]}-{parts[2][4:6]}-{parts[2][6:]})' if len(parts) == 4 and parts[2].isdigit() else 'build ' + Path(output).stem
+        shown = ''.join(c for c in shown if c.isalnum() or c in '.-() ')
+        flags = ['-p', '4', '-trimpath', '-buildvcs=false', '-ldflags', f'-s -w -buildid= -X main.configSHA={sha} -X "main.releaseName={shown}"']
         subprocess.run([str(go), 'build', *flags, '-o', str(binary), '.'],
                        cwd=ROOT / 'tools/recovery', env=dict(base, GOOS='linux', GOARCH='arm64', GOARM64='v8.0'), check=True)
         if binary.read_bytes()[:4] != b'\x7fELF':
