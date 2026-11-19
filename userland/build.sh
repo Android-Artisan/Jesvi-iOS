@@ -224,7 +224,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# the kernel's thermal pressure passed on to iOS (src/thermald.c)
 		$DYN -o obj/thermald src/thermald.c
 		# native Touch ID: our fingerprint stack behind RedwoodMesa's bridge (src/redwood-fpd.c; runs only with touchid=1)
-		$DYN -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
+		$DYN -fblocks -Wno-four-char-constants -framework CoreFoundation -framework IOKit -o obj/redwood-fpd src/redwood-fpd.c
 		$DYN -o obj/teetsd ../tools/fingerprint/teetsd.c
 		$DYN -o obj/dsc-exec src/dsc_exec.c
 		# Touch ID's place on screen: Apple's enrolment fingerprint moved onto the sensor, a ring while a capture waits
