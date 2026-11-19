@@ -36,6 +36,25 @@ secureWindowClass(void)
 	return c;
 }
 
+static UIView *
+makeSpot(CGRect screen)
+{
+	CGFloat d = screen.size.width * 0.16;
+	CGPoint c = CGPointMake(screen.size.width * 0.5, screen.size.height * (50790.0 / 65535.0));
+	UIView *spot = [[UIView alloc] initWithFrame:CGRectMake(c.x - d / 2, c.y - d / 2, d, d)];
+	spot.userInteractionEnabled = NO;
+	spot.layer.cornerRadius = d / 2;
+	spot.layer.borderWidth = 1.5;
+	spot.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
+	spot.backgroundColor = [UIColor colorWithWhite:1 alpha:0.06];   /* faint: blends with any wallpaper */
+	UIImageView *glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"touchid"]];
+	glyph.tintColor = [UIColor colorWithWhite:1 alpha:0.4];
+	glyph.contentMode = UIViewContentModeScaleAspectFit;
+	glyph.frame = CGRectInset(spot.bounds, d * 0.2, d * 0.2);
+	[spot addSubview:glyph];
+	return spot;
+}
+
 /* the window's controller hides its home indicator: a second, grey home bar showed under SpringBoard's own */
 static Class
 ringControllerClass(void)
@@ -72,20 +91,7 @@ makeRingWindow(void)
 	w.rootViewController.view.userInteractionEnabled = NO;
 	w.rootViewController.view.backgroundColor = UIColor.clearColor;
 
-	CGFloat d = screen.size.width * 0.16;
-	CGPoint c = CGPointMake(screen.size.width * 0.5, screen.size.height * (50790.0 / 65535.0));
-	UIView *spot = [[UIView alloc] initWithFrame:CGRectMake(c.x - d / 2, c.y - d / 2, d, d)];
-	spot.userInteractionEnabled = NO;
-	spot.layer.cornerRadius = d / 2;
-	spot.layer.borderWidth = 1.5;
-	spot.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
-	spot.backgroundColor = [UIColor colorWithWhite:1 alpha:0.06];   /* faint: blends with any wallpaper */
-	UIImageView *glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"touchid"]];
-	glyph.tintColor = [UIColor colorWithWhite:1 alpha:0.4];
-	glyph.contentMode = UIViewContentModeScaleAspectFit;
-	glyph.frame = CGRectInset(spot.bounds, d * 0.2, d * 0.2);
-	[spot addSubview:glyph];
-	[w.rootViewController.view addSubview:spot];
+	[w.rootViewController.view addSubview:makeSpot(screen)];
 	return w;
 }
 
@@ -120,27 +126,50 @@ fingerWanted(void)
 
 static uint64_t ringState;
 static NSTimer *ringTimer;
+static UIView *lockSpot;        /* the ring inside the lock screen's own view (no window: no second home bar) */
+
+static void
+fade(UIView *v, BOOL on)
+{
+	if (v == nil) {
+		return;
+	}
+	if (on) {
+		v.hidden = NO;
+	}
+	CGFloat want = on ? 1 : 0;
+	if (v.alpha != want) {
+		[UIView animateWithDuration:0.25 animations:^{ v.alpha = want; } completion:^(BOOL done) {
+			if (done && v.alpha == 0) v.hidden = YES;
+		}];
+	}
+}
 
 static void
 ringUpdate(void)
 {
-	BOOL on = ringState == 1 || (ringState == 2 && fingerWanted());
-	if (on && ringWindow == nil) {
+	/* enrolment (Settings): a window over the app, its home indicator hidden */
+	if (ringState == 1 && ringWindow == nil) {
 		ringWindow = makeRingWindow();
 		ringWindow.alpha = 0;
 	}
-	if (ringWindow == nil) {
-		return;
+	fade(ringWindow, ringState == 1);
+
+	/* a match: part of the cover sheet, so it moves and goes with the lock screen like its own elements */
+	BOOL lock = ringState == 2 && fingerWanted();
+	if (lock) {
+		id lsm = msgId((id)objc_getClass("SBLockScreenManager"), "sharedInstance");
+		UIViewController *cs = msgId(lsm, "coverSheetViewController");
+		UIView *host = [cs isKindOfClass:UIViewController.class] ? cs.view : nil;
+		if (host && lockSpot.superview != host) {
+			[lockSpot removeFromSuperview];
+			lockSpot = makeSpot(UIScreen.mainScreen.bounds);
+			lockSpot.alpha = 0;
+			[host addSubview:lockSpot];
+		}
+		[lockSpot.superview bringSubviewToFront:lockSpot];
 	}
-	if (on) {
-		ringWindow.hidden = NO;
-	}
-	CGFloat want = on ? 1 : 0;
-	if (ringWindow.alpha != want) {
-		[UIView animateWithDuration:0.25 animations:^{ ringWindow.alpha = want; } completion:^(BOOL done) {
-			if (done && ringWindow.alpha == 0) ringWindow.hidden = YES;
-		}];
-	}
+	fade(lockSpot, lock);
 }
 
 __attribute__((constructor)) static void
