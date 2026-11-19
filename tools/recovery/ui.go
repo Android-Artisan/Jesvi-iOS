@@ -12,12 +12,13 @@ import (
 
 const uiWidth = 38
 
+// "JESVI iOS", 37 columns, one even 4-wide letter shape; printed without blank lines between rows (bannerRow)
 var banner = []string{
-	"  ### ####  ### #   # ### #  ###   ###",
-	"    # #    #    #   #  #    #   # #   ",
-	"    # ###   ##  #   #  #  # #   #  ## ",
-	"#   # #       #  # #   #  # #   #    #",
-	" ###  #### ###    #   ### #  ###  ### ",
+	" ### ####  ### #  # ###   #  ##   ### ",
+	"   # #    #    #  #  #      #  # #    ",
+	"   # ###   ##  #  #  #    # #  #  ##  ",
+	"#  # #       #  ##   #    # #  #    # ",
+	" ##  #### ###   ##  ###   #  ##  ###  ",
 }
 
 // screen writes to the recovery pipe; nil in tests and in --inspect.
@@ -53,13 +54,20 @@ func (s *screen) print(line string) {
 	}
 }
 
+// bannerRow: one row of the banner, without the blank line print() adds (it pulled the letters apart)
+func (s *screen) bannerRow(line string) {
+	if s.pipe != nil {
+		fmt.Fprintf(s.pipe, "ui_print %s\n", uiText(line))
+	}
+}
+
 func rule() string { return strings.Repeat("=", uiWidth) }
 
 // header: the banner, the product line and the release version.
 func (s *screen) header(title, version, device string) {
 	s.print(rule())
 	for _, l := range banner {
-		s.print(l)
+		s.bannerRow(l)
 	}
 	s.print("")
 	s.print(center(title))
