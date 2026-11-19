@@ -8,6 +8,7 @@
 # With a PASSWORD (8-63 characters): WPA2, the driver doing the handshakes. Tools in /var/root (rwdhcpd, rwpf, clat-test) and
 # /var/jb (ifconfig, route: Procursus network-cmds).
 setopt err_return 2>/dev/null
+export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/bin:/bin:/usr/sbin:/sbin	# (misd starts it with none)
 B=/var/root
 IFC=/var/jb/usr/sbin/ifconfig
 RT=/var/jb/usr/sbin/route
@@ -47,10 +48,29 @@ stop)
 	$SC -w kern.redwood.wifi_ap=stop >/dev/null
 	echo "hotspot: off (Wi-Fi back to client mode; CLAT46 stays on for the phone's own IPv4)"
 	;;
+net-start)	# iOS's own switch already put the access point on the air (wifid): the network behind it (libredwood-mis)
+	C=$(cell_if)
+	[ -n "$C" ] || { echo "hotspot: no cellular data tunnel (is mobile data up?)"; return 1; }
+	$IFC $C | grep -q clat46 || $B/clat-test start $C 64:ff9b::/96 | grep -E "CLAT46|NAT64"
+	$IFC $C | grep -q "inet 192.0.0.2" || $IFC $C inet 192.0.0.2 192.0.0.1 netmask 255.255.255.255
+	$RT -n delete -inet default >/dev/null 2>&1
+	$RT -n add -inet default -interface $C >/dev/null
+	$IFC en0 | grep -q "inet 172.20.10.1 " || $IFC en0 inet 172.20.10.1 netmask 255.255.255.240 alias
+	$RT -n add -host 255.255.255.255 -interface en0 >/dev/null 2>&1
+	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/root/rwdhcpd.log 2>&1 </dev/null &)
+	$B/rwpf nat $C 192.0.0.2 172.20.10.0/28
+	echo "hotspot: network up, internet through $C"
+	;;
+net-stop)
+	$B/rwpf flush
+	p=$(dhcpd_pid); [ -z "$p" ] || kill $p
+	$IFC en0 inet 172.20.10.1 -alias 2>/dev/null
+	echo "hotspot: network down"
+	;;
 status)
 	$SC kern.redwood.wifi_ap
 	echo "dhcpd: ${$(dhcpd_pid):-not running}; forwarding: $($SC -n net.inet.ip.forwarding)"
 	;;
 *)
-	echo "usage: hotspot-up.sh start [NAME [CHANNEL [PASSWORD]]] | stop | status"; return 2 ;;
+	echo "usage: hotspot-up.sh start [NAME [CHANNEL [PASSWORD]]] | stop | net-start | net-stop | status"; return 2 ;;
 esac

@@ -23,6 +23,13 @@
 #include <os/log.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <spawn.h>
+#include <string.h>
+#include <sys/sysctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <string.h>
 
 struct mis_conn { int state; int pdp; char ifname[16]; };
@@ -115,6 +122,60 @@ mis_activateTethering(id self, SEL _cmd, bool on)
 	return 0;
 }
 
+/*
+ * The network behind the access point (B, 2026-11-19). On an iPhone wifid makes a separate interface (ap1) and misd
+ * builds the bridge, 172.20.10.1, bootpd and NAT on it; here the access point is en0 itself, so misd never sees an
+ * internal interface. Watch the driver (kern.redwood.wifi_ap reads "ON THE AIR..." while it runs) and bring the
+ * network up/down with tools/hotspot/hotspot-up.sh net-start/net-stop (addresses, rwdhcpd, NAT over CLAT46).
+ */
+extern char **environ;
+
+static void
+hotspot_net(const char *what)
+{
+	char *argv[] = { "zsh", "/var/root/hotspot-up.sh", (char *)what, NULL };
+	pid_t pid;
+	int st;
+
+	posix_spawn_file_actions_t fa;
+	int e;
+
+	posix_spawn_file_actions_init(&fa);	/* its output: /var/tmp/redwood-hotspot.log */
+	posix_spawn_file_actions_addopen(&fa, 1, "/var/tmp/redwood-hotspot.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+	posix_spawn_file_actions_adddup2(&fa, 1, 2);
+	e = posix_spawn(&pid, "/var/jb/bin/zsh", &fa, NULL, argv, environ);
+	posix_spawn_file_actions_destroy(&fa);
+
+	if (e == 0) {
+		waitpid(pid, &st, 0);
+		os_log(lg, "redwood-mis: hotspot %{public}s: exit %d", what, WEXITSTATUS(st));
+	} else {
+		os_log(lg, "redwood-mis: hotspot %{public}s: cannot start zsh: %d", what, e);
+	}
+}
+
+static void *
+ap_watch(void *arg)
+{
+	bool up = false;
+
+	(void)arg;
+	os_log(lg, "redwood-mis: watching the access point");
+	for (;;) {
+		char s[160] = "";
+		size_t n = sizeof(s) - 1;
+		bool on = sysctlbyname("kern.redwood.wifi_ap", s, &n, NULL, 0) == 0 && strncmp(s, "ON THE AIR", 10) == 0;
+
+		if (on != up) {
+			os_log(lg, "redwood-mis: access point %{public}s (%{public}.20s)", on ? "on" : "off", s);
+			hotspot_net(on ? "net-start" : "net-stop");
+			up = on;
+		}
+		sleep(2);
+	}
+	return NULL;
+}
+
 static void
 swap(Class c, const char *sel, IMP imp)
 {
@@ -139,5 +200,10 @@ mis_init(void)
 	swap(c, "isDataPlanEnabled:", (IMP)mis_isDataPlanEnabled);
 	swap(c, "getTetheringInterfaceName:", (IMP)mis_getTetheringInterfaceName);
 	swap(c, "activateTethering:", (IMP)mis_activateTethering);
+	{
+		pthread_t th;
+		pthread_create(&th, NULL, ap_watch, NULL);
+		pthread_detach(th);
+	}
 	os_log(lg, "redwood-mis: misd's CoreTelephony answers come from the S20's modem service");
 }
