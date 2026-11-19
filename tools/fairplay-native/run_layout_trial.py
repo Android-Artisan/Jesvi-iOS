@@ -81,6 +81,19 @@ class Trial:
         if not state.get('restore_ready'):
             self.event('Hotspot parameters unavailable; automatic restart was not attempted')
             return False
+        if state.get('native'):
+            for attempt in range(12):
+                status = self.ssh('/var/jb/usr/sbin/sysctl -n kern.redwood.wifi_ap', check=False)
+                if status.returncode == 0 and b'ON THE AIR' in status.stdout:
+                    self.event('Native hotspot is back on the air')
+                    return True
+                if attempt == 0:
+                    self.ssh('/redwood/bin/misctl on', timeout=25, check=False)
+                    self.ssh('/redwood/bin/misctl wifi on', timeout=25, check=False)
+                    self.ssh('/redwood/bin/misctl discover on', timeout=25, check=False)
+                time.sleep(5)
+            self.event('Native hotspot restart pending; iOS remains reachable over USB')
+            return False
         name, channel = state['name'], int(state['channel'])
         if not 1 <= len(name.encode()) <= 32 or not 1 <= channel <= 196:
             raise ValueError('Invalid captured hotspot parameters')

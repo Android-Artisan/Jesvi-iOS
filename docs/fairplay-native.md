@@ -29,23 +29,20 @@ kernel UUID, bounds, destination ranges, overlap and checksums in two passes,
 then copies before kernel entry. Invalid input triggers no copy. Checksums
 detect transfer damage, not malicious substitution.
 
-Fifteen host tests pass, including actual C validation against synthetic bad
-payloads. The actual private eight-piece payload also passes the C validator,
-byte-for-byte matching the Python reference. The gate object and loader object
-compile in isolation. Archive relink attempts have not produced an accepted
-kernel: the latest output failed the gate-marker check, so the tool rejected it.
-Do not use the rejected binaries. Investigate object/archive admission or replay
-the exact canonical link filelist. Even a successful archived build would not
-be a current release source build or ready to flash.
+Eighteen host tests pass, including actual C validation against malformed payloads.
+Archive replay failures are superseded by a successful full current-source XNU
+build. Latest main through dd747746 is merged on the FairPlay branch (888f9d77).
+The loader also rebuilds successfully. Regenerated bindings and layout produce a
+15,433,728-byte compact kernel and a 1,732,312-byte sidecar; the actual C validator,
+AVB signature/hash checks, ramdisk preservation and layout preflight all pass.
 
-Next: complete isolated relink validation, regenerate native imports for that
-exact binary, and finish payload/recovery packaging checks. B currently holds
-the phone. Any later test must use a current canonical build, preserve existing
-phone features, and start with a layout-only boot (`fairplay_native=0`) before
-native execution is considered. No successful download/install is established.
-
-2026-11-19, codex-fairplayed. Native installation is unfinished. No kernel image
-was built or flashed, and no account, service or phone state changed this phase.
+A read-only copy of the actual running phone's RECOVERY is the test template.
+The next test is layout only: native execution stays disabled and both module
+headers must be present. The controller verifies ownership, backs up RECOVERY
+again in Log access, checks it against the template, writes and reads back only
+RECOVERY, and attempts rollback on failure. Native hotspot controls restart an
+active hotspot if needed. No successful download/install is established.
+No FairPlay image has yet been flashed.
 
 Original 20F66 iPhone10,3 kernelcache fetched from the same Apple CDN IPSW used
 by sysimage/fetch-from-ipsw.py. Firmware and generated bundles stay in workspace

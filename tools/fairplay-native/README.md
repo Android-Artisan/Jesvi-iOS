@@ -25,10 +25,10 @@ python3 -m unittest discover -s tools/fairplay-native -p 'test_*.py' -v
 These are offline tools. The C validator tests use the local Clang compiler and
 synthetic payloads, never execute Apple instructions, and perform no phone access.
 
-All generated image manifests currently say DO_NOT_DEPLOY. The first full-layout
+Offline reconstructed modules remain analysis artifacts. The guarded layout-only
+image has a separate preparation manifest and does not enable native execution. The first full-layout
 prototype exceeds the existing kernel read window. `sidecar.py` produces a compact
 kernel within that window plus a separate native payload. The new loader expects
 payload entries `fpart=recovery`, `foff=1800000`, `fsize=<hex actual size>` and
-padded storage for the sidecar at recovery+24 MiB; packaging and live verification
-remain unfinished. Kernel/loader sources must be rebuilt together and native
+padded storage for the sidecar at recovery+24 MiB; packaging passes AVB and C validation; live verification remains pending. Kernel/loader sources must be rebuilt together and native
 imports rebound to the exact rebuilt kernel before any test.
