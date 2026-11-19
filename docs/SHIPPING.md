@@ -1,3 +1,15 @@
+## 2026-11-20 (A) — 0.1.1 with iPhone's boot and charging pictures, installed from the Mac with no key press
+
+- What: the release ZIP (9d9e8dc5) carries iOS's boot logo and iBoot's charging pictures (lpm.jpg = charging,
+  low_battery_alert.jpg = battery empty; Apple's art from the IPSW at build time, tools/bootlogo/mkcharging.py);
+  the installer swaps them in up_param and keeps Samsung's as .stock (Restore puts them back).
+  twrp-install.sh asks once on the computer (yes / ERASE) and the installer takes that approval instead of Volume Up;
+  TWRP's own Install still needs the key. tools/install/flash-twrp.sh: TWRP from iOS with no buttons (heimdall
+  restarts the phone, misc's boot-recovery starts TWRP; not yet run on the phone).
+- Tested on the phone 2026-11-20: install "Approved on the computer", pictures set, iOS up 40 s after the automatic
+  restart, data and fingerprint kept. Not yet seen: the charging picture with the phone off (needs the charger-boot
+  loader fix, feat/offmode-charging).
+
 ## 2026-11-20 (A) — 0.1.1 installed on the phone through TWRP (update path, data kept)
 
 - What: TWRP (Artisan 3.7.1) put into recovery with heimdall from Download Mode; backup of every partition except
