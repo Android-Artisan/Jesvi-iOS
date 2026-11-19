@@ -64,6 +64,15 @@ static IOMobileFramebuffer * gFbLive;           /* the one framebuffer, for fb.m
 
 #include "MiniIOSurface.h"
 
+/*
+ * kern.redwood_fb_shown_sid: the IOSurface id of the frame on the panel (A, 2026-11-19), so a root tool
+ * (tools/hotspot/rwshot.c) can look the surface up and save what the screen shows: a screenshot without hands.
+ */
+#include <sys/sysctl.h>
+static unsigned int gFbShownSid;
+SYSCTL_UINT(_kern, OID_AUTO, redwood_fb_shown_sid, CTLFLAG_RD | CTLFLAG_LOCKED, &gFbShownSid, 0,
+    "the IOSurface id of the frame on the panel");
+
 extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
 extern "C" uint64_t redwood_fb_swap_at;        /* the clock governor's frame floor (redwood_exynos_acpm.c, dvfs_frame=) */
 extern "C" int redwood_gov_wake;
@@ -1735,6 +1744,7 @@ IOMobileFramebuffer::scalerWait(void)
 	fScanShown = fScanNext;
 	fScanNext = NULL;
 	fShownSid = fScanShown != NULL ? fScanShown->sid : 0;
+	gFbShownSid = fShownSid;
 	fNextSid = 0;
 	return true;
 }
@@ -4612,6 +4622,7 @@ static const uint8_t kLtps2Osc86[8] = { 0x16, 0x19, 0x00, 0x00, 0x00, 0xD8, 0x16
 /* the DECON half (blender, scaled size, OUTFIFO, the two DSC encoders, the window): see deconModeRegs below */
 struct mode_reg { uint32_t off, native, fhd, mask; };
 #include "MiniIOMobileFramebufferMode.h"
+
 
 /* A DSI packet of the given data type: short (type 0x05 / 0x15 / 0x07: up to two bytes) or long (0x39, 0x0A). */
 bool
