@@ -142,6 +142,11 @@ log_read(line_fn fn)
 {
 	static char buf[1 << 20];
 	size_t n = 0;
+	/* 8 bytes first: copying the whole 128 KB ring 10 times a second while the sensor listens, under the kernel's
+	 * log lock, is only worth it when something was written */
+	uint64_t t = 0;
+	size_t tn = sizeof(t);
+	if (sysctlbyname("kern.redwood_dmesg_total", &t, &tn, NULL, 0) == 0 && t == log_total) return;
 	if (sysctlbyname("kern.redwood_dmesg", NULL, &n, NULL, 0) || n < 8 || n > sizeof(buf)) return;
 	if (sysctlbyname("kern.redwood_dmesg", buf, &n, NULL, 0) || n < 8) return;
 	uint64_t total;
@@ -208,7 +213,9 @@ ev_send(unsigned code, int32_t status, uint32_t fid, int32_t score, uint32_t rem
 static void
 ring(int on)
 {
-	static int token = -1;
+	static int token = -1, last = -1;
+	if (on == last) return;         /* the lock-screen loop re-sets it every run: post only a change */
+	last = on;
 	if (token == -1 && notify_register_check("com.redwood.touchid.sensor", &token) != NOTIFY_STATUS_OK) {
 		token = -2;
 	}
