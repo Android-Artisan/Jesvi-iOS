@@ -54,7 +54,12 @@ static volatile uint32_t gen;                   /* operation generation: a new o
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
 static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
-static volatile int enrolling, calibrated, grip_phase;                  /* EnrollMode .. template saved / Cancel / RemoveTemplate */
+static volatile int enrolling, calibrated;
+/* Apple's phase 2 ("adjust your grip") after the template is saved: open until this time. Apple sends Cancel between
+ * its phase-2 steps, and a Cancel used to end it: the next touch went to the matcher, came back NO MATCH and phase 2
+ * stalled (2026-11-19). Ended by a new EnrollMode, or 2 minutes without a phase-2 touch. */
+static volatile time_t grip_until;
+#define grip_phase (time(NULL) < grip_until)
 
 static void
 lg(const char *fmt, ...)
@@ -246,7 +251,7 @@ on_line(const char *l)
 		if (sscanf(l, "fp template: saved %u bytes to " TEMPLATE " (error %d)", &bytes, &err) == 2 && !err &&
 		    bytes > 0) {
 			enrolling = 0;
-			grip_phase = 1;                     /* Apple's phase 2 ("adjust your grip") follows */
+			grip_until = time(NULL) + 120;      /* Apple's phase 2 ("adjust your grip") follows */
 			ev_send(FPCD_EV_ENROL_DONE, 0, FID, 0, 0, samples_seen, 0);
 			ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
 		} else {
@@ -258,6 +263,7 @@ on_line(const char *l)
 		 * enrolment, a real touch on the sensor counts as one: RedwoodMesa hands such matches only to the
 		 * enrolling client (Settings), never to an unlock. */
 		ev_send(FPCD_EV_MATCH, 0, FID, 0, 0, 1, 0);
+		grip_until = time(NULL) + 120;          /* each phase-2 touch keeps it open */
 	} else if (op == 2 && sscanf(l, "fp run 6: SENSOR MATCH candidate (bio %u score %u", &b, &sc) == 2) {
 		ev_send(FPCD_EV_MATCH, 0, FID, (int32_t)sc, 0, 1, 0);
 		op = 0;
@@ -495,7 +501,7 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		p->len = sizeof(ids);
 		return FPCD_OK;
 	}
-	case 3: enrolling = 1; grip_phase = 0; return start(1);     /* EnrollMode */
+	case 3: enrolling = 1; grip_until = 0; return start(1);     /* EnrollMode */
 	case 4:                                                 /* MatchMode */
 		if (enrolling) {                                /* phase 2 before the template was committed: go on */
 			if (op != 1) return start(1);
@@ -503,7 +509,6 @@ handle(const struct smb_req *q, struct smb_reply *p)
 		}
 		return has ? start(2) : FPCD_E_NOENT;
 	case 12:                                                /* Cancel (Apple also sends it between its two phases) */
-		if (!enrolling) grip_phase = 0;
 		gen++;
 		op = 0;
 		return FPCD_OK;

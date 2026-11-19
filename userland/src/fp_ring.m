@@ -52,6 +52,13 @@ makeSpot(CGRect screen)
 	glyph.contentMode = UIViewContentModeScaleAspectFit;
 	glyph.frame = CGRectInset(spot.bounds, d * 0.2, d * 0.2);
 	[spot addSubview:glyph];
+	/* a faint dark shadow under the white ring and glyph: on a white or bright wallpaper the ring was invisible */
+	for (UIView *v in @[spot, glyph]) {
+		v.layer.shadowColor = UIColor.blackColor.CGColor;
+		v.layer.shadowOpacity = 0.35;
+		v.layer.shadowRadius = 3;
+		v.layer.shadowOffset = CGSizeZero;
+	}
 	return spot;
 }
 
