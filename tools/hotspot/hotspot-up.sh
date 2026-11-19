@@ -1,11 +1,11 @@
 #!/bin/zsh
-# hotspot-up.sh start [NAME [CHANNEL]] | stop | status -- the S20's Personal Hotspot, by hand (A, 2026-11-19).
+# hotspot-up.sh start [NAME [CHANNEL [PASSWORD]]] | stop | status -- the S20's Personal Hotspot, by hand (A, 2026-11-19).
 #
 #   cellular  CLAT46 on the data tunnel (Jio is IPv6-only): NAT64 prefix 64:ff9b::/96, 192.0.0.2, IPv4 default route
 #   Wi-Fi     the chip as an access point (kern.redwood.wifi_ap), the phone 172.20.10.1/28 on en0
 #   clients   rwdhcpd (addresses), rwpf (NAT from 172.20.10.0/28 to 192.0.0.2), IPv4 forwarding
 #
-# Open network only until the driver's WPA2 authenticator exists. Tools in /var/root (rwdhcpd, rwpf, clat-test) and
+# With a PASSWORD (8-63 characters): WPA2, the driver doing the handshakes. Tools in /var/root (rwdhcpd, rwpf, clat-test) and
 # /var/jb (ifconfig, route: Procursus network-cmds).
 setopt err_return 2>/dev/null
 B=/var/root
@@ -14,6 +14,7 @@ RT=/var/jb/usr/sbin/route
 SC=/var/jb/usr/sbin/sysctl
 NAME=${2:-JesviTest}
 CHAN=${3:-6}
+PASS=${4:-}
 
 cell_if() {	# the data tunnel: the utun holding the cellular service's address (redwood-cellular.log)
 	grep -a "configd service redwood-cell published" /var/tmp/redwood-cellular.log | tail -1 | grep -oE "on utun[0-9]+" | cut -d' ' -f2
@@ -31,11 +32,13 @@ start)
 	$IFC $C | grep -q "inet 192.0.0.2" || $IFC $C inet 192.0.0.2 192.0.0.1 netmask 255.255.255.255
 	$RT -n delete -inet default >/dev/null 2>&1
 	$RT -n add -inet default -interface $C >/dev/null
-	$SC -w kern.redwood.wifi_ap="start	$CHAN	$NAME" | sed 's/^/hotspot: /'
+	$SC -w kern.redwood.wifi_ap="start	$CHAN	$NAME${PASS:+	$PASS}" >/dev/null || { echo "hotspot: $($SC -n kern.redwood.wifi_ap)"; return 1; }
+	echo "hotspot: $($SC -n kern.redwood.wifi_ap)"
 	$IFC en0 inet 172.20.10.1 netmask 255.255.255.240 alias
 	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/root/rwdhcpd.log 2>&1 </dev/null &)
 	$B/rwpf nat $C 192.0.0.2 172.20.10.0/28
-	echo "hotspot: \"$NAME\" on channel $CHAN, internet through $C"
+	MODE=open; [ -z "$PASS" ] || MODE=WPA2
+	echo "hotspot: \"$NAME\" on channel $CHAN ($MODE), internet through $C"
 	;;
 stop)
 	$B/rwpf flush
@@ -49,5 +52,5 @@ status)
 	echo "dhcpd: ${$(dhcpd_pid):-not running}; forwarding: $($SC -n net.inet.ip.forwarding)"
 	;;
 *)
-	echo "usage: hotspot-up.sh start [NAME [CHANNEL]] | stop | status"; return 2 ;;
+	echo "usage: hotspot-up.sh start [NAME [CHANNEL [PASSWORD]]] | stop | status"; return 2 ;;
 esac
