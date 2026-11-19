@@ -347,7 +347,7 @@ func TestInstallSavesAndroidMapAndRestoreBringsItBack(t *testing.T) {
 		t.Fatal(e)
 	}
 	got, e := parseLP(readBytes(t, d.files["super"], 0, lpRegion))
-	if e != nil || len(got.Partitions) != 0 || got.Groups[1].Name != "rom_group" {
+	if e != nil || len(got.Partitions) != 4 || got.Partitions[0].Name != "system" || got.Groups[1].Name != "rom_group" { // placeholders for TWRP
 		t.Fatal("restored map wrong", e, log)
 	}
 	if h := readBytes(t, d.files["userdata"], 1024, 2); string(h) == "HX" {

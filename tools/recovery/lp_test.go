@@ -145,3 +145,26 @@ func TestConfigRejectsUnsafeProfiles(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// TWRP's Install needs a system partition in super before it runs a ROM ZIP: the restore leaves 1 MiB placeholders.
+func TestRestorePlaceholders(t *testing.T) {
+	a := AndroidSuper{MetadataMaxSize: 65536, MetadataSlots: 2, LogicalBlockSize: 4096, Alignment: 1048576,
+		FirstLogicalSector: 2048, Groups: []AndroidGroup{{Name: "group_basic", MaxSize: 9432989696}}}
+	m := a.metadata(9437184000).withPlaceholders()
+	region, e := m.encode()
+	if e != nil {
+		t.Fatal(e)
+	}
+	back, e := parseLP(append(region, make([]byte, lpRegion-len(region))...))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(back.Partitions) != 4 || back.Partitions[0].Name != "system" || back.Groups[back.Partitions[0].Group].Name != "group_basic" {
+		t.Fatalf("partitions: %+v", back.Partitions)
+	}
+	for i, x := range back.Extents {
+		if x.Data != 2048+uint64(i)*2048 || x.Sectors != 2048 {
+			t.Fatalf("extent %d: %+v", i, x)
+		}
+	}
+}

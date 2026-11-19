@@ -311,6 +311,40 @@ func (m *lpMetadata) emptied() *lpMetadata {
 	return &c
 }
 
+// withPlaceholders adds system, vendor, product and odm, 1 MiB each, to the first group after "default": TWRP's
+// Install unmounts /system_root before it runs any ROM ZIP and stops ("Unable to find partition for path
+// '/system_root'") when super holds no such partition (2026-11-20). The ROM's own update_dynamic_partitions replaces
+// them at once. Read-only, linear, one after the other from the first logical sector.
+func (m *lpMetadata) withPlaceholders() *lpMetadata {
+	c := *m
+	if len(c.Groups) < 2 || len(c.Devices) == 0 {
+		return &c
+	}
+	c.Partitions = append([]lpPartition{}, m.Partitions...)
+	c.Extents = append([]lpExtent{}, m.Extents...)
+	at := c.Devices[0].FirstSector
+	for _, name := range []string{"system", "vendor", "product", "odm"} {
+		c.Partitions = append(c.Partitions, lpPartition{Name: name, Attributes: 1, FirstExtent: uint32(len(c.Extents)), NumExtent: 1, Group: 1})
+		c.Extents = append(c.Extents, lpExtent{Sectors: 2048, Type: 0, Data: at, Source: 0})
+		at += 2048
+	}
+	return &c
+}
+
+// onlyPlaceholders: super holds exactly what withPlaceholders left (a restore already ran; no ROM yet).
+func (m *lpMetadata) onlyPlaceholders() bool {
+	if len(m.Partitions) != 4 || len(m.Extents) != 4 {
+		return false
+	}
+	for i, name := range []string{"system", "vendor", "product", "odm"} {
+		p := m.Partitions[i]
+		if p.Name != name || p.NumExtent != 1 || m.Extents[p.FirstExtent].Sectors != 2048 {
+			return false
+		}
+	}
+	return true
+}
+
 // AndroidSuper is the measured stock layout, used when no saved copy exists.
 type AndroidSuper struct {
 	MetadataMaxSize    uint32         `json:"metadata_max_size"`

@@ -265,7 +265,7 @@ func saveAndroidMap(b *Bundle, super Target, log func(string)) error {
 // super holds a live Android layout or something unrecognized.
 func restoreState(head []byte) (bool, error) {
 	if m, e := parseLP(head); e == nil {
-		if len(m.Partitions) != 0 {
+		if len(m.Partitions) != 0 && !m.onlyPlaceholders() {
 			return false, errors.New("super already holds Android partitions; nothing to restore")
 		}
 		return true, nil
@@ -318,7 +318,7 @@ func restoreAndroid(b *Bundle, device Device, log func(string)) error {
 			log("No saved map (" + e.Error() + "); using the measured stock layout")
 			m = b.Config.AndroidSuper.metadata(size)
 		}
-		region, e := m.encode()
+		region, e := m.withPlaceholders().encode()
 		if e != nil {
 			return e
 		}
