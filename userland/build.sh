@@ -703,6 +703,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
     # Shared graphics is automatic for normal applications. GRAPHICS_COMPAT=0
