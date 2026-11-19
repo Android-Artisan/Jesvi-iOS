@@ -1,3 +1,14 @@
+## 2026-11-19 (B) — Cellular survives a slow modem; airplane mode resets the modem
+
+- What: redwood-cellulard retried only the SPI boot; a firmware-download timeout (stage 5, no reply in 5 s, seen
+  right after a thermal shutdown) left "no modem" until a reboot. Now a failed bring-up is retried as a whole (3
+  tries, 15 s apart; then left off, so a real fault still cannot loop). Airplane mode now acts on the modem: on parks
+  it (command pipe "airplane"), off starts a fresh bring-up (pipe "restart", or launchd WatchPaths
+  /var/tmp/redwood-cell-kick when the service is not running). SpringBoard watches AirplaneMode (cell_sb.h).
+- Tested on the phone 2026-11-19: airplane on -> modem parked; airplane off -> service started, Jio 3 bars + data
+  in ~33 s.
+- Open: Personal Hotspot (needs CommCenter tethering answers + IPv6-only Jio: 464XLAT/DNS64 design).
+
 ## 2026-11-19 (B) — Native Touch ID on the under-display sensor (boot argument touchid=1)
 
 - What: Apple's own Touch ID UI drives the S20's ultrasonic sensor (QBT2000 in TEEGRIS). Settings → Touch ID & Passcode
