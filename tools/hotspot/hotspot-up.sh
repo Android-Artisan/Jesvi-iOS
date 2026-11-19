@@ -59,8 +59,11 @@ net-start)	# iOS's own switch already put the access point on the air (wifid): t
 	$RT -n add -host 255.255.255.255 -interface en0 >/dev/null 2>&1
 	[ -n "$(dhcpd_pid)" ] || (nohup $B/rwdhcpd en0 8.8.8.8 >>/var/tmp/rwdhcpd.log 2>&1 </dev/null &)
 	$B/rwpf nat $C 192.0.0.2 172.20.10.0/28
-	# Apple's "this is a phone's hotspot" element (devices then treat it as mobile data): kept in /var/db/redwood-hotspot-ie
-	[ ! -s /var/db/redwood-hotspot-ie ] || $SC -w kern.redwood.wifi_ap_vendor_ie="$(cat /var/db/redwood-hotspot-ie)" >/dev/null
+	# Apple's "this is a phone's hotspot" element (devices then treat it as mobile data). Built in (a real iPhone's,
+	# 2026-11-19); /var/db/redwood-hotspot-ie overrides it, an empty file turns it off.
+	VIE=0017f206010103030000
+	[ ! -f /var/db/redwood-hotspot-ie ] || VIE=$(cat /var/db/redwood-hotspot-ie)
+	[ -z "$VIE" ] || $SC -w kern.redwood.wifi_ap_vendor_ie="$VIE" >/dev/null
 	echo "hotspot: network up, internet through $C"
 	;;
 net-stop)

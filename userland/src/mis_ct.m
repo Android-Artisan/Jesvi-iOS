@@ -195,7 +195,7 @@ ap_watch(void *arg)
 		if (retry != 0) {
 			retry--;
 		}
-		sleep(2);
+		sleep(on ? 2 : 5);                      /* (off: fewer wake-ups; on: devices counted quickly) */
 	}
 	return NULL;
 }
