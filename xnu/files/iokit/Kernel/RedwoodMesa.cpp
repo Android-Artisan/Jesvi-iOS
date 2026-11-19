@@ -1701,11 +1701,17 @@ mesa_command(const uint8_t *in, uint32_t inLen, uint8_t *out, uint32_t cap, uint
 		 */
 		if (gCat) {     /* 1206: present, loaded, dirty from the catacomb engine */
 			uint32_t cst = 1u | (gCatLoaded ? 2u : 0u) | (gCatLoaded && gCatDirty ? 4u : 0u);
-			uint32_t cn = cap >= 8 ? 1 : 0;
+			/* 2026-11-19: the master component (user ~0) is listed too: with only the user's entry biometrickitd
+			 * answered NoCatacomb at every start although master.cat and user_*.cat were on disk */
+			uint32_t cn = cap >= 16 ? 2 : cap >= 8 ? 1 : 0;
 			ANSWER(8 * cn);
 			if (cn) {
 				put32(out, cat_user());
 				put32(out + 4, cst);
+			}
+			if (cn > 1) {
+				put32(out + 8, 0xffffffffu);
+				put32(out + 12, cst);
 			}
 			*how = cst == 1 ? "catacomb (present, not loaded: load wanted)" :
 			    cst == 3 ? "catacomb (present + loaded)" : "catacomb (present + loaded + dirty: save wanted)";
