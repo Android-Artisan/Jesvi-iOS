@@ -130,7 +130,7 @@ mis_activateTethering(id self, SEL _cmd, bool on)
  */
 extern char **environ;
 
-static void
+static int
 hotspot_net(const char *what)
 {
 	char *argv[] = { "zsh", "/var/root/hotspot-up.sh", (char *)what, NULL };
@@ -149,15 +149,17 @@ hotspot_net(const char *what)
 	if (e == 0) {
 		waitpid(pid, &st, 0);
 		os_log(lg, "redwood-mis: hotspot %{public}s: exit %d", what, WEXITSTATUS(st));
-	} else {
-		os_log(lg, "redwood-mis: hotspot %{public}s: cannot start zsh: %d", what, e);
+		return WEXITSTATUS(st);
 	}
+	os_log(lg, "redwood-mis: hotspot %{public}s: cannot start zsh: %d", what, e);
+	return -1;
 }
 
 static void *
 ap_watch(void *arg)
 {
 	bool up = false;
+	unsigned retry = 0;
 
 	(void)arg;
 	os_log(lg, "redwood-mis: watching the access point");
@@ -166,10 +168,17 @@ ap_watch(void *arg)
 		size_t n = sizeof(s) - 1;
 		bool on = sysctlbyname("kern.redwood.wifi_ap", s, &n, NULL, 0) == 0 && strncmp(s, "ON THE AIR", 10) == 0;
 
-		if (on != up) {
-			os_log(lg, "redwood-mis: access point %{public}s (%{public}.20s)", on ? "on" : "off", s);
-			hotspot_net(on ? "net-start" : "net-stop");
-			up = on;
+		if (on && !up && retry == 0) {          /* (no mobile data yet, e.g. just after a boot: again in 10 s) */
+			os_log(lg, "redwood-mis: access point on");
+			up = hotspot_net("net-start") == 0;
+			retry = up ? 0 : 5;
+		} else if (!on && up) {
+			os_log(lg, "redwood-mis: access point off");
+			hotspot_net("net-stop");
+			up = false;
+		}
+		if (retry != 0) {
+			retry--;
 		}
 		sleep(2);
 	}

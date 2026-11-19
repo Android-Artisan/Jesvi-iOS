@@ -50,7 +50,7 @@ stop)
 	;;
 net-start)	# iOS's own switch already put the access point on the air (wifid): the network behind it (libredwood-mis)
 	C=$(cell_if)
-	[ -n "$C" ] || { echo "hotspot: no cellular data tunnel (is mobile data up?)"; return 1; }
+	[ -n "$C" ] && $IFC $C >/dev/null 2>&1 || { echo "hotspot: no cellular data tunnel yet (is mobile data up?)"; exit 1; }
 	$IFC $C | grep -q clat46 || $B/clat-test start $C 64:ff9b::/96 | grep -E "CLAT46|NAT64"
 	$IFC $C | grep -q "inet 192.0.0.2" || $IFC $C inet 192.0.0.2 192.0.0.1 netmask 255.255.255.255
 	$RT -n delete -inet default >/dev/null 2>&1
