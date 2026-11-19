@@ -160,18 +160,17 @@ func run() error {
 		if e = d.CheckData(); e != nil {
 			return e
 		}
-		log("UPDATE: existing HFSX data/keybags will be preserved.")
+		log("UPDATE: your iOS data, apps and settings are kept.")
+		log("TWRP is replaced by Jesvi iOS.")
+		e = confirm("Install the update?", false, log)
 	} else {
-		log("FRESH INSTALL: ALL ANDROID/iOS USERDATA WILL BE LOST. This is not a secure erase.")
+		log("FRESH INSTALL: this ERASES ALL DATA on the phone")
+		log("(Android or iOS) and replaces TWRP.")
+		log("Keep a backup off the phone if you need anything.")
+		e = confirm("Erase the phone and install Jesvi iOS?", true, log) // one confirmation (2026-11-20)
 	}
-	log("Use verified OFF-DEVICE backups and tested Download Mode rescue. TWRP will be overwritten.")
-	if e = confirm("Confirm backups/rescue and installation of this experimental candidate.", mode == "fresh", log); e != nil {
+	if e != nil {
 		return e
-	}
-	if mode == "fresh" {
-		if e = confirm("SECOND CONFIRMATION: erase userdata and initialize HFSX?", true, log); e != nil {
-			return e
-		}
 	}
 	ui.begin("Freeing the storage")
 	if e = d.release(log); e != nil {

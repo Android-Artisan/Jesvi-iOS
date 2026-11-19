@@ -32,8 +32,8 @@ the "boot into recovery" flag set). Without the script: Odin → AP: TWRP, then 
 - **From the computer** (`twrp-install.sh`): you type `yes` there once, before anything is copied (`ERASE` for
   anything that erases data, with `--erase`). Then it runs by itself, with **no key presses on the phone**, shows
   each step on the computer and on TWRP's screen, and restarts the phone into iOS when done (`--no-reboot` to stay).
-- **On the phone** (TWRP → *Install*): the screen explains what will happen and asks you to **hold Volume Up for 3
-  seconds** (Volume Down or Power cancels). Nothing is written before that.
+- **On the phone** (TWRP → *Install*): the screen explains what will happen and asks you to **press Volume Up** once
+  (Volume Down or Power cancels). Nothing is written before that.
 
 ## A. From Android (ExtremeROM or any ROM) to iOS
 
@@ -42,8 +42,8 @@ the "boot into recovery" flag set). Without the script: Odin → AP: TWRP, then 
    - **with a computer:** `tools/install/twrp-install.sh --erase Jesvi-iOS_<version>_x1slte.zip` and type `ERASE`
      (this erases the phone's data), or
    - **without one:** put the ZIP on a **microSD card or USB-C stick** (never internal storage: it is about to be
-     wiped), then TWRP → *Install* → pick the ZIP, and **hold Volume Up for 3 seconds** when asked to confirm the
-     install, and again for initializing the data partition.
+     wiped), then TWRP → *Install* → pick the ZIP, and **press Volume Up** when the screen asks (one confirmation; it
+     says that a fresh install erases the phone's data).
 3. Before it writes iOS, the installer saves your ROM's partition map at the end of `super` (used by the way back).
 4. It also puts iPhone's pictures into Samsung's power-on screens (the Apple logo, the charging and battery-empty
    screens), keeping Samsung's own for the way back.
@@ -95,8 +95,8 @@ partition table were never touched.
 - **Computer does not see the phone in TWRP:** cable straight into the computer, another port or cable; in TWRP
   *Mount → Enable MTP*; unplug and plug again.
 - **"battery must report at least 50 percent":** charge in TWRP and run it again.
-- **"physical confirmation timed out"** (TWRP's Install button only): you have 45 seconds to hold Volume Up for 3
-  seconds; run it again. From the computer there is no key press.
+- **"physical confirmation timed out"** (TWRP's Install button only): you have 60 seconds to press Volume Up; run
+  it again. From the computer there is no key press.
 - **"the iOS data here is damaged or a different size than this package":** the package's iOS data size
   (`IOS_DATA_GB`) differs from the phone's; nothing was written. Use the matching package.
 - **"unqualified recovery product" or "model/bootloader mismatch":** not an SM-G980F on G980FXXSNHYB7: not supported.

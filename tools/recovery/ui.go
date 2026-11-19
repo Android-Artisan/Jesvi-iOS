@@ -7,19 +7,11 @@ import (
 	"strings"
 )
 
-// The TWRP screen: a JESVIiOS banner, numbered steps and a live percent bar.
+// The TWRP screen: a plain title, numbered steps, TWRP's own progress bar and a text bar.
 // TWRP's console is about 40 columns of plain ASCII, so everything stays inside that.
 
 const uiWidth = 38
 
-// "JESVI iOS", 37 columns, one even 4-wide letter shape; printed without blank lines between rows (bannerRow)
-var banner = []string{
-	" ### ####  ### #  # ###   #  ##   ### ",
-	"   # #    #    #  #  #      #  # #    ",
-	"   # ###   ##  #  #  #    # #  #  ##  ",
-	"#  # #       #  ##   #    # #  #    # ",
-	" ##  #### ###   ##  ###   #  ##  ###  ",
-}
 
 // screen writes to the recovery pipe; nil in tests and in --inspect.
 type screen struct {
@@ -54,22 +46,12 @@ func (s *screen) print(line string) {
 	}
 }
 
-// bannerRow: one row of the banner, without the blank line print() adds (it pulled the letters apart)
-func (s *screen) bannerRow(line string) {
-	if s.pipe != nil {
-		fmt.Fprintf(s.pipe, "ui_print %s\n", uiText(line))
-	}
-}
-
 func rule() string { return strings.Repeat("=", uiWidth) }
 
-// header: the banner, the product line and the release version.
+// header: the title, the product line and the release version.
 func (s *screen) header(title, version, device string) {
 	s.print(rule())
-	for _, l := range banner {
-		s.bannerRow(l)
-	}
-	s.print("")
+	s.print(center("J E S V I   i O S"))
 	s.print(center(title))
 	s.print(center(version + "  |  " + device))
 	s.print(rule())
@@ -93,6 +75,7 @@ func (s *screen) begin(name string) {
 // plan: how many bytes the writes will move, so the bar is the whole install, not one partition.
 func (s *screen) plan(steps int, bytes int64) {
 	s.steps, s.total, s.done, s.shown = steps, bytes, 0, -1
+	s.raw("progress 1.0 0") // the whole bar is ours: set_progress fills the portion announced here (TWRP's bar)
 	s.raw("set_progress 0.0")
 }
 

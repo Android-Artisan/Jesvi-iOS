@@ -325,7 +325,8 @@ func warmPause(d time.Duration) error {
 // A new physical key-down held for three seconds authorizes each destructive mode.
 func confirmKeys(prompt string, log func(string)) error {
 	log(prompt)
-	log("Hold VOLUME UP for 3 seconds to confirm; VOLUME DOWN/POWER cancels. Timeout: 45 seconds.")
+	log("Press VOLUME UP to continue.")
+	log("VOLUME DOWN or POWER cancels (60 s).")
 	paths, e := filepath.Glob("/dev/input/event*")
 	if e != nil || len(paths) == 0 {
 		return errors.New("no physical key input devices")
@@ -366,7 +367,7 @@ func confirmKeys(prompt string, log func(string)) error {
 	if len(files) == 0 {
 		return errors.New("cannot read physical key input")
 	}
-	timeout := time.NewTimer(45 * time.Second)
+	timeout := time.NewTimer(60 * time.Second)
 	defer timeout.Stop()
 	var hold *time.Timer
 	var held <-chan time.Time
@@ -383,18 +384,8 @@ func confirmKeys(prompt string, log func(string)) error {
 			if (ev[0] == 114 || ev[0] == 116) && ev[1] == 1 {
 				return errors.New("installation cancelled")
 			}
-			if ev[0] == 115 {
-				if ev[1] == 1 {
-					if hold != nil {
-						hold.Stop()
-					}
-					hold = time.NewTimer(3 * time.Second)
-					held = hold.C
-				}
-				if ev[1] == 0 && hold != nil {
-					hold.Stop()
-					held = nil
-				}
+			if ev[0] == 115 && ev[1] == 1 { // one press of Volume Up (a 3 s hold was clumsy, 2026-11-20)
+				return nil
 			}
 		case <-held:
 			return nil
