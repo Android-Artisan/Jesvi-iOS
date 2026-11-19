@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func uiText(s string) string {
@@ -19,7 +20,8 @@ func uiText(s string) string {
 	}, s)
 }
 
-var configSHA string // Bound by builder to exact metadata; no arbitrary destinations.
+var batteryTenthsC int // the battery temperature the device check read (platform_linux.go)
+var configSHA string   // Bound by builder to exact metadata; no arbitrary destinations.
 func run() error {
 	args := os.Args
 	if len(args) == 3 && args[1] == "--inspect" {
@@ -93,6 +95,12 @@ func run() error {
 	}
 	defer d.Close()
 	log("Exact device, bootloader, partition sizes and battery checks passed.")
+	if batteryTenthsC > 450 {
+		log(fmt.Sprintf("Battery warm (%d.%d C): continuing in 5 s; Volume Down or Power cancels.", batteryTenthsC/10, batteryTenthsC%10))
+		if e = warmPause(5 * time.Second); e != nil {
+			return e
+		}
+	}
 	if b.Config.Action == "restore" {
 		head, e := d.readHead("super", lpRegion)
 		if e != nil {

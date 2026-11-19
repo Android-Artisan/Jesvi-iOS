@@ -68,9 +68,10 @@ func openRecovery(c Config, archive *os.File) (*linuxDevice, error) {
 		return nil, errors.New("battery must report at least 50 percent")
 	}
 	temp, e := readInt("/sys/class/power_supply/battery/temp")
-	if e != nil || temp < 0 || temp > 450 {
-		return nil, errors.New("battery temperature missing or outside 0..45 C")
+	if e != nil || temp < 0 || temp > 550 {
+		return nil, errors.New("battery temperature missing or outside 0..55 C: let the phone cool down, then run it again")
 	}
+	batteryTenthsC = temp // 45..55 C: a warning and a 5 s pause in main (warmPause), not a stop
 	fd, e := syscall.Open("/tmp/jesvi-install.lock", syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if e != nil {
 		return nil, e
@@ -274,6 +275,51 @@ func (d *linuxDevice) Close() error {
 		d.lock.Close()
 	}
 	return nil
+}
+
+// warmPause: wait d, or return an error as soon as Volume Down or Power is pressed (no key: go on).
+func warmPause(d time.Duration) error {
+	paths, _ := filepath.Glob("/dev/input/event*")
+	events := make(chan int, 8)
+	var files []*os.File
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	for _, path := range paths {
+		f, e := os.Open(path)
+		if e != nil {
+			continue
+		}
+		files = append(files, f)
+		go func(f *os.File) {
+			for {
+				var raw [24]byte
+				if _, e := io.ReadFull(f, raw[:]); e != nil {
+					return
+				}
+				if binary.LittleEndian.Uint16(raw[16:18]) == 1 && int32(binary.LittleEndian.Uint32(raw[20:24])) == 1 {
+					select {
+					case events <- int(binary.LittleEndian.Uint16(raw[18:20])):
+					default:
+					}
+				}
+			}
+		}(f)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			return nil
+		case k := <-events:
+			if k == 114 || k == 116 {
+				return errors.New("installation cancelled")
+			}
+		}
+	}
 }
 
 // A new physical key-down held for three seconds authorizes each destructive mode.

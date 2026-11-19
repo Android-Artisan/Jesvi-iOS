@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"os"
+	"time"
 )
 
 type linuxDevice struct{}
@@ -23,6 +24,7 @@ func (*linuxDevice) dataState() (bool, bool, error) {
 }
 func (*linuxDevice) Close() error            { return nil }
 func confirmKeys(string, func(string)) error { return errors.New("physical keys unavailable on host") }
+func warmPause(time.Duration) error          { return nil }
 func (*linuxDevice) plan() (releasePlan, error) {
 	return releasePlan{}, errors.New("no device backend on host")
 }
