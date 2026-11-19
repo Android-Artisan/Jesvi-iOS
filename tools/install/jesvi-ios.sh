@@ -2,7 +2,8 @@
 # jesvi-ios.sh — one command from nothing to Jesvi iOS on your Galaxy S20 (SM-G980F).
 #   curl -fsSL <raw url of this file> | bash        or        bash tools/install/jesvi-ios.sh [--no-flash]
 # 1. gets (or updates) the source into ~/Jesvi-iOS (JESVI_DIR)
-# 2. checks this Mac (make doctor); iOS 16.5's files come straight from Apple (sysimage/fetch.sh)
+# 2. iOS 16.5's files straight from Apple (sysimage/fetch.sh), the other inputs (tools/install/get-inputs.sh:
+#    AOSP's AVB tool, our UEFI, Samsung's DT table from YOUR phone in TWRP), then checks this Mac (make doctor)
 # 3. builds the TWRP install ZIP (make release; the first time about an hour)
 # 4. if the phone is in TWRP over USB: offers a full backup, then installs the ZIP (twrp-install.sh)
 # Your phone's own firmware files are pulled from TWRP the first time (tools/s20-firmware.sh --adb).
@@ -28,7 +29,8 @@ if [ ! -d sysimage/rootfs ]; then
 	echo "iOS 16.5's files are not here yet: downloading them from Apple (about 7 GB, once)"
 	(cd sysimage && ./fetch.sh) || die "the iOS download stopped; run this again to continue"
 fi
-make doctor || die "this computer is missing what is listed above: see docs/release/building.md (\"Inputs\"), then run this again"
+tools/install/get-inputs.sh || die "the build inputs are not complete (above); see docs/release/building.md, then run this again"
+make doctor || die "this computer is missing what is listed above: see docs/release/building.md, then run this again"
 ok "ready to build"
 
 phone() { adb get-state 2>/dev/null | grep -q recovery; }
