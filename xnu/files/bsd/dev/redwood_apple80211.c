@@ -673,15 +673,21 @@ set_host_ap(const struct apple80211req *request, char *said, size_t said_size)
 	    "cipher %u; not zero after 140 at:%s\n", *(uint32_t *)d, *(uint16_t *)(d + 4), *(uint16_t *)(d + 6),
 	    *(uint16_t *)(d + 8), channel, *(uint32_t *)(d + 20), name_length, name_length <= 32 ? (int)name_length : 0, d + 28,
 	    key_length, cipher, where);
-	if (name_length == 0 || name_length > 32 || channel > 165 || (key_length != 0 && (key_length < 8 || key_length > 63))) {
+	if (name_length == 0 || name_length > 32 || channel > 165 || (key_length != 0 && (key_length < 8 || key_length > 63) &&
+	    !(cipher == 6 && key_length == 32))) {
 		error = EINVAL;
 		goto out;
 	}
 	memcpy(ap->ssid, d + 28, name_length);
 	ap->ssid_length = (uint8_t)name_length;
 	ap->channel = (uint16_t)channel;
-	memcpy(ap->passphrase, d + 76, key_length);
-	ap->passphrase_length = (uint8_t)key_length;
+	if (cipher == 6 && key_length == 32) {          /* APPLE80211_CIPHER_PMK: the key itself */
+		memcpy(ap->pmk, d + 76, 32);
+		ap->has_pmk = true;
+	} else {
+		memcpy(ap->passphrase, d + 76, key_length);
+		ap->passphrase_length = (uint8_t)key_length;
+	}
 	ap_secured = key_length != 0;
 	snprintf(said, said_size, " (host AP: \"%.*s\" channel %u, %s)", (int)name_length, ap->ssid, channel,
 	    key_length ? "WPA2" : "open");

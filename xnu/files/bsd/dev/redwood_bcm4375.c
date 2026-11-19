@@ -3345,7 +3345,7 @@ ap_down(void)
 }
 
 static int
-ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
+ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl, const uint8_t *pmk)
 {
 	static const uint8_t ap_events[] = { E_AUTH_IND, E_ASSOC_IND, E_REASSOC_IND, E_DEAUTH_IND, E_DISASSOC_IND };
 	uint32_t one = 1, status = ~0U;
@@ -3356,6 +3356,9 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 
 	if (sl == 0 || sl > 32 || (pl != 0 && (pl < 8 || pl > 63)) || channel == 0 || channel > 165) {
 		return EINVAL;
+	}
+	if (pmk != NULL) {              /* the key itself (wifid): WPA2 as with a passphrase, without making the key */
+		pl = 0;
 	}
 	if (sta_state.phase == REDWOOD_STA_JOINED || sta_state.phase == REDWOOD_STA_JOINING) {
 		sta_leave();
@@ -3380,13 +3383,18 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		(void)iovar(true, "event_msgs", mask, sizeof(mask));
 	}
 	(void)iovar_int("mfp", MFP_NONE);
-	e_wsec = iovar_int("wsec", pl ? AES_ENABLED : 0);
-	e_auth = iovar_int("wpa_auth", pl ? WPA2_AUTH_PSK : 0);
+	bool secure = pl != 0 || pmk != NULL;
+	e_wsec = iovar_int("wsec", secure ? AES_ENABLED : 0);
+	e_auth = iovar_int("wpa_auth", secure ? WPA2_AUTH_PSK : 0);
 	(void)iovar_int("auth", AUTH_OPEN);
-	if (pl) {                       /* the key of the name and passphrase: ours to hold (no firmware authenticator) */
+	if (secure) {                   /* the key of the name and passphrase: ours to hold (no firmware authenticator) */
 		int32_t caps = 0;
 
-		lx_wpa_pmk((const unsigned char *)pass, pl, (const unsigned char *)ssid, sl, ap_pmk);
+		if (pmk != NULL) {
+			memcpy(ap_pmk, pmk, 32);
+		} else {
+			lx_wpa_pmk((const unsigned char *)pass, pl, (const unsigned char *)ssid, sl, ap_pmk);
+		}
 		if (iovar(false, "wpa_cap", &caps, sizeof(caps)) == 0) {
 			ap_rsn[20] = (uint8_t)caps;     /* the RSN element in message 3 must be the beacon's */
 			ap_rsn[21] = (uint8_t)(caps >> 8);
@@ -3414,14 +3422,14 @@ ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint
 		lck_mtx_unlock(&ring_lock);
 	}
 	snprintf(ap_result, sizeof(ap_result), "%s: ch %u %s; down %d infra %d ap %d chanspec %d wsec %d wpa_auth %d pmk %d up %d "
-	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, pl ? "WPA2" : "open", e_down, e_infra,
+	    "ssid %d event %s %u", got && status == 0 ? "ON THE AIR" : "FAILED", channel, secure ? "WPA2" : "open", e_down, e_infra,
 	    e_ap, e_chan, e_wsec, e_auth, e_pmk, e_up, e_ssid, !got ? "none" : link ? "link" : "set_ssid", got ? status : 0);
 	blog("ap: start \"%.*s\": %s", sl, ssid, ap_result);
 	if (!(got && status == 0)) {
 		ap_down();
 		return EIO;
 	}
-	if (pl) {                       /* the group key: random, the primary (transmit) key; then the handshakes */
+	if (secure) {                   /* the group key: random, the primary (transmit) key; then the handshakes */
 		thread_t t;
 		int e_gtk;
 
@@ -3520,7 +3528,7 @@ sysctl_wifi_ap SYSCTL_HANDLER_ARGS
 			(void)ap_stop();
 		}
 		err = ap_start((uint32_t)strtoul(ch, NULL, 10), name, (uint32_t)strlen(name), pass ? pass : "",
-		    pass ? (uint32_t)strlen(pass) : 0);
+		    pass ? (uint32_t)strlen(pass) : 0, NULL);
 	}
 	ap_busy = 0;
 	return err;
@@ -3546,7 +3554,8 @@ sta_ap(const struct redwood_sta_ap *what)
 		bzero(pass, sizeof(pass));
 		memcpy(name, what->ssid, what->ssid_length > 32 ? 32 : what->ssid_length);
 		memcpy(pass, what->passphrase, what->passphrase_length > 63 ? 63 : what->passphrase_length);
-		err = ap_start(what->channel != 0 ? what->channel : 6, name, (uint32_t)strlen(name), pass, (uint32_t)strlen(pass));
+		err = ap_start(what->channel != 0 ? what->channel : 6, name, (uint32_t)strlen(name), pass, (uint32_t)strlen(pass),
+		    what->has_pmk ? what->pmk : NULL);
 		bzero(pass, sizeof(pass));
 	}
 	ap_busy = 0;

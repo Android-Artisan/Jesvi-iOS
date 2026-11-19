@@ -57,7 +57,9 @@ struct redwood_sta_join {
 struct redwood_sta_ap {
 	uint8_t ssid[32], ssid_length;
 	uint16_t channel;                       /* 0: the radio's choice */
-	uint8_t passphrase[64], passphrase_length;      /* empty: an open network */
+	uint8_t passphrase[64], passphrase_length;      /* empty: an open network ... */
+	uint8_t pmk[32];                        /* ... unless this, the key already made of passphrase and name, is given */
+	bool has_pmk;                           /* (wifid gives the PMK: key cipher 6) */
 };
 
 enum redwood_sta_phase { REDWOOD_STA_OFF, REDWOOD_STA_IDLE, REDWOOD_STA_SCANNING, REDWOOD_STA_JOINING, REDWOOD_STA_JOINED };
