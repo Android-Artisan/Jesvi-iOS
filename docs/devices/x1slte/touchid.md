@@ -22,11 +22,9 @@ Branch `feat/s20-touchid` (worktree `work/hackios-touchid`) = `main` + `feat/s20
      from several branches: find which one fires;
    - the TA's own log (FUN_00144604) would show it: find where TEEGRIS keeps it.
 2. Enrolled finger forgotten at reboot: catacomb support added (redwood-fpd cat_*, kern.sweet_mesa_catacomb=1), the
-   save sequence runs (61/62/63), but (a) the file stays in biometrickitd's staging folder
-   /var/root/Library/Catacomb/prepare/user_000001f5.cat and is never moved to Catacomb/ (find what BiometricSupport
-   checks after ConfirmSaveCatacomb: redfin's identical kernel path works, compare their SWCT blob / sweetfpcd
-   h_cat_prepare and h_cat_confirm), and (b) at boot biometrickitd asks before redwood-fpd is connected (NotReady)
-   and does not retry: open the bridge before tee_up() in redwood-fpd main().
+   save fixed (2026-11-19): RedwoodMesa refused the master component (user ~0) in 61, so biometrickitd never moved
+   its staged catacomb out of Catacomb/prepare/; forwarded now, Catacomb/master.cat + user_000001f5.cat are written.
+   redwood-fpd answers before TEEGRIS is up (tee_up in a thread) for the boot-time load. Reboot test pending.
 3. The sensor ring (libredwood-touchid-ui in SpringBoard) is not visible on the lock screen.
 4. Popup text shows raw TOUCH_ID_ISSUE_* keys (strings only in a Touch ID iPhone's iOS).
 5. Screen-off / AOD unlock: needs the sensor's WUHB line (Samsung qbt2000_wuhb_irq_handler); we use the touch panel.

@@ -1406,11 +1406,8 @@ mesa_catacomb(uint32_t cmd, const uint8_t *p, uint32_t plen, uint8_t *out, uint3
 	switch (cmd) {
 	case 61:        /* PrepareSaveCatacomb: component -> u32 size */
 		user = cat_component_user(p, plen);
-		if (user == 0xffffffffu) {
-			*how = "catacomb: master component not kept";
-			r = kIOReturnUnsupported;
-			break;
-		}
+		/* (the master component, user ~0, was refused here; biometrickitd then never moved its staged catacomb out of
+		 * Catacomb/prepare/ and forgot the finger at every reboot (S20, 2026-11-19): it is forwarded like a user's) */
 		gCatSize = 0;
 		gCatSavedGen = gCatGen;
 		r = mesa_forward_ms(61, p, plen, rbuf, &rlen, &offline, gCatMs, false);
