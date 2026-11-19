@@ -1,5 +1,6 @@
 # Our TWRP for the Galaxy S20 (x1s / SM-G980F), built on GitHub's machines (the Mac has no room for the ~40 GB tree).
-# Source: TWRP's minimal manifest (twrp-11) + TeamWin's official x1s tree (prebuilt kernel), with our changes from
+# Source: TWRP's minimal manifest (twrp-12.1) + ExtremeXT's unified Exynos 990 tree (the TWRP that works on this
+# phone's current bootloader; TeamWin's official 3.7.0 loses USB), with our changes from
 # tools/twrp/ applied on top (tools/twrp/apply.sh). Output: recovery.img and an Odin AP tar, as a workflow artifact.
 name: TWRP
 on:
@@ -33,9 +34,9 @@ jobs:
       - name: Sync TWRP (shallow)
         run: |
           mkdir -p ~/twrp && cd ~/twrp
-          ~/bin/repo init --depth=1 -q -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11
+          ~/bin/repo init --depth=1 -q -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
           ~/bin/repo sync -q -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
-          git clone -q --depth=1 -b android-11 https://github.com/TeamWin/android_device_samsung_x1s.git device/samsung/x1s
+          git clone -q --depth=1 -b android-12.1 https://github.com/ExtremeXT/android_device_samsung_exynos990.git device/samsung/exynos990
           bash "$GITHUB_WORKSPACE/tools/twrp/apply.sh" ~/twrp
           df -h /
       - name: Build recovery.img
