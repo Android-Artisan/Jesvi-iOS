@@ -371,6 +371,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		cp ../xnu-src/xnu-8796.121.2/bsd/net/pfvar.h ../xnu-src/xnu-8796.121.2/bsd/net/radix.h obj/hotspot-inc/net/
 		cp ../xnu-src/xnu-8796.121.2/libkern/libkern/tree.h obj/hotspot-inc/libkern/
 		for p in rwdhcpd rwpf clat-test; do $DYN -Iobj/hotspot-inc -o obj/$p ../tools/hotspot/$p.c; done
+		# rwsys NAME [VALUE] (sysctl strings): the Store account boot job uses it (it was copied below but never built)
+		$DYN -o obj/rwsys src/rwsys.c
 		$DYN -fobjc-arc -framework Foundation -F "${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks" \
 			-framework MobileWiFi -o obj/misctl ../tools/hotspot/misctl.m &&
 			{ ${LDID:-ldid} -S../tools/hotspot/misctl.ent obj/misctl 2>/dev/null || echo "build.sh: no ldid: misctl unsigned"; }
