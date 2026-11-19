@@ -1,3 +1,12 @@
+## 2026-11-19 (B) — Apple account relay survives reboots; Continuity groundwork (parked)
+
+- What: the App Store / Apple account relay now starts at every boot (its job is in the image; rwsys is built). It
+  used to sit in /var/jb/Library/LaunchDaemons, which our launchd never reads: "MID is invalid" after every reboot.
+  sharingd sees the S20 as hotspot-capable (SIM ready, cellular data on); identityservicesd is in the system image and
+  passes Anisette through the relay. Instant Hotspot itself is parked at Apple's activation wall (no APNs push token).
+- Full write-up: docs/devices/x1slte/continuity.md.
+- Tested on the phone 2026-11-19: App Store sign-in after the relay fix (user); sharingd "tethering support = YES".
+
 ## 2026-11-19 (B, from A's start) — Native Personal Hotspot
 
 - What: iOS's own Personal Hotspot works on the S20. Settings → Personal Hotspot / Control Center switch it; "Jesvi IOS"
