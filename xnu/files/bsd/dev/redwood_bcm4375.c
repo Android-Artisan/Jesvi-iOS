@@ -1044,6 +1044,9 @@ heard_one(const uint8_t *bi, uint32_t avail)
 
 /* brcmf_fweh_process_event(): an Ethernet frame of type 0x886c, Broadcom's event header (big-endian) [fweh]215..248 */
 static volatile bool ap_on;     /* the chip is an access point (Personal Hotspot): client mode refused */
+static uint8_t ap_ssid[32], ap_ssid_length;     /* the access point's name and channel, for state() */
+static uint16_t ap_channel;
+static uint8_t ap_bssid[6];                     /* our address (bcm_ops.address, set at attach) */
 
 /*
  * WPA2 as an access point: the firmware has no authenticator (WLC_SET_WSEC_PMK -23), so the four-way handshake
@@ -2897,7 +2900,7 @@ sta_get_state(struct redwood_sta_state *state)
 		bzero(&state->bss, sizeof(state->bss));
 		memcpy(state->bss.ssid, ap_ssid, ap_ssid_length);
 		state->bss.ssid_length = ap_ssid_length;
-		memcpy(state->bss.bssid, bcm_ops.address, 6);
+		memcpy(state->bss.bssid, ap_bssid, 6);
 		state->bss.frequency = (uint16_t)(ap_channel > 14 ? 5000 + 5 * ap_channel : ap_channel == 14 ? 2484 :
 		    2407 + 5 * ap_channel);
 	}
@@ -3072,6 +3075,7 @@ service_start(void)
 	int err;
 
 	memcpy(bcm_ops.address, mac, 6);
+	memcpy(ap_bssid, mac, 6);
 	memcpy(bcm_link.address, mac, 6);
 	state_set(REDWOOD_STA_IDLE, NULL, 0);
 	link_attached = redwood_net_attach(&bcm_link);
@@ -3339,9 +3343,6 @@ ap_down(void)
 	bzero(ap_gtk, sizeof(ap_gtk));
 	ap_on = false;
 }
-
-static uint8_t ap_ssid[32], ap_ssid_length;     /* the access point's name and channel, for state() */
-static uint16_t ap_channel;
 
 static int
 ap_start(uint32_t channel, const char *ssid, uint32_t sl, const char *pass, uint32_t pl)
