@@ -4285,6 +4285,7 @@ static int stage_last_log(void);
 static const char *stage_write(const char *part, uint64_t off);
 static int usb_boot_asked;
 static void reboot_download(void);
+static void reboot_recovery(void);
 
 static int64_t
 usb_rx(uint8_t *buf, uint64_t len)
@@ -4584,6 +4585,13 @@ fb_command(char *cmd)
 #endif
 			fb_reply("OKAY", "booting iOS");
 			usb_boot_asked = 1;
+		} else if (starts_with(cmd, "oem recovery-mode")) {
+#ifdef CELLULAR_CP_BOOT_PREFLIGHT
+			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
+#endif
+			fb_reply("OKAY", "");
+			BS->stall(200000);
+			reboot_recovery();
 		} else if (starts_with(cmd, "oem download-mode")) {
 #ifdef CELLULAR_CP_BOOT_PREFLIGHT
 			if (!cellular_cp_boot_can_reset()) {fb_reply("FAIL","CP stop not confirmed; use oem cp-stop");return;}
@@ -4975,8 +4983,10 @@ menu_status(const char *title, const char *l1, const char *l2, const char *l3, c
  * (SEC_RESET_REASON_DOWNLOAD), RST_STAT cleared, the software reset.
  */
 #define Y2S_PMU                 0x15860000ULL
+#define SEC_RESET_REASON_DOWNLOAD 0x12345601u
+#define SEC_RESET_REASON_RECOVERY 0x12345604u   /* sec_reboot.c "recovery": S-Boot starts the recovery partition */
 static void
-reboot_download(void)
+reboot_samsung(uint32_t reason)
 {
 	volatile uint32_t *pmu = (volatile uint32_t *)(uintptr_t)Y2S_PMU;
 	uint32_t v = pmu[0x808 / 4];
@@ -4984,7 +4994,7 @@ reboot_download(void)
 	v &= ~(0xffu << 16);
 	v |= 0x4eu << 16;
 	pmu[0x808 / 4] = v;
-	pmu[0x80c / 4] = 0x12345601;
+	pmu[0x80c / 4] = reason;
 	__asm__ volatile ("dsb sy" ::: "memory");
 	pmu[0x404 / 4] = 0;
 	pmu[0x3a00 / 4] = 1u << 1;
@@ -4992,6 +5002,10 @@ reboot_download(void)
 	BS->stall(1000000);
 	ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
 }
+static void reboot_download(void) { reboot_samsung(SEC_RESET_REASON_DOWNLOAD); }
+/* Samsung's `reboot recovery`: TWRP after tools/install/flash-twrp.sh wrote it (Jesvi iOS's BOOT holds this loader too,
+ * so a plain restart comes back here, not to recovery) */
+static void reboot_recovery(void) { reboot_samsung(SEC_RESET_REASON_RECOVERY); }
 
 static void
 power_off(void)
