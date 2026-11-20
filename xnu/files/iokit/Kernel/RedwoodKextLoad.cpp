@@ -45,7 +45,9 @@ redwood_kext_lifs_personality(void)
 	if (p == NULL) {
 		return false;
 	}
-	p->setObject("CFBundleIdentifier", OSString::withCString("com.apple.filesystems.lifs"));
+	/* the owner IOKit looks up before starting the class: the kernel itself, which owns lifs's classes (postModLoad
+	 * above); "com.apple.filesystems.lifs" made it ask user space to load that kext (disabled here) */
+	p->setObject("CFBundleIdentifier", OSString::withCString(kOSKextKernelIdentifier));
 	p->setObject("IOClass", OSString::withCString("com_apple_filesystems_lifs"));
 	p->setObject("IOMatchCategory", OSString::withCString("com_apple_filesystems_lifs"));
 	p->setObject("IOProviderClass", OSString::withCString("IOResources"));
