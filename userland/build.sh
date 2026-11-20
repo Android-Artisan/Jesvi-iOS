@@ -319,6 +319,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# (the kernel's log over the network while iOS runs: PLANS/09-standalone.md, P4)
 		$DYN -o obj/rwlogd src/rwlogd.c
 		$DYN -o obj/m2m_mark src/m2m_mark.c
+		$DYN -framework CoreFoundation -o obj/sd-userfs-start src/sd-userfs-start.c
+		${LDID:-ldid} -Cadhoc -S obj/sd-userfs-start
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 		$DYN -framework CoreFoundation -framework CoreLocation -lobjc -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
 		$DYN -fobjc-arc -framework Foundation -o obj/safari_favourites src/safari_favourites.m
@@ -525,6 +527,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/redwood-defaults ] && cp obj/redwood-defaults root/bin/
 	[ -f obj/safari_favourites ] && cp obj/safari_favourites root/bin/
 	[ -f obj/trollstore_once ] && cp obj/trollstore_once root/bin/
+	[ -f obj/sd-userfs-start ] && cp obj/sd-userfs-start root/bin/
 	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
@@ -768,7 +771,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# (A, 2026-11-14: no job's os_log on the console by default -- with OS_ACTIVITY_DT_MODE backboardd, the window server,
 	# wrote every touch's log lines out on its own threads; stream them with /var/jb/usr/bin/oslog instead, or build
 	# with OSLOG=com.apple.backboardd for the console copy)
-	[ -n "$IOS_JOBS" ] && OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
+	[ -n "$IOS_JOBS" ] && SD_USERFS=${DEVICE:-x1slte} OSLOG=${OSLOG-} ./mkjobs.py ${REST:+--rest} $VOLUME $IOS/rootfs root/LaunchDaemons $IOS_JOBS
 	# after mkjobs, which writes the stock callservicesd job over ours (B, 2026-11-14): the program is in /var/jb/redwood
 	# (python, not plutil: on macOS the build's PATH has xnu-deps/host-macos/bin/plutil, a no-op stand-in)
 	if [ -f root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then

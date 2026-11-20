@@ -230,6 +230,11 @@
    "sha256": "c9334ee316835b12ff46571b30ea68a6f2c9f2bc4ba0de929a67a566d7591d76",
    "why": "our program, built from this repo (user: publish with checksums)"
   },
+  "prebuilt/userland/sd-userfs-start": {
+   "decision": "publish",
+   "sha256": "9f491feb2bb45daf6aca69b16d57f18d8e72f225b316ecb9e21a8a64415bf008",
+   "why": "Repository-owned startup helper from userland/src/sd-userfs-start.c; rebuilt from source and matched byte-for-byte. Links only CoreFoundation and libSystem."
+  },
   "prebuilt/userland/softkeybag-init": {
    "decision": "publish",
    "sha256": "fb84a7d5b4dd24c94809ade386ffe3f792feba373bb6554d708e14cac108396d",

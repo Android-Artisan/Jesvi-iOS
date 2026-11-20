@@ -1752,7 +1752,7 @@ index 07147cb3188b..e937e62bf4c3 100644
  options		FDESC		# fdesc_fs support		# <fdesc>
  options		DEVFS		# devfs support			# <devfs>
 diff --git a/config/MASTER.arm64.bcm2837 b/config/MASTER.arm64.bcm2837
-index 1ed75eea2052..54c5e12d2271 100644
+index 1ed75eea2052..d35a177e0730 100644
 --- a/config/MASTER.arm64.bcm2837
 +++ b/config/MASTER.arm64.bcm2837
 @@ -16,15 +16,15 @@
@@ -1771,7 +1771,7 @@ index 1ed75eea2052..54c5e12d2271 100644
 -#  FILESYS_BASE =   [ devfs fifo fs_compression config_protect config_mnt_rootsnap config_fse routefs namedstreams bindfs]
 +#  BSD_DEV =        [ BSD_BASE config_netboot config_imageboot config_coredump config_vnguard ]
 +#  BSD_DEBUG =      [ BSD_BASE config_netboot config_imageboot config_coredump config_vnguard ]
-+#  FILESYS_BASE =   [ devfs fifo fs_compression config_protect config_mnt_rootsnap config_fse routefs namedstreams bindfs mockfs ramfs apfs ]
++#  FILESYS_BASE =   [ devfs fifo fs_compression config_protect config_mnt_rootsnap config_triggers config_fse routefs namedstreams bindfs mockfs ramfs apfs ]
  #  FILESYS_RELEASE= [ FILESYS_BASE ]
  #  FILESYS_DEV =    [ FILESYS_BASE config_union_mounts fdesc ]
  #  FILESYS_DEBUG =  [ FILESYS_BASE config_union_mounts fdesc ]
@@ -3653,6 +3653,47 @@ index 384118e8d7a9..2573d2ebd4e6 100644
  				 * Framebuffers would normally use VM_WIMG_RT, which
  				 * io_map doesn't support.  However this buffer is set up
  				 * by the bootloader and doesn't require D$ cleaning, so
+diff --git a/osfmk/kern/backtrace.c b/osfmk/kern/backtrace.c
+index fc5d8948fc5e..0311585c50d2 100644
+--- a/osfmk/kern/backtrace.c
++++ b/osfmk/kern/backtrace.c
+@@ -44,19 +44,15 @@
+ #include <ptrauth.h>
+ #endif // defined(HAS_APPLE_PAC)
+ 
+-#if __x86_64__
+ static void
+ _backtrace_packed_out_of_reach(void)
+ {
+ 	/*
+ 	 * This symbol is used to replace frames that have been "JIT-ed"
+ 	 * or dynamically inserted in the kernel by some kext in a regular
+-	 * VM mapping that might be outside of the filesets.
+-	 *
+-	 * This is an Intel only issue.
++	 * VM mapping that might be outside the signed 32-bit offset range.
+ 	 */
+ }
+-#endif
+ 
+ // Pack an address according to a particular packing format.
+ static size_t
+@@ -72,15 +68,11 @@ _backtrace_pack_addr(backtrace_pack_t packing, uint8_t *dst, size_t dst_size,
+ 	case BTP_KERN_OFFSET_32:;
+ 		uintptr_t addr_delta = addr - vm_kernel_stext;
+ 		int32_t addr_packed = (int32_t)addr_delta;
+-#if __x86_64__
+ 		if ((uintptr_t)(int32_t)addr_delta != addr_delta) {
+ 			addr = (vm_offset_t)&_backtrace_packed_out_of_reach;
+ 			addr_delta = addr - vm_kernel_stext;
+ 			addr_packed = (int32_t)addr_delta;
+ 		}
+-#else
+-		assert((uintptr_t)(int32_t)addr_delta == addr_delta);
+-#endif
+ 		if (dst_size >= sizeof(addr_packed)) {
+ 			memcpy(dst, &addr_packed, sizeof(addr_packed));
+ 		}
 diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
 index 0a00656a0fdd..bfad3cbca5bc 100644
 --- a/osfmk/kern/debug.c

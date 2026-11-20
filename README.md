@@ -10,18 +10,37 @@ the same way: a common tree, plus one directory per device.
 
 ## What works on the S20
 
-| | |
+| Area | What works |
 |---|---|
-| Display | FHD+ up to 120 Hz (real ProMotion), auto-brightness, Always-On Display |
-| Graphics | Metal on the Mali-G77; OpenGL ES games through Mesa |
-| Cellular | 4G data, VoLTE calls both ways, SMS in Messages |
-| Cameras | front + three rear lenses by zoom, photo and video with sound |
-| Connectivity | Wi-Fi 2.4/5 GHz, Bluetooth audio, USB networking, Finder file access |
-| System | touch, buttons, vibration, charging, sensors and compass, passcode, persistent data, thermal control |
-| Not yet | fingerprint, full GPS, App Store purchases |
+| Display | FHD+ up to 120 Hz with ProMotion, auto-brightness, Always-On Display (off by default) |
+| Touch and buttons | Multitouch, lock-screen pocket rejection, power and volume buttons |
+| Motion and environmental sensors | Accelerometer, gyroscope, compass, proximity sensor, and ambient light sensor |
+| Graphics | Metal on the Mali-G77 and OpenGL ES through Mesa for supported apps |
+| Audio and haptics | Speaker, earpiece, microphone, Bluetooth audio, and vibration |
+| Cellular | 4G data, incoming and outgoing VoLTE calls, and carrier SMS in Messages |
+| Cameras | Front and three rear lenses with zoom switching, photos, video with sound, main-camera autofocus, and flashlight |
+| Wi-Fi and Bluetooth | 2.4 GHz and 5 GHz Wi-Fi, plus Bluetooth A2DP audio |
+| USB | USB networking, serial console, and Finder file access |
+| Internal storage | Persistent iOS data on UFS and local files under On My iPhone |
+| microSD | Native exFAT read/write in Files. Boot with the card inserted. |
+| Power and charging | Battery level, charging, CPU frequency scaling, idle on small cores with the screen off, and thermal throttling |
+| Lock screen | Passcode setup and unlock |
 
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
 and every change is logged in [SHIPPING.md](docs/SHIPPING.md).
+
+A clean exFAT card with an MBR partition mounts automatically under **Files → Browse → Locations**.
+The card keeps its volume label. Automatic mounting and read/write persistence were verified on the
+SM-G980F across reboots. Shut down before removing the card. Live removal and reinsertion remain
+unsupported. See the [microSD notes](docs/devices/x1slte/sdcard.md).
+
+**Limited or unavailable**
+
+- **GPS** has produced host-assisted fixes. Standalone Core Location fixes are still pending.
+- **Touch ID** has experimental enrollment. Fingerprint unlock is still pending.
+- **App Store** FairPlay DRM, including protected app downloads and purchases, is unfinished.
+- **iMessage, FaceTime, and related Apple services** are unavailable. Carrier SMS works.
+- **Apple Account (Apple ID)** sign-in works with a Hackintosh to supply MID. Standalone sign-in on the S20 remains pending.
 
 ## Install
 
@@ -33,6 +52,19 @@ Everything is in the **[install guide](docs/release/install.md)**: before you st
   Tested on the phone 2026-11-18.
 - **C. Back to Android:** Odin TWRP, the restore ZIP, *Format Data*, flash any ROM. Nothing is repartitioned.
 - **D. If something goes wrong**, and troubleshooting.
+
+## JESViOS TWRP recovery
+
+The [TWRP feature branch](https://github.com/jesvi-eulah/Jesvi-iOS/tree/feat/twrp-x1s) builds the
+SM-G980F recovery on GitHub Actions. A successful run provides a `twrp-x1s` artifact containing
+`recovery.img`, an Odin TAR, source revisions, and SHA-256 checksums.
+[Recovery builds](https://github.com/jesvi-eulah/Jesvi-iOS/actions?query=branch%3Afeat%2Ftwrp-x1s)
+
+The JESViOS recovery build adds raw backups for **System (Super)** and **Data (Userdata)**.
+**Wipe → JESViOS Wipe** opens the installer ZIP picker for a confirmed fresh install or reinstall.
+The recovery can mount microSD and USB-OTG. Its kernel lacks APFS and HFS+ support, so the internal
+iOS system and data volumes use raw backups. The new recovery menus and restore flow still need
+hardware validation. The iOS installer ZIP is built separately. [Installer guide](docs/release/twrp.md)
 
 ## Build
 

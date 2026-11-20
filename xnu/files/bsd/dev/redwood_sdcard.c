@@ -3,9 +3,9 @@
  * 0x132E0000 in HSI1, the block of the embedded UFS and the Wi-Fi PCIe, so always powered while iOS runs).
  *
  * S-Boot leaves the slot initialised: card powered (PWREN 1), clocked (CLKENA 1), 4-bit bus (CTYPE 1), the card in
- * the "tran" state after its own CMD17. This first driver keeps that state and only reads: CMD18 (multiple blocks,
- * block addressing: SDHC/SDXC) with the controller's auto-stop, by PIO through the FIFO at +0x200 (CTRL 0: no
- * IDMAC yet). Read-only; on by default, boot-arg sd=0 switches it off.
+ * the "tran" state after its own CMD17. The driver keeps that state and uses SDHC/SDXC block addressing.
+ * It reads by PIO through the FIFO at +0x200 and uses CMD24 for writes on the first partition.
+ * sd_write=0 makes the slot read-only, and sd=0 disables the driver.
  *
  *   /dev/rsdcard   raw, read-only; its size: the end of the last partition in the card's MBR (the card's own size,
  *                  CSD, needs its RCA, which only a re-identification gives -- next step)
@@ -47,6 +47,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 #define INT_CD          (1u << 2)       /* command done */
 #define INT_DTO         (1u << 3)       /* data transfer over */
+#define INT_TXDR        (1u << 4)
 #define INT_RXDR        (1u << 5)       /* receive FIFO over its watermark */
 #define INT_HTO         (1u << 10)      /* FIFO full, the card clock paused until it is drained: not an error */
 #define INT_ERR         0xbbc2u         /* RE, RCRC, DCRC, RTO, DRTO, FRUN, HLE, SBE, EBE */
@@ -55,14 +56,20 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 #define CMD_HOLD        (1u << 29)
 #define CMD_WAIT_PREV   (1u << 13)
 #define CMD_AUTO_STOP   (1u << 12)
+#define CMD_WRITE       (1u << 10)
 #define CMD_DATA        (1u << 9)
 #define CMD_CRC         (1u << 8)
 #define CMD_RESP        (1u << 6)
 
+#define STATUS_FIFO_FULL (1u << 3)
+#define STATUS_DATA_BUSY (1u << 9)
+#define SD_R1_ERRORS    0xfff9a080u
+
 #define SD_MAX_BLOCKS   128             /* 64 KB per command */
 
 static volatile uint8_t *sd;
-static uint32_t sd_mode = 1;            /* boot-arg sd=: on by default (read-only, the card touched only on open); sd=0 off */
+static uint32_t sd_mode = 1;            /* sd=0 disables the driver */
+static uint32_t sd_write_enabled = 1;  /* sd_write=0 disables partition writes */
 static int sd_ready;
 static uint64_t sd_blocks;              /* 512-byte blocks exposed (minor 0: the card up to its last partition) */
 static uint64_t sd_part_start, sd_part_blocks;  /* minor 1: the first MBR partition */
@@ -155,12 +162,72 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 	return 0;
 }
 
+static int
+sd_wait_not_busy(void)
+{
+	for (unsigned i = 0; i < 1000; i++) {
+		if (!(rd(R_STATUS) & STATUS_DATA_BUSY)) {
+			return 0;
+		}
+		IOSleep(1);
+	}
+	return ETIMEDOUT;
+}
+
+/* Send one SDHC block with CMD24. Caller holds sd_lock. */
+static int
+sd_write_sector(uint64_t lba, const uint64_t *data)
+{
+	uint32_t status = 0;
+	unsigned sent = 0;
+
+	if (lba > UINT32_MAX) {
+		return EINVAL;
+	}
+	int error = sd_wait_not_busy();
+	if (error != 0) {
+		return error;
+	}
+	wr(R_RINTSTS, UINT32_MAX);
+	wr(R_BLKSIZ, 512);
+	wr(R_BYTCNT, 512);
+	wr(R_CMDARG, (uint32_t)lba);
+	wr(R_CMD, CMD_START | CMD_HOLD | CMD_WAIT_PREV | CMD_WRITE | CMD_DATA | CMD_CRC | CMD_RESP | 24u);
+
+	error = ETIMEDOUT;
+	for (unsigned i = 0; i < 10000; i++) {
+		status = rd(R_RINTSTS);
+		if ((status & INT_ERR) || ((status & INT_CD) && (rd(R_RESP0) & SD_R1_ERRORS))) {
+			error = EIO;
+			break;
+		}
+		while (sent < 64 && !(rd(R_STATUS) & STATUS_FIFO_FULL)) {
+			*(volatile uint64_t *)(sd + R_FIFO) = data[sent++];
+		}
+		if (status & INT_TXDR) {
+			wr(R_RINTSTS, INT_TXDR);
+		}
+		if ((status & (INT_CD | INT_DTO)) == (INT_CD | INT_DTO)) {
+			error = sent == 64 ? sd_wait_not_busy() : EIO;
+			break;
+		}
+		delay(10);
+	}
+	sd_last_int = status;
+	wr(R_RINTSTS, UINT32_MAX);
+	if (error != 0) {
+		sd_errors++;
+	}
+	return error;
+}
+
 static int sd_probe(void);
 
 static int
-sd_copen(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
+sd_copen(dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
 {
-	if (flags & FWRITE) {
+	/* UVFS opens the partition O_RDWR before querying DKIOCISWRITABLE. */
+	if (minor(dev) != 1 && (flags & FWRITE)) {
 		return EROFS;
 	}
 	if (!sd_ready) {
@@ -217,6 +284,51 @@ sd_cread(dev_t dev, struct uio *uio, __unused int ioflag)
 }
 
 static int
+sd_cwrite(dev_t dev, struct uio *uio, __unused int ioflag)
+{
+	/* Samsung disables the unconnected write-protect pin for dwmmc2. */
+	if (minor(dev) != 1 || !sd_write_enabled) {
+		return EROFS;
+	}
+	if (!sd_ready) {
+		return ENXIO;
+	}
+	off_t offset = uio_offset(uio);
+	user_ssize_t count = uio_resid(uio);
+	uint64_t size = sd_part_blocks * 512;
+	if (offset < 0 || offset % 512 != 0 || count < 0 || count % 512 != 0 ||
+	    (uint64_t)offset > size || (uint64_t)count > size - (uint64_t)offset) {
+		return EINVAL;
+	}
+	if (count == 0) {
+		return 0;
+	}
+
+	uio_t input = uio_duplicate(uio);
+	if (input == NULL) {
+		return ENOMEM;
+	}
+	uint64_t data[64];
+	int error = 0;
+	while (uio_resid(input) > 0) {
+		uint64_t lba = sd_part_start + (uint64_t)uio_offset(input) / 512;
+		error = uiomove((caddr_t)data, sizeof(data), input);
+		if (error != 0) {
+			break;
+		}
+		lck_mtx_lock(&sd_lock);
+		error = sd_write_sector(lba, data);
+		lck_mtx_unlock(&sd_lock);
+		if (error != 0) {
+			break;
+		}
+		uio_update(uio, sizeof(data));
+	}
+	uio_free(input);
+	return error;
+}
+
+static int
 sd_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unused struct proc *p)
 {
 	switch (cmd) {
@@ -231,10 +343,14 @@ sd_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unused struct
 	case DKIOCGETMAXBLOCKCOUNTWRITE:
 		*(uint64_t *)data = SD_MAX_BLOCKS;
 		return 0;
-	case DKIOCSYNCHRONIZECACHE:
-		return 0;
+	case DKIOCSYNCHRONIZECACHE: {
+		lck_mtx_lock(&sd_lock);
+		int error = sd_write_enabled ? sd_wait_not_busy() : 0;
+		lck_mtx_unlock(&sd_lock);
+		return error;
+	}
 	case DKIOCISWRITABLE:
-		*(uint32_t *)data = 0;
+		*(uint32_t *)data = minor(dev) == 1 && sd_write_enabled;
 		return 0;
 	default:
 		return ENOTTY;
@@ -245,7 +361,7 @@ static const struct cdevsw sd_cdevsw = {
 	.d_open       = sd_copen,
 	.d_close      = sd_cclose,
 	.d_read       = sd_cread,
-	.d_write      = eno_rdwrt,
+	.d_write      = sd_cwrite,
 	.d_ioctl      = sd_ioctl,
 	.d_stop       = eno_stop,
 	.d_reset      = eno_reset,
@@ -309,19 +425,19 @@ sd_probe(void)
 		return ENXIO;
 	}
 	sd_ready = 1;
-	snprintf(sd_state, sizeof(sd_state), "ready, read-only: %llu MB (to the last partition), DW MMC %#x, 4-bit, S-Boot's setup",
+	snprintf(sd_state, sizeof(sd_state), "ready: %llu MB (to the last partition), DW MMC %#x, 4-bit, S-Boot's setup",
 	    sd_blocks / 2048, sd_verid);
 	printf("sdcard: %s\n", sd_state);
 	return 0;
 }
 
 extern int redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_t part_start, uint64_t part_blocks,
-    unsigned part_type);
+    unsigned part_type, int writable);
 
 /*
  * At boot (2026-11-21): the card read once IOKit and devfs are up, then /dev/disk9 + rdisk9 (the card) and disk9s1 +
  * rdisk9s1 (its first partition) and the IOKit disk userfsd matches (iokit/Kernel/RedwoodSDMedia.cpp). Character
- * devices, read-only, readable by mobile (userfsd's file-system service runs as mobile; writes are refused anyway).
+ * devices. The file-system service requests a descriptor from Apple's privileged userfs_helper.
  */
 static void
 sd_boot_thread(__unused void *arg, __unused wait_result_t wr)
@@ -340,9 +456,10 @@ sd_boot_thread(__unused void *arg, __unused wait_result_t wr)
 	(void)devfs_make_node(makedev(sd_cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "rdisk%d", SD_UNIT);
 	(void)devfs_make_node(makedev(sd_cmaj, 1), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "disk%ds1", SD_UNIT);
 	(void)devfs_make_node(makedev(sd_cmaj, 1), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "rdisk%ds1", SD_UNIT);
-	error = redwood_sdmedia_publish(SD_UNIT, sd_cmaj, sd_blocks, sd_part_start, sd_part_blocks, sd_part_type);
-	snprintf(sd_state, sizeof(sd_state), "ready, read-only: disk%d %llu MB, disk%ds1 type %#x at %llu, %llu MB; IOKit %s",
-	    SD_UNIT, sd_blocks / 2048, SD_UNIT, sd_part_type, sd_part_start, sd_part_blocks / 2048, error == 0 ? "published" : "FAILED");
+	error = redwood_sdmedia_publish(SD_UNIT, sd_cmaj, sd_blocks, sd_part_start, sd_part_blocks, sd_part_type, sd_write_enabled);
+	snprintf(sd_state, sizeof(sd_state), "ready: disk%d %llu MB, disk%ds1 type %#x at %llu, %llu MB (%s); IOKit %s",
+	    SD_UNIT, sd_blocks / 2048, SD_UNIT, sd_part_type, sd_part_start, sd_part_blocks / 2048,
+	    sd_write_enabled ? "read-write" : "read-only", error == 0 ? "published" : "FAILED");
 	printf("sdcard: %s\n", sd_state);
 }
 
@@ -354,6 +471,7 @@ redwood_sdcard_init(void)
 	thread_t t;
 
 	(void)PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode));
+	(void)PE_parse_boot_argn("sd_write", &sd_write_enabled, sizeof(sd_write_enabled));
 	if (sd_mode == 0) {
 		return;
 	}
