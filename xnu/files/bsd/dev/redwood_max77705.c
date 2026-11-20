@@ -188,6 +188,7 @@ status_name(int status)
 
 enum hv_state { HV_IDLE, HV_ACTIVE, HV_FAILED, HV_FAULT };
 static uint32_t hv_on;
+static unsigned plugged_polls;          /* polls since the cable went in (charger_limits) */
 static enum hv_state hv_state;
 static unsigned hv_tries, hv_pdo, pd5_ma;   /* pd5_ma: the 5 V PD contract's current, when 9 V is not had */
 static bool hv_pd;
@@ -389,6 +390,7 @@ charger_limits(bool external, int32_t temp_hundredths)
 		hv_state = HV_IDLE;
 		hv_tries = 0;
 		pd5_ma = 0;
+		plugged_polls = 0;
 		charger_write_limits(0, 0);
 		return;
 	}
@@ -406,7 +408,19 @@ charger_limits(bool external, int32_t temp_hundredths)
 			hv_state = HV_FAILED;
 		}
 	}
-	if (hv_on && hv_state == HV_IDLE && warm_ok && (type == 3 || type == 0 || type == 2)) {
+	if (plugged_polls < 1000) {
+		plugged_polls++;
+	}
+	/*
+	 * 9 V only from a charger, never a computer: AFC talks on D+/D-, the USB data lines -- on a Mac's port (detected
+	 * as type 3) it broke the link and the Mac cut the port, charge and data both (2026-11-20). So only after the cable
+	 * has been in for 3 polls (a computer configures the link within that) with no host on the link.
+	 */
+	if (hv_on && hv_state == HV_IDLE && redwood_usb_gadget_host()) {
+		hv_state = HV_FAILED;
+		m2m_klog('I', "DEV", "bms: hv: a computer on the USB link: 5 V only on this plug-in");
+	}
+	if (hv_on && hv_state == HV_IDLE && plugged_polls >= 3 && warm_ok && (type == 3 || type == 0 || type == 2)) {
 		if (hv_try(type)) {
 			hv_state = HV_ACTIVE;
 			m2m_klog('I', "DEV", "bms: hv: 9 V by %s, VBUS ADC %u", hv_pd ? "USB PD" : "AFC", vbus_adc());
