@@ -25,6 +25,15 @@ userfsd expects (likely `diskN` / `rdiskNs1`: add those nodes in redwood_sdcard.
 Tools: tools/sdcard/. Build: `xcrun clang -target arm64-apple-ios15.0 -isysroot ~/theos/sdks/iPhoneOS16.5.sdk -fobjc-arc -framework
 Foundation -o sdmount sdmount.m && ldid -Ssdmount.ent sdmount`.
 
+## Found 2026-11-20 (evening): why userfsd never answers
+With a live log (tools/oslogq: LoggingSupport's live stream) userfsd stops at `cleanUpStateIfNeeded:start`: it asks
+livefileproviderd (`machp://com.apple.filesystems.livefileproviderd`, the mounter) about kernel mounts, and
+livefileproviderd exits at start: `main:lifs:v2:1`, "Didn't find matching client", "get client returned e0000001",
+"sending mach port to kernel: -536870911" -- it needs **Apple's lifs.kext** (LiveFS user client). So the native route
+is: a lifs stand-in in our kernel (the user client livefileproviderd hands its port to, and a VFS that forwards vnode
+operations to it), then userfsd/addDisk work. That is a kernel project of several days. livefileproviderd is denied
+in userland/mkjobs.py meanwhile (it restarted every 10 s).
+
 ## Fallback
 Our own File Provider extension ("SD Card" location) on the hidden Files host, using livefiles_exfat.dylib's plugin
 API directly on /dev/rsdcard. 1-2 days.
