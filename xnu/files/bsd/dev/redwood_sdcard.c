@@ -64,6 +64,7 @@ static uint32_t sd_mode;                /* boot-arg sd= */
 static int sd_ready;
 static uint64_t sd_blocks;              /* 512-byte blocks exposed */
 static uint32_t sd_reads, sd_errors, sd_last_int;
+static char sd_dbg[200];
 LCK_GRP_DECLARE(sd_lck_grp, "redwood-sdcard");
 LCK_MTX_DECLARE(sd_lock, &sd_lck_grp);
 
@@ -101,8 +102,16 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 	wr(R_CMDARG, (uint32_t)lba);
 	wr(R_CMD, CMD_START | CMD_HOLD | CMD_WAIT_PREV | (count > 1 ? CMD_AUTO_STOP : 0) | CMD_DATA | CMD_CRC | CMD_RESP |
 	    (count > 1 ? 18u : 17u));
+	uint32_t st0 = rd(R_STATUS), loops = 0, stmax = 0;
 	for (;;) {
+		loops++;
 		st = rd(R_RINTSTS);
+		{
+			uint32_t x = rd(R_STATUS);
+			if (((x >> 17) & 0x1fff) > ((stmax >> 17) & 0x1fff)) {
+				stmax = x;
+			}
+		}
 		if (st & INT_ERR) {
 			break;
 		}
@@ -128,6 +137,8 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 		}
 	}
 	sd_last_int = st;
+	snprintf(sd_dbg, sizeof(sd_dbg), "cmd %#x: STATUS before %#x, fullest %#x, end %#x; loops %u, words %u/%u; CTRL %#x TBBCNT %#x",
+	    rd(R_CMD), st0, stmax, rd(R_STATUS), loops, got, want, rd(R_CTRL), rd(0x60));
 	wr(R_RINTSTS, 0xffffffff);
 	if ((st & (INT_ERR | (1u << 30))) || got < want) {
 		sd_errors++;
@@ -237,6 +248,7 @@ SYSCTL_DECL(_kern_redwood);
 SYSCTL_STRING(_kern_redwood, OID_AUTO, sdcard, CTLFLAG_RD | CTLFLAG_LOCKED, sd_state, 0, "the microSD slot");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_reads, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_reads, 0, "reads done");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_errors, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_errors, 0, "reads failed");
+SYSCTL_STRING(_kern_redwood, OID_AUTO, sdcard_dbg, CTLFLAG_RD | CTLFLAG_LOCKED, sd_dbg, 0, "the last transfer, in detail");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_last_int, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_last_int, 0, "last RINTSTS");
 
 static uint32_t sd_verid;
