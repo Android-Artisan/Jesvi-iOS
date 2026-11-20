@@ -621,6 +621,55 @@ bigpark_check(int a76, int m5)
 	lck_mtx_unlock(&scroff_lock);
 }
 
+/* Darwin thermal pressure values used by SpringBoard on iOS 16.5.
+ * The warning starts just before the default 96 C M5 hotplug threshold.
+ * Keep it active down to 91 C. This does not change hardware protection.
+ */
+static int thermal_pressure = -1;
+
+static int
+sysctl_thermal_pressure SYSCTL_HANDLER_ARGS
+{
+	int value = os_atomic_load(&thermal_pressure, relaxed);
+	return sysctl_handle_int(oidp, &value, 0, req);
+}
+
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_PROC(_kern_redwood, OID_AUTO, thermal_pressure, CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED,
+    NULL, 0, sysctl_thermal_pressure, "I", "Darwin thermal pressure, or -1 before a valid Exynos TMU sample");
+
+static void
+thermal_pressure_sample(const int temp[4])
+{
+	int hottest = -1;
+	bool complete = true;
+
+	for (unsigned z = 0; z < 4; z++) {
+		if (temp[z] < 0) {
+			complete = false;
+		}
+		if (temp[z] > hottest) {
+			hottest = temp[z];
+		}
+	}
+	if (hottest < 0) {
+		return;
+	}
+	int previous = os_atomic_load(&thermal_pressure, relaxed);
+	int pressure = 0;
+	if (hottest >= 95 || (previous >= 40 && hottest > 91)) {
+		pressure = 40;
+	} else if (hottest >= 88 || (previous >= 30 && hottest > 86)) {
+		pressure = 30;
+	} else if (hottest >= 80 || (previous >= 20 && hottest > 78)) {
+		pressure = 20;
+	}
+	/* A missing reading can never clear a warning. */
+	if (complete || pressure > previous) {
+		os_atomic_store(&thermal_pressure, pressure, relaxed);
+	}
+}
+
 /* from the thermal step, with the BIG zone's temperature */
 static void
 bigoff_check(int t)
@@ -707,7 +756,6 @@ power_profile(void)
 	return redwood_lowpower && prof_lpm ? PROF_LPM : PROF_NORMAL;
 }
 
-SYSCTL_DECL(_kern_redwood);
 SYSCTL_INT(_kern_redwood, OID_AUTO, lowpower, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_lowpower, 0,
     "Low Power Mode: 1 caps the clocks (redwood_exynos_acpm.c)");
 static int
@@ -1432,6 +1480,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				therm_fast = 1;
 			}
 		}
+		thermal_pressure_sample(temp);
 		if (mode >= 2) {
 			bigoff_check(temp[0]);          /* zones[0] = "big" */
 			if (dyncap) {
