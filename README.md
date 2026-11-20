@@ -10,21 +10,29 @@ the same way: a common tree, plus one directory per device.
 
 ## What works on the S20
 
+### Hardware
+
 | Area | What works |
 |---|---|
 | Display | QHD, FHD+, and FHD modes, 60 Hz and 120 Hz, True Tone, auto-brightness, and Always-On Display (off by default) |
 | Touch and buttons | Multitouch, lock-screen pocket rejection, power and volume buttons |
-| Motion and environmental sensors | Accelerometer, gyroscope, compass, proximity sensor, and ambient light sensor |
+| Sensors | Accelerometer, gyroscope, compass, proximity, and ambient light |
 | Location | Standalone GPS through Core Location |
+| Cameras | Front and three rear lenses with zoom switching, photos, video with sound, and main-camera autofocus |
+| Audio | Speaker, earpiece, microphone, and Bluetooth A2DP audio |
+| Haptics and flashlight | Vibration and the rear LED. Both pause at the 45 °C battery temperature limit. |
+| Power and charging | Battery level and temperature, charging, CPU frequency scaling, screen-off idle, and thermal throttling |
+
+### iOS and connectivity
+
+| Area | What works |
+|---|---|
 | Graphics | Metal on the Mali-G77 and OpenGL ES through Mesa for supported apps |
-| Audio and haptics | Speaker, earpiece, microphone, Bluetooth audio, and vibration |
 | Cellular | 4G data, incoming and outgoing VoLTE calls, and carrier SMS in Messages |
-| Cameras | Front and three rear lenses with zoom switching, photos, video with sound, main-camera autofocus, and flashlight |
-| Wi-Fi and Bluetooth | 2.4 GHz and 5 GHz Wi-Fi, plus Bluetooth A2DP audio |
+| Wi-Fi | 2.4 GHz and 5 GHz Wi-Fi |
 | USB | USB networking, serial console, and Finder file access |
 | Internal storage | Persistent iOS data on UFS and local files under On My iPhone |
 | microSD | Native exFAT read/write in Files. Boot with the card inserted. |
-| Power and charging | Battery level, charging, CPU frequency scaling, idle on small cores with the screen off, and thermal throttling |
 | Lock screen | Passcode setup and unlock |
 
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
