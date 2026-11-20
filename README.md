@@ -12,9 +12,10 @@ the same way: a common tree, plus one directory per device.
 
 | Area | What works |
 |---|---|
-| Display | FHD+ up to 120 Hz with ProMotion, auto-brightness, Always-On Display (off by default) |
+| Display | QHD, FHD+, and FHD modes, 60 Hz and 120 Hz, True Tone, auto-brightness, and Always-On Display (off by default) |
 | Touch and buttons | Multitouch, lock-screen pocket rejection, power and volume buttons |
 | Motion and environmental sensors | Accelerometer, gyroscope, compass, proximity sensor, and ambient light sensor |
+| Location | Standalone GPS through Core Location |
 | Graphics | Metal on the Mali-G77 and OpenGL ES through Mesa for supported apps |
 | Audio and haptics | Speaker, earpiece, microphone, Bluetooth audio, and vibration |
 | Cellular | 4G data, incoming and outgoing VoLTE calls, and carrier SMS in Messages |
@@ -36,8 +37,7 @@ unsupported. See the [microSD notes](docs/devices/x1slte/sdcard.md).
 
 **Limited or unavailable**
 
-- **GPS** has produced host-assisted fixes. Standalone Core Location fixes are still pending.
-- **Touch ID** has experimental enrollment. Fingerprint unlock is still pending.
+- **Touch ID** is implemented. Fingerprint matching on the S20 sensor is still a work in progress.
 - **App Store** FairPlay DRM, including protected app downloads and purchases, is unfinished.
 - **iMessage, FaceTime, and related Apple services** are unavailable. Carrier SMS works.
 - **Apple Account (Apple ID)** sign-in works with a Hackintosh to supply MID. Standalone sign-in on the S20 remains pending.
