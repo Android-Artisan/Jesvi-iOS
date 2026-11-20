@@ -17,11 +17,17 @@ the same way: a common tree, plus one directory per device.
 | Cellular | 4G data, VoLTE calls both ways, SMS in Messages |
 | Cameras | front + three rear lenses by zoom, photo and video with sound |
 | Connectivity | Wi-Fi 2.4/5 GHz, Bluetooth audio, USB networking, Finder file access |
+| microSD | Native exFAT read/write in Files. Boot with the card inserted. |
 | System | touch, buttons, vibration, charging, sensors and compass, passcode, persistent data, thermal control |
 | Not yet | fingerprint, full GPS, App Store purchases |
 
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
 and every change is logged in [SHIPPING.md](docs/SHIPPING.md).
+
+A clean exFAT card with an MBR partition mounts automatically under **Files → Browse → Locations**.
+The card keeps its volume label. Automatic mounting and read/write persistence were verified on the
+SM-G980F across reboots. Shut down before removing the card. Live removal and reinsertion remain
+unsupported. See the [microSD notes](docs/devices/x1slte/sdcard.md).
 
 ## Install
 
@@ -33,6 +39,19 @@ Everything is in the **[install guide](docs/release/install.md)**: before you st
   Tested on the phone 2026-11-18.
 - **C. Back to Android:** Odin TWRP, the restore ZIP, *Format Data*, flash any ROM. Nothing is repartitioned.
 - **D. If something goes wrong**, and troubleshooting.
+
+## JESViOS TWRP recovery
+
+The [TWRP feature branch](https://github.com/jesvi-eulah/Jesvi-iOS/tree/feat/twrp-x1s) builds the
+SM-G980F recovery on GitHub Actions. A successful run provides a `twrp-x1s` artifact containing
+`recovery.img`, an Odin TAR, source revisions, and SHA-256 checksums.
+[Recovery builds](https://github.com/jesvi-eulah/Jesvi-iOS/actions?query=branch%3Afeat%2Ftwrp-x1s)
+
+The JESViOS recovery build adds raw backups for **System (Super)** and **Data (Userdata)**.
+**Wipe → JESViOS Wipe** opens the installer ZIP picker for a confirmed fresh install or reinstall.
+The recovery can mount microSD and USB-OTG. Its kernel lacks APFS and HFS+ support, so the internal
+iOS system and data volumes use raw backups. The new recovery menus and restore flow still need
+hardware validation. The iOS installer ZIP is built separately. [Installer guide](docs/release/twrp.md)
 
 ## Build
 
