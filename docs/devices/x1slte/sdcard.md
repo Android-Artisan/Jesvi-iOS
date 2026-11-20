@@ -42,3 +42,19 @@ diskarbitrationd hand it to UserFS.
 5. **Speed**: high speed 50 MHz, then UHS (switch vqmmc to 1.8 V, CMD11, tuning for SDR104) with Samsung's timings.
 
 Boot argument for every step (project rule): `sd=0` off (default until it works), `sd=1` probe/log, `sd=2` block device.
+
+## First read from iOS (2026-11-20, user's 128 GB exFAT card)
+
+S-Boot leaves the slot **initialised**: CMU_HSI1 gates forced on (MMC_CARD I_ACLK 0x201c / SDCLKIN 0x2020 =
+0x00300000, QCH 0x3038 = 0x003f0002, user mux 0x610 = 0x10), and DWMMC2 with VERID 0x5342270a (DW MMC 2.70a), PWREN 1,
+CLKENA 1, CTYPE 1 (4-bit), last command 0x20002351 (CMD17), RESP0 0x900 (card in tran, ready). HSI1 also holds the
+embedded UFS and the Wi-Fi PCIe, so it is powered whenever iOS runs: reading these is safe.
+
+Sector 0 read with only register writes (kern.redwood.poke): RINTSTS = ~0, BLKSIZ 0x200, BYTCNT 0x200, CMDARG 0,
+CMD 0xa0002351 (start | use_hold_reg | CMD17 with data); then 2 x 64 words from the FIFO at +0x200 (PIO: CTRL 0).
+RINTSTS 0x2c (command done, data over). The MBR came back: disk signature e7a96ad2, one partition type 0x07 (exFAT)
+at LBA 2048, ~250 M sectors, 0x55AA. So steps 1-3 of the plan reduce to: keep S-Boot's state, read/write with
+CMD17/18/24/25 (block addressing, SDHC/SDXC), re-initialise only after a card change (card detect GPA1-5).
+
+Next: the kernel driver -- an IOBlockStorageDevice (Removable, Ejectable) over this controller (PIO first, then IDMAC),
+behind boot-arg sd=; then check that diskarbitrationd hands it to UserFS and Files shows it.
