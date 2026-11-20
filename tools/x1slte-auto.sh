@@ -11,7 +11,7 @@ else
 	st=$($HOME/ios-port-research/tools/phone-lock.sh status); case "$st" in *held*) echo "[auto] $st (set CLAUDE_SESSION=NAME to deploy as the holder)"; exit 3 ;; esac
 fi
 # the phone over the USB cable when its network is up there (tools/phone-ip), else Wi-Fi; asked again after the restart
-IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-192.168.137.106}); F=${1:-userland/system.apfs}; T=$(date +%Y%m%d-%H%M%S); D=logs/runs/$T; mkdir -p $D
+IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-10.77.0.2}); F=${1:-userland/system.apfs}; T=$(date +%Y%m%d-%H%M%S); D=logs/runs/$T; mkdir -p $D
 up() { [ "$(curl -s -m 4 -o /dev/null -w '%{http_code}' http://$IP:8080/)" = 200 ]; }
 wake() { ping -c1 -t1 $IP >/dev/null 2>&1; }
 echo "[auto] phone at $IP ($([ "$IP" = "${Y2S_USB_IP:-10.77.0.2}" ] && echo USB cable || echo Wi-Fi))"

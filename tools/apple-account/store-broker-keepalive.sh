@@ -48,6 +48,6 @@ python3 -u tools/apple-account/phone-helper-tunnel.py --ssh-config "$CONF" >>"$P
 sleep 2
 log "starting broker (foreground)"
 exec python3 -u tools/apple-account/native-provider-server.py \
-  --host jesvi@account-hackintosh --ssh-config "$CONF" \
+  --host "${HACKINTOSH_SSH_HOST:?Set HACKINTOSH_SSH_HOST to your SSH target}" --ssh-config "$CONF" \
   --helper hackintosh-provider-v8 --media-helper native-media-provider-v4 \
   --key "$P/hackintosh_ed25519" --known-hosts "$KH" --token-file "$P/broker-token"

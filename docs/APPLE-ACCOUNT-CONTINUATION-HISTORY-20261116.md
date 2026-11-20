@@ -520,7 +520,7 @@ Stop asking for repeated retries without a specific new test or change.
 
 ## Current live setup (rechecked at handoff)
 
-- Phone Wi-Fi SSH: existing s20 config, Hostname192.168.137.100,
+- Phone Wi-Fi SSH: existing s20 config, Hostname192.0.2.10,
   HostKeyAlias10.77.0.2. USB10.77.0.2 is intermittent. Preserve host checking.
 - Injection bridge: `/var/tmp/anisette-lab-bridge-v13.dylib Preferences akd`.
 - Passive probe: `/var/tmp/network-error-probe-v5.dylib Preferences akd accountsd appleaccountd`.
@@ -533,7 +533,7 @@ Stop asking for repeated retries without a specific new test or change.
 - Local native broker127.0.0.1:49741, PID66881, exec session27833.
 - Owned reverse Wi-Fi tunnel PID57071, exec session3471:
   phone127.0.0.1:49742 -> local127.0.0.1:49741.
-- Hackintosh `jesvi@192.168.137.114`, Intel macOS15.8.1 build24H32.
+- Hackintosh `user@hackintosh.example`, Intel macOS15.8.1 build24H32.
   Isolated binary `~/.local/share/redwood-account-lab/hackintosh-provider-v5`.
   Dedicated key and pinned known-host file are in ignored out/apple-account/private/:
   `hackintosh_ed25519`, `hackintosh-known-hosts`. Never print/copy private key.

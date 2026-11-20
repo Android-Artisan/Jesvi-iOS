@@ -106,7 +106,7 @@ Native helper check, safe boolean output only (may initialize native signing
 context, but does not perform an account login):
 
 ```sh
-ssh -i out/apple-account/private/hackintosh_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=out/apple-account/private/hackintosh-known-hosts -o ConnectTimeout=5 jesvi@192.168.137.114 '.local/share/redwood-account-lab/hackintosh-provider-v7 --check'
+ssh -i out/apple-account/private/hackintosh_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=out/apple-account/private/hackintosh-known-hosts -o ConnectTimeout=5 user@hackintosh.example '.local/share/redwood-account-lab/hackintosh-provider-v7 --check'
 ```
 
 **Never run the helper's --stdio mode directly in a terminal or text-returning
@@ -123,13 +123,13 @@ ownership. Keep both Macs awake.
 Run broker in a persistent tool/shell session:
 
 ```sh
-python3 -u tools/apple-account/native-provider-server.py --host jesvi@192.168.137.114 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
+python3 -u tools/apple-account/native-provider-server.py --host user@hackintosh.example --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
 ```
 
 Run the owned reverse tunnel in a separate persistent session if absent:
 
 ```sh
-ssh -o Hostname=192.168.137.100 -o HostKeyAlias=10.77.0.2 -o ConnectTimeout=4 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -N -R 127.0.0.1:49742:127.0.0.1:49741 s20
+ssh -o Hostname=192.0.2.10 -o HostKeyAlias=10.77.0.2 -o ConnectTimeout=4 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -N -R 127.0.0.1:49742:127.0.0.1:49741 s20
 ```
 
 Phone connection.json already targets127.0.0.1:49742 with the existing private token.

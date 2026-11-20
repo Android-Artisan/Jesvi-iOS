@@ -206,7 +206,7 @@ Updated: 2026-11-16. No successful native account sign-in has been demonstrated.
 ## CURRENT: native Hackintosh provider / v8 trial pending
 
 - User added the dedicated SSH public key. Successfully connected as
-  jesvi@192.168.137.114 using the task key and pinned private known-host file.
+  user@hackintosh.example using the task key and pinned private known-host file.
   Hackintosh is Intel x86_64 macOS15.8.1 build24H32. No administrator permission
   needed for the probes/helper. Isolated binaries under
   ~/.local/share/redwood-account-lab/. No account/keychain/database reads,
@@ -300,7 +300,7 @@ Updated: 2026-11-16. No successful native account sign-in has been demonstrated.
   packet/service diagnostics. No packet sniffer was found on S20; no TLS
   interception or broad packet capture has been performed. Existing metadata
   capture already establishes serverHTTP400 rather than transport timeout.
-- Hackintosh access supplied: jesvi@192.168.137.114. SSH reachable. First-contact
+- Hackintosh access supplied: user@hackintosh.example. SSH reachable. First-contact
   host key saved via accept-new into private hackintosh-known-hosts, changed keys
   remain refused. Batch login rejected for missing authorization. No password
   requested or used.
@@ -393,7 +393,7 @@ Updated: 2026-11-16. No successful native account sign-in has been demonstrated.
   IMG_0238.PNG independently confirms exact text “Could Not Sign In / Could not
   communicate with the server.” IMG_0239.PNG shows “Signing in to iCloud…”. These
   do not establish successful authentication or completed account registration.
-- USB SSH timed out; Wi-Fi SSH at 192.168.137.100 with HostKeyAlias=10.77.0.2
+- USB SSH timed out; Wi-Fi SSH at 192.0.2.10 with HostKeyAlias=10.77.0.2
   works. Broker port 49731 is still listening. Use the verified Wi-Fi route.
 - Existing SRP probe log contained only its installation marker: no error from
   the previous user attempt was captured. Do not infer an error code from it.
@@ -544,7 +544,7 @@ Last reported setup was enabled for trial version 4. Runtime has NOT been rechec
 - Host broker: loopback port 49731.
 - Phone tunnel endpoint: loopback port 49732.
 - Phone private config/status: `/var/mobile/Library/RedwoodAppleAccountLab/` (`connection.json`, `status.log`). Never print the config/token or machine headers.
-- Last verified Wi-Fi SSH address: 192.168.137.100, using existing s20 SSH configuration and verified HostKeyAlias 10.77.0.2. USB SSH at 10.77.0.2 has been intermittent. Recheck addresses; do not disable host-key checking.
+- Last verified Wi-Fi SSH address: 192.0.2.10, using existing s20 SSH configuration and verified HostKeyAlias 10.77.0.2. USB SSH at 10.77.0.2 has been intermittent. Recheck addresses; do not disable host-key checking.
 - Last phone-lock owner reported: `codex-gps`; current ownership is unverified. Consult workspace NEXT.md, TASKS.md and phone-lock status before device changes. Do not steal another worker's lock.
 - No reboot was performed for this experiment. Ask the user before any reboot.
 

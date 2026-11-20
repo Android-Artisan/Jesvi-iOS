@@ -2,7 +2,7 @@
 # x1slte-sndtest.sh "KNOBS" ["KNOBS" ...]: for each set of sound boot-args: payload + pack + hands-free flash + boot,
 # then the audio driver's own start-up check from the kernel log (does RDMA3 read frames?).
 cd "$(dirname "$0")/.."
-IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-192.168.137.106}); R=logs/sndtest-$(date +%H%M%S).txt
+IP=$(phone-ip 2>/dev/null || echo ${Y2S_WIFI_IP:-10.77.0.2}); R=logs/sndtest-$(date +%H%M%S).txt
 ./x1slte.sh kernel 2>&1 | tail -1
 grep -E "redwood_exynos_sound.c:[0-9]+:[0-9]+: (error|warning)" out/kernel-build.log && exit 1
 for k in "$@"; do

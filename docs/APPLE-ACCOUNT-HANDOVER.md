@@ -352,7 +352,7 @@ rejected by Hackintosh key was then separately confirmed against S20's own pin;
 no keys changed/host-check disabling. USB10.77.0.2 currently not reachable.
 
 Private account-hotspot-ssh.conf defines s20 scoped IPv6 with HostKeyAlias10.77.0.2,
-account-hackintosh BonjourIPv6 with HostKeyAlias192.168.137.114, then Host* Include
+account-hackintosh BonjourIPv6 with HostKeyAlias192.0.2.10, then Host* Include
 original ~/.ssh/config to preserve root/key/known-host options. Original global
 SSH config is unchanged. IMPORTANT use -F out/apple-account/private/account-hotspot-ssh.conf
 for phone commands now. Raw HostName IPv6scope needs %%en0 in SSH config (expands
@@ -659,10 +659,10 @@ Ask user for ONE attempt only after checking connection and service readiness, t
 
 ## Live components and access
 
-Run commands from the account worktree. Default `ssh s20` is pinned USB10.77.0.2. Old Wi-Fi100 and106 are unreliable; don't hardcode them. Hackintosh `jesvi@192.168.137.114` has working native account. SSH flags:
+Run commands from the account worktree. Default `ssh s20` is pinned USB10.77.0.2. Old Wi-Fi100 and106 are unreliable; don't hardcode them. Hackintosh `user@hackintosh.example` has working native account. SSH flags:
 
 ```sh
-ssh -i out/apple-account/private/hackintosh_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=out/apple-account/private/hackintosh-known-hosts -o ConnectTimeout=4 jesvi@192.168.137.114 'echo reachable'
+ssh -i out/apple-account/private/hackintosh_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=out/apple-account/private/hackintosh-known-hosts -o ConnectTimeout=4 user@hackintosh.example 'echo reachable'
 ```
 
 No passwords/code in commands. User authorized transient owner PET forwarding and deep debugging, but no need to log raw secrets. Never print private bearer configs, --stdio helper output, proofs, passwords, keychains or token values. Mac account preference identity matched user account earlier. Do not repeat credential typing tests or extract stored credentials.
@@ -699,8 +699,8 @@ First inspect exact owner/command and stop only task-owned stale instance. Do no
 
 ```sh
 python3 -u tools/apple-account/phone-helper-tunnel.py
-python3 -u tools/apple-account/native-provider-server.py --host jesvi@192.168.137.114 --helper hackintosh-provider-v7 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
-python3 -u tools/apple-account/pet-comparison-server.py --host jesvi@192.168.137.114 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/pet-comparison-token --worker native-pet-comparison-v11 --phone-worker --phone-body-token-file out/apple-account/private/broker-token --wait-for-phone-failure
+python3 -u tools/apple-account/native-provider-server.py --host user@hackintosh.example --helper hackintosh-provider-v7 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
+python3 -u tools/apple-account/pet-comparison-server.py --host user@hackintosh.example --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/pet-comparison-token --worker native-pet-comparison-v11 --phone-worker --phone-body-token-file out/apple-account/private/broker-token --wait-for-phone-failure
 ```
 
 Long-running services should have independent tool sessions. Comparison expires after30min or one valid attempt. It waits native401 (up to45sec) before worker, tuple age<=60sec; callback references expire120sec. To rearm, privately transmit JSON over SSH stdin to `/var/mobile/Library/RedwoodAppleAccountLab/native-comparison.json`, mode0600 owner501:501: fields enabled=true, port49752, token=contents of private pet-comparison-token. NEVER print the JSON/token. Existing config currently present/armed. Do not auto-repeat account requests.
