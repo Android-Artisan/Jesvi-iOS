@@ -43,3 +43,18 @@ Test: boot-arg lifs=1, `kern.redwood.lifs_load=1` (once a boot); lifs_stop/lifs_
 ## Next
 The SD card as an external disk in IOKit, the way userfsd's matching expects (IOMedia-like service, BSD name,
 Physical Interconnect External), a /dev node for it; then lifs at boot (lifs=2) by default.
+
+## State 2026-11-21 01:00 (A, end of session)
+Default boot now: lifs loads at boot (kernel default lifs=2; `lifs=0` off) -- boots fine (44 s); SD probed at boot,
+`/dev/disk9` `rdisk9` (card, 121941 MB) and `disk9s1` `rdisk9s1` (exFAT 0x07 at LBA 2048) published, and IOKit
+`IOBlockStorageDevice` (Protocol Characteristics: SATA / External) -> `IOMedia disk9` -> `IOMedia disk9s1` (Leaf).
+userfsd (started by hand: `launchctl kickstart user/foreground/com.apple.filesystems.userfsd`) comes fully up, but:
+- nothing appears in /private/var/mobile/Library/LiveFiles, no UVFSService runs; its IOMediaMatchingCallback lines
+  (debug level?) are not in the stream -- did getBSDNameIFExternalMedia skip disk9s1? (strings: skipping non-leaf,
+  EFI, BOOT_UUID, "not apple card reader")
+- launchd did not start userfsd on its own (its LaunchEvents com.apple.iokit.matching; check launchd's IOKit events)
+- livefileproviderd logs "will mount over LIFSv2" but no lifs mount shows in `mount`, then exits on its idle timer.
+Next, in order: (1) oslogq with debug level for userfsd's scan (or disassemble getBSDNameIFExternalMedia: which
+properties, which parent walk); (2) try the USB shape (IOBlockStorageDevice under a removable "IOUSBHostDevice") if
+External SATA is refused; (3) the LiveFiles lifs mount (mount_lifs / livefileproviderd's mount call result);
+(4) start userfsd at boot (its own job, RunAtLoad) once it registers the card. Tools: tools/oslogq, tools/sdcard.
