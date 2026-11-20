@@ -54,7 +54,7 @@ static volatile uint32_t gen;                   /* operation generation: a new o
 static volatile int op;                         /* 0 none, 1 enrol, 2 match */
 static uint32_t evseq;
 static uint32_t enrol_pct;                      /* the matcher's own enrolment percentage */
-static volatile int enrolling, calibrated;
+static volatile int enrolling, calibrated, enrol_saved;
 /* Apple's phase 2 ("adjust your grip") after the template is saved: open until this time. Apple sends Cancel between
  * its phase-2 steps, and a Cancel used to end it: the next touch went to the matcher, came back NO MATCH and phase 2
  * stalled (2026-11-19). Ended by a new EnrollMode, or 2 minutes without a phase-2 touch. */
@@ -258,6 +258,7 @@ on_line(const char *l)
 		if (sscanf(l, "fp template: saved %u bytes to " TEMPLATE " (error %d)", &bytes, &err) == 2 && !err &&
 		    bytes > 0) {
 			enrolling = 0;
+			enrol_saved = 1;
 			grip_until = time(NULL) + 120;      /* Apple's phase 2 ("adjust your grip") follows */
 			ev_send(FPCD_EV_ENROL_DONE, 0, FID, 0, 0, samples_seen, 0);
 			ev_send(FPCD_EV_TEMPLATES, 0, 0, 0, 0, 0, 0);
@@ -362,7 +363,9 @@ cbge_chain(uint32_t g)
  * phone without a rebuild. Failures are logged, never fatal: the identify runs either way.
  */
 #define MATCH_OPS "/private/var/redwood/match-ops"
-static char ops_pre[64] = "108,101", ops_arm[64] = "74,49", ops_post[64] = "75,46";
+static char ops_pre[64] = "108,101,74,49", ops_arm[64] = "", ops_post[64] = "75,46";
+/* Samsung enrol (same log): preEnroll 22,43 + 16; before the first touch 49 (then HAT cmd 13, not sent), 75; stored 45,46,75 */
+static char ops_epre[64] = "22,43,16", ops_earm[64] = "49,75", ops_epost[64] = "45,46,75";
 static void
 match_ops_load(void)
 {
@@ -372,9 +375,11 @@ match_ops_load(void)
 	size_t n = fread(b, 1, sizeof(b) - 1, f);
 	fclose(f);
 	b[n] = 0;
-	struct { const char *k; char *v; } kv[] = { { "pre=", ops_pre }, { "arm=", ops_arm }, { "post=", ops_post } };
-	for (unsigned i = 0; i < 3; i++) {
+	struct { const char *k; char *v; } kv[] = { { "pre=", ops_pre }, { "arm=", ops_arm }, { "post=", ops_post },
+		{ "epre=", ops_epre }, { "earm=", ops_earm }, { "epost=", ops_epost } };
+	for (unsigned i = 0; i < 6; i++) {
 		const char *p = strstr(b, kv[i].k);
+		while (p && p != b && p[-1] != ' ' && p[-1] != '\n') p = strstr(p + 1, kv[i].k);   /* "pre=" not inside "epre=" */
 		if (!p) continue;
 		p += strlen(kv[i].k);
 		size_t l = strcspn(p, " \t\n");
@@ -383,7 +388,8 @@ match_ops_load(void)
 		kv[i].v[l] = 0;
 		if (!strcmp(kv[i].v, "off")) kv[i].v[0] = 0;
 	}
-	lg("match ops from " MATCH_OPS ": pre=%s arm=%s post=%s", ops_pre, ops_arm, ops_post);
+	lg("ops from " MATCH_OPS ": match pre=%s arm=%s post=%s; enrol pre=%s arm=%s post=%s", ops_pre, ops_arm, ops_post,
+	    ops_epre, ops_earm, ops_epost);
 }
 static void
 match_ops(const char *list, uint32_t g)
@@ -436,9 +442,16 @@ run(void *arg)
 	} else {
 		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
 		 * as tools/fingerprint/ui/broker.m did (17 touches to 100 % on this phone) */
+		match_ops_load();
+		match_ops(ops_epre, g);
 		for (int rounds = 0; !bad && op == 1 && g == gen && rounds < 200; rounds++) {
+			if (!rounds) match_ops(ops_earm, g);
 			bad = step("fp einit 1", g);
 			if (!bad) bad = step("fp run 3 1 45 4", g);
+		}
+		if (enrol_saved) {              /* the template was saved: Samsung's 45, 46, 75 (even if iOS moved on) */
+			enrol_saved = 0;
+			match_ops(ops_epost, gen);
 		}
 	}
 	if (bad && op == kind && g == gen) {
