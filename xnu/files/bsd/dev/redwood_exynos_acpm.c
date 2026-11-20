@@ -555,7 +555,7 @@ static uint32_t bigoff_switches;
  * work over all eight. kern.redwood.bigpark=1: cpu6-7 out of the recommended cores until the A76s are at least
  * bigpark_up % busy for 3 ticks (150 ms); back out after 2 s with the A76s under bigpark_down % and the M5s idle.
  */
-static uint32_t bigpark = 0, bigpark_up = 80, bigpark_down = 40;
+static uint32_t bigpark = 1, bigpark_up = 80, bigpark_down = 40;
 static int bigpark_on;
 static uint32_t bigpark_switches;
 
@@ -579,6 +579,12 @@ scroff_little_set(int on)               /* scroff_lock held */
 	scroff_little_on = on;
 	scroff_little_switches++;
 	cores_apply();
+}
+
+static void
+bigpark_set_default(uint32_t on)
+{
+	bigpark = on;
 }
 
 /* every tick (screen on), with the A76s' (gov[1]) and the M5s' (gov[2]) last busy % */
@@ -768,7 +774,7 @@ static const struct {
 	/* rung 0 of the A76 and M5: Samsung's own idle floors (DTS user-default-qos 845 / 962 MHz); used with
 	 * kern.redwood.gov_lowfloor=1 (A, 2026-11-20), else the old lowest 1066 / 1196 */
 	{ D_CL1, 4, 2, { 845000, 1066000, 1404000, 1794000, 2106000, 2304000, 2504000, 0 }, 60, 70, 1404000, 1222000 },
-	{ D_CL2, 6, 2, { 962000, 1196000, 1586000, 1898000, 2208000, 2504000, 2730000, 0 }, 60, 70, 1066000, 858000 },
+	{ D_CL2, 6, 2, { 962000, 1196000, 1274000, 1586000, 1898000, 2208000, 2504000, 2730000 }, 60, 70, 1066000, 858000 },
 	{ D_G3D, 0, 0, { 156000, 260000, 377000, 455000, 572000, 702000, 800000, 0 }, 40, 60, 572000, 572000 },
 };
 #define TOUCH_HEAD_MS   130
@@ -864,6 +870,56 @@ SYSCTL_UINT(_kern_redwood, OID_AUTO, gov_lowfloor, CTLFLAG_RW | CTLFLAG_LOCKED, 
 SYSCTL_UINT(_kern_redwood, OID_AUTO, wake_boost_ms, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_wake_boost_ms, 0,
     "frame floor held after a key press or the display coming on, ms");
 
+/*
+ * Performance profiles (A, 2026-11-20): one switch for the tunables above. kern.redwood.perf_profile / boot-arg
+ * perf_profile=: 0 cool (Samsung-like), 1 balanced (default: the user's pick from the A/B test), 2 performance. Every
+ * profile keeps the 96 C big-core cutoff and Samsung's clock tables; a tunable changed by hand afterwards stays changed.
+ */
+static int perf_therm_offset;           /* degrees added to every thermal step (cool -4, performance +4) */
+static uint32_t perf_profile = 1;
+static void bigpark_set_default(uint32_t on);
+static void
+perf_profile_apply(uint32_t p)
+{
+	static const struct {
+		uint32_t lowfloor, ffl[4], wake_ms, park;
+		int therm;
+	} t[3] = {
+		{ 1, { 1456000, 1794000, 1274000, 455000 }, 500, 1, -4 },     /* cool */
+		{ 1, { 1456000, 2106000, 1274000, 572000 }, 500, 1, 0 },      /* balanced */
+		{ 0, { 1456000, 2106000, 1898000, 572000 }, 1000, 0, 4 },     /* performance */
+	};
+	if (p > 2) {
+		return;
+	}
+	perf_profile = p;
+	gov_lowfloor = t[p].lowfloor;
+	for (unsigned i = 0; i < 4; i++) {
+		gov_frame_khz[i] = t[p].ffl[i];
+	}
+	redwood_wake_boost_ms = t[p].wake_ms;
+	perf_therm_offset = t[p].therm;
+	bigpark_set_default(t[p].park);
+}
+static int
+sysctl_perf_profile SYSCTL_HANDLER_ARGS
+{
+	int value = (int)perf_profile, error = sysctl_handle_int(oidp, &value, 0, req);
+	if (error || req->newptr == USER_ADDR_NULL) {
+		return error;
+	}
+	if (value < 0 || value > 2) {
+		return EINVAL;
+	}
+	perf_profile_apply((uint32_t)value);
+	thread_wakeup((event_t)&redwood_gov_wake);
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, perf_profile, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, NULL, 0, sysctl_perf_profile,
+    "I", "0 cool (Samsung-like), 1 balanced (default), 2 performance");
+SYSCTL_INT(_kern_redwood, OID_AUTO, perf_therm_offset, CTLFLAG_RW | CTLFLAG_LOCKED, &perf_therm_offset, 0,
+    "degrees added to the thermal steps (profile sets it)");
+
 static uint32_t gov_ticks[8][2];        /* busy, all: the last reading of each core */
 
 /* the busiest core of the cluster since the last call (or the GPU's load), in percent; -1: no reading */
@@ -947,6 +1003,11 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
 	PE_parse_boot_argn("scroff_little", &scroff_little, sizeof(scroff_little));
 	PE_parse_boot_argn("dvfs_bigoff", &bigoff, sizeof(bigoff));
+	{
+		uint32_t p = 1;
+		PE_parse_boot_argn("perf_profile", &p, sizeof(p));
+		perf_profile_apply(p);
+	}
 	PE_parse_boot_argn("dvfs_bigoff_out", &bigoff_out, sizeof(bigoff_out));
 	PE_parse_boot_argn("dvfs_bigoff_in", &bigoff_in, sizeof(bigoff_in));
 	PE_parse_boot_argn("dvfs_scroff_tick", &gov_scroff_tick_ms, sizeof(gov_scroff_tick_ms));
@@ -1319,8 +1380,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 			if (z < 0 || targets[i] == 0 || (t = temp[z]) < 0) {
 				continue;
 			}
-			s1 = hot_at ? (int)hot_at : domains[i].step1;
-			s2 = hot_at ? (int)hot_at + 8 : domains[i].step2;
+			s1 = (hot_at ? (int)hot_at : domains[i].step1) + perf_therm_offset;
+			s2 = (hot_at ? (int)hot_at + 8 : domains[i].step2) + perf_therm_offset;
 			want = level[i];
 			if (t >= s2) {
 				want = 2;
