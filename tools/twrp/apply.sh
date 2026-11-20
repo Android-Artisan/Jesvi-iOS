@@ -27,6 +27,7 @@ fi
 
 model='PRODUCT_MODEL := Galaxy S20 (SM-G980F)'
 grep -Fxq "$model" "$device/twrp_x1s.mk" || printf '\n%s\n' "$model" >> "$device/twrp_x1s.mk"
-sed -i.bak -E 's/^(TW_DEVICE_VERSION := .*)$/\1-Jesvi/; s/-Jesvi-Jesvi$/-Jesvi/' "$device/BoardConfig.mk"
+sed -i.bak -E 's/^TW_DEVICE_VERSION := .*$/TW_DEVICE_VERSION := -JESViOS/' "$device/BoardConfig.mk"
 rm "$device/BoardConfig.mk.bak"
-grep -q '^TW_DEVICE_VERSION := .*-Jesvi$' "$device/BoardConfig.mk"
+grep -Fxq 'TW_DEVICE_VERSION := -JESViOS' "$device/BoardConfig.mk"
+python3 "$script_dir/theme.py" "$1/bootable/recovery/gui/theme/common/portrait.xml"

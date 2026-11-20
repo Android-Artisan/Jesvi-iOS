@@ -223,3 +223,15 @@ same model and partition sizes and still needs hardware qualification.
 
 These aliases do not add any PIT or GPT changes. The recovery customization
 leaves EFS and Sec EFS out of its backup and restore menus.
+
+The recovery header uses the version suffix `-JESViOS`. In **Wipe →
+JESViOS Wipe**, **Choose installer ZIP** opens the ZIP picker. Use an explicit
+Fresh Install package to erase and recreate HFSX userdata. Reinstalling
+replaces the APFS system image. The installer checks the device and asks
+for confirmation before writing. The generic TWRP wipe controls target
+Android filesystems.
+
+The **Mount** screen keeps the microSD and USB-OTG controls. The supplied
+SM-G980F recovery kernel does not include HFS+ support and lacks an APFS
+driver. Use the raw entries under **Backup** for the internal JESViOS
+volumes.
