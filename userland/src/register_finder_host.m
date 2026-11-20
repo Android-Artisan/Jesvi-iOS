@@ -2,6 +2,7 @@
  * user-app sharing query includes it. Keep its existing identifier and data.
  * Copy the immutable system bundle once; never replace user documents. */
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -114,10 +115,56 @@ static void share_storage(NSString *home) {
     NSLog(@"Jesvi Files: Finder shares %@", storage);
 }
 
+/*
+ * Native Files (A, 2026-11-20; the default image): Apple's local provider (On My iPhone) and the two document pickers
+ * stay in their frameworks, as on an iPhone, with no host app and so no "Jesvi Files" icon. LaunchServices usually
+ * finds them itself; any it does not know are registered here, and the provider's app-group and data containers are
+ * made (a fresh data volume has no installer pass that would make them). An earlier install's host app is unregistered.
+ */
+static int native_files(Class workspace) {
+    NSArray *paths = @[
+        @"/System/Library/Frameworks/FileProvider.framework/PlugIns/LocalStorageFileProvider.appex",
+        @"/System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/SaveToFiles.appex",
+        @"/System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/com.apple.DocumentManager.Service.appex" ];
+    Class plugins = NSClassFromString(@"LSPlugInKitProxy"), apps = NSClassFromString(@"LSApplicationProxy");
+    id ws = [workspace defaultWorkspace];
+    id host = [apps performSelector:@selector(applicationProxyForIdentifier:) withObject:@"org.hakios.LocalFilesHost"];
+    NSURL *hostURL = [host respondsToSelector:@selector(bundleURL)] ? [host performSelector:@selector(bundleURL)] : nil;
+    if (hostURL && [ws respondsToSelector:@selector(unregisterApplication:)]) {
+        BOOL gone = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, @selector(unregisterApplication:), hostURL);
+        NSLog(@"Files: the old host app (Jesvi Files) unregistered: %d", gone);
+    }
+    NSString *group = mcm_path(@"MCMSharedDataContainer", @"group.com.apple.FileProvider.LocalStorage");
+    mcm_path(@"MCMPluginKitPluginDataContainer", @"com.apple.FileProvider.LocalStorage");
+    if (group) {
+        NSString *storage = [group stringByAppendingPathComponent:@"File Provider Storage"];
+        if (mkdir(storage.fileSystemRepresentation, 0755) == 0) chown(storage.fileSystemRepresentation, 501, 501);
+    }
+    int missing = 0;
+    for (NSString *path in paths) {
+        NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
+        if (!pid) { NSLog(@"Files: %@ is not in this image", path); missing++; continue; }
+        if ([plugins performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid]) continue;
+        BOOL ok = [ws respondsToSelector:@selector(registerPlugin:)] &&
+            ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, @selector(registerPlugin:), [NSURL fileURLWithPath:path]);
+        BOOL known = [plugins performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid] != nil;
+        NSLog(@"Files: %@ registered: %d, known now: %d", pid, ok, known);
+        if (!known) missing++;
+    }
+    NSLog(@"Files (native): %s", missing ? "some extensions missing" : "On My iPhone and the pickers ready");
+    return missing ? 1 : 0;
+}
+
 int main(void) {
     alarm(30);
     @autoreleasepool {
         NSString *identifier = @"org.hakios.LocalFilesHost";
+        if (access("/Applications/HakiosLocalFiles.app/Info.plist", F_OK) != 0 &&
+            access("/var/mobile/Library/HakiosLocalFiles/LocalFilesHost.app/Info.plist", F_OK) != 0) {
+            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW);
+            dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+            return native_files(NSClassFromString(@"LSApplicationWorkspace"));
+        }
         dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW);
         dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
         Class containers = NSClassFromString(@"MCMAppContainer");

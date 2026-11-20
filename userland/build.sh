@@ -321,6 +321,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/m2m_mark src/m2m_mark.c
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 		$DYN -framework CoreFoundation -framework CoreLocation -lobjc -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
+		$DYN -o obj/trollstore_once src/trollstore_once.c   # TrollStore on a fresh data volume, once
 		${LDID:-ldid} -S../tools/redwood-defaults.entitlements obj/redwood-defaults
 		${LDID:-ldid} -Cadhoc -S obj/prefset
 		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
@@ -520,6 +521,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
 	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
 	[ -f obj/redwood-defaults ] && cp obj/redwood-defaults root/bin/
+	[ -f obj/trollstore_once ] && cp obj/trollstore_once root/bin/
 	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
@@ -713,6 +715,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-defaults ] || cp com.redwood.defaults.plist root/LaunchDaemons/   # fresh-volume defaults
+	[ ! -x root/bin/trollstore_once ] || cp com.redwood.trollstore.plist root/LaunchDaemons/   # TrollStore, once
 	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
@@ -1132,7 +1135,8 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	#
 	# This is in the SYSTEM image and not the small one, so a change to it costs a 2.5 GB rebuild
 	# and a re-upload: SYSTEM=1 is what makes this line run again.
-	if [ -d obj/RedwoodTriangle.app ]; then
+	# the triangle test app only on request (TRIANGLE=1): it did nothing for a user and sat on the home screen (A, 2026-11-20)
+	if [ -n "${TRIANGLE:-}" ] && [ -d obj/RedwoodTriangle.app ]; then
 		cp -a obj/RedwoodTriangle.app sysroot/Applications/
 		echo "  RedwoodTriangle.app in /Applications (com.redwood.triangle, scheme redwoodtriangle:)"
 	fi
@@ -1184,8 +1188,24 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	if [ -n "${JESVI_TARGET:-}" ]; then
 		python3 ../tools/release/apply_mods.py "$JESVI_TARGET" system sysroot
 	fi
-	python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
-		$IOS/system.manifest obj/system-files.manifest
+	# Files' local provider (On My iPhone) and its pickers stay where iOS keeps them (A, 2026-11-20): register_finder_host
+	# makes sure LaunchServices knows them and their containers exist. The old way -- moving them into a hidden host app,
+	# org.hakios.LocalFilesHost -- left a dead "Jesvi Files" icon on the home screen of a clean install. FILES_HOST=1
+	# keeps that host (it is what Finder's File Sharing on a Mac lists).
+	if [ -n "${FILES_HOST:-}" ]; then
+		python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
+			$IOS/system.manifest obj/system-files.manifest
+	else
+		cp $IOS/system.manifest obj/system-files.manifest
+	fi
+	# TrollStore (opa334, MIT; the official 2.1.1 release, TrollStore.tar) for installing IPAs: com.redwood.trollstore
+	# runs its own trollstorehelper install-trollstore once on a data volume without it (userland/src/trollstore_once.c)
+	TS=${TROLLSTORE_TAR:-$HOME/ios-port-research/work/sideloading/TrollStore-uncompressed.tar}
+	if [ -f "$TS" ]; then
+		mkdir -p sysroot/System/Library/Redwood/TrollStore
+		cp "$TS" sysroot/System/Library/Redwood/TrollStore/TrollStore.tar
+		echo "  TrollStore: the official release in the image (installed at first boot)"
+	fi
 	# zlib where it saves room, as Apple keeps the root (a small file whole in its attribute): 5.4 GB of
 	# files in 2.5 GB, what fits into the phone's RAM beside iOS
 	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=obj/system-files.manifest | tail -1
