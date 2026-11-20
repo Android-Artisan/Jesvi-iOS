@@ -911,3 +911,11 @@ signal and power save, Samsung DVFS tables, iOS-only storage (system on `super`,
 - Default wallpaper: the user's own image, deliberately the single clean-install default (stock gallery otherwise).
 - docs/research: not published; untracked and git-ignored, kept on the developers' Mac.
 - Deleted: legacy y2s UEFI DTBs, an unused fingerprint image, an empty job file. (The 64 GB HFS kit looked unused but is the release's: targets.kit_path computes its name from IOS_DATA_GB; restored.)
+
+## 2026-11-20 (A) — v0.1.2 built (tag v0.1.2 = 4fe87765)
+- Package: Jesvi-iOS_0.1.2_20261120_x1slte.zip, 2,723,860,609 bytes, sha256 6c035d83387d8556ca56cc595cf0412225755953fc80ee17129f0f39d2447d6a,
+  `SHARE=1 ./build.sh local` in the clean checkout (source_dirty false); kept on the SSD (iOS-Jesvi/builds), not on GitHub.
+  Checked in recovery.img: charging limits, SD driver, temperature protection, dyncap, GPU layer, telephonyd job;
+  boot line ufs_userdata_all=1. Not yet installed on a phone from the package (installer_validated false).
+- Draft release v0.1.2 on GitHub: restore ZIP from Actions.
+- Fixed on the way: camera build scripts' ldid path (clean checkouts), the 64 GB HFS kit restored.
