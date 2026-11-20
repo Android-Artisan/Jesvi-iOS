@@ -188,11 +188,11 @@ provision_radio(void)
 struct ext4 { int fd; uint32_t bs, ipg, isz, dsz, first; int big; };
 
 static int
-ext4_open(struct ext4 *x)
+ext4_open_dev(struct ext4 *x, const char *dev)
 {
 	uint8_t sb[1024];
 
-	x->fd = open(EFS_DEV, O_RDONLY);
+	x->fd = open(dev, O_RDONLY);
 	if (x->fd < 0 || dev_read(x->fd, 1024, sb, sizeof(sb)) || le16(sb + 56) != 0xef53) {
 		return -1;
 	}
@@ -203,6 +203,12 @@ ext4_open(struct ext4 *x)
 	x->dsz = x->big ? le16(sb + 254) : 32;
 	x->first = le32(sb + 20);                       /* s_first_data_block */
 	return x->bs >= 1024 && x->bs <= 65536 && x->ipg && x->isz >= 128 ? 0 : -1;
+}
+
+static int
+ext4_open(struct ext4 *x)
+{
+	return ext4_open_dev(x, EFS_DEV);
 }
 
 static int
@@ -329,11 +335,63 @@ provision_nv(void)
 	return rc;
 }
 
+/* ------------------------------------------------- --fp: the fingerprint sensor's factory calibration (2026-11-20)
+ * Samsung keeps it in /efs/biometrics/meta (cbge_0.dat, cbge_8.dat: the background slots; sensor_id). Without it a
+ * clean install's fingerprint images fail the TA's quality checks (redwood_teegris.c "fp cbgeefs" loads the slots
+ * from /var/root/fp-calib). Read-only, from whichever EFS partition holds it. */
+static int
+provision_fp(void)
+{
+	static const char *devs[] = { EFS_DEV, "/dev/rufs_sec_efs" };
+	static const char *files[] = { "cbge_0.dat", "cbge_8.dat", "sensor_id" };
+	int need = 0;
+
+	for (unsigned i = 0; i < 3; i++) need |= !exists(files[i]);
+	if (!need) {
+		printf("cell-provision --fp: calibration present\n");
+		return 0;
+	}
+	if (check_only) return 1;
+	for (unsigned d = 0; d < 2; d++) {
+		struct ext4 x = { -1 };
+		uint32_t bio, meta;
+		int rc = 0, got = 0;
+
+		if (ext4_open_dev(&x, devs[d])) {
+			if (x.fd >= 0) close(x.fd);
+			continue;
+		}
+		bio = ext4_lookup(&x, 2, "biometrics");
+		meta = bio ? ext4_lookup(&x, bio, "meta") : 0;
+		for (unsigned i = 0; meta && i < 3; i++) {
+			uint64_t len;
+			uint32_t n = exists(files[i]) ? 0 : ext4_lookup(&x, meta, files[i]);
+			uint8_t *data = n ? ext4_file(&x, n, &len) : NULL;
+			if (data) {
+				rc |= put(files[i], data, (size_t)len);
+				got++;
+				printf("cell-provision --fp: %s (%llu bytes) from %s\n", files[i], (unsigned long long)len, devs[d]);
+				free(data);
+			}
+		}
+		close(x.fd);
+		if (meta) return rc || got == 0;
+	}
+	printf("cell-provision --fp: no biometrics/meta in EFS\n");
+	return 1;
+}
+
 int
 main(int argc, char **argv)
 {
 	int r;
 
+	if (argc > 1 && strcmp(argv[1], "--fp") == 0) {     /* the fingerprint calibration instead of the modem files */
+		out_dir = getenv("CELL_PROVISION_DIR") ? getenv("CELL_PROVISION_DIR") : "/var/root/fp-calib/";
+		mkdir(out_dir, 0700);
+		check_only = argc > 2 && strcmp(argv[2], "--check") == 0;
+		return provision_fp() ? 1 : 0;
+	}
 	check_only = argc > 1 && strcmp(argv[1], "--check") == 0;
 	if (getenv("CELL_PROVISION_DIR")) out_dir = getenv("CELL_PROVISION_DIR");
 	r = provision_radio();

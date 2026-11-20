@@ -1053,6 +1053,17 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		find sysroot/System/Library/Redwood/DefaultWallpaper -type d -exec chmod 0777 {} +
 		find sysroot/System/Library/Redwood/DefaultWallpaper -type f -exec chmod 0644 {} +
 	fi
+	# The fingerprint TA set for a clean data volume (A, 2026-11-20): redwood-fpd copies it to /var/root/tee when that
+	# is missing (src/redwood-fpd.c fp_provision). It is Samsung's vendor/tee from THIS phone (device/firmware/vendor-tee),
+	# so only in a build for this machine's own phone: never in a SHARE=1 image (docs/clean-install.md).
+	if [ -z "$SHARE" ] && [ -d ../../../device/firmware/vendor-tee ]; then
+		mkdir -p sysroot/System/Library/Redwood/Fingerprint
+		rm -rf sysroot/System/Library/Redwood/Fingerprint/tee
+		cp -R ../../../device/firmware/vendor-tee sysroot/System/Library/Redwood/Fingerprint/tee
+		find sysroot/System/Library/Redwood/Fingerprint/tee -name '._*' -delete
+		chmod -R go-rwx sysroot/System/Library/Redwood/Fingerprint/tee
+		echo "  Touch ID: fingerprint TA set in the system image (fresh data volumes)"
+	fi
 	# callservicesd for the data volume (B, 2026-11-15): init copies it to /var/jb/redwood where its job runs it
 	# (src/init.c seed_phone); select-system.py leaves framework executables out of the image, so it is added here
 	CSD=System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd

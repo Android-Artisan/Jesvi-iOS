@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/sysctl.h>
 #include <time.h>
 #include <unistd.h>
@@ -633,11 +634,65 @@ handle(const struct smb_req *q, struct smb_reply *p)
 /* TEEGRIS up, as tools/fingerprint/tee-up.sh: the storage daemon, the secure OS, then this phone's driver TAs
  * (/var/root/tee/driver/: Samsung's, pulled from the phone itself, never in the image) */
 extern char **environ;
+/*
+ * A clean data volume (fresh install) has neither the fingerprint TA set (/var/root/tee) nor the sensor's factory
+ * calibration (/var/root/fp-calib): the TA failed to open ("fp: open err 2") and enrolment ended at once (2026-11-20).
+ * The TAs come from the system image (/System/Library/Redwood/Fingerprint/tee, a local build's copy of the phone's
+ * own Samsung vendor/tee; never in a SHARE=1 image), the calibration from the phone's EFS (cell-provision --fp,
+ * read-only). Files present are never replaced. docs/clean-install.md.
+ */
+#define TEE_SEED "/System/Library/Redwood/Fingerprint/tee"
+static int
+copy_tree_files(const char *from, const char *to)
+{
+	DIR *d = opendir(from);
+	struct dirent *e;
+	int n = 0;
+	if (!d) return 0;
+	mkdir(to, 0700);
+	while ((e = readdir(d))) {
+		char f[512], t[512];
+		struct stat st;
+		if (e->d_name[0] == '.') continue;
+		snprintf(f, sizeof(f), "%s/%s", from, e->d_name);
+		snprintf(t, sizeof(t), "%s/%s", to, e->d_name);
+		if (stat(f, &st)) continue;
+		if (S_ISDIR(st.st_mode)) { n += copy_tree_files(f, t); continue; }
+		if (access(t, F_OK) == 0) continue;
+		int in = open(f, O_RDONLY), out = in >= 0 ? open(t, O_WRONLY | O_CREAT | O_EXCL, 0600) : -1;
+		char buf[65536];
+		ssize_t r;
+		while (out >= 0 && (r = read(in, buf, sizeof(buf))) > 0) if (write(out, buf, (size_t)r) != r) break;
+		if (in >= 0) close(in);
+		if (out >= 0) { close(out); n++; }
+	}
+	closedir(d);
+	return n;
+}
+
+static void
+fp_provision(void)
+{
+	if (access("/var/root/tee/00000000-0000-0000-0000-46494e474502", F_OK) != 0) {
+		int n = copy_tree_files(TEE_SEED, "/var/root/tee");
+		if (n) lg("fingerprint TAs: %d files from the system image", n);
+		else lg("fingerprint TAs: none in /var/root/tee and no " TEE_SEED " (a SHARE=1 image: docs/clean-install.md)");
+	}
+	if (access("/var/root/fp-calib/cbge_0.dat", F_OK) != 0 && access("/redwood/bin/cell-provision", X_OK) == 0) {
+		pid_t pid;
+		int st = 0;
+		char *argv[] = { "cell-provision", "--fp", NULL };
+		if (posix_spawn(&pid, "/redwood/bin/cell-provision", NULL, NULL, argv, environ) == 0) waitpid(pid, &st, 0);
+		lg("sensor calibration from EFS: %s", WIFEXITED(st) && WEXITSTATUS(st) == 0 ? "done" : "FAILED");
+	}
+}
+
 static void
 tee_up(void)
 {
 	char s[2048];
 	if (tee_status(s, sizeof(s)) == 0 && strstr(s, "TEEGRIS: up")) return;
+	fp_provision();
 	pid_t pid;
 	char *argv[] = { "/redwood/bin/teetsd", NULL };
 	if (access(argv[0], X_OK) == 0 && posix_spawn(&pid, argv[0], NULL, NULL, argv, environ) == 0) lg("teetsd started");

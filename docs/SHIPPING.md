@@ -8,6 +8,14 @@
 - Tested on the phone: all six files moved aside, reboot: made by the phone, Jio 4 bars + data in ~20 s.
 - Commit 4efe500f (main).
 
+
+## 2026-11-20 (A): Touch ID without the iPhone 8 cache, and on a clean install
+- `libBKDM1` (Touch ID module) ported onto the iPhone X cache: `tools/touchid/fetch-bkdm1.sh` (DyldExtractor +
+  `relink_bkdm1.py` + `bkdm1-map.json`); biometrickitd opens the sensor; enrolment verified on the phone.
+- Clean install: redwood-fpd puts the TA set back from the image (local builds only, never SHARE=1) and the sensor
+  calibration from the phone's sec_efs (`cell-provision --fp`, read-only, byte-identical).
+- Unlock still NO MATCH (the TA's matcher); cause and plan: docs/devices/x1slte/touchid-port.md.
+
 ## 2026-11-20 (A) — 0.1.1 with iPhone's boot and charging pictures, installed from the Mac with no key press
 
 - What: the release ZIP (9d9e8dc5) carries iOS's boot logo and iBoot's charging pictures (lpm.jpg = charging,

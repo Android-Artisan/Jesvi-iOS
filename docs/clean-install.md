@@ -34,14 +34,18 @@ itself. Write in `docs/SHIPPING.md` that it survived a clean install.
 | Feature | Needed on the data volume | Status |
 |---|---|---|
 | SIM, data, VoLTE | `/var/root/cell-*` modem files | **made automatically, clean-install tested** by `cell-provision` from RADIO + EFS ([cellular/provisioning.md](devices/x1slte/cellular/provisioning.md)) |
-| Location Services (Compass, Maps, GPS) | `LocationServicesEnabledIn7.0` in locationd's preferences | first-boot default: to do |
-| Keyboard haptics on | Sounds & Haptics preference | first-boot default: to do |
-| Live Photo off | Camera preference | first-boot default: to do |
+| Location Services (Compass, Maps, GPS) | locationd's switch | **first-boot default** (`redwood-defaults`: `+[CLLocationManager setLocationServicesEnabled:]`, entitled; the preferences key alone is ignored by iOS 16.5 and Settings then hides the row) |
+| Keyboard haptics on | `com.apple.keyboard.preferences` `KeyboardVisceral = 2` | **first-boot default** (`redwood-defaults`) |
+| Live Photo off | `com.apple.camera` `CAMUserPreferencePreserveLivePhoto = true`, `..DesiredIrisMode = 0` | **first-boot default** (`redwood-defaults`) |
 | Files: On My iPhone | the local file provider's setup | to do |
-| Touch ID enrolment | `/var/root/fp-*` (made by enrolling) | by design: enrol after a clean install |
+| Touch ID: the fingerprint TA set | `/var/root/tee` (Samsung vendor/tee: FINGE TA + driver TAs) | copied by `redwood-fpd` from the system image (`/System/Library/Redwood/Fingerprint/tee`, from `device/firmware/vendor-tee`); **local builds only, never `SHARE=1`** (Samsung firmware). Public images: to do, capture the phone's own `/vendor/tee` at install time, before `super` gets placeholders |
+| Touch ID: sensor calibration | `/var/root/fp-calib/cbge_0.dat`, `cbge_8.dat`, `sensor_id` | **made automatically** by `cell-provision --fp` from the phone's `sec_efs` (`biometrics/meta`), read-only; byte-identical to Samsung's (2026-11-20) |
+| Touch ID: the sensor module | `/usr/lib/libBKDM1.dylib` | in the image: `tools/touchid/fetch-bkdm1.sh` ports the iPhone 8's onto the iPhone X cache ([touchid-port.md](devices/x1slte/touchid-port.md)) |
+| Touch ID enrolment | `/var/root/fp-template.bin` (made by enrolling) | by design: enrol after a clean install |
 | Apple account layer | `/var/jb/usr/lib/libredwood-account-*`, boot job | needs the image (sessions/B-apple-account-handoff.md) |
 
 ## Defaults
 
-Preferences that iOS keeps on the data volume are set once per data volume by a first-boot step (planned:
-`redwood-defaults`, a boot job with a marker file so the user's later choices are never overwritten).
+Preferences that iOS keeps on the data volume are set once per data volume by a first-boot step:
+`redwood-defaults` (boot job `com.redwood.defaults`), once per data volume (marker `/var/root/.redwood-defaults-v1`),
+so the user's later choices are never overwritten. A new default: add it there and bump the marker's version.
