@@ -100,3 +100,8 @@ boot + heavy UI), then made default.
   Android; the user picked the middle ground, M5 1274 MHz, as the balanced default. Fair tests need the same start
   temperature.
 - AOD is "display off" for the power code (MiniIOMobileFramebuffer: redwood_dvfs_display(0)): screen-off profile.
+
+## Next (parked 2026-11-20): GPU like Samsung
+Samsung decides the GPU clock every 5 ms (interactive governor, 94 % target at 377 MHz), throttles along
+800 -> 702 -> 572 -> 455 -> 377 -> 260 MHz, sustains 455 MHz at 85 %, controls at 88 C, and ties CPU limits to the
+GPU's level (gpu_cl_pmqos_table). Ours: 50 ms tick with an instant jump on a slow job, steps 82/90 C to 572/455.
