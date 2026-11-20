@@ -39,6 +39,88 @@
 #include <sys/redwood_input.h>
 #include <sys/redwood_m2m.h>
 #include <sys/systm.h>
+#include <sys/sysctl.h>
+
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+
+/*
+ * The thermistors, on the Exynos ADC v3 (adc@15C40000, CMU_CMGP's clock: on), as Samsung's battery_v2 reads them
+ * (exynos990-x1slte DTS: battery adc-temp ch 4, adc-chg-temp ch 3, adc-usb-temp ch 1; drivers/iio/adc/exynos_adc.c
+ * v3: CON2 = C_TIME(6) | channel, CON1 = 2 | START, DAT bit 31 = done, 12 bits). Tables in 0.1 C, ADC falls as it
+ * warms. The battery's is THE battery temperature (the gauge has no thermistor: it read 33.00 C, made up).
+ */
+#define ADC_PHYS                0x15c40000UL
+static volatile uint32_t *adc;
+static const uint16_t bat_adc[] = { 0x13a, 0x16c, 0x1a5, 0x1e9, 0x23a, 0x29a, 0x30c, 0x382, 0x414, 0x4b8, 0x574, 0x63e,
+	0x719, 0x801, 0x8ee, 0x9d6, 0xac0, 0xb95, 0xc57, 0xd0d, 0xda6, 0xe16, 0xe78 };
+static const uint16_t usb_adc[] = { 0x113, 0x150, 0x19f, 0x1e3, 0x227, 0x29b, 0x2fc, 0x387, 0x41e, 0x4a5, 0x568, 0x627,
+	0x6fb, 0x7fa, 0x8d7, 0x9bc, 0xaa3, 0xb79, 0xc37, 0xced, 0xd87, 0xdfa, 0xe5e };   /* also the charger's */
+/* 90.0 C down to -20.0 C in 5 C steps, for both tables */
+#define TEMP_TOP_DECI           900
+static int32_t batt_deci = INT32_MIN, chg_deci = INT32_MIN, usb_deci = INT32_MIN;      /* 0.1 C; MIN: unknown */
+static uint32_t adc_raw[3];
+
+static int
+adc_read(unsigned ch)
+{
+	if (adc == NULL) {
+		return -1;
+	}
+	adc[1] = 0x60U | (ch & 0xfU);           /* CON2: C_TIME(6), channel */
+	adc[0] = 0x3U;                          /* CON1: non-reset, start */
+	for (int i = 0; i < 200; i++) {
+		uint32_t d = adc[2];            /* DAT */
+
+		if ((d & 0x80000000U) && i > 0) {
+			return (int)(d & 0xfffU);
+		}
+		delay(10);
+	}
+	return -1;
+}
+
+static int32_t
+adc_to_deci(int raw, const uint16_t *t)
+{
+	if (raw < 0) {
+		return INT32_MIN;
+	}
+	if (raw <= t[0]) {
+		return TEMP_TOP_DECI;
+	}
+	for (int i = 1; i < 23; i++) {
+		if (raw <= t[i]) {
+			/* between t[i-1] (warmer) and t[i] (5 C cooler) */
+			return TEMP_TOP_DECI - 50 * (i - 1) - (int32_t)(50 * (raw - t[i - 1]) / (t[i] - t[i - 1]));
+		}
+	}
+	return TEMP_TOP_DECI - 50 * 22;
+}
+
+static void
+thermistors_read(void)
+{
+	int r;
+
+	if (adc == NULL) {
+		adc = (volatile uint32_t *)ml_io_map(ADC_PHYS, 0x1000);
+		if (adc == NULL) {
+			return;
+		}
+		adc[0] = 0x4U;                  /* CON1: soft reset, then out of it (Samsung's v3 init) */
+		adc[0] = 0x2U;
+		adc[4] = 0;                     /* INT_EN: polled, no interrupt */
+	}
+	r = adc_read(4); adc_raw[0] = (uint32_t)r; batt_deci = adc_to_deci(r, bat_adc);
+	r = adc_read(3); adc_raw[1] = (uint32_t)r; chg_deci = adc_to_deci(r, usb_adc);
+	r = adc_read(1); adc_raw[2] = (uint32_t)r; usb_deci = adc_to_deci(r, usb_adc);
+}
+
+static int batt_c10_sysctl, chg_c10_sysctl, usb_c10_sysctl;
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_INT(_kern_redwood, OID_AUTO, batt_temp, CTLFLAG_RD | CTLFLAG_LOCKED, &batt_c10_sysctl, 0, "battery thermistor, 0.1 C");
+SYSCTL_INT(_kern_redwood, OID_AUTO, chg_temp, CTLFLAG_RD | CTLFLAG_LOCKED, &chg_c10_sysctl, 0, "charger thermistor, 0.1 C");
+SYSCTL_INT(_kern_redwood, OID_AUTO, usb_temp, CTLFLAG_RD | CTLFLAG_LOCKED, &usb_c10_sysctl, 0, "USB port thermistor, 0.1 C");
 
 void redwood_usb_gadget_vbus(bool present);
 bool redwood_usb_gadget_host(void);           /* redwood_dwc3.c: a computer has configured the USB link */    /* redwood_dwc3.c: the cable, for the USB link's restarts */
@@ -448,6 +530,64 @@ charger_limits(bool external, int32_t temp_hundredths)
 			}
 		}
 	}
+	/*
+	 * Samsung's protection (exynos990-x1slte DTS, battery_v2), on the battery's own thermistor -- never the CPU's --
+	 * and the charger chip's for its rule. Only ever lowers. 0.1 C, 2 C hysteresis as Samsung's:
+	 *   battery >= 50 (back < 48) or <= 0 (back > 2): charging stopped (100 mA, the charger's floor)
+	 *   battery >= 42 (back < 40): 1350 mA (swelling)        battery < 5 / < 15: 350 / 900 mA
+	 *   charger chip >= 60 (back < 58): input 1000, charge 1900 mA
+	 */
+	{
+		static int hot_stop, cold_stop, swell, chg_hot;
+		int32_t t = batt_deci, c = chg_deci;
+		unsigned cap = 0;
+
+		if (t != INT32_MIN) {
+			hot_stop = hot_stop ? t >= 480 : t >= 500;
+			cold_stop = cold_stop ? t <= 20 : t <= 0;
+			swell = swell ? t >= 400 : t >= 420;
+			if (hot_stop || cold_stop) {
+				cap = 100;
+			} else if (swell) {
+				cap = 1350;
+			} else if (t < 50) {
+				cap = 350;
+			} else if (t < 150) {
+				cap = 900;
+			}
+		}
+		if (c != INT32_MIN) {
+			chg_hot = chg_hot ? c >= 580 : c >= 600;
+		}
+		if (cap || chg_hot) {
+			if (in_ma == 0) {
+				in_ma = usb_ma;                 /* the bootloader's values are not a limit we know */
+			}
+			if (cc_ma == 0) {
+				cc_ma = 1500;
+			}
+			if (cap && cc_ma > cap) {
+				cc_ma = cap;
+			}
+			if (chg_hot) {
+				in_ma = in_ma > 1000 ? 1000 : in_ma;
+				cc_ma = cc_ma > 1900 ? 1900 : cc_ma;
+			}
+		}
+		{
+			static unsigned last_cap = ~0U;
+			static int last_chg_hot = -1;
+
+			if (cap != last_cap || chg_hot != last_chg_hot) {
+				m2m_klog('I', "DEV", "bms: temperature protection: battery %d.%d C, charger %d.%d C -> %s%s",
+				    t / 10, t < 0 ? -(t % 10) : t % 10, c / 10, c < 0 ? -(c % 10) : c % 10,
+				    cap == 100 ? "charging stopped" : cap ? "charge current lowered" : "no battery limit",
+				    chg_hot ? ", charger hot: input 1000 mA" : "");
+				last_cap = cap;
+				last_chg_hot = chg_hot;
+			}
+		}
+	}
 	charger_write_limits(in_ma, cc_ma);
 }
 
@@ -501,6 +641,14 @@ poll_once(bool say)
 	if (temp_hundredths < -2000 || temp_hundredths > 7000) {
 		temp_hundredths = 2500;
 	}
+	/* the real one: the battery's thermistor on the AP's ADC (2026-11-20) */
+	thermistors_read();
+	if (batt_deci != INT32_MIN) {
+		temp_hundredths = batt_deci * 10;
+	}
+	batt_c10_sysctl = batt_deci == INT32_MIN ? -999 : batt_deci;
+	chg_c10_sysctl = chg_deci == INT32_MIN ? -999 : chg_deci;
+	usb_c10_sysctl = usb_deci == INT32_MIN ? -999 : usb_deci;
 
 	{
 		uint8_t bc;
@@ -562,12 +710,15 @@ poll_once(bool say)
 	}
 	if (say || trace) {
 		printf("bms: %d.%02d %% %d mV %d mA (now %d), %d.%02d C, %d/%d mAh (design %d, gauge %u), %u cycles, "
-		    "%s%s, input %d mV %d mA; INT_OK %#x DTLS %#x %#x\n",
+		    "%s%s, input %d mV %d mA; INT_OK %#x DTLS %#x %#x; charger %d.%d C, USB %d.%d C (ADC %u %u %u)\n",
 		    b.percent_hundredths / 100, b.percent_hundredths % 100, b.voltage_uv / 1000, b.current_ua / 1000,
 		    current_ua(cur) / 1000, temp_hundredths / 100, temp_hundredths % 100 < 0 ? -(temp_hundredths % 100) :
 		    temp_hundredths % 100, b.charge_uah / 1000, b.full_uah / 1000, DESIGN_MAH,
 		    designcap * FG_RESISTOR / 2, b.cycles, b.present ? "" : "NO BATTERY, ",
-		    status_name(b.status), b.usb_voltage_uv / 1000, b.usb_current_ua / 1000, int_ok, d00, d01);
+		    status_name(b.status), b.usb_voltage_uv / 1000, b.usb_current_ua / 1000, int_ok, d00, d01,
+		    chg_c10_sysctl / 10, chg_c10_sysctl < 0 ? -(chg_c10_sysctl % 10) : chg_c10_sysctl % 10,
+		    usb_c10_sysctl / 10, usb_c10_sysctl < 0 ? -(usb_c10_sysctl % 10) : usb_c10_sysctl % 10,
+		    adc_raw[0], adc_raw[1], adc_raw[2]);
 	}
 	return true;
 }
