@@ -134,3 +134,29 @@ under its existing identifier, preserving data/plugin containers. The default
 launchd job runs this once per boot and retries startup failures. Both app and
 file visibility were confirmed after this registration. No uicache executable
 or jailbreak bootstrap is required by the helper.
+
+## Native-registration regression (2026-11-20)
+
+The framework-only `registerPlugin:` path created a LaunchServices proxy with
+no entitlements, data container or group-container mapping. A successful call
+and a non-nil proxy did not mean the provider could run: FileProvider exposed
+Photos and iCloud domains but no local domain. Re-running that helper did not
+repair the metadata.
+
+`register_finder_host` now prepares a hidden registration host automatically
+from the three immutable framework extensions plus `/redwood/bin/LocalFilesHost`.
+It uses the existing `org.hakios.LocalFilesHost` container and local-storage group,
+so documents stay in place. The source framework bundles remain unchanged.
+The host's `SBAppTags = [hidden]` is included in its Info.plist and registration
+record; it supplies metadata without a home-screen icon. This is an internal
+registration app, not a replacement Files interface.
+
+Readiness requires all three extension executables and Info.plists, each plugin's
+data-container URL, and LocalStorage's group mapping and entitlement. Incomplete
+standalone registrations are removed before the complete record is registered.
+An incomplete generated host is renamed aside, never deleted with its contents.
+Failure returns nonzero so the launchd job retries.
+
+Validation: helper builds with the iOS 16.5 SDK; live repair/clean-install checks
+are pending while the phone's USB connection is intermittent. Do not treat proxy
+presence alone as a passing Files test.

@@ -49,3 +49,17 @@ itself. Write in `docs/SHIPPING.md` that it survived a clean install.
 Preferences that iOS keeps on the data volume are set once per data volume by a first-boot step:
 `redwood-defaults` (boot job `com.redwood.defaults`), once per data volume (marker `/var/root/.redwood-defaults-v1`),
 so the user's later choices are never overwritten. A new default: add it there and bump the marker's version.
+
+### Files registration follow-up (2026-11-20)
+
+Framework-only registration regressed: `registerPlugin:` returned success but
+left the local extension's entitlements and container metadata empty. A proxy
+existed, while the local FileProvider domain did not. The helper now prepares a
+hidden registration host from the image's framework bundles automatically, and
+registers the full app/extension/container record. `LocalFilesHost` is included
+in `/redwood/bin`; nothing must be copied to `/var` by hand on a clean install.
+Both the bundle and its LaunchServices record carry the `hidden` app tag.
+
+Check all three plugin records, including LocalStorage's group mapping and
+entitlement, then open Files and confirm On My iPhone. Compilation is checked;
+phone repair and a generated-host recreation check remain pending.
