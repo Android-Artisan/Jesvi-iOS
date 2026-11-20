@@ -58,3 +58,16 @@ CMD17/18/24/25 (block addressing, SDHC/SDXC), re-initialise only after a card ch
 
 Next: the kernel driver -- an IOBlockStorageDevice (Removable, Ejectable) over this controller (PIO first, then IDMAC),
 behind boot-arg sd=; then check that diskarbitrationd hands it to UserFS and Files shows it.
+
+## Driver working (2026-11-20, bsd/dev/redwood_sdcard.c, boot-arg sd=1)
+
+`/dev/rsdcard` reads the user's 128 GB card: MBR 55AA, 121941 MB to the end of the exFAT partition, 16.3 MB/s for
+16 MB (PIO, CMD18 with auto-stop, one CPU busy). Three lessons on the way:
+- the FIFO is **64 bits wide** (HCON 0x08e42541, H_DATA_WIDTH 2): 32-bit reads return data but never pop it
+  (TBBCNT stays 0, DTO never comes); Linux's dw_mci_pull_data64
+- HTO (bit 10) is flow control (FIFO full, card clock paused), not an error
+- the first card access is on the first open, not at driver init (clean in either case now, but no risk at boot)
+
+Next: IDMAC (DMA) for speed and less CPU; write support (CMD24/25) behind its own switch; card detect (GPA1-5);
+then Files: lifs.kext is Apple's bridge between a block device and userfsd (exfat.fs / msdos.fs are in the image),
+so either a kernel side for userfsd or our own File Provider with an exFAT reader.
