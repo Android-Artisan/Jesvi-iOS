@@ -81,10 +81,10 @@ index 4b83160780c3..b6e8ed633c1d 100644
  
  #
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cf..a1f5d59194a0 100644
+index 44274016a4cf..73a3434d725a 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,67 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,69 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -117,6 +117,8 @@ index 44274016a4cf..a1f5d59194a0 100644
 +bsd/dev/redwood_battery.c	standard
 +bsd/dev/redwood_ufs.c	standard
 +bsd/dev/redwood_sdcard.c	standard
++bsd/dev/redwood_kextload.c	standard
++bsd/dev/redwood_kextsyms.c	standard
 +bsd/dev/redwood_ufshc.c	standard
 +bsd/dev/redwood_exynos_bt.c	standard
 +bsd/dev/redwood_exynos_sound.c	standard
@@ -152,7 +154,7 @@ index 44274016a4cf..a1f5d59194a0 100644
  bsd/dev/dev_perfmon.c optional config_perfmon
  
  bsd/libkern/crc32.c			standard
-@@ -155,6 +216,53 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+@@ -155,6 +218,53 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
  bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
@@ -206,7 +208,7 @@ index 44274016a4cf..a1f5d59194a0 100644
  
  bsd/miscfs/routefs/routefs_ops.c	optional routefs
  
-@@ -361,6 +469,7 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +471,7 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -214,7 +216,7 @@ index 44274016a4cf..a1f5d59194a0 100644
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -383,6 +492,7 @@ bsd/kern/kern_debug.c			standard
+@@ -383,6 +494,7 @@ bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
  bsd/kern/kern_descrip.c			standard
  bsd/kern/kern_guarded.c			standard
@@ -2037,10 +2039,10 @@ index 5219fb0d9ed6..d88015b06b3a 100644
  //	Now check if we are trying to root on a memory device
  //
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52062e0..7711ab7fbf66 100644
+index 5fb0a52062e0..49e2d3d9d860 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
-@@ -79,6 +79,17 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
+@@ -79,6 +79,18 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
  iokit/Kernel/IOGuardPageMemoryDescriptor.cpp		optional iokitcpp
  
  iokit/Kernel/IOPlatformExpert.cpp			optional iokitcpp
@@ -2052,13 +2054,14 @@ index 5fb0a52062e0..7711ab7fbf66 100644
 +iokit/Kernel/RedwoodWLAN.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodBattery.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodStorage.cpp			optional iokitcpp
++iokit/Kernel/RedwoodKextLoad.cpp			optional iokitcpp
 +iokit/Kernel/MiniAppleKeyStore.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodMesa.cpp			optional iokitcpp
 +iokit/Kernel/MiniIONetworkStack.cpp			optional iokitcpp
  iokit/Kernel/IOPlatformIO.cpp				optional iokitcpp
  
  iokit/Kernel/IOCPU.cpp					optional iokitcpp
-@@ -148,3 +159,5 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
+@@ -148,3 +160,5 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
  
  # Skywalk
  iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk
@@ -2407,7 +2410,7 @@ index 39daaf8db949..64ceb1a5f201 100644
  	}
  	os_atomic_clear_exclusive();
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096fa0010..5011ab612305 100644
+index fc2096fa0010..9d12349f05a8 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -93,6 +93,8 @@
@@ -2460,6 +2463,42 @@ index fc2096fa0010..5011ab612305 100644
  #endif
  }
  
+@@ -14294,3 +14299,35 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
+ }
+ 
+ #endif /* DEVELOPMENT || DEBUG */
++
++/*
++ * (A, 2026-11-20) Kernel text loaded at run time: bsd/dev/redwood_kextload.c loads Apple's lifs.kext from the system
++ * volume (docs/devices/x1slte/lifs-loader.md). pmap_enter refuses executable kernel mappings and pmap_protect never
++ * clears PNX, so this makes exactly [va, va + size) read-only and kernel-executable (PNX clear, NX set: never
++ * user-executable), after the caller has written and relocated it. Then the TLB and the caches are brought in line.
++ * Only for pages the caller allocated from kernel_map; nothing here checks what the code is.
++ */
++void redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size);
++void
++redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size)
++{
++	vm_offset_t end = round_page(va + size);
++
++	va = trunc_page(va);
++	CleanPoU_DcacheRegion(va, end - va);
++	for (vm_offset_t v = va; v < end; v += PAGE_SIZE) {
++		pt_entry_t *ptep = pmap_pte(kernel_pmap, v);
++
++		if (ptep == NULL) {
++			panic("redwood_pmap_kernel_text: no mapping at %p", (void *)v);
++		}
++		for (unsigned i = 0; i < PAGE_RATIO; i++) {
++			pt_entry_t spte = ptep[i];
++
++			spte = (spte & ~(ARM_PTE_APMASK | ARM_PTE_PNX)) | ARM_PTE_AP(AP_RONA) | ARM_PTE_NX;
++			write_pte_strong(&ptep[i], spte);
++		}
++	}
++	flush_mmu_tlb_region(va, (unsigned)(end - va));
++	InvalidatePoU_IcacheRegion(va, end - va);
++}
 diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
 index df672c65b144..d7e1da7c5db2 100644
 --- a/osfmk/arm/pmap/pmap.h
@@ -3627,6 +3666,45 @@ index 809dafaaa2a7..71c6580f44e2 100644
  	assert(exception != EXC_RPC_ALERT);
  
  	/*
+diff --git a/osfmk/kern/kalloc.c b/osfmk/kern/kalloc.c
+index e08348bf856f..c5df0c7f0642 100644
+--- a/osfmk/kern/kalloc.c
++++ b/osfmk/kern/kalloc.c
+@@ -3086,3 +3086,34 @@ run_kalloc_test(int64_t in __unused, int64_t *out)
+ SYSCTL_TEST_REGISTER(kalloc, run_kalloc_test);
+ 
+ #endif
++
++/*
++ * (A, 2026-11-20) Typed-allocation views of a kext loaded at run time (bsd/dev/redwood_kextload.c, Apple's lifs.kext):
++ * the boot parser (kalloc_type_view_parse) only sees kexts linked into the kernel collection, so these views have no
++ * zone and their first allocation would fault. Each gets the default heap's zone for its size (no per-signature
++ * isolation, as for a view the boot parser could not place); views for large types (KT_VM) keep the VM path.
++ * Returns the views placed.
++ */
++unsigned redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count);
++unsigned
++redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count)
++{
++	unsigned placed = 0;
++
++	for (unsigned i = 0; i < count; i++) {
++		struct kalloc_type_view *kt = views[i];
++		zone_t z;
++
++		if (kt == NULL || (kt->kt_flags & KT_VM) || kt->kt_size == 0 || kt->kt_size > KHEAP_MAX_SIZE) {
++			continue;
++		}
++		z = kalloc_zone_for_size(KHEAP_DEFAULT->kh_zstart, kt->kt_size);
++		if (z == ZONE_NULL) {
++			continue;
++		}
++		kt->kt_zv.zv_zone = z;
++		kt->kt_zv.zv_stats = z->z_stats;
++		placed++;
++	}
++	return placed;
++}
 diff --git a/osfmk/kern/kalloc.h b/osfmk/kern/kalloc.h
 index dfa89c7b0d29..07e0ba5bf44c 100644
 --- a/osfmk/kern/kalloc.h

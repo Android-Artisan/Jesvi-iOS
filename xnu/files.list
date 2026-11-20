@@ -83,6 +83,8 @@ bsd/dev/redwood_guard.c
 bsd/dev/redwood_haptic.c
 bsd/dev/redwood_image.c
 bsd/dev/redwood_input.c
+bsd/dev/redwood_kextload.c
+bsd/dev/redwood_kextsyms.c
 bsd/dev/redwood_logd.c
 bsd/dev/redwood_lx.c
 bsd/dev/redwood_m2m.c
@@ -277,6 +279,7 @@ iokit/Kernel/MiniIOSurface.h
 iokit/Kernel/MiniUSBDeviceMux.cpp
 iokit/Kernel/RedwoodBattery.cpp
 iokit/Kernel/RedwoodGPU.cpp
+iokit/Kernel/RedwoodKextLoad.cpp
 iokit/Kernel/RedwoodMali.cpp
 iokit/Kernel/RedwoodMesa.cpp
 iokit/Kernel/RedwoodStorage.cpp
