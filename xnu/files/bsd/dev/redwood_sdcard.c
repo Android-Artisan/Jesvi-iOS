@@ -137,13 +137,21 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 	return 0;
 }
 
+static int sd_probe(void);
+
 static int
 sd_copen(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
 {
-	if (!sd_ready) {
-		return ENXIO;
+	if (flags & FWRITE) {
+		return EROFS;
 	}
-	return (flags & FWRITE) ? EROFS : 0;
+	if (!sd_ready) {
+		lck_mtx_lock(&sd_lock);
+		int error = sd_ready ? 0 : sd_probe();
+		lck_mtx_unlock(&sd_lock);
+		return error;
+	}
+	return 0;
 }
 
 static int
@@ -231,43 +239,28 @@ SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_reads, CTLFLAG_RD | CTLFLAG_LOCKED, 
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_errors, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_errors, 0, "reads failed");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_last_int, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_last_int, 0, "last RINTSTS");
 
-void redwood_sdcard_init(void);
-void
-redwood_sdcard_init(void)
-{
-	uint32_t verid, resp;
-	uint8_t *mbr;
-	int cmaj;
+static uint32_t sd_verid;
 
-	if (!PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode)) || sd_mode == 0) {
-		return;
-	}
-	sd = (volatile uint8_t *)ml_io_map(SD_PHYS, 0x1000);
-	if (sd == NULL) {
-		snprintf(sd_state, sizeof(sd_state), "no mapping");
-		return;
-	}
-	verid = rd(R_VERID);
-	resp = rd(R_RESP0);
-	if ((verid & 0xffff0000) != 0x53420000 || rd(R_PWREN) != 1 || rd(R_CLKENA) != 1) {
-		snprintf(sd_state, sizeof(sd_state), "not as S-Boot leaves it: VERID %#x PWREN %u CLKENA %u", verid,
-		    rd(R_PWREN), rd(R_CLKENA));
-		printf("sdcard: %s\n", sd_state);
-		return;
-	}
-	mbr = kalloc_data(512, Z_WAITOK);
+/*
+ * The card's MBR, on the first open and not at boot: at driver init the transfer's data reached the FIFO but the
+ * reads of it never counted (TBBCNT 0, 2026-11-20); from a running system the same sequence works. sd_lock held.
+ */
+static int
+sd_probe(void)
+{
+	uint8_t *mbr = kalloc_data(512, Z_WAITOK);
+	int error;
+
 	if (mbr == NULL) {
-		return;
+		return ENOMEM;
 	}
-	lck_mtx_lock(&sd_lock);
-	int error = sd_read_blocks(0, 1, mbr);
-	lck_mtx_unlock(&sd_lock);
+	error = sd_read_blocks(0, 1, mbr);
 	if (error != 0 || mbr[510] != 0x55 || mbr[511] != 0xaa) {
-		snprintf(sd_state, sizeof(sd_state), "no card or no MBR: read %d, RINTSTS %#x, RESP0 %#x", error, sd_last_int, resp);
-		printf("sdcard: %s\n", sd_state);
+		snprintf(sd_state, sizeof(sd_state), "no card or no MBR: read %d, RINTSTS %#x", error, sd_last_int);
 		kfree_data(mbr, 512);
-		return;
+		return ENXIO;
 	}
+	sd_blocks = 0;
 	for (unsigned i = 0; i < 4; i++) {          /* the end of the furthest partition */
 		const uint8_t *e = mbr + 446 + 16 * i;
 		uint64_t start = (uint64_t)e[8] | (uint64_t)e[9] << 8 | (uint64_t)e[10] << 16 | (uint64_t)e[11] << 24;
@@ -278,14 +271,44 @@ redwood_sdcard_init(void)
 		}
 	}
 	kfree_data(mbr, 512);
+	if (sd_blocks == 0) {
+		snprintf(sd_state, sizeof(sd_state), "MBR without partitions");
+		return ENXIO;
+	}
+	sd_ready = 1;
+	snprintf(sd_state, sizeof(sd_state), "ready, read-only: %llu MB (to the last partition), DW MMC %#x, 4-bit, S-Boot's setup",
+	    sd_blocks / 2048, sd_verid);
+	printf("sdcard: %s\n", sd_state);
+	return 0;
+}
+
+void redwood_sdcard_init(void);
+void
+redwood_sdcard_init(void)
+{
+	int cmaj;
+
+	if (!PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode)) || sd_mode == 0) {
+		return;
+	}
+	sd = (volatile uint8_t *)ml_io_map(SD_PHYS, 0x1000);
+	if (sd == NULL) {
+		snprintf(sd_state, sizeof(sd_state), "no mapping");
+		return;
+	}
+	sd_verid = rd(R_VERID);
+	if ((sd_verid & 0xffff0000) != 0x53420000 || rd(R_PWREN) != 1 || rd(R_CLKENA) != 1) {
+		snprintf(sd_state, sizeof(sd_state), "not as S-Boot leaves it: VERID %#x PWREN %u CLKENA %u", sd_verid,
+		    rd(R_PWREN), rd(R_CLKENA));
+		printf("sdcard: %s\n", sd_state);
+		return;
+	}
 	cmaj = cdevsw_add(-1, &sd_cdevsw);
-	if (cmaj < 0 || sd_blocks == 0) {
-		snprintf(sd_state, sizeof(sd_state), "no device (major %d, %llu blocks)", cmaj, sd_blocks);
+	if (cmaj < 0) {
+		snprintf(sd_state, sizeof(sd_state), "no device major");
 		return;
 	}
 	(void)devfs_make_node(makedev(cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdcard");
-	sd_ready = 1;
-	snprintf(sd_state, sizeof(sd_state), "ready, read-only: %llu MB (to the last partition), DW MMC %#x, 4-bit, S-Boot's setup",
-	    sd_blocks / 2048, verid);
+	snprintf(sd_state, sizeof(sd_state), "slot found (DW MMC %#x); the card is read on the first open of /dev/rsdcard", sd_verid);
 	printf("sdcard: %s\n", sd_state);
 }
