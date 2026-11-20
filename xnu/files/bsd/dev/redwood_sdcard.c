@@ -46,7 +46,8 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 #define INT_CD          (1u << 2)       /* command done */
 #define INT_DTO         (1u << 3)       /* data transfer over */
 #define INT_RXDR        (1u << 5)       /* receive FIFO over its watermark */
-#define INT_ERR         0xbfc2u         /* RE, RCRC, DCRC, RTO, DRTO, HTO, FRUN, HLE, SBE, EBE */
+#define INT_HTO         (1u << 10)      /* FIFO full, the card clock paused until it is drained: not an error */
+#define INT_ERR         0xbbc2u         /* RE, RCRC, DCRC, RTO, DRTO, FRUN, HLE, SBE, EBE */
 
 #define CMD_START       (1u << 31)
 #define CMD_HOLD        (1u << 29)
@@ -114,8 +115,8 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 		while (n-- > 0 && got < want) {
 			((uint32_t *)out)[got++] = rd(R_FIFO);
 		}
-		if (st & INT_RXDR) {
-			wr(R_RINTSTS, INT_RXDR);
+		if (st & (INT_RXDR | INT_HTO)) {
+			wr(R_RINTSTS, st & (INT_RXDR | INT_HTO));
 		}
 		if ((st & INT_DTO) && got >= want) {
 			break;
