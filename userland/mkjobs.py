@@ -236,7 +236,11 @@ DENY = ('watchdog', 'CommCenter', 'wifi', 'WiFi', 'bluetooth', 'BTServer', 'Blue
         'coreduetd', 'biomed',
         # x1slte (A, 2026-11-14): ClassKit's progressd (Schoolwork progress) dies of a null pointer 10 s after every
         # start (pc 0x1cd79aa4c) and is started again: 35 runs and ~100 log lines a minute from launchd for nothing
-        'progressd')
+        'progressd',
+        # x1slte (A, 2026-11-20): livefileproviderd needs Apple's lifs kernel extension ("Didn't find matching client",
+        # e0000001) and exits at once, restarted every 10 s all day; userfsd then waits on it forever. Back when this
+        # kernel has a lifs stand-in (docs/devices/x1slte/sdcard-files-parked.md)
+        'livefileproviderd')
 # duetexpertd is let through again (B, 2026-11-14): it fills the wallpaper gallery ("Add New Wallpaper",
 # com.apple.proactive.FaceSuggestions.xpc; without it PosterBoard aborts on a nil gallery). It starts on demand
 # and sits idle; coreduetd, which asked for it without end, stays denied. It traps in
