@@ -320,6 +320,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/rwlogd src/rwlogd.c
 		$DYN -o obj/m2m_mark src/m2m_mark.c
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
+		$DYN -framework CoreFoundation -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
 		${LDID:-ldid} -Cadhoc -S obj/prefset
 		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
 		$DYN -o obj/cell-provision ../tools/cellular/cell-provision.c   # modem files from the phone's RADIO/EFS (read-only)
@@ -517,6 +518,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/metal_drv_test ] && cp obj/metal_drv_test root/bin/
 	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
 	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
+	[ -f obj/redwood-defaults ] && cp obj/redwood-defaults root/bin/
 	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
 	[ -f obj/apfs_mmap_test ] && cp obj/apfs_mmap_test root/bin/
@@ -709,6 +711,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	[ ! -x root/bin/redwood-defaults ] || cp com.redwood.defaults.plist root/LaunchDaemons/   # fresh-volume defaults
 	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
 	[ ! -x root/bin/redwood-motiond ] || cp com.redwood.motion-wake.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-fpd ] || cp com.redwood.fpd.plist root/LaunchDaemons/
