@@ -145,3 +145,21 @@ Phone validation still required: cold-start baseline vs switches on, identical
 scrolling/game workload, temperature, frame misses, actual clocks and cool-down.
 Disable both switches to restore the existing limits. The feature is image code
 and needs no manually seeded data-volume files on a clean install.
+
+
+## Lower Mongoose limits (user request, 2026-11-20)
+
+Balanced now caps M5 at **1586 MHz**, Cool at **1274 MHz**; the 1274 MHz
+frame floor remains. Performance retains its explicit 2730 MHz maximum.
+The cap is applied after touch/frame boosts and with fixed-clock governor
+overrides, and lower thermal/power limits still win. `dvfs_m5_max=KHZ` or
+`kern.redwood.m5_max` overrides it (0 removes this extra ceiling).
+Balanced/Cool unpark the M5s only after A76 load >=90% for three ticks and
+park them again after A76 load <60% and M5 load <20% for two seconds.
+This favors the A76s and reduces M5 bursts; performance/temperature impact
+needs a cold-start phone comparison. GPU and other zones can also be hot.
+
+Screen idle now defaults to `idle_lock=2`: untouched wake sleeps after10s,
+unlocked follows Settings Auto-Lock (including Never); recent audio keeps
+the unlocked screen awake. AOD suppression remains in place. Runtime
+`redwood-idle.conf` and boot arguments retain explicit override support.

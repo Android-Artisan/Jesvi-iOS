@@ -1532,8 +1532,8 @@ input_thread(__unused void *arg)
  *   Auto-Lock's time (Settings: maxInactivity in EffectiveUserSettings; "Never" leaves it on) when unlocked,
  * the lock button is pressed, as the user would. Unlocked, not while the speakers have had sound in the last 5 s
  * (kern.redwood.snd_quiet_ms), so a video or music keeps the screen on.
- * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s; the default since 2026-11-13, the user's wish), 2 also
- * Auto-Lock when in use (the default 2026-11-12..13). /var/jb/etc/redwood-idle.conf "mode=N" overrides it at every wake.
+ * Boot-arg idle_lock=0 off, 1 only an untouched wake (lock_s), 2 also
+ * Auto-Lock when in use (default, user request 2026-11-20). /var/jb/etc/redwood-idle.conf "mode=N" overrides it at every wake.
  */
 static int
 auto_lock_seconds(void)
@@ -1574,7 +1574,7 @@ auto_lock_seconds(void)
 static void *
 idle_thread(__unused void *argument)
 {
-	int lock_s = 10, auto_s = 60, mode = 1;     /* (default 1 since 2026-11-13, the user's wish; was 2) */
+	int lock_s = 10, auto_s = 60, mode = 2;     /* user 2026-11-20: sleep on lock screen and unlocked */
 	uint64_t woke_at = 0;
 	int aod_token = NOTIFY_TOKEN_INVALID;
 	bool was_on = false, booted = false;
