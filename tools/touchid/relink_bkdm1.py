@@ -15,7 +15,7 @@ What ties an extracted dylib to its old cache, and what this does about it (A, 2
 MAP.json: {"0x<old address>": "<symbol>"} for the pooled GOT slots and the constant-object classes (ipsw dyld a2s).
 Binds outside the GOT use a flat lookup (the classes and data live in libSystem / CoreFoundation / Foundation).
 """
-import json, struct, sys
+import collections, json, struct, sys
 import lief
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
 from capstone.arm64 import ARM64_INS_ADRP, ARM64_OP_MEM
@@ -139,6 +139,19 @@ CLASS_SECTIONS = [(x.virtual_address, x.virtual_address + x.size) for x in b.sec
 def class_slot(a):
     return any(lo <= a < hi for lo, hi in CLASS_SECTIONS)
 
+# class and metaclass method caches: 0 in the cache's copy (libobjc's shared tables); a loose image binds them to
+# _objc_empty_cache, or objc_msgSend reads a null cache (crash in BKDMInitialize's first message, 2026-11-20)
+ncache = 0
+_cl = b.get_section('__objc_classlist')
+if _cl is not None:
+    for k in range(_cl.size // 8):
+        c = rd(_cl.virtual_address + 8 * k)
+        for a in (c, rd(c) if c else 0):
+            if a and in_keep(a) and (rd(a + 16) or 0) == 0 and (a + 16) not in binds:
+                binds[a + 16] = (FLAT, '__objc_empty_cache', False)
+                ncache += 1
+print(f'relink: {ncache} class caches bound to _objc_empty_cache')
+
 unknown = {}
 for segname in [n for n in mem if n != '__TEXT']:
     base, buf = mem[segname]
@@ -199,7 +212,81 @@ for i in md.disasm(code, text.virtual_address):
         if r in regs:
             regs.pop(r)
 
-print(f'relink: {len(binds)} binds, {len(rebases)} rebases, {fixed} pooled loads repointed, {len(unknown)} unknown pointers')
+# 4. stubs: the cache builder pointed them at the cache's own pointer area (outside this image; read as 0 -> a jump to
+# address 0 in BKDMInitialize, 2026-11-20). Each stub k is named by the indirect symbol table: point its ADRP+LDR at
+# this image's __got slot for that symbol, or at a new slot in __RELINK.
+nrelink = len(pooled)
+got_of = {nm: slot for slot, (o, nm, w) in binds.items() if any(
+    x.name == '__got' and x.virtual_address <= slot < x.virtual_address + x.size for x in b.sections)}
+stubs_fixed = 0
+for sec in b.sections:
+    if sec.name != '__stubs':
+        continue
+    es = sec.reserved2 or 12
+    for k in range(sec.size // es):
+        at = sec.virtual_address + es * k
+        sym = ind[sec.reserved1 + k]
+        if not sym.name:
+            continue
+        slot = got_of.get(sym.name)
+        if slot is None:
+            slot = relink_base + 8 * nrelink
+            nrelink += 1
+            binds[slot] = ((sym.description >> 8) & 0xff, sym.name, ((sym.description >> 8) & 0xff) in weak_ordinals)
+            got_of[sym.name] = slot
+        delta = ((slot & ~0xfff) - (at & ~0xfff)) >> 12
+        ins = rd(at, 4)
+        assert ins & 0x9f000000 == 0x90000000, f'stub {at:#x} is not ADRP'
+        wr(at, (ins & 0x9f00001f) | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5), 4)
+        ins = rd(at + 4, 4)
+        assert ins & 0xffc00000 == 0xf9400000, f'stub {at + 4:#x} is not LDR'
+        wr(at + 4, (ins & ~(0xfff << 10)) | (((slot & 0xfff) >> 3) << 10), 4)
+        stubs_fixed += 1
+# 5. __objc_stubs ("objc_msgSend$sel"): ADRP x1/LDR selref (inside), then ADRP x16/LDR x16 from the cache's own
+# objc_msgSend pointer (outside): point that at our _objc_msgSend slot.
+def slot_for(nm, ordl=FLAT):
+    global nrelink
+    if nm not in got_of:
+        got_of[nm] = relink_base + 8 * nrelink
+        binds[got_of[nm]] = (ordl, nm, False)
+        nrelink += 1
+    return got_of[nm]
+osf = 0
+os_ = b.get_section('__objc_stubs')
+if os_ is not None:
+    ms = slot_for('_objc_msgSend')
+    for at in range(os_.virtual_address, os_.virtual_address + os_.size - 15, 4):
+        i0, i1 = rd(at, 4), rd(at + 4, 4)
+        if i0 & 0x9f00001f == 0x90000010 and i1 & 0xffc003ff == 0xf9400210:     # adrp x16 ; ldr x16, [x16, #]
+            delta = ((ms & ~0xfff) - (at & ~0xfff)) >> 12
+            wr(at, (i0 & 0x9f00001f) | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5), 4)
+            wr(at + 4, (i1 & ~(0xfff << 10)) | (((ms & 0xfff) >> 3) << 10), 4)
+            osf += 1
+assert 8 * nrelink <= len(mem['__RELINK'][1])
+
+# what still loads from outside the image (for the log; should be 0)
+def image_has(a):
+    return any(base <= a < base + len(buf) for base, buf in mem.values())
+outside = collections.Counter()
+for secname in ('__text', '__stubs', '__objc_stubs'):
+    sx = b.get_section(secname)
+    if sx is None:
+        continue
+    r = {}
+    for at in range(sx.virtual_address, sx.virtual_address + sx.size, 4):
+        ins = rd(at, 4)
+        if ins & 0x9f000000 == 0x90000000:
+            imm = ((ins >> 29) & 3) | (((ins >> 5) & 0x7ffff) << 2)
+            if imm & (1 << 20): imm -= 1 << 21
+            r[ins & 31] = (at & ~0xfff) + (imm << 12)
+        elif ins & 0xffc00000 == 0xf9400000 and ((ins >> 5) & 31) in r:
+            t = r[(ins >> 5) & 31] + (((ins >> 10) & 0xfff) << 3)
+            if not image_has(t):
+                outside[(secname, t)] += 1
+print(f'relink: {osf} objc stubs repointed; loads from outside the image left: {sum(outside.values())}',
+      [(n, hex(t), c) for (n, t), c in outside.most_common(6)])
+
+print(f'relink: {len(binds)} binds, {len(rebases)} rebases, {fixed} pooled loads repointed, {stubs_fixed} stubs repointed, {len(unknown)} unknown pointers')
 for slot, v in sorted(unknown.items())[:20]:
     print(f'  unknown pointer at {slot:#x} -> {v:#x}')
 
@@ -299,7 +386,7 @@ for n, vm, pad, size, fo, fsz in lay:
                             0 if zerofill else fo + (addr - vm), align, 0, 0, flags, r1, r2, 0)
     nsect = len(secs)
     if n == '__RELINK':
-        body += struct.pack('<16s16sQQIIIIIIII', b'__got', b'__RELINK', vm, 8 * len(pooled), fo, 3, 0, 0, 6, 0, 0, 0)
+        body += struct.pack('<16s16sQQIIIIIIII', b'__got', b'__RELINK', vm, 8 * nrelink, fo, 3, 0, 0, 6, 0, 0, 0)
         nsect = 1
     elif n == '__DATA_DIRTY' and extra is not None:
         # the merged __EXTRA_OBJC as a section of its own: every fixup must lie in a section (dyld_info stopped there)
@@ -334,4 +421,4 @@ out[0:len(hdr) + len(cmds)] = hdr + cmds
 for p, o in zip(le_parts, offs):
     out[o:o + len(p)] = p
 open(outp, 'wb').write(out)
-print(f'relink: wrote {outp} ({len(out)} bytes), __RELINK at {relink_base:#x} ({len(pooled)} slots)')
+print(f'relink: wrote {outp} ({len(out)} bytes), __RELINK at {relink_base:#x} ({nrelink} slots)')
