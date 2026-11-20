@@ -27,3 +27,19 @@ Behind boot-arg `lifs=1` (default off until it works).
 
 ## Then
 livefileproviderd stays up -> userfsd answers -> addDisk with a disk node of the card's exFAT partition -> Files.
+
+## Result (2026-11-21)
+Apple's lifs loads, links and starts in our kernel: `com.apple.filesystems.lifs 1.0.0d1`, 288 KB, 286+664
+relocations, 35/35 typed views; IOKit service `com_apple_filesystems_lifs` registered/matched/active.
+livefileproviderd then starts properly ("set notification port returned 0", "will mount over LIFSv2", FileProvider
+domains) and userfsd completes: "LiveFSService XPC service for externally attached volumes is up", "registering for
+IOKit matching notification". Bugs found on the way (each froze the phone):
+1. write_pte_strong fills the 4 hardware entries of a 16 KB page itself: one call per VM page.
+2. __kalloc_type holds the views (64 bytes each), not pointers.
+3. XNU builds every dynamic-memory table with PXNTable: cleared on the tables above the text pages, full TLB flush.
+4. The personality must name `__kernel__` as owner (else IOKit asks user space to load the kext).
+Test: boot-arg lifs=1, `kern.redwood.lifs_load=1` (once a boot); lifs_stop/lifs_text for staged runs.
+
+## Next
+The SD card as an external disk in IOKit, the way userfsd's matching expects (IOMedia-like service, BSD name,
+Physical Interconnect External), a /dev node for it; then lifs at boot (lifs=2) by default.
