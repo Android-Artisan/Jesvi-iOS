@@ -93,6 +93,7 @@ bsd/dev/redwood_net.c
 bsd/dev/redwood_perf.c
 bsd/dev/redwood_qmi.c
 bsd/dev/redwood_s2mpb02_torch.c
+bsd/dev/redwood_sdcard.c
 bsd/dev/redwood_sec_ts.c
 bsd/dev/redwood_sensors.c
 bsd/dev/redwood_sound.c
