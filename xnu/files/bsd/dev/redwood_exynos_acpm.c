@@ -540,6 +540,27 @@ static uint32_t scroff_little_switches;
 LCK_GRP_DECLARE(scroff_lck_grp, "redwood-scroff");
 LCK_MTX_DECLARE(scroff_lock, &scroff_lck_grp);
 
+/*
+ * The big cores off when hot (A, 2026-11-20): Samsung hotplugs cpu6-7 out at 96 C (BIG zone) and back in at 91 C
+ * (exynos9830 DTS, tmu BIG hotplug_out/in_threshold; docs/devices/x1slte/power-thermal-samsung.md). Here they are
+ * taken from the scheduler's recommended cores, as the screen-off mask does; the phone used to climb to 105-110 C and
+ * be reset by the PMIC. Boot-arg dvfs_bigoff=0: off; dvfs_bigoff_out=C / dvfs_bigoff_in=C move the marks.
+ */
+static uint32_t bigoff = 1, bigoff_out = 96, bigoff_in = 91;
+static int bigoff_on;                   /* cpu6-7 out of the scheduler now */
+static uint32_t bigoff_switches;
+
+static void
+cores_apply(void)                       /* scroff_lock held */
+{
+	uint32_t m = scroff_little_on ? 0x0fu : 0xffu;
+
+	if (bigoff_on) {
+		m &= ~0xc0u;
+	}
+	sched_perfcontrol_update_recommended_cores(m == 0xffu ? 0xffffffffu : m);
+}
+
 static void
 scroff_little_set(int on)               /* scroff_lock held */
 {
@@ -548,7 +569,28 @@ scroff_little_set(int on)               /* scroff_lock held */
 	}
 	scroff_little_on = on;
 	scroff_little_switches++;
-	sched_perfcontrol_update_recommended_cores(on ? 0x0fu : 0xffffffffu);
+	cores_apply();
+}
+
+/* from the thermal step, with the BIG zone's temperature */
+static void
+bigoff_check(int t)
+{
+	int want;
+
+	if (!bigoff || t < 0) {
+		return;
+	}
+	want = bigoff_on ? t > (int)bigoff_in : t >= (int)bigoff_out;
+	if (want == bigoff_on) {
+		return;
+	}
+	lck_mtx_lock(&scroff_lock);
+	bigoff_on = want;
+	bigoff_switches++;
+	cores_apply();
+	lck_mtx_unlock(&scroff_lock);
+	dlog("thermal: big zone %d C: cores 6-7 %s", t, want ? "OFF (hotplug, as Samsung at 96 C)" : "back on");
 }
 
 void redwood_dvfs_display(int on);
@@ -644,6 +686,10 @@ SYSCTL_UINT(_kern_redwood, OID_AUTO, efficiency_mask, CTLFLAG_RD | CTLFLAG_LOCKE
     &efficiency_mask, 0, "Automatic cooling bits: A55=1 A76=2 M5=4 GPU=8; memory independent");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, scroff_little, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
     NULL, 0, sysctl_scroff_little, "I", "Screen off: the small cores (0-3) only; 1 on (default), 0 off");
+SYSCTL_INT(_kern_redwood, OID_AUTO, bigoff_now, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &bigoff_on, 0, "1: cores 6-7 are out of the scheduler (BIG zone hot, Samsung's 96/91 C hotplug)");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bigoff_switches, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &bigoff_switches, 0, "times the hot-big-cores hotplug switched");
 SYSCTL_INT(_kern_redwood, OID_AUTO, scroff_little_now, CTLFLAG_RD | CTLFLAG_LOCKED,
     &scroff_little_on, 0, "1: the scheduler has cores 0-3 only right now");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, scroff_little_switches, CTLFLAG_RD | CTLFLAG_LOCKED,
@@ -829,6 +875,9 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_ffl_g3d", &gov_frame_khz[3], sizeof(gov_frame_khz[3]));
 	PE_parse_boot_argn("dvfs_sleep", &prof_sleep, sizeof(prof_sleep));
 	PE_parse_boot_argn("scroff_little", &scroff_little, sizeof(scroff_little));
+	PE_parse_boot_argn("dvfs_bigoff", &bigoff, sizeof(bigoff));
+	PE_parse_boot_argn("dvfs_bigoff_out", &bigoff_out, sizeof(bigoff_out));
+	PE_parse_boot_argn("dvfs_bigoff_in", &bigoff_in, sizeof(bigoff_in));
 	PE_parse_boot_argn("dvfs_scroff_tick", &gov_scroff_tick_ms, sizeof(gov_scroff_tick_ms));
 	if (gov_scroff_tick_ms != 50 && gov_scroff_tick_ms != 250 && gov_scroff_tick_ms != 500 && gov_scroff_tick_ms != 1000) {
 		gov_scroff_tick_ms = 500;
@@ -1124,13 +1173,22 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				}
 			}
 		}
-		if (tick % (250 / GOV_TICK_MS) != 0) {
+		/* the temperatures and the thermal steps: every 250 ms (once a second was too slow for the M5 cores), and every
+		 * tick (50 ms) once a zone is at 80 C or more -- Samsung's IPA polls every 50 ms while hot (A, 2026-11-20) */
+		static int therm_fast;
+		if (!therm_fast && tick % (250 / GOV_TICK_MS) != 0) {
 			continue;
 		}
-		/* the temperatures and the thermal steps: every 250 ms (once a second was too slow for the M5 cores) */
 		hot = 0;
+		therm_fast = 0;
 		for (unsigned z = 0; z < 4; z++) {
 			temp[z] = ch_tmu.len != 0 ? read_temp(z) : -1;
+			if (temp[z] >= 80) {
+				therm_fast = 1;
+			}
+		}
+		if (mode >= 2) {
+			bigoff_check(temp[0]);          /* zones[0] = "big" */
 		}
 		/* Reuse the four samples above: no extra reads, thread, timer or log polling.
 		 * Decisions affect the next governor tick; stricter thermal/profile caps still win. */
