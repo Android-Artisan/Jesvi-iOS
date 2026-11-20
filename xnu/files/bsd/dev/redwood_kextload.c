@@ -44,10 +44,11 @@ typedef void (*redwood_ctor_t)(void);
 extern int redwood_kext_classes(redwood_ctor_t *ctors, unsigned count);
 extern bool redwood_kext_lifs_personality(void);
 
-static char lifs_state[200] = "off (boot-arg lifs=1)";
+static char lifs_state[200] = "off (boot-arg lifs=1: on request, 2: at boot)";
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_STRING(_kern_redwood, OID_AUTO, lifs, CTLFLAG_RD | CTLFLAG_LOCKED, lifs_state, 0, "Apple's lifs.kext, loaded at run time");
 
+#define STEP(...) do { printf("lifs: step: " __VA_ARGS__); printf("\n"); IOSleep(50); } while (0)
 #define FAIL(...) do { snprintf(lifs_state, sizeof(lifs_state), __VA_ARGS__); printf("lifs: %s\n", lifs_state); goto out; } while (0)
 
 static const void *
@@ -127,6 +128,7 @@ lifs_load(void)
 	int error, r;
 	const uint8_t *lc, *lc_end;
 
+	STEP("read %s", LIFS_PATH);
 	error = read_file(LIFS_PATH, &file, &flen);
 	if (error != 0) {
 		FAIL("cannot read %s: %d", LIFS_PATH, error);
@@ -187,6 +189,7 @@ lifs_load(void)
 		FAIL("symbol table, relocations or sections out of the file");
 	}
 
+	STEP("checked %zu bytes; mapping %llu bytes", flen, vmend);
 	/* pass 2: memory for every segment, wired, zeroed; the file's bytes at their addresses */
 	vmsize = round_page(vmend);
 	if (kmem_alloc(kernel_map, &base, vmsize, KMA_ZERO | KMA_KOBJECT | KMA_PERMANENT, VM_KERN_MEMORY_KEXT) != KERN_SUCCESS) {
@@ -205,6 +208,7 @@ lifs_load(void)
 		lc += l->cmdsize;
 	}
 
+	STEP("mapped at %p; relocating", (void *)base);
 	/* pass 3: relocations; only 64-bit absolute pointers inside the image */
 	{
 		const struct relocation_info *rel = (const struct relocation_info *)(file + dy->locreloff);
@@ -252,10 +256,13 @@ lifs_load(void)
 	}
 
 	/* pass 4: text read-only and executable; typed views placed; classes; start; IOKit */
+	STEP("relocated; text %#llx-%#llx executable", text_lo, text_hi);
 	redwood_pmap_kernel_text(base + text_lo, text_hi - text_lo);
+	STEP("text done; typed views");
 	r = (int)redwood_kalloc_type_adopt((struct kalloc_type_view **)(base + kt_off), (unsigned)(kt_size / sizeof(void *)));
 	printf("lifs: %llu KB at %p, text %#llx-%#llx, %u+%u relocations, %d of %llu typed views placed\n",
 	    (uint64_t)vmsize / 1024, (void *)base, text_lo, text_hi, dy->nlocrel, dy->nextrel, r, kt_size / sizeof(void *));
+	STEP("classes (%llu constructors)", ctor_size / sizeof(void *));
 	error = redwood_kext_classes((redwood_ctor_t *)(base + ctor_off), (unsigned)(ctor_size / sizeof(void *)));
 	if (error != 0) {
 		FAIL("class registration: %#x", error);
@@ -264,12 +271,14 @@ lifs_load(void)
 	ki->address = base;
 	ki->size = vmsize;
 	ki->hdr_size = 0;
+	STEP("start %s %s", ki->name, ki->version);
 	if (ki->start != NULL) {
 		error = ki->start(ki, NULL);
 		if (error != KERN_SUCCESS) {
 			FAIL("start: %d", error);
 		}
 	}
+	STEP("started; personality to IOKit");
 	if (!redwood_kext_lifs_personality()) {
 		FAIL("IOKit did not take the personality");
 	}
@@ -307,17 +316,45 @@ lifs_thread(__unused void *arg, __unused wait_result_t wr)
 	snprintf(lifs_state, sizeof(lifs_state), "%s never appeared", LIFS_PATH);
 }
 
+/* lifs=1: loaded when asked (kern.redwood.lifs_load=1, once); lifs=2: also at boot, from a thread */
+static uint32_t lifs_mode;
+static int lifs_loaded;
+
+static int
+sysctl_lifs_load SYSCTL_HANDLER_ARGS
+{
+	int v = lifs_loaded, error = sysctl_handle_int(oidp, &v, 0, req);
+
+	if (error != 0 || req->newptr == USER_ADDR_NULL) {
+		return error;
+	}
+	if (lifs_mode == 0) {
+		return EPERM;
+	}
+	if (v == 1 && !lifs_loaded) {
+		lifs_loaded = 1;
+		lifs_load();
+	}
+	return 0;
+}
+SYSCTL_PROC(_kern_redwood, OID_AUTO, lifs_load, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_lifs_load, "I",
+    "1: load Apple's lifs.kext now (boot-arg lifs=1 or 2)");
+
 void redwood_kextload_init(void);
 void
 redwood_kextload_init(void)
 {
-	uint32_t on = 0;
 	thread_t t;
 
-	if (!PE_parse_boot_argn("lifs", &on, sizeof(on)) || on == 0) {
+	if (!PE_parse_boot_argn("lifs", &lifs_mode, sizeof(lifs_mode)) || lifs_mode == 0) {
+		return;
+	}
+	if (lifs_mode == 1) {
+		snprintf(lifs_state, sizeof(lifs_state), "ready: sysctl kern.redwood.lifs_load=1 loads it");
 		return;
 	}
 	snprintf(lifs_state, sizeof(lifs_state), "waiting for %s", LIFS_PATH);
+	lifs_loaded = 1;
 	if (kernel_thread_start(lifs_thread, NULL, &t) == KERN_SUCCESS) {
 		thread_deallocate(t);
 	}
