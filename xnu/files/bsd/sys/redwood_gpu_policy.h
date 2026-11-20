@@ -3,6 +3,14 @@
 #ifndef REDWOOD_GPU_POLICY_H
 #define REDWOOD_GPU_POLICY_H
 #include <stdint.h>
+/* PLL readback is integer MHz. A rate already set before the request is valid. */
+static inline int
+redwood_gpu_rate_verified(int error, uint32_t requested_khz, uint32_t actual_mhz)
+{
+    uint32_t asked = requested_khz / 1000;
+    uint32_t delta = actual_mhz > asked ? actual_mhz - asked : asked - actual_mhz;
+    return !error && requested_khz && actual_mhz && delta <= 1;
+}
 struct redwood_gpu_policy {
     unsigned level;
     int sustained;

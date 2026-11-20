@@ -2,6 +2,13 @@
 #include <stdio.h>
 #include "redwood_gpu_policy.h"
 int main(void) {
+    assert(redwood_gpu_rate_verified(0, 572000, 572)); /* unchanged boot PLL */
+    assert(redwood_gpu_rate_verified(0, 572000, 571)); /* truncated MHz */
+    assert(!redwood_gpu_rate_verified(0, 572000, 570));
+    assert(!redwood_gpu_rate_verified(0, 572000, 800)); /* stale clock */
+    assert(!redwood_gpu_rate_verified(-1, 572000, 572)); /* failed ACK */
+    assert(!redwood_gpu_rate_verified(0, 0, 0));
+    assert(!redwood_gpu_rate_verified(0, 572000, 0));
     struct redwood_gpu_policy s = {0};
     assert(!redwood_gpu_policy_update(&s, 87, 0, 1, 1, 0));
     const int t[] = {88,91,94,97,100};

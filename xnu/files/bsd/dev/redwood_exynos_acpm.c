@@ -1117,10 +1117,13 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				g3d = targets[i] ? profile_cap(i, targets[i], power_profile()) : 0;
 			}
 		}
-		set_rate(D_G3D, g3d);
+		int rate_error = set_rate(D_G3D, g3d);
 		delay(5000);
-		if (g3d == 0 || g3d_pll_mhz() == before) {
-			dlog("PLL_G3D still %u MHz after asking for %u: ACPM did not take it, nothing else is set", g3d_pll_mhz(),
+        uint32_t after = g3d_pll_mhz();
+        /* A lower cap can equal the boot clock. Successful readback at the
+         * requested clock is valid even when the PLL did not need to move. */
+		if (!redwood_gpu_rate_verified(rate_error, g3d, after)) {
+			dlog("PLL_G3D %u MHz after asking for %u: ACPM rate not verified, nothing else is set", g3d_pll_mhz(),
 			    g3d / 1000);
 			mode = 1;
 		} else {
