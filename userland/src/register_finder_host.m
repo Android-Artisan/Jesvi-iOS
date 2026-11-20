@@ -115,44 +115,82 @@ static void share_storage(NSString *home) {
     NSLog(@"Jesvi Files: Finder shares %@", storage);
 }
 
-/*
- * Native Files (A, 2026-11-20; the default image): Apple's local provider (On My iPhone) and the two document pickers
- * stay in their frameworks, as on an iPhone, with no host app and so no "Jesvi Files" icon. LaunchServices usually
- * finds them itself; any it does not know are registered here, and the provider's app-group and data containers are
- * made (a fresh data volume has no installer pass that would make them). An earlier install's host app is unregistered.
- */
-static int native_files(Class workspace) {
+/* A standalone registerPlugin: makes a proxy without entitlements or container
+ * metadata on this port. FileProvider then omits the local domain. Build the
+ * registration host from the immutable image automatically on a clean volume;
+ * SBAppTags is supplied in both Info.plist and the LS record, so it has no icon.
+ * Apple's framework bundles stay in place. No user documents are copied here. */
+static NSArray *provider_names(void) {
+    return @[@"LocalStorageFileProvider", @"SaveToFiles", @"com.apple.DocumentManager.Service"];
+}
+static BOOL host_complete(NSString *path) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm isExecutableFileAtPath:[path stringByAppendingPathComponent:@"LocalFilesHost"]]) return NO;
+    for (NSString *name in provider_names()) {
+        NSString *plugin = [[path stringByAppendingPathComponent:@"PlugIns"]
+            stringByAppendingPathComponent:[name stringByAppendingString:@".appex"]];
+        if (![fm isExecutableFileAtPath:[plugin stringByAppendingPathComponent:name]] ||
+            ![NSDictionary dictionaryWithContentsOfFile:[plugin stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"]) return NO;
+    }
+    return YES;
+}
+static BOOL prepare_hidden_host(void) {
+    NSString *destination = @"/var/mobile/Library/HakiosLocalFiles/LocalFilesHost.app";
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (host_complete(destination)) return YES;
+    if ([fm fileExistsAtPath:destination]) {
+        NSString *saved = [destination stringByAppendingFormat:@".incomplete-%@", NSUUID.UUID.UUIDString];
+        if (![fm moveItemAtPath:destination toPath:saved error:nil]) return NO;
+    }
+    if (access("/redwood/bin/LocalFilesHost", X_OK)) {
+        NSLog(@"Files: image is missing LocalFilesHost; cannot prepare provider metadata");
+        return NO;
+    }
     NSArray *paths = @[
         @"/System/Library/Frameworks/FileProvider.framework/PlugIns/LocalStorageFileProvider.appex",
         @"/System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/SaveToFiles.appex",
         @"/System/Library/PrivateFrameworks/DocumentManagerUICore.framework/PlugIns/com.apple.DocumentManager.Service.appex" ];
-    Class plugins = NSClassFromString(@"LSPlugInKitProxy"), apps = NSClassFromString(@"LSApplicationProxy");
-    id ws = [workspace defaultWorkspace];
-    id host = [apps performSelector:@selector(applicationProxyForIdentifier:) withObject:@"org.hakios.LocalFilesHost"];
-    NSURL *hostURL = [host respondsToSelector:@selector(bundleURL)] ? [host performSelector:@selector(bundleURL)] : nil;
-    if (hostURL && [ws respondsToSelector:@selector(unregisterApplication:)]) {
-        BOOL gone = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, @selector(unregisterApplication:), hostURL);
-        NSLog(@"Files: the old host app (Jesvi Files) unregistered: %d", gone);
-    }
-    NSString *group = mcm_path(@"MCMSharedDataContainer", @"group.com.apple.FileProvider.LocalStorage");
-    mcm_path(@"MCMPluginKitPluginDataContainer", @"com.apple.FileProvider.LocalStorage");
-    if (group) {
-        NSString *storage = [group stringByAppendingPathComponent:@"File Provider Storage"];
-        if (mkdir(storage.fileSystemRepresentation, 0755) == 0) chown(storage.fileSystemRepresentation, 501, 501);
-    }
-    int missing = 0;
+    NSString *parent = destination.stringByDeletingLastPathComponent;
+    NSString *staging = [parent stringByAppendingPathComponent:[@".prepare-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSError *error = nil;
+    BOOL ok = [fm createDirectoryAtPath:[staging stringByAppendingPathComponent:@"PlugIns"]
+        withIntermediateDirectories:YES attributes:nil error:&error];
+    if (ok) ok = [fm copyItemAtPath:@"/redwood/bin/LocalFilesHost"
+        toPath:[staging stringByAppendingPathComponent:@"LocalFilesHost"] error:&error];
     for (NSString *path in paths) {
-        NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
-        if (!pid) { NSLog(@"Files: %@ is not in this image", path); missing++; continue; }
-        if ([plugins performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid]) continue;
-        BOOL ok = [ws respondsToSelector:@selector(registerPlugin:)] &&
-            ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, @selector(registerPlugin:), [NSURL fileURLWithPath:path]);
-        BOOL known = [plugins performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid] != nil;
-        NSLog(@"Files: %@ registered: %d, known now: %d", pid, ok, known);
-        if (!known) missing++;
+        if (!ok) break;
+        ok = [fm copyItemAtPath:path toPath:[[staging stringByAppendingPathComponent:@"PlugIns"]
+            stringByAppendingPathComponent:path.lastPathComponent] error:&error];
     }
-    NSLog(@"Files (native): %s", missing ? "some extensions missing" : "On My iPhone and the pickers ready");
-    return missing ? 1 : 0;
+    NSDictionary *info = @{ @"CFBundleIdentifier": @"org.hakios.LocalFilesHost",
+        @"CFBundleExecutable": @"LocalFilesHost", @"CFBundleName": @"Local Storage",
+        @"CFBundleDisplayName": @"Local Storage", @"CFBundlePackageType": @"APPL",
+        @"CFBundleVersion": @"1", @"CFBundleShortVersionString": @"1.0",
+        @"LSRequiresIPhoneOS": @YES, @"MinimumOSVersion": @"16.0", @"UIDeviceFamily": @[@1, @2],
+        @"UIRequiredDeviceCapabilities": @[@"arm64"], @"SBAppTags": @[@"hidden"],
+        @"UIFileSharingEnabled": @YES };
+    if (ok) ok = [info writeToFile:[staging stringByAppendingPathComponent:@"Info.plist"] atomically:YES];
+    if (ok) ok = [fm moveItemAtPath:staging toPath:destination error:&error];
+    if (!ok) {
+        [fm removeItemAtPath:staging error:nil];
+        NSLog(@"Files: preparing hidden provider host failed: %@", error);
+    }
+    return ok;
+}
+
+static BOOL plugin_ready(Class proxy, NSString *identifier) {
+    id p = [proxy performSelector:@selector(pluginKitProxyForIdentifier:) withObject:identifier];
+    if (!p) return NO;
+    NSURL *data = [p respondsToSelector:@selector(dataContainerURL)] ?
+        [p performSelector:@selector(dataContainerURL)] : nil;
+    NSDictionary *groups = [p respondsToSelector:@selector(groupContainerURLs)] ?
+        [p performSelector:@selector(groupContainerURLs)] : nil;
+    NSDictionary *rights = [p respondsToSelector:@selector(entitlements)] ?
+        [p performSelector:@selector(entitlements)] : nil;
+    NSArray *names = rights[@"com.apple.security.application-groups"];
+    return data != nil && (![identifier isEqual:@"com.apple.FileProvider.LocalStorage"] ||
+        (groups[@"group.com.apple.FileProvider.LocalStorage"] != nil &&
+         [names containsObject:@"group.com.apple.FileProvider.LocalStorage"]));
 }
 
 int main(void) {
@@ -160,10 +198,8 @@ int main(void) {
     @autoreleasepool {
         NSString *identifier = @"org.hakios.LocalFilesHost";
         if (access("/Applications/HakiosLocalFiles.app/Info.plist", F_OK) != 0 &&
-            access("/var/mobile/Library/HakiosLocalFiles/LocalFilesHost.app/Info.plist", F_OK) != 0) {
-            dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW);
-            dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
-            return native_files(NSClassFromString(@"LSApplicationWorkspace"));
+            !host_complete(@"/var/mobile/Library/HakiosLocalFiles/LocalFilesHost.app")) {
+            if (!prepare_hidden_host()) return 1;
         }
         dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW);
         dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
@@ -176,7 +212,11 @@ int main(void) {
         if (!url) { NSLog(@"Finder host container unavailable: %@", error); return 1; }
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *destination = [url.path stringByAppendingPathComponent:@"LocalFilesHost.app"];
-        if (![fm fileExistsAtPath:destination]) {
+        if (!host_complete(destination)) {
+            if ([fm fileExistsAtPath:destination]) {
+                NSString *saved = [destination stringByAppendingFormat:@".incomplete-%@", NSUUID.UUID.UUIDString];
+                if (![fm moveItemAtPath:destination toPath:saved error:&error]) return 1;
+            }
             NSString *source = nil;
             for (NSString *candidate in @[@"/Applications/HakiosLocalFiles.app",
                  @"/var/mobile/Library/HakiosLocalFiles/LocalFilesHost.app"]) {
@@ -207,7 +247,7 @@ int main(void) {
                 NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[[plugins stringByAppendingPathComponent:name]
                     stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
                 Class proxy = NSClassFromString(@"LSPlugInKitProxy");
-                if (pid && proxy && ![proxy performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid]) {
+                if (pid && proxy && !plugin_ready(proxy, pid)) {
                     NSLog(@"Jesvi Files: extension %@ not registered: the whole record", pid);
                     ok = NO;
                     break;
@@ -215,12 +255,32 @@ int main(void) {
             }
         }
         if (!ok) {
+            /* Discard only this port's incomplete standalone records. Otherwise
+             * PlugInKit can elect them instead of the fully described plugins. */
+            id ws = [workspace defaultWorkspace];
+            for (NSString *name in [fm contentsOfDirectoryAtPath:[destination stringByAppendingPathComponent:@"PlugIns"] error:nil] ?: @[]) {
+                NSString *path = [[destination stringByAppendingPathComponent:@"PlugIns"] stringByAppendingPathComponent:name];
+                NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
+                id proxy = [NSClassFromString(@"LSPlugInKitProxy") performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid];
+                NSURL *old = [proxy respondsToSelector:@selector(bundleURL)] ? [proxy performSelector:@selector(bundleURL)] : nil;
+                if (old && !plugin_ready(NSClassFromString(@"LSPlugInKitProxy"), pid) && [ws respondsToSelector:@selector(unregisterPlugin:)])
+                    ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, @selector(unregisterPlugin:), old);
+            }
             NSDictionary *whole = record(destination, nil);
             ok = whole && [[workspace defaultWorkspace] registerApplicationDictionary:whole];
             NSLog(@"Jesvi Files record: data %@, %lu extensions", whole[@"Container"],
                 (unsigned long)[whole[@"_LSBundlePlugins"] count]);
         }
-        NSLog(@"Jesvi Files user registration: %@", ok ? @"complete" : @"retry needed");
+        if (ok) {
+            ok = host_complete(destination);
+            for (NSString *name in provider_names()) {
+                NSString *path = [[destination stringByAppendingPathComponent:@"PlugIns"]
+                    stringByAppendingPathComponent:[name stringByAppendingString:@".appex"]];
+                NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
+                if (!pid || !plugin_ready(NSClassFromString(@"LSPlugInKitProxy"), pid)) ok = NO;
+            }
+        }
+        NSLog(@"Files provider metadata: %@", ok ? @"complete (hidden host)" : @"retry needed");
         if (ok) share_storage(mcm_path(@"MCMAppDataContainer", identifier));
         return ok ? 0 : 1;
     }

@@ -613,6 +613,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	for p in rwdhcpd rwpf clat-test misctl; do [ ! -f obj/$p ] || cp obj/$p root/bin/; done
 	cp ../tools/hotspot/hotspot-up.sh root/bin/ && chmod 755 root/bin/hotspot-up.sh
 	[ -f obj/register_finder_host ] && cp obj/register_finder_host root/bin/
+	[ -f obj/LocalFilesHost ] && cp obj/LocalFilesHost root/bin/
 	[ -f obj/device_name ] && cp obj/device_name root/bin/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/
@@ -1188,10 +1189,10 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	if [ -n "${JESVI_TARGET:-}" ]; then
 		python3 ../tools/release/apply_mods.py "$JESVI_TARGET" system sysroot
 	fi
-	# Files' local provider (On My iPhone) and its pickers stay where iOS keeps them (A, 2026-11-20): register_finder_host
-	# makes sure LaunchServices knows them and their containers exist. The old way -- moving them into a hidden host app,
-	# org.hakios.LocalFilesHost -- left a dead "Jesvi Files" icon on the home screen of a clean install. FILES_HOST=1
-	# keeps that host (it is what Finder's File Sharing on a Mac lists).
+	# Framework providers stay in their native paths. register_finder_host automatically prepares
+	# a hidden containerized registration host from these bundles on the data volume; standalone
+	# registerPlugin: loses entitlement/container metadata on this port. FILES_HOST=1 retains
+	# the older image-time relocation option.
 	if [ -n "${FILES_HOST:-}" ]; then
 		python3 ../tools/storage/stage-provider.py sysroot obj/LocalFilesHost \
 			$IOS/system.manifest obj/system-files.manifest
