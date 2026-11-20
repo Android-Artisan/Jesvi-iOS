@@ -76,3 +76,27 @@ most of the heat in plain UI use.
 
 Each one goes behind its own boot argument first (project rule), tested with the overheating scenario (flash +
 boot + heavy UI), then made default.
+
+## Done so far (2026-11-20)
+
+- **Big cores off at 96 C, back at 91 C** (`dvfs_bigoff`, Samsung's hotplug); thermal checks every 50 ms once a zone
+  reaches 80 C.
+- **Performance profiles**, one switch: `kern.redwood.perf_profile` (boot-arg `perf_profile=`):
+
+  | | 0 cool | 1 balanced (default) | 2 performance |
+  |---|---|---|---|
+  | idle floors (A76 / M5) | 845 / 962 | 845 / 962 | 1066 / 1196 |
+  | frame floor A55 / A76 / M5 / GPU (MHz) | 1456 / 1794 / 1274 / 455 | 1456 / 2106 / **1274** / 572 | 1456 / 2106 / 1898 / 572 |
+  | wake boost | 0.5 s | 0.5 s | 1 s |
+  | big cores parked until the A76s are busy | yes | yes | no |
+  | thermal steps | 4 C earlier | as set | 4 C later |
+
+  Every tunable is also its own sysctl (`gov_lowfloor`, `ffl_cl0..g3d`, `wake_boost_ms`, `bigpark*`,
+  `perf_therm_offset`). The 96 C cutoff and Samsung's clock tables hold in every profile: no overclocking past them.
+- **A/B on the phone** (same routine: Settings and Photos scrolling, home pages, lock/wake): old settings 97.6 % of
+  frames under 18 ms, 0.65 % over 26 ms; the Samsung-style set with the M5 frame floor at 1196 MHz 77.3 % / 4.36 %
+  -- but it ran ~6 C hotter (it came right after, no cool-down: the GPU was throttled to 455 MHz most of the time).
+  Lesson: our Metal translation does its frame work on the big cores, so their frame floor matters more than on
+  Android; the user picked the middle ground, M5 1274 MHz, as the balanced default. Fair tests need the same start
+  temperature.
+- AOD is "display off" for the power code (MiniIOMobileFramebuffer: redwood_dvfs_display(0)): screen-off profile.
