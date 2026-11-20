@@ -15,10 +15,16 @@ main(int argc, char **argv)
 	}
 
 	/* userfsd's initial scan requires an explicit false before it starts. */
-	CFPreferencesSetAppValue(CFSTR("LIFS_DA"), kCFBooleanFalse, domain);
-	if (!CFPreferencesAppSynchronize(domain)) {
-		fprintf(stderr, "sd-userfs-start: failed to synchronize LIFS_DA\n");
-		return 1;
+	for (unsigned attempt = 0; ; attempt++) {
+		CFPreferencesSetAppValue(CFSTR("LIFS_DA"), kCFBooleanFalse, domain);
+		if (CFPreferencesAppSynchronize(domain)) {
+			break;
+		}
+		if (attempt == 29) {
+			fprintf(stderr, "sd-userfs-start: failed to synchronize LIFS_DA\n");
+			return 1;
+		}
+		sleep(1);
 	}
 
 	for (unsigned attempt = 0; attempt < 30; attempt++) {

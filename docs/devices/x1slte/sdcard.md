@@ -71,3 +71,15 @@ behind boot-arg sd=; then check that diskarbitrationd hands it to UserFS and Fil
 Next: IDMAC (DMA) for speed and less CPU; write support (CMD24/25) behind its own switch; card detect (GPA1-5);
 then Files: lifs.kext is Apple's bridge between a block device and userfsd (exfat.fs / msdos.fs are in the image),
 so either a kernel side for userfsd or our own File Provider with an exFAT reader.
+
+## Files support
+
+The x1slte image builds the startup wrapper and installs it in the boot image. Launchd starts it as mobile. It
+sets the LiveFiles preference through CFPreferences, waits for LIFS, then runs Apple's userfsd. A clean image
+does not require a copied preference file, a shell command, or a separate Files app. The kernel publishes the
+first MBR partition of an SDHC or SDXC card inserted at startup. A clean exFAT volume without a camera layout
+appears in Files under its on-card volume name.
+
+Partition writes use CMD24, with completion and card-busy checks. A 1 MiB file written through LiveFiles had
+the same SHA-256 after a normal S20 reboot. Use `sd_write=0` for read-only operation. Power the phone down before
+removing the card. Live removal and reinsertion still require driver support for card detect and initialization.

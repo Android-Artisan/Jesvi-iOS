@@ -4,8 +4,8 @@
  *
  * S-Boot leaves the slot initialised: card powered (PWREN 1), clocked (CLKENA 1), 4-bit bus (CTYPE 1), the card in
  * the "tran" state after its own CMD17. The driver keeps that state and uses SDHC/SDXC block addressing.
- * It reads by PIO through the FIFO at +0x200. sd_write=1 enables CMD24 writes on the first partition.
- * The slot starts in read-only mode by default, and sd=0 disables the driver.
+ * It reads by PIO through the FIFO at +0x200 and uses CMD24 for writes on the first partition.
+ * sd_write=0 makes the slot read-only, and sd=0 disables the driver.
  *
  *   /dev/rsdcard   raw, read-only; its size: the end of the last partition in the card's MBR (the card's own size,
  *                  CSD, needs its RCA, which only a re-identification gives -- next step)
@@ -69,7 +69,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 static volatile uint8_t *sd;
 static uint32_t sd_mode = 1;            /* sd=0 disables the driver */
-static uint32_t sd_write_enabled;      /* sd_write=1 enables partition writes */
+static uint32_t sd_write_enabled = 1;  /* sd_write=0 disables partition writes */
 static int sd_ready;
 static uint64_t sd_blocks;              /* 512-byte blocks exposed (minor 0: the card up to its last partition) */
 static uint64_t sd_part_start, sd_part_blocks;  /* minor 1: the first MBR partition */
