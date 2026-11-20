@@ -1014,7 +1014,11 @@ static void ctl_line(char *l)
         printf("cellular: mobile data on\n");fflush(stdout);
         if (!pdn.up) ctl_line((char[]){"data"});   /* PDN still up: utun_up() follows in the main loop */
     } else if (!strncmp(l,"data",4)) {
-        const char *apn=l[4]==' '?l+5:"jionet";char cmd[1400],hex[1100];size_t al=strlen(apn);if (al>99) return;
+        /* (B, 2026-11-20) the carrier's data APN: "data <apn>" on the pipe, else /var/root/cell-apn (one line: other
+         * carriers and regions, docs/devices/x1slte/cellular/provisioning.md), else Jio's */
+        static char apn_file[100];
+        if (!apn_file[0]) {FILE *af=fopen("/var/root/cell-apn","r");if (af) {if (fscanf(af,"%99s",apn_file)!=1) apn_file[0]=0;fclose(af);}}
+        const char *apn=l[4]==' '?l+5:apn_file[0]?apn_file:"jionet";char cmd[1400],hex[1100];size_t al=strlen(apn);if (al>99) return;
         uint8_t d[330];
         memset(d,0,sizeof(d));d[0]=1;d[1]=1;d[2]=6;memcpy(d+3,apn,al);d[0x148]=6;HEXOF(d,330);snprintf(cmd,sizeof(cmd),"fmt 0d 14 03 %s",hex);ctl_line(cmd);
         ctl_line("fmt 0d 03 03 010000");
@@ -1562,6 +1566,17 @@ int main(int argc,char **argv)
             if (up>=25 || load[0]<8.0) break;
             if (waited==0) {printf("cellular: waiting for the system to settle (up %d s, load %.0f)\n",up,load[0]);fflush(stdout);}
             sleep(5);
+        }
+    }
+    if (stay_mode) {   /* (B, 2026-11-20) a clean data volume has no modem files: make them from the phone's own firmware */
+        static const char *need[]={"cell-boot.bin","cell-boot.info","cell-toc.bin","cell-plan.txt","cell-radio.img","cell-nv.bin"};
+        int missing=0;struct stat st;char p[64];
+        for (unsigned i=0;i<sizeof(need)/sizeof(need[0]);i++) {snprintf(p,sizeof(p),"/var/root/%s",need[i]);if (stat(p,&st) || !st.st_size) missing=1;}
+        if (missing && !access("/redwood/bin/cell-provision",X_OK)) {
+            pid_t pid;int status=0;char *cargv[]={"cell-provision",NULL};
+            printf("cellular: modem files missing: cell-provision makes them from RADIO and EFS (read-only)\n");fflush(stdout);
+            if (!posix_spawn(&pid,"/redwood/bin/cell-provision",NULL,NULL,cargv,environ)) waitpid(pid,&status,0);
+            printf("cellular: cell-provision exit %d\n",WIFEXITED(status)?WEXITSTATUS(status):-1);fflush(stdout);
         }
     }
     if (argc==7) {if (strcmp(argv[4],"--download-all")) return 2;link_requested=1;download_toc=argv[5];download_plan=argv[6];}

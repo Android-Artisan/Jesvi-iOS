@@ -322,6 +322,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 		${LDID:-ldid} -Cadhoc -S obj/prefset
 		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
+		$DYN -o obj/cell-provision ../tools/cellular/cell-provision.c   # modem files from the phone's RADIO/EFS (read-only)
 		$DYN -fblocks -o obj/bluetool_stub src/bluetool_stub.c
 		# launchd panics on a non-platform binary for a system daemon, and in this port an ad hoc
 		# signature is what makes one (bsd/kern/kern_minimac.c): sign the stub, or com.apple.BlueTool
@@ -485,6 +486,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		[ ! -f ../prebuilt/userland/redwood-cellulard ] || cp ../prebuilt/userland/redwood-cellulard root/bin/
 	else
 		cp obj/redwood-cellulard root/bin/
+		[ -f obj/cell-provision ] && cp obj/cell-provision root/bin/
 	fi
 	# The phone's call and text pieces that run from the data volume (B, 2026-11-15): put in place by init on a data
 	# volume that has none (src/init.c seed_phone; a newer one put there by hand is kept). Without this a fresh or wiped
