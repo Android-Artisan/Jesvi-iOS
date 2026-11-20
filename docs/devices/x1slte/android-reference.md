@@ -29,6 +29,15 @@ command libbauthserver sends to the fingerprint TA (N = the opcode we drive thro
 **Wrong finger:** `... 74 -> 49` -> `BAuth_Identify_Do Fail BAD_QUALITY or Identify Fail : 32` -> 75, then the retry
 `76 -> 108 -> 74 -> 49` without a new `authenticate`.
 
+**The numbers are BAuth CONTROL operations** (`Call FP cmd 0xc (N)` = BAuth_Control_OP, command 12, N decimal;
+fingerprint-handover.md): 76 = CONTROL 0x4c getAdditionalLog (diagnostics only), 73/68/70/67 = the CBGE chain. Samsung's
+unlock in hex: **0x6c, 0x65, (0x4c), 0x4a, 0x31** before the touch, **0x4b, 0x2e** after it; the identify itself (command 5
+Init / 6 Do) is not in these lines, only its failures (`BAuth_Identify_Do Fail : 32`).
+
+Ours (xnu/files/bsd/dev/redwood_teegris.c): `fp idinit` = command 5 Identify_Init with the stored template + metadata,
+then `fp run 6` = command 6 Identify_Do in a loop, answering the operations the TA asks for (check_opcode). We send
+none of 0x6c / 0x65 / 0x4a / 0x31 before it nor 0x4b / 0x2e after -- the first thing to add, one at a time, against NO MATCH.
+
 **For Jesvi iOS (redwood-fpd):** our match path is "fp idinit" + "fp run 6 1 15 0" after only "fp power" (calibrated) and
 gets NO MATCH. Compare opcode by opcode with the unlock line above: 108 and 101 before the capture, 74 + 49 to arm it, 75
 + 46 after; enrolment's CBGE chain matches what we added on 2026-11-19 (73/68/70/67). Next: log our TA opcodes for one

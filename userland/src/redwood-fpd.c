@@ -625,6 +625,12 @@ main(void)
 	sysctlbyname("kern.bootargs", args, &n, NULL, 0);
 	if (!strstr(args, "touchid=1")) return 0;               /* off unless asked for at boot */
 	if (getuid() != 0) return 1;
+	/* no iPhone 8 cache, no Touch ID: biometrickitd would run on the iPhone X cache and SpringBoard wait on it for ever
+	 * (src/init.c touchid_early, 2026-11-20) */
+	if (access("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", F_OK) != 0) {
+		lg("no iPhone 8 cache (tools/touchid/push-iphone8-cache.sh): Touch ID off");
+		return 0;
+	}
 	umask(0077);
 	set("kern.sweet_mesa_match", 2);                        /* the TEE matcher's decision, token unverified */
 	set("kern.sweet_mesa_offline", 1);

@@ -90,6 +90,38 @@ boot_arg(const char *name)
 	return NULL;
 }
 
+/*
+ * Touch ID (touchid=1): publish the persona now, before launchd, with "not ready" answers until redwood-fpd connects.
+ * SpringBoard asks BiometricKit synchronously at start-up (FBSystemShellInitialize); redwood-fpd only got to publish it
+ * ~16 s later, after which biometrickitd never answered: on a fresh data volume (no catacomb to answer from) SpringBoard
+ * waited for ever on the Apple logo (2026-11-20). redwood-fpd sets the same values again later: nothing changes then.
+ */
+static void
+touchid_early(void)
+{
+	const char *t = boot_arg("touchid");
+	int one = 1, two = 2, three = 3;
+
+	if (t == NULL || strcmp(t, "1") != 0) {
+		return;
+	}
+	/* biometrickitd's Touch ID module (libBKDM1) lives in the iPhone 8's shared cache (push-iphone8-cache.sh; cut out alone it
+	 * crashes: SIGSEGV, needs a relinker -- tools/touchid/fetch-bkdm1.sh, 2026-11-20); without
+	 * it biometrickitd runs on the iPhone X cache, takes SpringBoard's start-up request and never answers once the
+	 * persona exists. No cache: no persona, Touch ID unavailable, the phone starts (2026-11-20). */
+	struct stat cache;
+
+	if (stat("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", &cache) != 0) {
+		printf("  Touch ID: no iPhone 8 cache in /private/var/redwood/iphone8-dsc: not published\n");
+		return;
+	}
+	sysctlbyname("kern.sweet_mesa_offline", NULL, NULL, &one, sizeof(one));
+	sysctlbyname("kern.sweet_mesa_match", NULL, NULL, &two, sizeof(two));
+	sysctlbyname("kern.sweet_mesa_catacomb", NULL, NULL, &one, sizeof(one));
+	check(sysctlbyname("kern.sweet_mesa", NULL, NULL, &three, sizeof(three)) == 0,
+	    "publish Touch ID before launchd (not ready until redwood-fpd connects)");
+}
+
 /* A directory of this image (or anything else) shown in place of one of the volume's: bindfs. */
 static int
 bind_dir(const char *from, const char *to)
@@ -139,6 +171,9 @@ synthetic_dir(const char *path)
  */
 #ifndef EINVAL
 #define EINVAL 22
+#ifndef EEXIST
+#define EEXIST 17
+#endif
 #endif
 /*
  * Mount a cryptex on /private/preboot/Cryptexes/NAME: container C (",c=N") of md0, or, when md0 has
@@ -668,7 +703,9 @@ copy_tree(const char *from, const char *to, int *files)
 		return 0;
 	}
 	mode = st.st_mode & 07777;
-	if (mkdir(to, mode) != 0 || chown(to, 0, 0) != 0) {
+	/* existing (data volume on the flash): merge, and keep what is there -- the package manager's state */
+	if ((mkdir(to, mode) != 0 && (errno != EEXIST || lstat(to, &st) != 0 || (st.st_mode & S_IFMT) != S_IFDIR)) ||
+	    chown(to, 0, 0) != 0) {
 		return 0;
 	}
 	if ((fd = open(from, O_RDONLY | O_DIRECTORY, 0)) < 0) {
@@ -677,6 +714,7 @@ copy_tree(const char *from, const char *to, int *files)
 	while (ok && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
 		for (ssize_t at = 0; ok && at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
 			const char *name = ((struct dirent *)(buf + at))->d_name;
+			struct stat there;
 
 			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
 				continue;
@@ -696,6 +734,8 @@ copy_tree(const char *from, const char *to, int *files)
 				ok = 0;
 			} else if ((st.st_mode & S_IFMT) == S_IFDIR) {
 				ok = copy_tree(f, t, files);
+			} else if (lstat(t, &there) == 0) {
+				/* kept: an earlier boot (or the package manager) made it */
 			} else if ((st.st_mode & S_IFMT) == S_IFLNK) {
 				ssize_t length = readlink(f, target, sizeof(target) - 1);
 
@@ -732,10 +772,17 @@ graft_tree(const char *from, const char *to, int top, int *made, int *linked)
 		return 0;
 	}
 	mode = st.st_mode & 07777;
-	if (mkdir(to, mode) != 0 || chown(to, 0, 0) != 0) {
+	/* an existing directory is merged into, not given up on: on a data volume on the flash /private/var/jb outlives
+	 * the boot, and the phone pieces (build.sh) make it before the first graft -- a fresh install grafted nothing,
+	 * ever: no sshd, no prefix (2026-11-20) */
+	if (mkdir(to, mode) == 0) {
+		(*made)++;
+	} else if (errno != EEXIST || lstat(to, &st) != 0 || (st.st_mode & S_IFMT) != S_IFDIR) {
 		return 0;
 	}
-	(*made)++;
+	if (chown(to, 0, 0) != 0) {
+		return 0;
+	}
 	if ((fd = open(from, O_RDONLY | O_DIRECTORY, 0)) < 0) {
 		return 0;
 	}
@@ -768,7 +815,13 @@ graft_tree(const char *from, const char *to, int top, int *made, int *linked)
 			} else if ((st.st_mode & S_IFMT) == S_IFDIR) {
 				ok = graft_tree(f, t, 0, made, linked);
 			} else {
-				ok = symlink(f, t) == 0;
+				struct stat old;
+
+				/* a link from an earlier boot is renewed; a real file there (a phone piece) is kept */
+				if (lstat(t, &old) == 0 && (old.st_mode & S_IFMT) == S_IFLNK) {
+					unlink(t);
+				}
+				ok = symlink(f, t) == 0 || (errno == EEXIST && lstat(t, &old) == 0);
 				(*linked)++;
 			}
 			if (!ok) {
@@ -1242,6 +1295,7 @@ mount_writable(void)
 		    users ? ", users resolvable" : "");
 		check(grafted, "graft the package manager's prefix onto the data volume");
 	}
+	touchid_early();
 }
 
 /*
