@@ -880,6 +880,66 @@ static int perf_therm_offset;           /* degrees added to every thermal step (
 static uint32_t perf_profile = 1;
 static uint32_t gpu_max_khz = 572000; /* user: lower GPU bursts by default */
 static uint32_t m5_max_khz = 1586000; /* user: prioritize lower heat over M5 bursts */
+/*
+ * Sliding ceilings (A, 2026-11-20): instead of a fixed M5 / GPU cap, a ceiling that follows the zone's temperature,
+ * as Samsung's power allocator converges on its control temperature: the full burst while the zone is cool, sliding
+ * down one of Samsung's clock steps at a time to the profile's floor at the hot mark. It reuses the thermal step's
+ * readings (no extra work), moves up again only 2 C below where it moved down, and writes m5_max / gpu_max, so the
+ * caps in profile_cap() stay the one place that limits. kern.redwood.dyncap=0: the fixed caps of before.
+ */
+static uint32_t dyncap = 1;
+static struct dyn { uint32_t hi, lo; int t_lo, t_hi; } dyn_m5 = { 2208000, 1274000, 70, 86 },
+    dyn_gpu = { 702000, 455000, 72, 88 };
+/* the ceiling for zone temperature t, on one of gov[g]'s rungs (Samsung's steps), never under the range's floor */
+static uint32_t
+dyn_curve(const struct dyn *r, int t, unsigned g)
+{
+	uint64_t want;
+	uint32_t best = r->lo;
+
+	if (t <= r->t_lo || r->t_hi <= r->t_lo) {
+		want = r->hi;
+	} else if (t >= r->t_hi) {
+		want = r->lo;
+	} else {
+		want = r->hi - (uint64_t)(r->hi - r->lo) * (uint64_t)(t - r->t_lo) / (uint64_t)(r->t_hi - r->t_lo);
+	}
+	for (unsigned i = 0; i < GOV_RUNGS; i++) {      /* the highest rung at or under the curve */
+		uint32_t k = gov[g].rung[i];
+		if (k != 0 && k <= want && k > best) {
+			best = k;
+		}
+	}
+	return best;
+}
+
+/* from the thermal step: down at once, up only once the curve 2 C hotter allows it (no flapping at a mark) */
+static void
+dyn_apply(const struct dyn *r, int t, unsigned g, uint32_t *cap)
+{
+	uint32_t down, up;
+
+	if (t < 0 || r->hi == 0) {
+		return;
+	}
+	down = dyn_curve(r, t, g);
+	up = dyn_curve(r, t + 2, g);
+	if (down < *cap || *cap == 0) {
+		*cap = down;
+	} else if (up > *cap) {
+		*cap = up;
+	}
+}
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dyncap, CTLFLAG_RW | CTLFLAG_LOCKED, &dyncap, 0,
+    "1: M5/GPU ceilings slide with temperature (profile ranges); 0: fixed m5_max/gpu_max");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dyn_m5_hi, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_m5.hi, 0, "M5 ceiling when cool, kHz");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dyn_m5_lo, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_m5.lo, 0, "M5 ceiling when hot, kHz");
+SYSCTL_INT(_kern_redwood, OID_AUTO, dyn_m5_tlo, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_m5.t_lo, 0, "BIG zone C up to which the M5 may burst");
+SYSCTL_INT(_kern_redwood, OID_AUTO, dyn_m5_thi, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_m5.t_hi, 0, "BIG zone C from which the M5 sits at its floor");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dyn_gpu_hi, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_gpu.hi, 0, "GPU ceiling when cool, kHz");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, dyn_gpu_lo, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_gpu.lo, 0, "GPU ceiling when hot, kHz");
+SYSCTL_INT(_kern_redwood, OID_AUTO, dyn_gpu_tlo, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_gpu.t_lo, 0, "G3D zone C up to which the GPU may burst");
+SYSCTL_INT(_kern_redwood, OID_AUTO, dyn_gpu_thi, CTLFLAG_RW | CTLFLAG_LOCKED, &dyn_gpu.t_hi, 0, "G3D zone C from which the GPU sits at its floor");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, m5_max, CTLFLAG_RW | CTLFLAG_LOCKED,
     &m5_max_khz, 0, "Additional Mongoose M5 ceiling in kHz; 0 disables this ceiling");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, gpu_max, CTLFLAG_RW | CTLFLAG_LOCKED,
@@ -909,6 +969,12 @@ perf_profile_apply(uint32_t p)
 	bigpark_set_default(t[p].park);
     m5_max_khz = t[p].m5_max;
     gpu_max_khz = t[p].gpu_max;
+    {
+        static const struct dyn m5r[3] = { { 1586000, 1196000, 66, 82 }, { 2208000, 1274000, 70, 86 }, { 2730000, 1586000, 74, 90 } };
+        static const struct dyn gr[3] = { { 572000, 377000, 68, 84 }, { 702000, 455000, 72, 88 }, { 800000, 572000, 76, 92 } };
+        dyn_m5 = m5r[p];
+        dyn_gpu = gr[p];
+    }
     bigpark_up = p < 2 ? 90 : 80;
     bigpark_down = p < 2 ? 60 : 40;
 }
@@ -1368,6 +1434,19 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 		if (mode >= 2) {
 			bigoff_check(temp[0]);          /* zones[0] = "big" */
+			if (dyncap) {
+				uint32_t m5 = m5_max_khz, g3d = gpu_max_khz;
+
+				dyn_apply(&dyn_m5, temp[0], 2, &m5_max_khz);     /* gov[2] = M5, zone big */
+				dyn_apply(&dyn_gpu, temp[3], 3, &gpu_max_khz);   /* gov[3] = GPU, zone g3d */
+				if (m5 != m5_max_khz || g3d != gpu_max_khz) {
+					static uint32_t told;
+					if (told++ < 200) {
+						dlog("dyncap: big %d C g3d %d C: M5 <= %u, GPU <= %u MHz", temp[0], temp[3],
+						    m5_max_khz / 1000, gpu_max_khz / 1000);
+					}
+				}
+			}
             uint64_t gpu_ns;
             absolutetime_to_nanoseconds(mach_absolute_time(), &gpu_ns);
             uint32_t previous = gpu_policy_cap;
