@@ -94,7 +94,7 @@ restart_locationd(void)
 /*
  * The region from the SIM (A, 2026-11-20). A clean install skips the setup assistant, so there is no AppleLocale and
  * iOS takes en_US: Phone and Messages put +1 in front of local numbers. Once per data volume (its own marker), and only
- * when the user has chosen no region: wait for the modem service's MCC (/var/tmp/redwood-cell/call-ui/mcc, written
+ * when the user has chosen no region (India when there is no SIM country): wait for the modem service's MCC (/var/tmp/redwood-cell/call-ui/mcc, written
  * once the SIM is registered) and set AppleLocale to the language with the SIM's country, e.g. en_IN for MCC 404-406.
  */
 #define REGION_MARKER "/var/root/.redwood-region-v1"
@@ -141,9 +141,9 @@ region_from_sim(void)
 		}
 		if (!cc) sleep(2);
 	}
-	if (!cc) {
-		printf("redwood-defaults: region: no SIM country yet (MCC '%s'), tries again at the next boot\n", buf);
-		return;
+	if (!cc) {              /* no SIM, or a country this table lacks: India, not iOS's US default (user, 2026-11-20) */
+		cc = "IN";
+		printf("redwood-defaults: region: no SIM country (MCC '%s'): India by default\n", buf);
 	}
 	char locale[16];
 	snprintf(locale, sizeof(locale), "en_%s", cc);
