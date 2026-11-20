@@ -326,6 +326,9 @@ torch_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 		if ((error = uiomove((caddr_t)&value, sizeof(value), uio)) != 0) {
 			return error;
 		}
+		if (value != 0 && redwood_battery_temperature() >= HOTTEST_BATTERY_C) {
+			return EBUSY;
+		}
 		wanted = value > 1000 ? 1000 : value;
 		thread_wakeup((event_t)&wanted);        /* the thread sleeps while the light is off (torch_thread) */
 	}
@@ -438,7 +441,10 @@ torch_thread(__unused void *parameter, __unused wait_result_t result)
 		if (want == 0) {
 			hold_off = false;
 		}
-		if (hold_off || (want != 0 && temp >= HOTTEST_BATTERY_C)) {
+		if (want != 0 && temp >= HOTTEST_BATTERY_C) {
+			hold_off = true;
+		}
+		if (hold_off) {
 			want = 0;
 		}
 		if (want != applied) {

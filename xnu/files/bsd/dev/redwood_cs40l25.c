@@ -1387,6 +1387,14 @@ serve(void)
 		uint32_t peak = heard_peak, pct = pct_for(peak);
 		int temp = redwood_battery_temperature();
 
+		if (temp >= HOTTEST_BATTERY_C) {
+			if ((state == TAP || state == LOOP) && stop()) {
+				state = rest_until > now ? REST : IDLE;
+			}
+			/* A tap requested while hot must not replay after cooling. */
+			tap_onset = onset_us;
+		}
+
 		switch (state) {
 		case IDLE:
 		case TAP:
