@@ -2182,6 +2182,14 @@ out:
 	return ok;
 }
 
+/* for redwood_max77705.c: a host has configured us -- the cable goes to a computer, whatever the charger detection says */
+bool redwood_usb_gadget_host(void);
+bool
+redwood_usb_gadget_host(void)
+{
+	return acm.config != 0;
+}
+
 /* from hakios.max77705.c, every read of VBUS (a low only when it has stayed low): the poll does what follows from it */
 void
 redwood_usb_gadget_vbus(bool present)

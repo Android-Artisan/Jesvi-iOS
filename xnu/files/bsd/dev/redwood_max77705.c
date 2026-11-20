@@ -40,7 +40,8 @@
 #include <sys/redwood_m2m.h>
 #include <sys/systm.h>
 
-void redwood_usb_gadget_vbus(bool present);    /* redwood_dwc3.c: the cable, for the USB link's restarts */
+void redwood_usb_gadget_vbus(bool present);
+bool redwood_usb_gadget_host(void);           /* redwood_dwc3.c: a computer has configured the USB link */    /* redwood_dwc3.c: the cable, for the USB link's restarts */
 
 #define BANK_GPP1               0x20U           /* PERIC0 */
 
@@ -422,6 +423,10 @@ charger_limits(bool external, int32_t temp_hundredths)
 			/* a Mac/PC port: no more than it offers (a Mac cuts the port, charge and data both, when overdrawn:
 			 * 1.7-2.0 A at 4.6 V seen, 2026-11-20); a wall charger: Samsung's 1650 mA */
 			in_ma = type == 3 ? 1650 : (type == 1 || type == 2) ? usb_ma : 0;
+			/* a Mac's port is detected as a wall charger (type 3, 2026-11-20): a configured USB link says computer */
+			if (in_ma > usb_ma && redwood_usb_gadget_host()) {
+				in_ma = usb_ma;
+			}
 			/* a 5 V USB PD contract (a USB-C laptop: 5 V 3 A) says what may be taken: up to Samsung's 3000 mA */
 			if (pd5_ma >= 1500) {
 				in_ma = pd5_ma > 3000 ? 3000 : pd5_ma;
