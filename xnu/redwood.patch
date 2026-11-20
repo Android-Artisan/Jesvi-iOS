@@ -2410,7 +2410,7 @@ index 39daaf8db949..64ceb1a5f201 100644
  	}
  	os_atomic_clear_exclusive();
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096fa0010..9d12349f05a8 100644
+index fc2096fa0010..36bb64b4f467 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -93,6 +93,8 @@
@@ -2463,7 +2463,7 @@ index fc2096fa0010..9d12349f05a8 100644
  #endif
  }
  
-@@ -14294,3 +14299,35 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
+@@ -14294,3 +14299,53 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
  }
  
  #endif /* DEVELOPMENT || DEBUG */
@@ -2475,29 +2475,47 @@ index fc2096fa0010..9d12349f05a8 100644
 + * user-executable), after the caller has written and relocated it. Then the TLB and the caches are brought in line.
 + * Only for pages the caller allocated from kernel_map; nothing here checks what the code is.
 + */
-+void redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size);
-+void
-+redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size)
++/* upto: do the steps up to this one (1 clean D-cache, 2 page entries, 3 TLB, 4 I-cache; 0: all) -- to find a hang.
++ * Returns 0, or -1 (no page entry at some address: nothing changed). out_pte: the first page's entry, before. */
++int redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size, int upto, uint64_t *out_pte);
++int
++redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size, int upto, uint64_t *out_pte)
 +{
 +	vm_offset_t end = round_page(va + size);
 +
 +	va = trunc_page(va);
-+	CleanPoU_DcacheRegion(va, end - va);
 +	for (vm_offset_t v = va; v < end; v += PAGE_SIZE) {
 +		pt_entry_t *ptep = pmap_pte(kernel_pmap, v);
 +
 +		if (ptep == NULL) {
-+			panic("redwood_pmap_kernel_text: no mapping at %p", (void *)v);
++			return -1;
 +		}
-+		for (unsigned i = 0; i < PAGE_RATIO; i++) {
-+			pt_entry_t spte = ptep[i];
-+
-+			spte = (spte & ~(ARM_PTE_APMASK | ARM_PTE_PNX)) | ARM_PTE_AP(AP_RONA) | ARM_PTE_NX;
-+			write_pte_strong(&ptep[i], spte);
++		if (v == va && out_pte != NULL) {
++			*out_pte = (uint64_t)*ptep;
 +		}
 +	}
-+	flush_mmu_tlb_region(va, (unsigned)(end - va));
-+	InvalidatePoU_IcacheRegion(va, end - va);
++	if (upto == 0 || upto >= 1) {
++		CleanPoU_DcacheRegion(va, end - va);
++	}
++	if (upto == 0 || upto >= 2) {
++		for (vm_offset_t v = va; v < end; v += PAGE_SIZE) {
++			pt_entry_t *ptep = pmap_pte(kernel_pmap, v);
++
++			for (unsigned i = 0; i < PAGE_RATIO; i++) {
++				pt_entry_t spte = ptep[i];
++
++				spte = (spte & ~(ARM_PTE_APMASK | ARM_PTE_PNX)) | ARM_PTE_AP(AP_RONA) | ARM_PTE_NX;
++				write_pte_strong(&ptep[i], spte);
++			}
++		}
++	}
++	if (upto == 0 || upto >= 3) {
++		flush_mmu_tlb_region(va, (unsigned)(end - va));
++	}
++	if (upto == 0 || upto >= 4) {
++		InvalidatePoU_IcacheRegion(va, end - va);
++	}
++	return 0;
 +}
 diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
 index df672c65b144..d7e1da7c5db2 100644

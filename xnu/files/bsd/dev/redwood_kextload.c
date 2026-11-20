@@ -38,7 +38,9 @@ struct redwood_kextsym { const char *name; const void *addr; };
 extern const struct redwood_kextsym redwood_kextsyms[];
 extern const size_t redwood_kextsyms_count;
 
-extern void redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size);
+extern int redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size, int upto, uint64_t *out_pte);
+static int lifs_text_upto;      /* kern.redwood.lifs_text: 1..4 do only the first steps of making text executable */
+static uint64_t lifs_text_pte;
 extern unsigned redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count);
 typedef void (*redwood_ctor_t)(void);
 extern int redwood_kext_classes(redwood_ctor_t *ctors, unsigned count);
@@ -262,8 +264,10 @@ lifs_load(void)
 
 	/* pass 4: text read-only and executable; typed views placed; classes; start; IOKit */
 	STEP("relocated; text %#llx-%#llx executable", text_lo, text_hi);
-	redwood_pmap_kernel_text(base + text_lo, text_hi - text_lo);
-	STEP("text done; typed views");
+	if (redwood_pmap_kernel_text(base + text_lo, text_hi - text_lo, lifs_text_upto, &lifs_text_pte) != 0) {
+		FAIL("no page entry for the text (pte %#llx)", lifs_text_pte);
+	}
+	STEP("text done (sub-steps %d, first pte was %#llx); typed views", lifs_text_upto, lifs_text_pte);
 	r = (int)redwood_kalloc_type_adopt((struct kalloc_type_view **)(base + kt_off), (unsigned)(kt_size / sizeof(void *)));
 	printf("lifs: %llu KB at %p, text %#llx-%#llx, %u+%u relocations, %d of %llu typed views placed\n",
 	    (uint64_t)vmsize / 1024, (void *)base, text_lo, text_hi, dy->nlocrel, dy->nextrel, r, kt_size / sizeof(void *));
@@ -343,6 +347,8 @@ sysctl_lifs_load SYSCTL_HANDLER_ARGS
 	}
 	return 0;
 }
+SYSCTL_INT(_kern_redwood, OID_AUTO, lifs_text, CTLFLAG_RW | CTLFLAG_LOCKED, &lifs_text_upto, 0, "making text executable: only steps 1..N (0 all)");
+SYSCTL_QUAD(_kern_redwood, OID_AUTO, lifs_text_pte, CTLFLAG_RD | CTLFLAG_LOCKED, &lifs_text_pte, "the first text page's entry, before");
 SYSCTL_INT(_kern_redwood, OID_AUTO, lifs_stop, CTLFLAG_RW | CTLFLAG_LOCKED, &lifs_stop, 0, "stop the load after step N (1..6)");
 SYSCTL_INT(_kern_redwood, OID_AUTO, lifs_step, CTLFLAG_RD | CTLFLAG_LOCKED, &lifs_step, 0, "the last step begun");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, lifs_load, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_lifs_load, "I",
