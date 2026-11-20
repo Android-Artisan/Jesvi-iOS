@@ -30,13 +30,13 @@ Use `ssh -F out/apple-account/private/account-hotspot-ssh.conf s20 ...` now.
 The hotspot is IPv6/NAT64;192.0.0.2 is translated, not a peer address. Both devices
 were verified against original pinned keys over link-local IPv6. Task-private SSH
 config preserves original global configuration unchanged. Current helper host is
-`jesvi@account-hackintosh` via BonjourIPv6 and original host-key alias.
+`user@hackintosh.example` via BonjourIPv6 and original host-key alias.
 
 Current services:
 
 ```sh
 python3 -u tools/apple-account/phone-helper-tunnel.py --ssh-config out/apple-account/private/account-hotspot-ssh.conf
-python3 -u tools/apple-account/native-provider-server.py --host jesvi@account-hackintosh --ssh-config out/apple-account/private/account-hotspot-ssh.conf --helper hackintosh-provider-v8 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
+python3 -u tools/apple-account/native-provider-server.py --host user@hackintosh.example --ssh-config out/apple-account/private/account-hotspot-ssh.conf --helper hackintosh-provider-v8 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
 ```
 
 The account is stored (count1), initial server/services and preflight save/CDP have

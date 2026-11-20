@@ -88,7 +88,7 @@ NEW implementation:
 
 Tests: Mac synthetic sign RPC PASS; end-to-end PHONE sign+prime returns real proofs, malformed server and priming signatures rejected, empty input fails closed; combined shared library same smoke and existing bridge sync/async metadata smoke PASS. Unauthorized endpoint401, malformed/unknown operation400. test-native-media-transport.py schema PASS. Shared-rule preservation tests PASS. No real Media sign-in yet under new library.
 
-Runtime: native broker tool exec55437, host jesvi@account-hackintosh via private account-hotspot-ssh.conf, metadata helper8 + mediahelper1, same bearer and loopback49741/phone49742. Existing IPv6 tunnel supervisor unchanged. Old broker5867 stopped after exact command verification. To restart add --media-helper native-media-provider-v1 to previous broker command. Keep both Macs awake.
+Runtime: native broker tool exec55437, host user@hackintosh.example via private account-hotspot-ssh.conf, metadata helper8 + mediahelper1, same bearer and loopback49741/phone49742. Existing IPv6 tunnel supervisor unchanged. Old broker5867 stopped after exact command verification. To restart add --media-helper native-media-provider-v1 to previous broker command. Keep both Macs awake.
 
 NEXT: user prefers AppStore login, can report "loading" immediately, no minute wait. No further synthetic investigation needed before ONE test. AppStore/Preferences were not running at last check, so next launch loads newlayer. Inspect media-error-events.log for media_native_helper_result operations/success and native error origins while loader runs; do not wait for5min UIerror before inspecting. Also recheck saved account health. Store downloads still unverified.
 
@@ -362,7 +362,7 @@ Broker/USB-supervisor now accept optional --ssh-config, defaults unchanged. Fixe
 new config ordering before first broker child spawn. NativeTransport via pinned
 IPv6 supplies fresh iCloud metadata; phone AuthKit health and sync/async native
 bridge smoke pass. Accountcount1 still confirmed. Supervisor PID5862 exec44639;
-broker PID5867 exec93788, hostjesvi@account-hackintosh, helperv8, same privateports.
+broker PID5867 exec93788, hostuser@hackintosh.example, helperv8, same privateports.
 Stop old2856/95489 only (verified owned). No phone account/daemon/rule change in
 this recovery. Real direct phone public-HTTPS test pending; don't request passwords
 until general Apple connectivity also confirmed. Current phone DNS returns NAT64
@@ -370,7 +370,7 @@ and IPv4 addresses; direct request is credential-free.
 
 Commands:
 python3 -u tools/apple-account/phone-helper-tunnel.py --ssh-config out/apple-account/private/account-hotspot-ssh.conf
-python3 -u tools/apple-account/native-provider-server.py --host jesvi@account-hackintosh --ssh-config out/apple-account/private/account-hotspot-ssh.conf --helper hackintosh-provider-v8 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
+python3 -u tools/apple-account/native-provider-server.py --host user@hackintosh.example --ssh-config out/apple-account/private/account-hotspot-ssh.conf --helper hackintosh-provider-v8 --key out/apple-account/private/hackintosh_ed25519 --known-hosts out/apple-account/private/hackintosh-known-hosts --token-file out/apple-account/private/broker-token
 
 
 ## Latest 2026-11-17: name shown; update prompt returned amid network/helper outage
