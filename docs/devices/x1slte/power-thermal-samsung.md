@@ -71,7 +71,7 @@ most of the heat in plain UI use.
 3. **Keep work off the big cores** (EMS weights + ontime): mask cpu6-7 from the scheduler unless the A76s have been
    above ~60 % busy for several ticks (Samsung's ontime boundary), as the screen-off mask already does for 4-7.
 4. **Idle floors at Samsung's defaults**: A76 845, M5 962 (now 1066 / 1196).
-5. **GPU**: tick its governor faster (Samsung 5 ms, ours 50 ms) or at least jump on a slow job (we already do).
+5. **GPU**: measure a faster governor tick (ours 50 ms; Samsung's DTS has separate 5 ms interval and 30 ms polling settings) or at least jump on a slow job (we already do).
 6. Later: cluster power-down (C2) for 4-7 when both cores of a cluster are idle.
 
 Each one goes behind its own boot argument first (project rule), tested with the overheating scenario (flash +
