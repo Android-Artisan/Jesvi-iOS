@@ -44,7 +44,7 @@ set_num(IOService *s, const char *key, uint64_t v, unsigned bits)
 
 static IOMedia *
 media(IOService *parent, const char *bsd, unsigned unit, int major, int minor, uint64_t base, uint64_t bytes, bool whole,
-    const char *content)
+    const char *content, bool writable)
 {
 	IOMedia *m = new IOMedia;
 
@@ -60,7 +60,7 @@ media(IOService *parent, const char *bsd, unsigned unit, int major, int minor, u
 	set_num(m, "Preferred Block Size", 512, 64);
 	m->setProperty("Whole", whole ? kOSBooleanTrue : kOSBooleanFalse);
 	m->setProperty("Leaf", whole ? kOSBooleanFalse : kOSBooleanTrue);
-	m->setProperty("Writable", kOSBooleanFalse);
+	m->setProperty("Writable", writable ? kOSBooleanTrue : kOSBooleanFalse);
 	m->setProperty("Removable", kOSBooleanTrue);
 	m->setProperty("Ejectable", kOSBooleanTrue);
 	m->setProperty("Open", kOSBooleanFalse);
@@ -79,10 +79,10 @@ media(IOService *parent, const char *bsd, unsigned unit, int major, int minor, u
 extern "C" {
 /* 0 when published; called once, from the SD driver's probe thread */
 int redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_t part_start, uint64_t part_blocks,
-    unsigned part_type);
+    unsigned part_type, int writable);
 int
 redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_t part_start, uint64_t part_blocks,
-    unsigned part_type)
+    unsigned part_type, int writable)
 {
 	IOBlockStorageDevice *dev = new IOBlockStorageDevice;
 	OSDictionary *pc = OSDictionary::withCapacity(2), *dc = OSDictionary::withCapacity(3);
@@ -116,12 +116,12 @@ redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_
 	    (part_type == 0x06 || part_type == 0x0e) ? "DOS_FAT_16" : "Windows_NTFS";
 	snprintf(name, sizeof(name), "disk%u", unit);
 	snprintf(pname, sizeof(pname), "disk%us1", unit);
-	whole = media(dev, name, unit, major, 0, 0, whole_blocks * 512, true, "FDisk_partition_scheme");
+	whole = media(dev, name, unit, major, 0, 0, whole_blocks * 512, true, "FDisk_partition_scheme", false);
 	if (whole == NULL) {
 		return -1;
 	}
 	whole->registerService();
-	part = media(whole, pname, unit, major, 1, part_start * 512, part_blocks * 512, false, ptype);
+	part = media(whole, pname, unit, major, 1, part_start * 512, part_blocks * 512, false, ptype, writable != 0);
 	if (part == NULL) {
 		return -1;
 	}
