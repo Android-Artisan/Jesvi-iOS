@@ -23,6 +23,9 @@ diskarbitrationd hand it to UserFS.
 | Card power (vmmc) | S2MPS19 main PMIC **LDO15**, 2.95 V |
 | Signal power (vqmmc) | S2MPS19 main PMIC **LDO2**, 2.95 V (default speed / high speed) or 1.8 V (UHS SDR50/104) |
 | Timeouts | data 200 ms, card-detect delay 200 ms, HTO 80 |
+| PMIC registers (S2MPS19, type 1 PMIC, our redwood_acpm_pmic.c) | LDO15 CTRL **0x54**, LDO2 CTRL **0x47**; group 2: 1.8 V + 25 mV a step, CTRL = 0xC0 (on) \| vsel: **2.95 V = 0xEE**, 1.8 V = 0xC0. Samsung also has `ext_en,ldo2,use_tf_sel` (LDO2 switched by the TF pin): check |
+| Pin blocks | GPF1 in **pinctrl@13040000** (HSI1), GPA1 (card detect) in **pinctrl@15850000** (ALIVE) |
+| Clock / power domain | block **HSI1**: gate `GOUT_BLK_HSI1_UID_MMC_CARD_IPCLKPORT`, mux `MUX_CLKCMU_HSI1_MMC_CARD` (cal-if exynos9830 cmucal-node.*); HSI1's power domain may need to be on |
 
 ## Plan
 
