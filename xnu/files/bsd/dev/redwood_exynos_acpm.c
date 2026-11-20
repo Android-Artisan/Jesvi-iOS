@@ -878,17 +878,20 @@ SYSCTL_UINT(_kern_redwood, OID_AUTO, wake_boost_ms, CTLFLAG_RW | CTLFLAG_LOCKED,
  */
 static int perf_therm_offset;           /* degrees added to every thermal step (cool -4, performance +4) */
 static uint32_t perf_profile = 1;
+static uint32_t m5_max_khz = 1586000; /* user: prioritize lower heat over M5 bursts */
+SYSCTL_UINT(_kern_redwood, OID_AUTO, m5_max, CTLFLAG_RW | CTLFLAG_LOCKED,
+    &m5_max_khz, 0, "Additional Mongoose M5 ceiling in kHz; 0 disables this ceiling");
 static void bigpark_set_default(uint32_t on);
 static void
 perf_profile_apply(uint32_t p)
 {
 	static const struct {
-		uint32_t lowfloor, ffl[4], wake_ms, park;
+		uint32_t lowfloor, ffl[4], wake_ms, park, m5_max;
 		int therm;
 	} t[3] = {
-		{ 1, { 1456000, 1794000, 1274000, 455000 }, 500, 1, -4 },     /* cool */
-		{ 1, { 1456000, 2106000, 1274000, 572000 }, 500, 1, 0 },      /* balanced */
-		{ 0, { 1456000, 2106000, 1898000, 572000 }, 1000, 0, 4 },     /* performance */
+		{ 1, { 1456000, 1794000, 1274000, 455000 }, 500, 1, 1274000, -4 },     /* cool */
+		{ 1, { 1456000, 2106000, 1274000, 572000 }, 500, 1, 1586000, 0 },      /* balanced */
+		{ 0, { 1456000, 2106000, 1898000, 572000 }, 1000, 0, 2730000, 4 },     /* performance */
 	};
 	if (p > 2) {
 		return;
@@ -901,6 +904,9 @@ perf_profile_apply(uint32_t p)
 	redwood_wake_boost_ms = t[p].wake_ms;
 	perf_therm_offset = t[p].therm;
 	bigpark_set_default(t[p].park);
+    m5_max_khz = t[p].m5_max;
+    bigpark_up = p < 2 ? 90 : 80;
+    bigpark_down = p < 2 ? 60 : 40;
 }
 static int
 sysctl_perf_profile SYSCTL_HANDLER_ARGS
@@ -975,6 +981,9 @@ profile_cap(unsigned d, uint32_t cap, int prof)
 {
 	uint32_t p = prof == PROF_OFF ? domains[d].safe : prof == PROF_LPM ? domains[d].mid : 0;
 
+    if (domains[d].domain == D_CL2 && m5_max_khz && (!p || m5_max_khz < p)) {
+        p = m5_max_khz;
+    }
     if (domains[d].domain == D_G3D && gpu_policy_cap && (!p || gpu_policy_cap < p)) {
         p = gpu_policy_cap;
     }
@@ -1027,6 +1036,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		PE_parse_boot_argn("perf_profile", &p, sizeof(p));
 		perf_profile_apply(p);
 	}
+	PE_parse_boot_argn("dvfs_m5_max", &m5_max_khz, sizeof(m5_max_khz));
 	PE_parse_boot_argn("dvfs_bigoff_out", &bigoff_out, sizeof(bigoff_out));
 	PE_parse_boot_argn("dvfs_bigoff_in", &bigoff_in, sizeof(bigoff_in));
 	PE_parse_boot_argn("dvfs_scroff_tick", &gov_scroff_tick_ms, sizeof(gov_scroff_tick_ms));

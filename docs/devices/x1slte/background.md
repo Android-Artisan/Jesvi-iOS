@@ -51,9 +51,9 @@ never fires on this phone. Three modes:
 | Mode | What turns the screen off |
 | --- | --- |
 | 0 | nothing (iOS's own, broken, timer) |
-| **1** (default since 2026-11-13) | only the lock screen: 10 s (`idle_lock_s=`) after a wake nobody touched. Unlocked, the screen stays on. |
-| 2 (default 2026-11-12..13) | the lock screen as in 1, and Auto-Lock's time from Settings once unlocked (not while sound plays) |
+| 1 | only the lock screen: 10 s (`idle_lock_s=`) after a wake nobody touched. Unlocked, the screen stays on. |
+| **2** (default from 2026-11-20) | the lock screen as in 1, and Auto-Lock's time from Settings once unlocked (not while sound plays) |
 
 Switch without a rebuild: `ssh s20 'echo mode=2 > /var/jb/etc/redwood-idle.conf'` (read at every wake; delete the file
 for the default). Boot argument `idle_lock=` sets the default too. Check: the kernel log line
-`redwood: idle timer (idle_lock=1): 10 s after a wake with no touch`.
+`redwood: idle timer (idle_lock=2): 10 s after a wake with no touch`.
