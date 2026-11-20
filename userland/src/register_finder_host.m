@@ -151,6 +151,22 @@ int main(void) {
          * seen (-9499 at _LSRegisterBundleNode), and the host with its three extensions stays unknown:
          * no pickers, no On My iPhone, no Finder sharing. Then give LaunchServices the whole record, as
          * installd would: the app, its data container and each extension with its own. (2026-11-13) */
+        /* (A, 2026-11-20) on a clean data volume registerApplication: SUCCEEDED for the app in /Applications but left
+         * its extensions out: LaunchServices knew no com.apple.FileProvider.LocalStorage, fileproviderd never started
+         * it, Files had no On My iPhone. So check every extension and give the whole record when one is missing. */
+        if (ok) {
+            NSString *plugins = [destination stringByAppendingPathComponent:@"PlugIns"];
+            for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:plugins error:nil] ?: @[]) {
+                NSString *pid = [NSDictionary dictionaryWithContentsOfFile:[[plugins stringByAppendingPathComponent:name]
+                    stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
+                Class proxy = NSClassFromString(@"LSPlugInKitProxy");
+                if (pid && proxy && ![proxy performSelector:@selector(pluginKitProxyForIdentifier:) withObject:pid]) {
+                    NSLog(@"Jesvi Files: extension %@ not registered: the whole record", pid);
+                    ok = NO;
+                    break;
+                }
+            }
+        }
         if (!ok) {
             NSDictionary *whole = record(destination, nil);
             ok = whole && [[workspace defaultWorkspace] registerApplicationDictionary:whole];
