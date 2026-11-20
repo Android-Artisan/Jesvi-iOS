@@ -910,4 +910,4 @@ signal and power save, Samsung DVFS tables, iOS-only storage (system on `super`,
   unchanged, and never skips a credential match.
 - Default wallpaper: the user's own image, deliberately the single clean-install default (stock gallery otherwise).
 - docs/research: not published; untracked and git-ignored, kept on the developers' Mac.
-- Deleted: legacy y2s UEFI DTBs, an unused 64 GB HFS kit, an unused fingerprint image, an empty job file.
+- Deleted: legacy y2s UEFI DTBs, an unused fingerprint image, an empty job file. (The 64 GB HFS kit looked unused but is the release's: targets.kit_path computes its name from IOS_DATA_GB; restored.)

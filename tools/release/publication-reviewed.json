@@ -340,6 +340,11 @@
    "sha256": "0905ab19eabdaf8910b48053833f06855ece5d5b63a18d589bab12a8407caeb4",
    "why": "the user's own default wallpaper for clean installs (deliberate)"
   },
+  "userland/hfs-kit-64000000000.bin": {
+   "decision": "publish",
+   "sha256": "2cf24aaba579bbe75c9cc885a1aa5445ac3a992b838dc1adb821a56065b151ba",
+   "why": "HFSX format kit for the release data size (release.conf IOS_DATA_GB=64; name computed by tools/release/targets.kit_path)"
+  },
   "userland/hfs-kit.bin": {
    "decision": "publish",
    "sha256": "9256c8903c4d8977ba7bcedbaeb6c56903d54e12ad44377c8912a8d2fb9dbb00",
