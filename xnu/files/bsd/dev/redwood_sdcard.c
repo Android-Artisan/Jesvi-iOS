@@ -22,6 +22,8 @@
 #include <miscfs/devfs/devfs.h>
 #include <kern/locks.h>
 #include <kern/clock.h>
+#include <kern/thread.h>
+#include <IOKit/IOLib.h>
 #include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 
@@ -62,7 +64,11 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 static volatile uint8_t *sd;
 static uint32_t sd_mode = 1;            /* boot-arg sd=: on by default (read-only, the card touched only on open); sd=0 off */
 static int sd_ready;
-static uint64_t sd_blocks;              /* 512-byte blocks exposed */
+static uint64_t sd_blocks;              /* 512-byte blocks exposed (minor 0: the card up to its last partition) */
+static uint64_t sd_part_start, sd_part_blocks;  /* minor 1: the first MBR partition */
+static unsigned sd_part_type;
+static int sd_cmaj = -1;
+#define SD_UNIT 9                       /* /dev/disk9, disk9s1: well clear of the internal storage's names */
 static uint32_t sd_reads, sd_errors, sd_last_int;
 static char sd_dbg[200];
 LCK_GRP_DECLARE(sd_lck_grp, "redwood-sdcard");
@@ -173,11 +179,12 @@ sd_cclose(__unused dev_t dev, __unused int flags, __unused int devtype, __unused
 }
 
 static int
-sd_cread(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+sd_cread(dev_t dev, struct uio *uio, __unused int ioflag)
 {
 	uint8_t *bounce;
 	int error = 0;
-	uint64_t size = sd_blocks * 512;
+	uint64_t size = (minor(dev) == 1 ? sd_part_blocks : sd_blocks) * 512;
+	uint64_t first = minor(dev) == 1 ? sd_part_start : 0;
 
 	if (!sd_ready) {
 		return ENXIO;
@@ -199,7 +206,7 @@ sd_cread(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 			want = size - at;
 		}
 		lck_mtx_lock(&sd_lock);
-		error = sd_read_blocks(at / 512, (uint32_t)(want / 512), bounce);
+		error = sd_read_blocks(first + at / 512, (uint32_t)(want / 512), bounce);
 		lck_mtx_unlock(&sd_lock);
 		if (error == 0) {
 			error = uiomove((caddr_t)bounce, (int)want, uio);
@@ -210,14 +217,21 @@ sd_cread(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 }
 
 static int
-sd_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unused struct proc *p)
+sd_ioctl(dev_t dev, u_long cmd, caddr_t data, __unused int flag, __unused struct proc *p)
 {
 	switch (cmd) {
 	case DKIOCGETBLOCKSIZE:
+	case DKIOCGETPHYSICALBLOCKSIZE:
 		*(uint32_t *)data = 512;
 		return 0;
 	case DKIOCGETBLOCKCOUNT:
-		*(uint64_t *)data = sd_blocks;
+		*(uint64_t *)data = minor(dev) == 1 ? sd_part_blocks : sd_blocks;
+		return 0;
+	case DKIOCGETMAXBLOCKCOUNTREAD:
+	case DKIOCGETMAXBLOCKCOUNTWRITE:
+		*(uint64_t *)data = SD_MAX_BLOCKS;
+		return 0;
+	case DKIOCSYNCHRONIZECACHE:
 		return 0;
 	case DKIOCISWRITABLE:
 		*(uint32_t *)data = 0;
@@ -274,6 +288,7 @@ sd_probe(void)
 		return ENXIO;
 	}
 	sd_blocks = 0;
+	sd_part_blocks = 0;
 	for (unsigned i = 0; i < 4; i++) {          /* the end of the furthest partition */
 		const uint8_t *e = mbr + 446 + 16 * i;
 		uint64_t start = (uint64_t)e[8] | (uint64_t)e[9] << 8 | (uint64_t)e[10] << 16 | (uint64_t)e[11] << 24;
@@ -281,6 +296,11 @@ sd_probe(void)
 
 		if (e[4] != 0 && start + len > sd_blocks) {
 			sd_blocks = start + len;
+		}
+		if (e[4] != 0 && sd_part_blocks == 0 && len != 0) {
+			sd_part_start = start;
+			sd_part_blocks = len;
+			sd_part_type = e[4];
 		}
 	}
 	kfree_data(mbr, 512);
@@ -295,11 +315,43 @@ sd_probe(void)
 	return 0;
 }
 
+extern int redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_t part_start, uint64_t part_blocks,
+    unsigned part_type);
+
+/*
+ * At boot (2026-11-21): the card read once IOKit and devfs are up, then /dev/disk9 + rdisk9 (the card) and disk9s1 +
+ * rdisk9s1 (its first partition) and the IOKit disk userfsd matches (iokit/Kernel/RedwoodSDMedia.cpp). Character
+ * devices, read-only, readable by mobile (userfsd's file-system service runs as mobile; writes are refused anyway).
+ */
+static void
+sd_boot_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	int error;
+
+	IOSleep(6000);
+	lck_mtx_lock(&sd_lock);
+	error = sd_ready ? 0 : sd_probe();
+	lck_mtx_unlock(&sd_lock);
+	if (error != 0 || sd_part_blocks == 0) {
+		printf("sdcard: no card to publish (%d): %s\n", error, sd_state);
+		return;
+	}
+	(void)devfs_make_node(makedev(sd_cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "disk%d", SD_UNIT);
+	(void)devfs_make_node(makedev(sd_cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "rdisk%d", SD_UNIT);
+	(void)devfs_make_node(makedev(sd_cmaj, 1), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "disk%ds1", SD_UNIT);
+	(void)devfs_make_node(makedev(sd_cmaj, 1), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0644, "rdisk%ds1", SD_UNIT);
+	error = redwood_sdmedia_publish(SD_UNIT, sd_cmaj, sd_blocks, sd_part_start, sd_part_blocks, sd_part_type);
+	snprintf(sd_state, sizeof(sd_state), "ready, read-only: disk%d %llu MB, disk%ds1 type %#x at %llu, %llu MB; IOKit %s",
+	    SD_UNIT, sd_blocks / 2048, SD_UNIT, sd_part_type, sd_part_start, sd_part_blocks / 2048, error == 0 ? "published" : "FAILED");
+	printf("sdcard: %s\n", sd_state);
+}
+
 void redwood_sdcard_init(void);
 void
 redwood_sdcard_init(void)
 {
 	int cmaj;
+	thread_t t;
 
 	(void)PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode));
 	if (sd_mode == 0) {
@@ -322,7 +374,11 @@ redwood_sdcard_init(void)
 		snprintf(sd_state, sizeof(sd_state), "no device major");
 		return;
 	}
+	sd_cmaj = cmaj;
 	(void)devfs_make_node(makedev(cmaj, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdcard");
+	if (kernel_thread_start(sd_boot_thread, NULL, &t) == KERN_SUCCESS) {
+		thread_deallocate(t);
+	}
 	snprintf(sd_state, sizeof(sd_state), "slot found (DW MMC %#x); the card is read on the first open of /dev/rsdcard", sd_verid);
 	printf("sdcard: %s\n", sd_state);
 }
