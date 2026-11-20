@@ -31,6 +31,7 @@ uint32_t redwood_touch_lat_live = 0;
 
 extern void loader_log_line(const char *line);
 extern void redwood_sec_ts_init(void);
+extern void redwood_sdcard_init(void);
 extern void redwood_exynos_keys_init(void);
 extern void redwood_perf_init(void);
 extern void redwood_max77705_init(void);
@@ -273,6 +274,7 @@ redwood_input_init(void)
 	redwood_buttons_init();
 	redwood_battery_init();
 	redwood_ufs_init();
+	redwood_sdcard_init();        /* boot-arg sd=1: the microSD slot, read-only (bsd/dev/redwood_sdcard.c) */
 	redwood_hfs_init();             /* Apple's HFS+ (bsd/hfs): the S20+'s data volume on userdata */
 	redwood_net_init();
 	redwood_adreno_init();
