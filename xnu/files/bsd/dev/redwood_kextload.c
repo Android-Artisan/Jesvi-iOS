@@ -1,0 +1,324 @@
+/*
+ * Apple's lifs.kext, loaded by this kernel at run time (A, 2026-11-20; docs/devices/x1slte/lifs-loader.md).
+ *
+ * Files shows external drives through userfsd and livefileproviderd, and livefileproviderd needs lifs (IOKit
+ * com_apple_filesystems_lifs, user client AppleLIFSUserClient). This kernel has no kext loader; lifs needs very little:
+ * an arm64 MH_KEXT_BUNDLE whose relocations are all 64-bit absolute pointers (ARM64_RELOC_UNSIGNED): local ones
+ * (+= the load address) and external ones (= one of our kernel's symbols + addend, from redwood_kextsyms.c). Code
+ * reaches imports through its GOT, so no instruction is patched.
+ *
+ * Boot-arg lifs=1 (default off). A kernel thread waits for the system volume, reads
+ * /System/Library/Extensions/lifs.kext/lifs, checks every load command and relocation, maps, relocates, makes its text
+ * read-only + executable (redwood_pmap_kernel_text), gives its typed-allocation views zones, registers its classes
+ * under the kernel's own OSKext, starts it (kmod_info.start) and hands IOKit its personality. kern.redwood.lifs: state.
+ */
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/vnode.h>
+#include <sys/vnode_internal.h>
+#include <sys/proc.h>
+#include <sys/uio.h>
+#include <sys/sysctl.h>
+#include <kern/thread.h>
+#include <kern/kalloc.h>
+#include <vm/vm_kern.h>
+#include <mach/kmod.h>
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <mach-o/reloc.h>
+#include <libkern/libkern.h>
+#include <pexpert/pexpert.h>
+#include <IOKit/IOLib.h>
+
+#define LIFS_PATH               "/System/Library/Extensions/lifs.kext/lifs"
+#define LIFS_MAX_FILE           (1024 * 1024)
+
+struct redwood_kextsym { const char *name; const void *addr; };
+extern const struct redwood_kextsym redwood_kextsyms[];
+extern const size_t redwood_kextsyms_count;
+
+extern void redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size);
+extern unsigned redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count);
+typedef void (*redwood_ctor_t)(void);
+extern int redwood_kext_classes(redwood_ctor_t *ctors, unsigned count);
+extern bool redwood_kext_lifs_personality(void);
+
+static char lifs_state[200] = "off (boot-arg lifs=1)";
+SYSCTL_DECL(_kern_redwood);
+SYSCTL_STRING(_kern_redwood, OID_AUTO, lifs, CTLFLAG_RD | CTLFLAG_LOCKED, lifs_state, 0, "Apple's lifs.kext, loaded at run time");
+
+#define FAIL(...) do { snprintf(lifs_state, sizeof(lifs_state), __VA_ARGS__); printf("lifs: %s\n", lifs_state); goto out; } while (0)
+
+static const void *
+kernel_symbol(const char *name)
+{
+	size_t lo = 0, hi = redwood_kextsyms_count;
+
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		int c = strcmp(name, redwood_kextsyms[mid].name);
+
+		if (c == 0) {
+			return redwood_kextsyms[mid].addr;
+		}
+		if (c < 0) {
+			hi = mid;
+		} else {
+			lo = mid + 1;
+		}
+	}
+	return NULL;
+}
+
+/* the whole file into kernel memory: 0 or an errno */
+static int
+read_file(const char *path, uint8_t **out, size_t *outlen)
+{
+	vfs_context_t ctx = vfs_context_kernel();
+	vnode_t vp = NULLVP;
+	off_t size = 0;
+	int resid = 0, error;
+	uint8_t *buf;
+
+	error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+	if (error != 0) {
+		return error;
+	}
+	error = vnode_size(vp, &size, ctx);
+	if (error == 0 && (size <= 0 || size > LIFS_MAX_FILE)) {
+		error = EFBIG;
+	}
+	if (error == 0) {
+		buf = kalloc_data((vm_size_t)size, Z_WAITOK | Z_ZERO);
+		if (buf == NULL) {
+			error = ENOMEM;
+		} else {
+			error = vn_rdwr(UIO_READ, vp, (caddr_t)buf, (int)size, 0, UIO_SYSSPACE, 0, vfs_context_ucred(ctx), &resid,
+			    vfs_context_proc(ctx));
+			if (error == 0 && resid != 0) {
+				error = EIO;
+			}
+			if (error != 0) {
+				kfree_data(buf, (vm_size_t)size);
+			} else {
+				*out = buf;
+				*outlen = (size_t)size;
+			}
+		}
+	}
+	vnode_close(vp, FREAD, ctx);
+	return error;
+}
+
+static void
+lifs_load(void)
+{
+	uint8_t *file = NULL;
+	size_t flen = 0;
+	const struct mach_header_64 *mh;
+	const struct symtab_command *st = NULL;
+	const struct dysymtab_command *dy = NULL;
+	uint64_t vmend = 0, text_lo = 0, text_hi = 0, kmod_off = 0;
+	uint64_t ctor_off = 0, ctor_size = 0, kt_off = 0, kt_size = 0;
+	vm_offset_t base = 0;
+	vm_size_t vmsize = 0;
+	kmod_info_t *ki;
+	int error, r;
+	const uint8_t *lc, *lc_end;
+
+	error = read_file(LIFS_PATH, &file, &flen);
+	if (error != 0) {
+		FAIL("cannot read %s: %d", LIFS_PATH, error);
+	}
+	mh = (const struct mach_header_64 *)file;
+	if (flen < sizeof(*mh) || mh->magic != MH_MAGIC_64 || mh->cputype != CPU_TYPE_ARM64 || mh->filetype != MH_KEXT_BUNDLE ||
+	    sizeof(*mh) + mh->sizeofcmds > flen) {
+		FAIL("not an arm64 kext bundle");
+	}
+
+	/* pass 1: load commands; segments must lie inside the file and below 4 MB of address space */
+	lc = file + sizeof(*mh);
+	lc_end = lc + mh->sizeofcmds;
+	for (uint32_t i = 0; i < mh->ncmds; i++) {
+		const struct load_command *l = (const struct load_command *)lc;
+
+		if (lc + sizeof(*l) > lc_end || l->cmdsize < sizeof(*l) || lc + l->cmdsize > lc_end) {
+			FAIL("bad load command %u", i);
+		}
+		if (l->cmd == LC_SEGMENT_64) {
+			const struct segment_command_64 *s = (const struct segment_command_64 *)lc;
+			const struct section_64 *sect = (const struct section_64 *)(s + 1);
+
+			if (s->fileoff + s->filesize > flen || s->vmaddr + s->vmsize > 4 * 1024 * 1024 || s->filesize > s->vmsize ||
+			    sizeof(*s) + s->nsects * sizeof(*sect) > l->cmdsize) {
+				FAIL("bad segment %.16s", s->segname);
+			}
+			if (s->vmaddr + s->vmsize > vmend) {
+				vmend = s->vmaddr + s->vmsize;
+			}
+			if (strncmp(s->segname, "__TEXT_EXEC", 16) == 0) {
+				text_lo = s->vmaddr;
+				text_hi = s->vmaddr + s->vmsize;
+			}
+			for (uint32_t k = 0; k < s->nsects; k++) {
+				if (strncmp(sect[k].sectname, "__mod_init_func", 16) == 0) {
+					ctor_off = sect[k].addr;
+					ctor_size = sect[k].size;
+				} else if (strncmp(sect[k].sectname, "__kalloc_type", 16) == 0) {
+					kt_off = sect[k].addr;
+					kt_size = sect[k].size;
+				} else if (strncmp(sect[k].sectname, "__kalloc_var", 16) == 0 && sect[k].size != 0) {
+					FAIL("variable-size kalloc views: not handled");
+				}
+			}
+		} else if (l->cmd == LC_SYMTAB) {
+			st = (const struct symtab_command *)lc;
+		} else if (l->cmd == LC_DYSYMTAB) {
+			dy = (const struct dysymtab_command *)lc;
+		}
+		lc += l->cmdsize;
+	}
+	if (st == NULL || dy == NULL || text_hi == 0 || (text_lo & PAGE_MASK) || (text_hi & PAGE_MASK) ||
+	    st->symoff + (uint64_t)st->nsyms * sizeof(struct nlist_64) > flen || st->stroff + (uint64_t)st->strsize > flen ||
+	    dy->extreloff + (uint64_t)dy->nextrel * sizeof(struct relocation_info) > flen ||
+	    dy->locreloff + (uint64_t)dy->nlocrel * sizeof(struct relocation_info) > flen ||
+	    ctor_off + ctor_size > vmend || kt_off + kt_size > vmend) {
+		FAIL("symbol table, relocations or sections out of the file");
+	}
+
+	/* pass 2: memory for every segment, wired, zeroed; the file's bytes at their addresses */
+	vmsize = round_page(vmend);
+	if (kmem_alloc(kernel_map, &base, vmsize, KMA_ZERO | KMA_KOBJECT | KMA_PERMANENT, VM_KERN_MEMORY_KEXT) != KERN_SUCCESS) {
+		base = 0;
+		FAIL("no memory (%llu bytes)", (uint64_t)vmsize);
+	}
+	lc = file + sizeof(*mh);
+	for (uint32_t i = 0; i < mh->ncmds; i++) {
+		const struct load_command *l = (const struct load_command *)lc;
+
+		if (l->cmd == LC_SEGMENT_64) {
+			const struct segment_command_64 *s = (const struct segment_command_64 *)lc;
+
+			memcpy((void *)(base + s->vmaddr), file + s->fileoff, s->filesize);
+		}
+		lc += l->cmdsize;
+	}
+
+	/* pass 3: relocations; only 64-bit absolute pointers inside the image */
+	{
+		const struct relocation_info *rel = (const struct relocation_info *)(file + dy->locreloff);
+		const struct nlist_64 *syms = (const struct nlist_64 *)(file + st->symoff);
+		const char *strs = (const char *)(file + st->stroff);
+
+		for (uint32_t i = 0; i < dy->nlocrel; i++) {
+			if (rel[i].r_type != 0 || rel[i].r_length != 3 || rel[i].r_pcrel || rel[i].r_extern || rel[i].r_address < 0 ||
+			    (uint64_t)rel[i].r_address + 8 > vmend) {
+				FAIL("local relocation %u not a pointer", i);
+			}
+			*(uint64_t *)(base + (uint32_t)rel[i].r_address) += base;
+		}
+		rel = (const struct relocation_info *)(file + dy->extreloff);
+		for (uint32_t i = 0; i < dy->nextrel; i++) {
+			const char *name;
+			const void *addr;
+
+			if (rel[i].r_type != 0 || rel[i].r_length != 3 || rel[i].r_pcrel || !rel[i].r_extern || rel[i].r_address < 0 ||
+			    (uint64_t)rel[i].r_address + 8 > vmend || rel[i].r_symbolnum >= st->nsyms ||
+			    syms[rel[i].r_symbolnum].n_un.n_strx >= st->strsize) {
+				FAIL("external relocation %u malformed", i);
+			}
+			name = strs + syms[rel[i].r_symbolnum].n_un.n_strx;
+			if (strnlen(name, st->strsize - syms[rel[i].r_symbolnum].n_un.n_strx) ==
+			    st->strsize - syms[rel[i].r_symbolnum].n_un.n_strx) {
+				FAIL("external relocation %u: unterminated name", i);
+			}
+			addr = kernel_symbol(name);
+			if (addr == NULL) {
+				FAIL("unresolved %s", name);
+			}
+			*(uint64_t *)(base + (uint32_t)rel[i].r_address) += (uint64_t)addr;
+		}
+		/* kmod_info: a defined symbol */
+		for (uint32_t i = 0; i < st->nsyms; i++) {
+			if ((syms[i].n_type & N_TYPE) == N_SECT && syms[i].n_un.n_strx < st->strsize &&
+			    strncmp(strs + syms[i].n_un.n_strx, "_kmod_info", st->strsize - syms[i].n_un.n_strx) == 0) {
+				kmod_off = syms[i].n_value;
+			}
+		}
+		if (kmod_off == 0 || kmod_off + sizeof(kmod_info_t) > vmend) {
+			FAIL("no kmod_info");
+		}
+	}
+
+	/* pass 4: text read-only and executable; typed views placed; classes; start; IOKit */
+	redwood_pmap_kernel_text(base + text_lo, text_hi - text_lo);
+	r = (int)redwood_kalloc_type_adopt((struct kalloc_type_view **)(base + kt_off), (unsigned)(kt_size / sizeof(void *)));
+	printf("lifs: %llu KB at %p, text %#llx-%#llx, %u+%u relocations, %d of %llu typed views placed\n",
+	    (uint64_t)vmsize / 1024, (void *)base, text_lo, text_hi, dy->nlocrel, dy->nextrel, r, kt_size / sizeof(void *));
+	error = redwood_kext_classes((redwood_ctor_t *)(base + ctor_off), (unsigned)(ctor_size / sizeof(void *)));
+	if (error != 0) {
+		FAIL("class registration: %#x", error);
+	}
+	ki = (kmod_info_t *)(base + kmod_off);
+	ki->address = base;
+	ki->size = vmsize;
+	ki->hdr_size = 0;
+	if (ki->start != NULL) {
+		error = ki->start(ki, NULL);
+		if (error != KERN_SUCCESS) {
+			FAIL("start: %d", error);
+		}
+	}
+	if (!redwood_kext_lifs_personality()) {
+		FAIL("IOKit did not take the personality");
+	}
+	snprintf(lifs_state, sizeof(lifs_state), "loaded: %s %s at %p (%llu KB), started, personality given", ki->name,
+	    ki->version, (void *)base, (uint64_t)vmsize / 1024);
+	printf("lifs: %s\n", lifs_state);
+	base = 0;               /* it stays */
+out:
+	if (base != 0) {
+		/* failed before anything ran: give the memory back unless text was made executable (then keep it) */
+		if (strncmp(lifs_state, "class", 5) != 0 && strncmp(lifs_state, "start", 5) != 0 &&
+		    strncmp(lifs_state, "IOKit", 5) != 0) {
+			kmem_free(kernel_map, base, vmsize);
+		}
+	}
+	if (file != NULL) {
+		kfree_data(file, flen);
+	}
+}
+
+static void
+lifs_thread(__unused void *arg, __unused wait_result_t wr)
+{
+	/* the system volume is mounted a few seconds into the boot; wait for the file, up to two minutes */
+	for (int i = 0; i < 120; i++) {
+		vnode_t vp = NULLVP;
+
+		if (rootvnode != NULLVP && vnode_lookup(LIFS_PATH, 0, &vp, vfs_context_kernel()) == 0) {
+			vnode_put(vp);
+			lifs_load();
+			return;
+		}
+		IOSleep(1000);
+	}
+	snprintf(lifs_state, sizeof(lifs_state), "%s never appeared", LIFS_PATH);
+}
+
+void redwood_kextload_init(void);
+void
+redwood_kextload_init(void)
+{
+	uint32_t on = 0;
+	thread_t t;
+
+	if (!PE_parse_boot_argn("lifs", &on, sizeof(on)) || on == 0) {
+		return;
+	}
+	snprintf(lifs_state, sizeof(lifs_state), "waiting for %s", LIFS_PATH);
+	if (kernel_thread_start(lifs_thread, NULL, &t) == KERN_SUCCESS) {
+		thread_deallocate(t);
+	}
+}
