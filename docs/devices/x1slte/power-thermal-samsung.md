@@ -163,3 +163,14 @@ Screen idle now defaults to `idle_lock=2`: untouched wake sleeps after10s,
 unlocked follows Settings Auto-Lock (including Never); recent audio keeps
 the unlocked screen awake. AOD suppression remains in place. Runtime
 `redwood-idle.conf` and boot arguments retain explicit override support.
+
+
+## Lower GPU ceiling (user request, 2026-11-20)
+
+Balanced now caps GPU bursts at **572 MHz**, Cool at **455 MHz**; explicit
+Performance allows 800 MHz. Touch, frame and slow-job boosts all pass through
+this ceiling. Lower thermal/efficiency/sleep limits still win. Override with
+`dvfs_gpu_max=KHZ` or `kern.redwood.gpu_max` (0 removes this additional ceiling).
+This clock cap is separate from the experimental GPU ladder/sustained policy,
+which remains optional until measured on the phone. Actual heat and frame-rate
+impact is still pending phone validation.
