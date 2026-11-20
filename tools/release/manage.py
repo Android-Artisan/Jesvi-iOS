@@ -231,7 +231,9 @@ def main():
         run('python3', 'tools/release/loader_font.py', env=env)
         run('bash', 'x1slte.sh', 'embed', env=env)
         # Boot line from the target config: platform + hardware + target + mods.
-        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split(), data, userdata), env=env)
+        # data_bytes and hfs_kit checked the explicitly configured data window.
+        payload_env = dict(env, WIN_OK='1' if data < userdata else '0')
+        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split(), data, userdata), env=payload_env)
         run('bash', 'x1slte.sh', 'pack', env=env)
         verify()
         print('Private development images built. Next: build.sh package --output dist/CANDIDATE')
