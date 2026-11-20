@@ -5,7 +5,7 @@
  * S-Boot leaves the slot initialised: card powered (PWREN 1), clocked (CLKENA 1), 4-bit bus (CTYPE 1), the card in
  * the "tran" state after its own CMD17. This first driver keeps that state and only reads: CMD18 (multiple blocks,
  * block addressing: SDHC/SDXC) with the controller's auto-stop, by PIO through the FIFO at +0x200 (CTRL 0: no
- * IDMAC yet). Read-only, and only with boot-arg sd=1 (default off).
+ * IDMAC yet). Read-only; on by default, boot-arg sd=0 switches it off.
  *
  *   /dev/rsdcard   raw, read-only; its size: the end of the last partition in the card's MBR (the card's own size,
  *                  CSD, needs its RCA, which only a re-identification gives -- next step)
@@ -60,7 +60,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 #define SD_MAX_BLOCKS   128             /* 64 KB per command */
 
 static volatile uint8_t *sd;
-static uint32_t sd_mode;                /* boot-arg sd= */
+static uint32_t sd_mode = 1;            /* boot-arg sd=: on by default (read-only, the card touched only on open); sd=0 off */
 static int sd_ready;
 static uint64_t sd_blocks;              /* 512-byte blocks exposed */
 static uint32_t sd_reads, sd_errors, sd_last_int;
@@ -244,7 +244,7 @@ static const struct cdevsw sd_cdevsw = {
 	.d_type       = D_DISK,
 };
 
-static char sd_state[160] = "off (boot-arg sd=1)";
+static char sd_state[160] = "off (boot-arg sd=0)";
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_STRING(_kern_redwood, OID_AUTO, sdcard, CTLFLAG_RD | CTLFLAG_LOCKED, sd_state, 0, "the microSD slot");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, sdcard_reads, CTLFLAG_RD | CTLFLAG_LOCKED, &sd_reads, 0, "reads done");
@@ -301,7 +301,8 @@ redwood_sdcard_init(void)
 {
 	int cmaj;
 
-	if (!PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode)) || sd_mode == 0) {
+	(void)PE_parse_boot_argn("sd", &sd_mode, sizeof(sd_mode));
+	if (sd_mode == 0) {
 		return;
 	}
 	sd = (volatile uint8_t *)ml_io_map(SD_PHYS, 0x1000);
