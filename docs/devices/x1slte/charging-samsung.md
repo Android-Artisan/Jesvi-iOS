@@ -39,3 +39,10 @@ Direct-charging steps: 4110 / 4210 / 4380 mV -> 4690 / 3600 / 3220 mA.
 2. Samsung's protection table above, in charger_limits(), always on (safety, not a choice).
 3. 15 W by default once (1)+(2) hold; SIOP limits while the screen is on.
 4. 25 W: PCA9468 + PPS, after 15 W is proven.
+
+## Done (2026-11-20, kernel a35118ca)
+Thermistors read on the Exynos ADC v3 (0x15C40000; battery ch 4, charger ch 3, USB ch 1, Samsung's tables), every
+battery poll: `bms:` log line, `kern.redwood.batt_temp/chg_temp/usb_temp` (0.1 C), and the battery's to iOS.
+Protection above in charger_limits() (always on; only lowers). First reading while charging from the Mac:
+battery 43.9 C, charger 52-56 C, USB 40.7 C -> 1350 mA (Samsung's swelling step).
+Still open: 15 W by default (bms_hv only with no USB host, now), 25 W PPS (PCA9468), SIOP (screen-on limits).
