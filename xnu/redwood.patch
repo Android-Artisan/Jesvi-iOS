@@ -2039,10 +2039,10 @@ index 5219fb0d9ed6..d88015b06b3a 100644
  //	Now check if we are trying to root on a memory device
  //
 diff --git a/iokit/conf/files b/iokit/conf/files
-index 5fb0a52062e0..49e2d3d9d860 100644
+index 5fb0a52062e0..b749bc1c31b9 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
-@@ -79,6 +79,18 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
+@@ -79,6 +79,19 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
  iokit/Kernel/IOGuardPageMemoryDescriptor.cpp		optional iokitcpp
  
  iokit/Kernel/IOPlatformExpert.cpp			optional iokitcpp
@@ -2055,13 +2055,14 @@ index 5fb0a52062e0..49e2d3d9d860 100644
 +iokit/Kernel/RedwoodBattery.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodStorage.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodKextLoad.cpp			optional iokitcpp
++iokit/Kernel/RedwoodSDMedia.cpp			optional iokitcpp
 +iokit/Kernel/MiniAppleKeyStore.cpp			optional iokitcpp
 +iokit/Kernel/RedwoodMesa.cpp			optional iokitcpp
 +iokit/Kernel/MiniIONetworkStack.cpp			optional iokitcpp
  iokit/Kernel/IOPlatformIO.cpp				optional iokitcpp
  
  iokit/Kernel/IOCPU.cpp					optional iokitcpp
-@@ -148,3 +160,5 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
+@@ -148,3 +161,5 @@ iokit/Kernel/IOWorkloadConfig.cpp			optional iokitcpp
  
  # Skywalk
  iokit/bsddev/skywalk/IOSkywalkSupport.cpp		optional iokitcpp skywalk

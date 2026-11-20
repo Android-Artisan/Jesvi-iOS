@@ -282,6 +282,7 @@ iokit/Kernel/RedwoodGPU.cpp
 iokit/Kernel/RedwoodKextLoad.cpp
 iokit/Kernel/RedwoodMali.cpp
 iokit/Kernel/RedwoodMesa.cpp
+iokit/Kernel/RedwoodSDMedia.cpp
 iokit/Kernel/RedwoodStorage.cpp
 iokit/Kernel/RedwoodWLAN.cpp
 iokit/Kernel/SoftwareKeybag.h

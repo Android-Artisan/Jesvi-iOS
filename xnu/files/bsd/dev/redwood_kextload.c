@@ -364,7 +364,11 @@ redwood_kextload_init(void)
 {
 	thread_t t;
 
-	if (!PE_parse_boot_argn("lifs", &lifs_mode, sizeof(lifs_mode)) || lifs_mode == 0) {
+	/* default 2 (A, 2026-11-21: loads, starts and runs userfsd's stack): at boot; lifs=1 on request, lifs=0 off */
+	if (!PE_parse_boot_argn("lifs", &lifs_mode, sizeof(lifs_mode))) {
+		lifs_mode = 2;
+	}
+	if (lifs_mode == 0) {
 		return;
 	}
 	if (lifs_mode == 1) {
