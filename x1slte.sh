@@ -91,6 +91,11 @@ cmd_payload() {
 	case " $cmdline " in
 	*" cpus="*" cpumask="* | *" cpumask="*" cpus="*) die "cpus= and cpumask= together make XNU panic" ;;
 	esac
+	# (A, 2026-11-20) a boot line copied into a scratch script long ago had ufs_win=0:15625000 instead of
+	# ufs_userdata_all=1: iOS saw a window of the data volume. Take devices/exynos990/x1slte/x1slte.cmdline + extras.
+	case " $cmdline " in
+	*" ufs_win="*) [ "${WIN_OK:-0}" = 1 ] || die "ufs_win= in the boot line: the S20 uses ufs_userdata_all=1 (devices/exynos990/x1slte/x1slte.cmdline); WIN_OK=1 if on purpose" ;;
+	esac
 	local rsize
 	# shellcheck disable=SC1091
 	. common/devices/x1slte.conf
@@ -189,9 +194,16 @@ cmd_pack() {
 	# (A, 2026-11-15) a stale userland/root.apfs (Nov 14: the old com.redwood.phone job, no com.redwood.telephonyd) was
 	# packed and flashed: calls sat at "Starting..." until the right root went back. Refuse a root without the phone's
 	# call provider job; ROOT_OK=1 packs it anyway (a test root on purpose).
+	# (A, 2026-11-20) a root from plain userland/build.sh (no GPU layer, minimal jobs) was flashed: black wallpaper,
+	# stutter, iCloud and apps down. The phone's root comes from userland/build-gpu-y2s.sh with REST=1.
+	if [ "${ROOT_OK:-0}" != 1 ] && ! { LC_ALL=C grep -q -a 'libOSMesa' userland/root.apfs && LC_ALL=C grep -q -a 'libredwood-gl.dylib' userland/root.apfs; }; then
+		echo "x1slte.sh: pack: userland/root.apfs has no GPU layer (libOSMesa / libredwood-gl.dylib): built by plain userland/build.sh?"
+		echo "  Rebuild it: REST=1 JESVI_TARGET=x1slte IOS_INPUT_DIR=../sysimage userland/build-gpu-y2s.sh; ROOT_OK=1 to pack it anyway."
+		return 1
+	fi
 	if [ "${ROOT_OK:-0}" != 1 ] && ! LC_ALL=C grep -q -a 'com.redwood.telephonyd' userland/root.apfs; then
 		echo "x1slte.sh: pack: userland/root.apfs has no com.redwood.telephonyd job (stale root: calls would stay at"
-		echo "  \"Starting...\"). Rebuild it (userland/build.sh) or take the phone's own root (docs/devices/x1slte/root-swap.md);"
+		echo "  \"Starting...\"). Rebuild it (REST=1 JESVI_TARGET=x1slte IOS_INPUT_DIR=../sysimage userland/build-gpu-y2s.sh) or take the phone's own root (docs/devices/x1slte/root-swap.md);"
 		echo "  ROOT_OK=1 to pack it anyway."
 		return 1
 	fi
