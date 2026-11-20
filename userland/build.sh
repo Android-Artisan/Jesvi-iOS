@@ -321,6 +321,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/m2m_mark src/m2m_mark.c
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 		$DYN -framework CoreFoundation -framework CoreLocation -lobjc -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
+		$DYN -fobjc-arc -framework Foundation -o obj/safari_favourites src/safari_favourites.m
+		${LDID:-ldid} -Cadhoc -S obj/safari_favourites
 		$DYN -o obj/trollstore_once src/trollstore_once.c   # TrollStore on a fresh data volume, once
 		${LDID:-ldid} -S../tools/redwood-defaults.entitlements obj/redwood-defaults
 		${LDID:-ldid} -Cadhoc -S obj/prefset
@@ -521,6 +523,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/metal_caps ] && cp obj/metal_caps root/bin/
 	[ -f obj/metal_props ] && cp obj/metal_props root/bin/
 	[ -f obj/redwood-defaults ] && cp obj/redwood-defaults root/bin/
+	[ -f obj/safari_favourites ] && cp obj/safari_favourites root/bin/
 	[ -f obj/trollstore_once ] && cp obj/trollstore_once root/bin/
 	[ -f obj/prefset ] && cp obj/prefset root/bin/          # (x1slte: preferences without Settings' UI)
 	[ -f obj/shm_test ] && cp obj/shm_test root/bin/
@@ -715,6 +718,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.redwood.demo.plist com.redwood.wifi.plist com.redwood.thermald.plist com.redwood.lpmd.plist com.redwood.logd.plist com.redwood.cellular.plist root/LaunchDaemons/
+	[ ! -x root/bin/safari_favourites ] || cp com.redwood.safari-favourites.plist root/LaunchDaemons/
 	[ ! -x root/bin/redwood-defaults ] || cp com.redwood.defaults.plist root/LaunchDaemons/   # fresh-volume defaults
 	[ ! -x root/bin/trollstore_once ] || cp com.redwood.trollstore.plist root/LaunchDaemons/   # TrollStore, once
 	cp com.redwood.account-store.plist root/LaunchDaemons/     # (the Store relay at every boot, if installed)
