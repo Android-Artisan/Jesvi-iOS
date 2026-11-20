@@ -40,7 +40,9 @@ main(void)
 	/* SpringBoard and the installer services first: the helper registers the app with LaunchServices */
 	sleep(20);
 	mkdir(DIR_, 0700);
-	char *untar[] = { "/usr/bin/tar", "-xf", TAR, "-C", DIR_, NULL };
+	/* iOS has no tar of its own: the package prefix's (/var/jb, grafted by init before launchd) */
+	char *tar = access("/var/jb/usr/bin/tar", X_OK) == 0 ? "/var/jb/usr/bin/tar" : "/usr/bin/tar";
+	char *untar[] = { tar, "-xf", TAR, "-C", DIR_, NULL };
 	if (run(untar) != 0) {
 		printf("trollstore_once: extracting %s failed\n", TAR);
 		return 1;
