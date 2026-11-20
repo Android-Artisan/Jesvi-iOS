@@ -30,4 +30,8 @@ grep -Fxq "$model" "$device/twrp_x1s.mk" || printf '\n%s\n' "$model" >> "$device
 sed -i.bak -E 's/^TW_DEVICE_VERSION := .*$/TW_DEVICE_VERSION := -JESViOS/' "$device/BoardConfig.mk"
 rm "$device/BoardConfig.mk.bak"
 grep -Fxq 'TW_DEVICE_VERSION := -JESViOS' "$device/BoardConfig.mk"
+recovery=$1/bootable/recovery
+if ! git -C "$recovery" apply --reverse --check "$script_dir/layout.patch" 2>/dev/null; then
+    git -C "$recovery" apply "$script_dir/layout.patch"
+fi
 python3 "$script_dir/theme.py" "$1/bootable/recovery/gui/theme/common/portrait.xml"

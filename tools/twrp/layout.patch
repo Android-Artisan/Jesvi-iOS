@@ -1,0 +1,174 @@
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -32,6 +32,7 @@
+ #include <pwd.h>
+ #include <zlib.h>
+ #include <iostream>
++#include <sstream>
+ #include <iomanip>
+ #include <sys/wait.h>
+ #include <linux/fs.h>
+@@ -261,21 +262,62 @@
+ #endif
+ 	LOGINFO("Keymaster_Ver::Using keymaster version '%s' for decryption\n", version.c_str());
+ 	android::base::SetProperty(TW_KEYMASTER_VERSION_PROP, version.c_str());
++}
++
++// Jesvi stores APFS at the start of super and HFSX at the start of userdata.
++static bool JesviHasMagic(const char* path, off_t offset, const char* magic, size_t size) {
++	char bytes[4];
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		return false;
++	ssize_t got = pread(fd, bytes, size, offset);
++	close(fd);
++	return got == static_cast<ssize_t>(size) && memcmp(bytes, magic, size) == 0;
++}
++
++static bool jesvi_layout;
++
++static bool JesviAndroidMount(const std::string& mount) {
++	return mount == "/data" || mount == "/metadata" || mount == "/system" ||
++	       mount == "/system_root" || mount == "/vendor" || mount == "/product" ||
++	       mount == "/odm" || mount == "/system_ext" || mount == "/vendor_dlkm" ||
++	       mount == "/odm_dlkm";
+ }
+ 
++static bool JesviSkipFstabLine(const char* line, bool flags) {
++	if (!jesvi_layout)
++		return false;
++	std::istringstream fields(line);
++	std::string first, second;
++	fields >> first >> second;
++	// Legacy TWRP entries and flags put the mount point first. Android fstab
++	// uses a block path or logical partition name in the first field.
++	return JesviAndroidMount(first) || (!flags && JesviAndroidMount(second)) ||
++	       (flags && (first == "/system_image" || first == "/vendor_image" ||
++	                  first == "/product_image" || first == "/odm_image"));
++}
++
+ int TWPartitionManager::Process_Fstab(string Fstab_Filename, bool Display_Error, bool recovery_mode) {
++	jesvi_layout = JesviHasMagic("/dev/block/by-name/super", 32, "NXSB", 4) &&
++	               JesviHasMagic("/dev/block/by-name/userdata", 1024, "HX", 2);
++	property_set("twrp.jesvios.layout", jesvi_layout ? "1" : "0");
++	if (jesvi_layout)
++		LOGINFO("JesviOS APFS/HFSX layout detected; Android mounts are unavailable. Use microSD or USB OTG.\n");
++
+ 	FILE *fstabFile;
+ 	char fstab_line[MAX_FSTAB_LINE_LENGTH];
+ 	bool parse_userdata = false;
+ 	std::map<string, Flags_Map> twrp_flags;
+ 
+ 	fstabFile = fopen("/etc/twrp.flags", "rt");
+-	if (Get_Super_Status()) {
++	if (!jesvi_layout && Get_Super_Status()) {
+ 		Setup_Super_Devices();
+ 	}
+ 	if (fstabFile != NULL) {
+ 		LOGINFO("Reading /etc/twrp.flags\n");
+ 		while (fgets(fstab_line, sizeof(fstab_line), fstabFile) != NULL) {
++			if (JesviSkipFstabLine(fstab_line, true))
++				continue;
+ 			size_t line_size = strlen(fstab_line);
+ 			if (fstab_line[line_size - 1] != '\n')
+ 				fstab_line[line_size] = '\n';
+@@ -341,6 +383,8 @@
+ 		LOGINFO("Reading %s\n", Fstab_Filename.c_str());
+ 
+ 	while (fgets(fstab_line, sizeof(fstab_line), fstabFile) != NULL) {
++		if (JesviSkipFstabLine(fstab_line, false))
++			continue;
+ 		if (strstr(fstab_line, "swap"))
+ 			continue; // Skip swap in recovery
+ 
+@@ -410,7 +454,7 @@
+ 
+ 	TWPartition* ven = PartitionManager.Find_Partition_By_Path("/vendor");
+ 	TWPartition* odm = PartitionManager.Find_Partition_By_Path("/odm");
+-	if (recovery_mode && !parse_userdata) {
++	if (recovery_mode && !jesvi_layout && !parse_userdata) {
+ 		if (ven) ven->Mount(Display_Error);
+ 		if (odm) odm->Mount(Display_Error);
+ 
+@@ -437,7 +481,7 @@
+ #endif
+ 
+ 	if (odm) odm->UnMount(Display_Error);
+-	if (recovery_mode)
++	if (recovery_mode && !jesvi_layout)
+ 		Process_Keymaster_Version(ven, false);
+ 	if (ven) ven->UnMount(Display_Error);
+ 	return true;
+@@ -540,12 +584,14 @@
+ 		}
+ 
+ 	#ifdef TW_INCLUDE_CRYPTO
+-		DataManager::SetValue(TW_IS_ENCRYPTED, 1);
+-		Decrypt_Data();
++		if (!jesvi_layout) {
++			DataManager::SetValue(TW_IS_ENCRYPTED, 1);
++			Decrypt_Data();
++		}
+ 	#endif
+ 
+ 		Update_System_Details();
+-		if (Get_Super_Status())
++		if (!jesvi_layout && Get_Super_Status())
+ 			Setup_Super_Partition();
+ 		UnMount_Main_Partitions();
+ 	#ifdef AB_OTA_UPDATER
+@@ -838,7 +884,7 @@
+ 
+ 	if (Part)
+ 		return Part->Is_Mounted();
+-	else
++	else if (!jesvi_layout || !JesviAndroidMount(TWFunc::Get_Root_Path(Path)))
+ 		LOGINFO("Is_Mounted: Unable to find partition for path '%s'\n", Path.c_str());
+ 	return false;
+ }
+@@ -1940,7 +1986,8 @@
+ 	if (FreeStorage != NULL) {
+ 		// Attempt to mount storage
+ 		if (!FreeStorage->Mount(false)) {
+-			gui_msg(Msg(msg::kWarning, "unable_to_mount_storage=Unable to mount storage"));
++			if (!jesvi_layout || FreeStorage->Is_Present)
++				gui_msg(Msg(msg::kWarning, "unable_to_mount_storage=Unable to mount storage"));
+ 			DataManager::SetValue(TW_STORAGE_FREE_SIZE, 0);
+ 		} else {
+ 			DataManager::SetValue(TW_STORAGE_FREE_SIZE, (int)(FreeStorage->Free / 1048576LLU));
+@@ -2393,10 +2440,10 @@
+ 	TWPartition *Partition = Find_Partition_By_Path ("/vendor");
+ 
+ 	if (Partition != NULL) UnMount_By_Path("/vendor", false);
+-	UnMount_By_Path (Get_Android_Root_Path(), true);
++	if (!jesvi_layout) UnMount_By_Path (Get_Android_Root_Path(), true);
+ 	Partition = Find_Partition_By_Path ("/product");
+ 	if (Partition != NULL) UnMount_By_Path("/product", false);
+-	if (!datamedia)
++	if (!datamedia && !jesvi_layout)
+ 		UnMount_By_Path("/data", true);
+ 
+ 	Partition = Find_Partition_By_Path ("/boot");
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -208,7 +208,10 @@
+ 
+ 	// Check for and run startup script if script exists
+ 	TWFunc::check_and_run_script("/system/bin/runatboot.sh", "boot");
+-	TWFunc::check_and_run_script("/system/bin/postrecoveryboot.sh", "recovery");
++	char jesvi_layout[PROPERTY_VALUE_MAX];
++	property_get("twrp.jesvios.layout", jesvi_layout, "0");
++	if (strcmp(jesvi_layout, "1") != 0)
++		TWFunc::check_and_run_script("/system/bin/postrecoveryboot.sh", "recovery");
+ 
+ #ifdef TW_INCLUDE_INJECTTWRP
+ 	// Back up TWRP Ramdisk if needed:
+@@ -225,7 +228,7 @@
+ #ifdef TW_INCLUDE_CRYPTO
+ 	android::keystore::copySqliteDb();
+ #endif
+-	Decrypt_Page(skip_decryption, datamedia);
++	Decrypt_Page(skip_decryption || strcmp(jesvi_layout, "1") == 0, datamedia);
+ 
+ 	// Check for and load custom theme if present
+ 	TWFunc::check_selinux_support();
