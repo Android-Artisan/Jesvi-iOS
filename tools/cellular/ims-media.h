@@ -111,6 +111,14 @@ static void *media_rx(void *arg)
         if ((pkt[1] & 0x7f) != med.pt) { med.rx_other++; continue; }   /* (telephone-event, comfort noise) */
         med.rx_pkts++;
         uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
+        /* (A, 2026-11-20) a new stream: an outgoing call's early media (the network's ringback, 183) is followed at
+         * the answer by the other phone's voice with a new SSRC and its own sequence numbers. When they started
+         * lower, every voice packet counted as "late" and was dropped: no voice on outgoing calls (in 410 packets /
+         * 151 frames), incoming fine. A new SSRC, or a jump far back, starts the sequence again. */
+        static uint32_t rx_ssrc;
+        uint32_t ssrc = ((uint32_t)pkt[8] << 24) | ((uint32_t)pkt[9] << 16) | ((uint32_t)pkt[10] << 8) | pkt[11];
+        if (have_seq && (ssrc != rx_ssrc || (int16_t)(seq - next_seq) < -100)) have_seq = 0;
+        rx_ssrc = ssrc;
         if (have_seq) {
             int16_t gap = (int16_t)(seq - next_seq);
             if (gap < 0) continue;                          /* (late or repeated: already concealed) */
