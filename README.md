@@ -23,6 +23,11 @@ the same way: a common tree, plus one directory per device.
 | Haptics and flashlight | Vibration and the rear LED. Both pause at the 45 °C battery temperature limit. |
 | Power and charging | Battery level and temperature, charging, CPU frequency scaling, screen-off idle, thermal throttling, and the native iOS temperature screen |
 
+**Performance presets.** Balanced is the default and limits peak clocks to keep heat down.
+Performance is the highest preset. It gives animations and scrolling more headroom, but the
+phone can run substantially hotter. Select it with the `perf_profile=2` boot argument.
+Use `perf_profile=1` to return to Balanced.
+
 ### iOS and connectivity
 
 | Area | What works |
