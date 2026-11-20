@@ -68,3 +68,27 @@ checklist; keep rescue images and backups privately; triage model-specific bugs;
 state which carriers/features were tested; update known issues for each release.
 A maintainer without current hardware access should mark the profile unmaintained.
 Source contributors can still improve common code without claiming device support.
+
+## Experimental S20+ and S20 Ultra kernel builds
+
+The Exynos Galaxy S20+ (SM-G985F and SM-G986B) and S20 Ultra (SM-G988B)
+have a manual source-build entry point for port contributors. On macOS:
+
+```sh
+./build.sh kernel --device y2s --experimental
+./build.sh kernel --device z3s --experimental
+```
+
+The output under `out/experimental/<board>/` is the shared GICv2 Exynos 990
+kernel plus its build manifest and checksum. The target name records which
+bring-up it was built for. No board-specific settings are applied by this
+kernel build. Boot on either model is unverified, and there is no installer
+or GitHub Actions build for these models.
+
+For first boot, bring up a board-specific UEFI and loader configuration from
+the model's own boot header, DTB/DTBO, RAM reservations and framebuffer handoff.
+The S20+ has a [legacy UEFI starting point](../../devices/exynos990/y2s/legacy/uefi-y2s/).
+Its historical flashing script encodes fixed storage offsets. Measure the
+target's own partition map before assembling any images. Bring up early logs
+first, then the display and touch. Camera support can follow after boot;
+modules and calibration need separate hardware validation.

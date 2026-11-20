@@ -21,7 +21,7 @@ the same way: a common tree, plus one directory per device.
 | Cameras | Front and three rear lenses with zoom switching, photos, video with sound, and main-camera autofocus |
 | Audio | Speaker, earpiece, microphone, and Bluetooth A2DP audio |
 | Haptics and flashlight | Vibration and the rear LED. Both pause at the 45 °C battery temperature limit. |
-| Power and charging | Battery level and temperature, charging, CPU frequency scaling, screen-off idle, and thermal throttling |
+| Power and charging | Battery level and temperature, charging, CPU frequency scaling, screen-off idle, thermal throttling, and the native iOS temperature screen |
 
 ### iOS and connectivity
 
@@ -106,8 +106,10 @@ Guides: [building](docs/release/building.md), [one-command local build](docs/rel
 
 ## More devices
 
-The Exynos 990 layer is shared, so the S20+ (`y2s`), S20 Ultra (`z3s`) and Note20 (`c1s`/`c2s`) can be
-added as directories next to `x1slte`. See [porting](docs/release/porting.md).
+The Exynos S20+ (`y2s`) and S20 Ultra (`z3s`) have experimental local kernel
+builds for port contributors. Boot and installation still need hardware
+validation. The Note20 (`c1s`/`c2s`) remains a porting candidate.
+See the [local build commands and bring-up requirements](docs/release/porting.md#experimental-s20-and-s20-ultra-kernel-builds).
 
 ## Credits and licenses
 

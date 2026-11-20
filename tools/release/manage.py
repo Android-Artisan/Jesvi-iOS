@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+EXPERIMENTAL_KERNEL_TARGETS = ('y2s', 'z3s')
 
 
 def profile(name):
@@ -73,10 +74,10 @@ def run(*args, env=None):
     subprocess.run(args, cwd=ROOT, env=env, check=True)
 
 
-def doctor(device, images=False):
+def doctor(device, images=False, experimental_kernel=False):
     d = profile(device)
     problems = []
-    if d['status'] == 'unmaintained':
+    if d['status'] == 'unmaintained' and not experimental_kernel:
         problems.append('target has no qualified board profile or build adapter')
     if platform.system() != 'Darwin':
         problems.append('the release build adapter currently requires macOS')
@@ -135,6 +136,8 @@ def main():
         if cmd == 'doctor':
             p.add_argument('--images', action='store_true')
         elif cmd == 'kernel':
+            p.add_argument('--experimental', action='store_true',
+                           help='build a shared Exynos 990 kernel artifact for y2s or z3s bring-up')
             p.add_argument('--jobs', type=int, default=4)
         elif cmd == 'images':
             p.add_argument('--development', action='store_true',
@@ -180,7 +183,16 @@ def main():
             d = profile(p.parent.name)
             print(f'{d["id"]:8} {d["status"]:13} {d["name"]}; installer: unqualified')
         return 0
-    problems = doctor(a.device, images=a.command == 'images' or getattr(a, 'images', False))
+    experimental_kernel = a.command == 'kernel' and a.experimental
+    if a.command == 'kernel':
+        if not 1 <= a.jobs <= 64:
+            raise ValueError('jobs must be 1..64')
+        if experimental_kernel and a.device not in EXPERIMENTAL_KERNEL_TARGETS:
+            raise ValueError('--experimental requires --device y2s or z3s')
+        if not experimental_kernel and a.device != 'x1slte':
+            raise ValueError('use --experimental for y2s or z3s kernel bring-up')
+    problems = doctor(a.device, images=a.command == 'images' or getattr(a, 'images', False),
+                      experimental_kernel=experimental_kernel)
     if problems:
         for problem in problems:
             print('BLOCKED: ' + problem, file=sys.stderr)
@@ -189,9 +201,9 @@ def main():
         print('Host prerequisites found. Run kernel to verify the actual compiler/toolchain.')
         return 0
     if a.command == 'kernel':
-        if a.device != 'x1slte' or not 1 <= a.jobs <= 64:
-            raise ValueError('only the x1slte kernel adapter is qualified; jobs must be 1..64')
-        run('bash', 'ci/build-kernel.sh', str(a.jobs))
+        if a.experimental:
+            print(f'{a.device}: building a shared kernel for experimental bring-up', flush=True)
+        run('bash', 'ci/build-kernel.sh', str(a.jobs), a.device)
     elif a.command == 'images':
         if a.device != 'x1slte' or not a.development:
             raise ValueError('full images are private development candidates only; pass --development')
