@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""relink_bkdm1.py IN OUT MAP.json -- make a dylib cut out of a dyld shared cache (DyldExtractor's output) loadable on
+ANOTHER cache of the same iOS build: here the iPhone 8's libBKDM1 (Touch ID) on the iPhone X's 20F66 cache.
+
+What ties an extracted dylib to its old cache, and what this does about it (A, 2026-11-20):
+  - segments not on 16 KB pages (the cache packs them): every segment starts at its 16 KB page, padded in front;
+    addresses stay as they were, so no code moves.
+  - GOT slots (__got, named by the indirect symbol table): bound by name to the library in the symbol's ordinal.
+  - the cache builder's pooled GOT (loads straight from shared "_ptr.X" slots): a GOT of our own (__RELINK,__got),
+    bound by name, and every ADRP+LDR to a pooled slot pointed at it.
+  - isa pointers of constant objects (@"", @[], @{}, @1 -> ___CFConstantStringClassReference, NSConstant*): bound.
+  - DyldExtractor's __EXTRA_OBJC (copies of other images' classes): each reference bound to the real class or
+    metaclass (_OBJC_CLASS_$_X / _OBJC_METACLASS_$_X); the segment is dropped.
+  - every other pointer into the image: a rebase.
+MAP.json: {"0x<old address>": "<symbol>"} for the pooled GOT slots and the constant-object classes (ipsw dyld a2s).
+Binds outside the GOT use a flat lookup (the classes and data live in libSystem / CoreFoundation / Foundation).
+"""
+import json, struct, sys
+import lief
+from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
+from capstone.arm64 import ARM64_INS_ADRP, ARM64_OP_MEM
+
+PAGE = 0x4000
+FLAT = -2   # BIND_SPECIAL_DYLIB_FLAT_LOOKUP
+inp, outp, mapp = sys.argv[1:4]
+raw = open(inp, 'rb').read()
+b = lief.parse(inp)
+names = {int(k, 16): v for k, v in json.load(open(mapp)).items()}
+
+segs = [s for s in b.segments if s.name not in ('__PAGEZERO', '__LINKEDIT')]
+# the raw section headers (flags, alignment, reserved fields as the file has them)
+rawsect = {}
+_ncmds, _off = struct.unpack_from('<I', raw, 16)[0], 32
+for _ in range(_ncmds):
+    _cmd, _size = struct.unpack_from('<II', raw, _off)
+    if _cmd == 0x19:
+        _nsect = struct.unpack_from('<I', raw, _off + 64)[0]
+        for j in range(_nsect):
+            so = _off + 72 + 80 * j
+            sn, gn = (x.rstrip(b'\0').decode() for x in struct.unpack_from('<16s16s', raw, so))
+            addr, size, foff, align, reloff, nreloc, flags, r1, r2, r3 = struct.unpack_from('<QQIIIIIIII', raw, so + 32)
+            rawsect[(gn, sn)] = (addr, size, align, flags, r1, r2)
+    _off += _size
+extra = next((s for s in segs if s.name == '__EXTRA_OBJC'), None)
+keep = [s for s in segs if s is not extra]
+mem = {}
+for s in segs:
+    buf = bytearray(s.virtual_size)
+    buf[:s.file_size] = raw[s.file_offset:s.file_offset + s.file_size]
+    mem[s.name] = (s.virtual_address, buf)
+# DyldExtractor's __EXTRA_OBJC also holds the method names and types our own method lists point at: it stays, as the
+# tail of __DATA_DIRTY (they share a 16 KB page); only its copies of other images' classes are replaced by binds
+if extra is not None:
+    db, dbuf = mem['__DATA_DIRTY']
+    eb, ebuf = mem.pop('__EXTRA_OBJC')
+    merged = bytearray(eb + len(ebuf) - db)
+    merged[:len(dbuf)] = dbuf
+    merged[eb - db:] = ebuf
+    mem['__DATA_DIRTY'] = (db, merged)
+DATA_DIRTY_END = mem['__DATA_DIRTY'][0] + len(mem['__DATA_DIRTY'][1])
+
+def where(a):
+    for n, (base, buf) in mem.items():
+        if base <= a < base + len(buf):
+            return n, base, buf
+    return None, None, None
+
+def rd(a, n=8):
+    _, base, buf = where(a)
+    return None if buf is None else int.from_bytes(buf[a - base:a - base + n], 'little')
+
+def wr(a, v, n=8):
+    _, base, buf = where(a)
+    buf[a - base:a - base + n] = v.to_bytes(n, 'little')
+
+def in_keep(v):
+    return any(base <= v < base + len(buf) for base, buf in mem.values())
+
+def in_extra(v):
+    return extra is not None and extra.virtual_address <= v < extra.virtual_address + extra.virtual_size
+
+def cstr(a):
+    n, base, buf = where(a)
+    if buf is None:
+        return None
+    o = a - base
+    return bytes(buf[o:buf.index(0, o)]).decode()
+
+# __objc_imageinfo: not "OptimizedByDyld" (1<<3) any more -- that tells libobjc the image is in the shared cache's
+# pre-built tables, and it wrote its "loaded" flag into the read-only cache (SIGBUS in map_images, 2026-11-20)
+ii = b.get_section('__objc_imageinfo')
+if ii is not None:
+    _v, _f = struct.unpack('<II', bytes(mem['__DATA_CONST'][1][ii.virtual_address - mem['__DATA_CONST'][0]:][:8]))
+    wr(ii.virtual_address, 0, 4)
+    wr(ii.virtual_address + 4, _f & ~((1 << 3) | (1 << 7)), 4)
+
+binds = {}     # slot -> (ordinal, name, weak)
+rebases = set()
+
+# 1. the image's own GOT, named by the indirect symbol table
+ind = list(b.dynamic_symbol_command.indirect_symbols)
+weak_ordinals = set()
+for i, cmd in enumerate([c for c in b.commands if isinstance(c, lief.MachO.DylibCommand) and c.command != lief.MachO.LoadCommand.TYPE.ID_DYLIB]):
+    if cmd.command == lief.MachO.LoadCommand.TYPE.LOAD_WEAK_DYLIB:
+        weak_ordinals.add(i + 1)
+for sec in b.sections:
+    if sec.name not in ('__got', '__la_symbol_ptr', '__auth_got'):
+        continue
+    for k in range(sec.size // 8):
+        slot = sec.virtual_address + 8 * k
+        sym = ind[sec.reserved1 + k]
+        nm = sym.name
+        if not nm:          # INDIRECT_SYMBOL_LOCAL: a pointer into the image
+            if in_keep(rd(slot) or 0):
+                rebases.add(slot)
+            continue
+        ordl = (sym.description >> 8) & 0xff
+        binds[slot] = (ordl, nm, ordl in weak_ordinals)
+        wr(slot, 0)
+
+# 2. class and metaclass copies in __EXTRA_OBJC -> names
+def extra_class(v):
+    data = rd(v + 32)
+    ro = (data or 0) & ~7
+    if not ro:
+        return None
+    flags = rd(ro, 4)
+    try:
+        nm = cstr(rd(ro + 24) or 0)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not nm or not all(c.isalnum() or c in '_$.' for c in nm):
+        return None
+    return ('_OBJC_METACLASS_$_' if flags & 1 else '_OBJC_CLASS_$_') + nm
+
+# class references live only here; a pointer into __EXTRA_OBJC anywhere else is a method name, type or list (rebase)
+CLASS_SECTIONS = [(x.virtual_address, x.virtual_address + x.size) for x in b.sections
+                  if x.name in ('__objc_classrefs', '__objc_superrefs', '__objc_data')]
+def class_slot(a):
+    return any(lo <= a < hi for lo, hi in CLASS_SECTIONS)
+
+unknown = {}
+for segname in [n for n in mem if n != '__TEXT']:
+    base, buf = mem[segname]
+    for off in range(0, len(buf) - 7, 8):
+        slot = base + off
+        if slot in binds or slot in rebases:
+            continue
+        v = int.from_bytes(buf[off:off + 8], 'little')
+        if v == 0:
+            continue
+        if in_extra(v) and class_slot(slot) and (nm := extra_class(v)) is not None:
+            binds[slot] = (FLAT, nm, False)
+            wr(slot, 0)
+        elif in_keep(v):
+            rebases.add(slot)
+        elif v in names:
+            binds[slot] = (FLAT, names[v], False)
+            wr(slot, 0)
+        elif 0x180000000 <= v < 0x300000000 and v & 7 == 0:
+            unknown[slot] = v
+
+# 3. pooled GOT loads -> a GOT of our own
+md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+md.detail = True
+text = b.get_section('__text')
+tb, tbuf = mem['__TEXT']
+pooled = sorted({v for v in names if not in_keep(v) and names[v].startswith('_ptr.')})
+last_end = max(base + len(buf) for base, buf in mem.values())
+relink_base = (last_end + PAGE - 1) & ~(PAGE - 1)
+newslot = {v: relink_base + 8 * i for i, v in enumerate(pooled)}
+mem['__RELINK'] = (relink_base, bytearray(max(PAGE, 8 * len(pooled))))
+for v, slot in newslot.items():
+    binds[slot] = (FLAT, names[v][len('_ptr.'):], False)
+regs, fixed = {}, 0
+code = bytes(tbuf[text.virtual_address - tb:text.virtual_address - tb + text.size])
+for i in md.disasm(code, text.virtual_address):
+    if i.mnemonic in ('ret', 'b', 'br'):
+        regs.clear()
+    if i.id == ARM64_INS_ADRP:
+        regs[i.operands[0].reg] = (i.operands[1].imm, i.address)
+        continue
+    if i.mnemonic == 'ldr' and len(i.operands) == 2 and i.operands[1].type == ARM64_OP_MEM \
+            and i.operands[1].mem.base in regs and i.operands[1].mem.index == 0:
+        page, at = regs[i.operands[1].mem.base]
+        t = page + i.operands[1].mem.disp
+        if t in newslot:
+            ns = newslot[t]
+            delta = ((ns & ~0xfff) - (at & ~0xfff)) >> 12
+            ins = rd(at, 4)
+            ins = (ins & 0x9f00001f) | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5)
+            wr(at, ins, 4)
+            ins = rd(i.address, 4)                       # LDR Xt, [Xn, #imm12*8]
+            ins = (ins & ~(0xfff << 10)) | (((ns & 0xfff) >> 3) << 10)
+            wr(i.address, ins, 4)
+            regs[i.operands[1].mem.base] = (ns & ~0xfff, at)   # the ADRP now points at our page
+            fixed += 1
+    for r in i.regs_access()[1]:
+        if r in regs:
+            regs.pop(r)
+
+print(f'relink: {len(binds)} binds, {len(rebases)} rebases, {fixed} pooled loads repointed, {len(unknown)} unknown pointers')
+for slot, v in sorted(unknown.items())[:20]:
+    print(f'  unknown pointer at {slot:#x} -> {v:#x}')
+
+# 4. layout: every segment on its 16 KB page, the same addresses
+order = [s.name for s in keep] + ['__RELINK']   # (__EXTRA_OBJC lives inside __DATA_DIRTY)
+lay = []    # (name, vmaddr, pad, vmsize, fileoff, filesize, prot, sections)
+cur = 0
+for n in order:
+    base, buf = mem[n]
+    vm = base & ~(PAGE - 1)
+    pad = base - vm
+    size = (pad + len(buf) + PAGE - 1) & ~(PAGE - 1)
+    if n == '__TEXT':
+        assert pad == 0 and base == vm
+    # file offset = address - image base, as dyld assumes when it reads sections from the unmapped file
+    # (MachOAnalyzer::hasSwiftOrObjC crashed reading __objc_imageinfo at its VM offset, 2026-11-20). The gaps between
+    # the cache's scattered segments become zeros in the file (~128 MB, compresses to nothing).
+    fo = vm - (mem['__TEXT'][0] & ~(PAGE - 1))
+    lay.append([n, vm, pad, size, fo, size])
+    cur = fo + size
+for a, c in zip(lay, lay[1:]):
+    assert a[1] + a[3] <= c[1], f'{a[0]} overlaps {c[0]}'
+
+# 5. opcodes
+def uleb(v):
+    o = bytearray()
+    while True:
+        x = v & 0x7f
+        v >>= 7
+        o.append(x | (0x80 if v else 0))
+        if not v:
+            return o
+
+segidx = {l[0]: k for k, l in enumerate(lay)}
+def seg_off(a):
+    for k, l in enumerate(lay):
+        if l[1] <= a < l[1] + l[3]:
+            return k, a - l[1]
+    raise ValueError(hex(a))
+
+rb = bytearray([0x11])   # REBASE_OPCODE_SET_TYPE_IMM | POINTER
+for a in sorted(rebases):
+    k, o = seg_off(a)
+    rb += bytes([0x20 | k]) + uleb(o) + bytes([0x51])   # SET_SEGMENT_AND_OFFSET_ULEB, DO_REBASE_IMM_TIMES 1
+rb.append(0)
+bd = bytearray()
+for a in sorted(binds):
+    ordl, nm, weak = binds[a]
+    k, o = seg_off(a)
+    if ordl == FLAT:
+        bd.append(0x30 | (FLAT & 0xf))                  # SET_DYLIB_SPECIAL_IMM
+    elif ordl < 16:
+        bd.append(0x10 | ordl)                          # SET_DYLIB_ORDINAL_IMM
+    else:
+        bd += bytes([0x20]) + uleb(ordl)
+    bd += bytes([0x40 | (1 if weak else 0)]) + nm.encode() + b'\0'   # SET_SYMBOL_TRAILING_FLAGS_IMM (weak import)
+    bd += bytes([0x51, 0x70 | k]) + uleb(o) + bytes([0x90])          # TYPE pointer, SEGMENT_AND_OFFSET, DO_BIND
+bd.append(0)
+
+def al8(x):
+    return x + bytes(-len(x) % 8)
+
+def blob(off, size):
+    return raw[off:off + size]
+lc_exp = next(c for c in b.commands if c.command.name == 'DYLD_EXPORTS_TRIE')
+lc_fs = next(c for c in b.commands if c.command.name == 'FUNCTION_STARTS')
+st = b.symbol_command
+dst = b.dynamic_symbol_command
+le_parts = [al8(bytes(rb)), al8(bytes(bd)), al8(blob(lc_exp.data_offset, lc_exp.data_size)),
+            al8(blob(lc_fs.data_offset, lc_fs.data_size)),
+            al8(blob(st.symbol_offset, st.numberof_symbols * 16)),
+            al8(blob(dst.indirect_symbol_offset, dst.nb_indirect_symbols * 4)),
+            blob(st.strings_offset, st.strings_size)]
+le_vm = (lay[-1][1] + lay[-1][3])
+le_off = le_vm - lay[0][1]
+offs, o = [], le_off
+for p in le_parts:
+    offs.append(o)
+    o += len(p)
+le_size = o - le_off
+
+# 6. load commands
+segcmds = b''
+sect_of = {}
+for s in keep:
+    sect_of[s.name] = [x for x in b.sections if x.segment_name == s.name]
+sect_of['__RELINK'] = []
+prot = {s.name: (s.max_protection, s.init_protection) for s in keep}
+prot['__RELINK'] = (3, 3)
+for n, vm, pad, size, fo, fsz in lay:
+    secs = sect_of[n]
+    body = b''
+    for x in secs:
+        addr, size_, align, flags, r1, r2 = rawsect[(n, x.name)]
+        zerofill = (flags & 0xff) in (1, 0xc, 0x12)
+        body += struct.pack('<16s16sQQIIIIIIII', x.name.encode(), n.encode(), addr, size_,
+                            0 if zerofill else fo + (addr - vm), align, 0, 0, flags, r1, r2, 0)
+    nsect = len(secs)
+    if n == '__RELINK':
+        body += struct.pack('<16s16sQQIIIIIIII', b'__got', b'__RELINK', vm, 8 * len(pooled), fo, 3, 0, 0, 6, 0, 0, 0)
+        nsect = 1
+    elif n == '__DATA_DIRTY' and extra is not None:
+        # the merged __EXTRA_OBJC as a section of its own: every fixup must lie in a section (dyld_info stopped there)
+        ea, es = extra.virtual_address, extra.virtual_size
+        body += struct.pack('<16s16sQQIIIIIIII', b'__extra_objc', b'__DATA_DIRTY', ea, es, fo + (ea - vm), 3, 0, 0, 0, 0, 0, 0)
+        nsect += 1
+    mp, ip = prot[n]
+    segcmds += struct.pack('<II16sQQQQiiII', 0x19, 72 + len(body), n.encode(), vm, size, fo, size, mp, ip, nsect, 0) + body
+segcmds += struct.pack('<II16sQQQQiiII', 0x19, 72, b'__LINKEDIT', le_vm, (le_size + PAGE - 1) & ~(PAGE - 1), le_off, le_size, 1, 1, 0, 0)
+
+keepcmds = b''
+for c in b.commands:
+    if c.command.name in ('ID_DYLIB', 'UUID', 'BUILD_VERSION', 'SOURCE_VERSION', 'LOAD_DYLIB', 'LOAD_WEAK_DYLIB'):
+        keepcmds += bytes(c.data)
+lc_dyld = struct.pack('<IIIIIIIIIIII', 0x80000022, 48, offs[0], len(le_parts[0]), offs[1], len(le_parts[1]), 0, 0, 0, 0, offs[2], len(le_parts[2]))
+lc_fs2 = struct.pack('<IIII', 0x26, 16, offs[3], len(le_parts[3]))
+lc_sym = struct.pack('<IIIIII', 0x2, 24, offs[4], st.numberof_symbols, offs[6], len(le_parts[6]))
+lc_dys = struct.pack('<IIIIIIIIIIIIIIIIIIII', 0xb, 80, dst.idx_local_symbol, dst.nb_local_symbols, dst.idx_external_define_symbol,
+                     dst.nb_external_define_symbols, dst.idx_undefined_symbol, dst.nb_undefined_symbols, 0, 0, 0, 0, 0, 0,
+                     offs[5], dst.nb_indirect_symbols, 0, 0, 0, 0)
+cmds = segcmds + keepcmds + lc_dyld + lc_fs2 + lc_sym + lc_dys
+ncmds = (len(lay) + 1) + sum(1 for c in b.commands if c.command.name in ('ID_DYLIB', 'UUID', 'BUILD_VERSION', 'SOURCE_VERSION', 'LOAD_DYLIB', 'LOAD_WEAK_DYLIB')) + 4
+hdr = struct.pack('<IiiIIIII', 0xfeedfacf, 0x0100000c, 0, 6, ncmds, len(cmds), 0x00100085 & ~0x80000000 | 0x4 | 0x80 | 0x100000, 0)
+first_sect = min(x.virtual_address for x in sect_of['__TEXT']) - lay[0][1]
+assert len(hdr) + len(cmds) <= first_sect, f'load commands {len(hdr) + len(cmds)} > {first_sect}'
+
+out = bytearray(le_off + le_size)
+for n, vm, pad, size, fo, fsz in lay:
+    base, buf = mem[n]
+    out[fo + pad:fo + pad + len(buf)] = buf
+out[0:len(hdr) + len(cmds)] = hdr + cmds
+for p, o in zip(le_parts, offs):
+    out[o:o + len(p)] = p
+open(outp, 'wb').write(out)
+print(f'relink: wrote {outp} ({len(out)} bytes), __RELINK at {relink_base:#x} ({len(pooled)} slots)')
