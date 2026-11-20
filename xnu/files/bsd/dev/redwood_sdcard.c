@@ -79,24 +79,21 @@ wr(unsigned off, uint32_t v)
 	*(volatile uint32_t *)(sd + off) = v;
 }
 
-static uint64_t
-now_us(void)
-{
-	uint64_t ns;
-
-	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
-	return ns / 1000;
-}
-
 /* `count` blocks from block `lba` into `out`: CMD18 with auto-stop, PIO. 0 or an errno. sd_lock held. */
 static int
 sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 {
-	uint32_t want = count * 128, got = 0, st;       /* 32-bit words */
-	uint64_t deadline;
+	uint32_t want = count * 128, got = 0, st, idle_us = 0;  /* 32-bit words */
 
 	if (count == 0 || count > SD_MAX_BLOCKS || lba > 0xffffffffull) {
 		return EINVAL;
+	}
+	/* a transfer left half-read (an earlier timeout): empty the FIFO first (CTRL bit 1, FIFO_RESET) */
+	if (!(rd(R_STATUS) & (1u << 2))) {
+		wr(R_CTRL, rd(R_CTRL) | 2u);
+		for (int i = 0; i < 1000 && (rd(R_CTRL) & 2u); i++) {
+			delay(1);
+		}
 	}
 	wr(R_RINTSTS, 0xffffffff);
 	wr(R_BLKSIZ, 512);
@@ -104,13 +101,13 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 	wr(R_CMDARG, (uint32_t)lba);
 	wr(R_CMD, CMD_START | CMD_HOLD | CMD_WAIT_PREV | (count > 1 ? CMD_AUTO_STOP : 0) | CMD_DATA | CMD_CRC | CMD_RESP |
 	    (count > 1 ? 18u : 17u));
-	deadline = now_us() + 500000 + (uint64_t)count * 2000;
 	for (;;) {
 		st = rd(R_RINTSTS);
 		if (st & INT_ERR) {
 			break;
 		}
 		/* drain the FIFO until it says empty (STATUS bit 2, FIFO_EMPTY) */
+		uint32_t before = got;
 		while (got < want && !(rd(R_STATUS) & (1u << 2))) {
 			((uint32_t *)out)[got++] = rd(R_FIFO);
 		}
@@ -120,9 +117,14 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 		if ((st & INT_DTO) && got >= want) {
 			break;
 		}
-		if (now_us() > deadline) {
-			st |= 1u << 30;         /* (ours: timed out) */
+		/* timed out: a second with nothing new (a counted wait: the clock conversions are not up this early in boot) */
+		if (got != before) {
+			idle_us = 0;
+		} else if (++idle_us > 1000000) {
+			st |= 1u << 30;
 			break;
+		} else {
+			delay(1);
 		}
 	}
 	sd_last_int = st;
