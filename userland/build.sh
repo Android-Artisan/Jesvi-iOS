@@ -320,7 +320,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -o obj/rwlogd src/rwlogd.c
 		$DYN -o obj/m2m_mark src/m2m_mark.c
 		$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
-		$DYN -framework CoreFoundation -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
+		$DYN -framework CoreFoundation -framework CoreLocation -lobjc -o obj/redwood-defaults src/redwood-defaults.c   # fresh-data-volume defaults, once
+		${LDID:-ldid} -S../tools/redwood-defaults.entitlements obj/redwood-defaults
 		${LDID:-ldid} -Cadhoc -S obj/prefset
 		$DYN -framework CoreFoundation -o obj/redwood-cellulard ../tools/cellular/live-modem.c
 		$DYN -o obj/cell-provision ../tools/cellular/cell-provision.c   # modem files from the phone's RADIO/EFS (read-only)

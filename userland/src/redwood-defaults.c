@@ -6,13 +6,17 @@
  * Photo on. Run at boot (com.redwood.defaults); the marker /var/root/.redwood-defaults-v1 makes it a once-only step,
  * so whatever the user changes later is never overwritten. Bump the marker's version to apply a new default.
  * Keys found by diffing the preference files around the Settings switches, and in iOS 16.5's CameraUI:
- *   root   com.apple.locationd           LocationServicesEnabledIn7.0 = true   (locationd runs as root and reads
- *                                                                               root's domain, not mobile's)
+ *   Location Services: +[CLLocationManager setLocationServicesEnabled:YES], as Settings does (needs the
+ *                     com.apple.locationd.preferences entitlement: tools/redwood-defaults.entitlements). Writing
+ *                     LocationServicesEnabledIn7.0 into a preferences file is ignored by iOS 16.5's locationd: the
+ *                     switch stayed off and Settings hid its Location Services row (PUIPrivacyController).
  *   mobile com.apple.keyboard.preferences KeyboardVisceral = 2                  (Keyboard Feedback: Haptic)
  *   mobile com.apple.camera               CAMUserPreferencePreserveLivePhoto = true, ..DesiredIrisMode = 0
  *                                                                               (Live Photo off, and kept off)
  */
 #include <CoreFoundation/CoreFoundation.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -48,6 +52,29 @@ set_int(CFStringRef user, const char *domain, const char *key, int v)
 	return r;
 }
 
+/* Location Services on through CoreLocation, as Settings does; 0 when it reads back on */
+static int
+location_services_on(void)
+{
+	Class L = objc_getClass("CLLocationManager");
+	SEL get = sel_registerName("locationServicesEnabled"), set_ = sel_registerName("setLocationServicesEnabled:");
+
+	if (L == Nil || !class_respondsToSelector(object_getClass(L), set_)) {
+		printf("redwood-defaults: CoreLocation has no setLocationServicesEnabled:\n");
+		return 1;
+	}
+	((void (*)(Class, SEL, BOOL))objc_msgSend)(L, set_, 1);
+	for (int i = 0; i < 10; i++) {
+		if (((BOOL (*)(Class, SEL))objc_msgSend)(L, get)) {
+			printf("redwood-defaults: Location Services on\n");
+			return 0;
+		}
+		usleep(500000);
+	}
+	printf("redwood-defaults: Location Services did NOT turn on\n");
+	return 1;
+}
+
 /* locationd reads its switch at start: restart it (launchd starts it again) */
 static void
 restart_locationd(void)
@@ -81,12 +108,10 @@ main(void)
 		if (access("/var/mobile/Library/Preferences", W_OK) == 0) break;
 		sleep(2);
 	}
-	r |= set(CFSTR("root"), "com.apple.locationd", "LocationServicesEnabledIn7.0", kCFBooleanTrue);
-	r |= set(CFSTR("mobile"), "com.apple.locationd", "LocationServicesEnabledIn7.0", kCFBooleanTrue);
+	r |= location_services_on();
 	r |= set_int(CFSTR("mobile"), "com.apple.keyboard.preferences", "KeyboardVisceral", 2);
 	r |= set(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferencePreserveLivePhoto", kCFBooleanTrue);
 	r |= set_int(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferenceDesiredIrisMode", 0);
-	restart_locationd();
 	if (r == 0) {
 		int fd = open(MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		if (fd >= 0) close(fd);
