@@ -33,7 +33,7 @@ converges on the control temperature, instead of dropping a rung and overshootin
 | A55 (cpu0-3) | 442 / **806** / 2002 MHz | 806 .. 2002 (touch 1456/1248, frame 1456) |
 | A76 (cpu4-5) | 507 / **845** / 2600 MHz | 1066 .. 2504 (touch 1404/1222, frame 2106) |
 | M5 (cpu6-7) | 546 / **962** / 2730 MHz | 1196 .. 2730 (touch 1066/858, frame 1898) |
-| GPU | 156 / start 260 / 800 MHz, interactive governor at 94 % load, every 5 ms | 156 .. 800, 50 ms tick |
+| GPU | 156 / start 260 / 800 MHz, per-rung load thresholds; interval 5, polling 30 ms | 156 .. 800, 50 ms tick |
 
 Our idle floors are higher than Samsung's on A76 (1066 vs 845) and M5 (1196 vs 962): the lowest rung is where idle
 cores sit when they are not power-gated, so that is idle heat for nothing.
@@ -102,6 +102,46 @@ boot + heavy UI), then made default.
 - AOD is "display off" for the power code (MiniIOMobileFramebuffer: redwood_dvfs_display(0)): screen-off profile.
 
 ## Next (parked 2026-11-20): GPU like Samsung
-Samsung decides the GPU clock every 5 ms (interactive governor, 94 % target at 377 MHz), throttles along
+Samsung exposes a 5 ms DVFS interval and a separate 30 ms polling interval (the DTS alone does not establish a 5 ms governor timer), throttles along
 800 -> 702 -> 572 -> 455 -> 377 -> 260 MHz, sustains 455 MHz at 85 %, controls at 88 C, and ties CPU limits to the
 GPU's level (gpu_cl_pmqos_table). Ours: 50 ms tick with an instant jump on a slow job, steps 82/90 C to 572/455.
+
+
+## Experimental GPU limits (2026-11-20, continuation)
+
+The governor already contains 156, 260, 377, 455, 572, 702 and 800 MHz.
+The new policy adds thermal ceilings using Samsung's existing 800 -> 702 ->
+572 -> 455 -> 377 -> 260 MHz list. It does **not** reproduce Samsung's IPA
+power allocator. Its thresholds and dwell times are our conservative experiment.
+
+- `gpu_ladder=1` / `kern.redwood.gpu_ladder=1`: additional ceilings of
+  702/572/455/377/260 MHz at 88/91/94/97/100 C, with 5 C hysteresis per step.
+  A hot sample can immediately apply several steps; invalid temperatures keep
+  the previous ceiling. Existing thermal, efficiency and power-profile limits
+  still win if lower. In particular the existing 82 C / 572 MHz limit means
+  the 702 MHz ceiling usually adds no restriction.
+- `gpu_sustain=1` / `kern.redwood.gpu_sustain=1`: cap at 455 MHz after
+  10 continuous seconds with >=85% GPU busy and >=78 C. Release after
+  5 continuous seconds below 75% busy or below 73 C. Missing readings interrupt
+  the dwell measurement and retain an active ceiling. Samsung supplies the
+  455 MHz / 85% sustainable point; the dwell and temperatures are ours.
+- `kern.redwood.gpu_policy_cap` reports the additional ceiling in kHz (0: none).
+  Neither switch changes profile selection. Both default **off** until measured
+  on the phone; neither raises a legacy thermal limit.
+
+The existing thermal loop supplies samples, with no additional timer or
+hardware reads. No 5 ms polling, CPU/GPU linking, or changes to CPU limits
+are included. These need separate power and latency comparisons.
+
+Host verification (from repository root):
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -iquote xnu/files/bsd/sys \
+  tools/tests/gpu_policy.c -o /tmp/gpu-policy-test
+/tmp/gpu-policy-test
+```
+
+Phone validation still required: cold-start baseline vs switches on, identical
+scrolling/game workload, temperature, frame misses, actual clocks and cool-down.
+Disable both switches to restore the existing limits. The feature is image code
+and needs no manually seeded data-volume files on a clean install.

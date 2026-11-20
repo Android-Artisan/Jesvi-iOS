@@ -52,6 +52,7 @@
 #include <mach/machine.h>
 #include <sys/redwood_dbgport.h>
 #include <sys/redwood_power_policy.h>
+#include <sys/redwood_gpu_policy.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void loader_log_line(const char *line);
@@ -957,11 +958,26 @@ gov_busy(unsigned g)
 	return worst;
 }
 
+/* Opt-in until cold-start phone comparisons pass. Legacy thermal limits remain
+ * active, so enabling the new policy never weakens existing cooling. */
+static int gpu_ladder, gpu_sustain;
+static uint32_t gpu_policy_cap;
+SYSCTL_INT(_kern_redwood, OID_AUTO, gpu_ladder, CTLFLAG_RW | CTLFLAG_LOCKED,
+    &gpu_ladder, 0, "Samsung-derived GPU thermal ladder (experimental)");
+SYSCTL_INT(_kern_redwood, OID_AUTO, gpu_sustain, CTLFLAG_RW | CTLFLAG_LOCKED,
+    &gpu_sustain, 0, "455 MHz cap after 10 s at >=85 percent GPU load and >=78 C");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, gpu_policy_cap, CTLFLAG_RD | CTLFLAG_LOCKED,
+    &gpu_policy_cap, 0, "GPU policy ceiling in kHz; 0 means no additional cap");
+
 /* the profile's cap for domain index d on top of `cap' (0: none) */
 static uint32_t
 profile_cap(unsigned d, uint32_t cap, int prof)
 {
 	uint32_t p = prof == PROF_OFF ? domains[d].safe : prof == PROF_LPM ? domains[d].mid : 0;
+
+    if (domains[d].domain == D_G3D && gpu_policy_cap && (!p || gpu_policy_cap < p)) {
+        p = gpu_policy_cap;
+    }
 
 	if (domains[d].domain == D_MIF) {
 		p = prof == PROF_OFF ? 421000 : prof == PROF_LPM ? 1352000 : 0;
@@ -981,6 +997,7 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 {
 	uint32_t mode = 0, wait = 10, hot_at = 0, fb_hot = 82;
 	struct redwood_cooling_state cooling[4] = {0};
+	struct redwood_gpu_policy gpu_policy = {0};
 	int bl_step = 0;
 	int hot = 0, level[NDOMAINS] = { 0 }, temp[4];
 	uint32_t govern = 1, govern_gpu = 1, gov_rung[NGOV], gov_low[NGOV], gov_sent[NGOV], gov_changes = 0, tick = 0;
@@ -995,6 +1012,8 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 	PE_parse_boot_argn("dvfs_gov", &govern, sizeof(govern));
 	PE_parse_boot_argn("fb_hot", &fb_hot, sizeof(fb_hot));
 	PE_parse_boot_argn("dvfs_gov_gpu", &govern_gpu, sizeof(govern_gpu));
+    PE_parse_boot_argn("gpu_ladder", &gpu_ladder, sizeof(gpu_ladder));
+    PE_parse_boot_argn("gpu_sustain", &gpu_sustain, sizeof(gpu_sustain));
 	PE_parse_boot_argn("dvfs_frame", &gov_frame, sizeof(gov_frame));
 	PE_parse_boot_argn("dvfs_ffl_cl0", &gov_frame_khz[0], sizeof(gov_frame_khz[0]));
 	PE_parse_boot_argn("dvfs_ffl_cl1", &gov_frame_khz[1], sizeof(gov_frame_khz[1]));
@@ -1328,6 +1347,16 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 		}
 		if (mode >= 2) {
 			bigoff_check(temp[0]);          /* zones[0] = "big" */
+            uint64_t gpu_ns;
+            absolutetime_to_nanoseconds(mach_absolute_time(), &gpu_ns);
+            uint32_t previous = gpu_policy_cap;
+            gpu_policy_cap = redwood_gpu_policy_update(&gpu_policy, temp[3],
+                govern && govern_gpu ? gov_last_busy[3] : -1,
+                gpu_ns / NSEC_PER_MSEC, gpu_ladder, gpu_sustain);
+            if (previous != gpu_policy_cap) {
+                dlog("GPU policy: %d C, busy %d: ceiling %u MHz", temp[3],
+                    gov_last_busy[3], gpu_policy_cap / 1000);
+            }
 		}
 		/* Reuse the four samples above: no extra reads, thread, timer or log polling.
 		 * Decisions affect the next governor tick; stricter thermal/profile caps still win. */

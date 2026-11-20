@@ -249,6 +249,7 @@ bsd/sys/redwood_fp_channels.h
 bsd/sys/redwood_fp_probe.h
 bsd/sys/redwood_fp_sysconf.h
 bsd/sys/redwood_fp_wire.h
+bsd/sys/redwood_gpu_policy.h
 bsd/sys/redwood_input.h
 bsd/sys/redwood_lx.h
 bsd/sys/redwood_m2m.h
