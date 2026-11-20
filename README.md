@@ -109,12 +109,24 @@ Guides: [building](docs/release/building.md), [one-command local build](docs/rel
 | `docs/` | `release/` install and build, `devices/x1slte/` per-feature notes, `dev/` and `research/` |
 | `ci/`, `.github/` | checks and workflows |
 
-## More devices
+## Supported SoC and device family
 
-The Exynos S20+ (`y2s`) and S20 Ultra (`z3s`) have experimental local kernel
-builds for port contributors. Boot and installation still need hardware
-validation. The Note20 (`c1s`/`c2s`) remains a porting candidate.
-See the [local build commands and bring-up requirements](docs/release/porting.md#experimental-s20-and-s20-ultra-kernel-builds).
+Jesvi iOS targets the **Samsung Exynos 990** in the Galaxy S20 family. The
+**Galaxy S20 LTE (SM-G980F, `x1slte`)** is the only model with a tested iOS
+boot and a development image build path. Snapdragon variants are unsupported.
+
+| Device | Local build and install status |
+|---|---|
+| Galaxy S20 LTE (SM-G980F) | Development images can be built locally. See the [install guide](docs/release/install.md). |
+| Galaxy S20+ Exynos (SM-G985F, SM-G986B) | Experimental shared kernel build (`y2s`). Boot is unverified. |
+| Galaxy S20 Ultra Exynos (SM-G988B) | Experimental shared kernel build (`z3s`). Boot is unverified. |
+
+Contributors can build the S20+ and S20 Ultra kernels on macOS with
+`./build.sh kernel --device y2s --experimental` or
+`./build.sh kernel --device z3s --experimental`. A flashable install package
+for either model still needs a model-specific boot chain, device tree, and
+verified memory and storage layouts. The S20 5G, S20 FE, and Note20 family
+remain porting candidates. See the [bring-up requirements](docs/release/porting.md#experimental-s20-and-s20-ultra-kernel-builds).
 
 ## Credits and licenses
 
