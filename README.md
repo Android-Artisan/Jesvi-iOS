@@ -10,16 +10,21 @@ the same way: a common tree, plus one directory per device.
 
 ## What works on the S20
 
-| | |
+| Area | What works |
 |---|---|
-| Display | FHD+ up to 120 Hz (real ProMotion), auto-brightness, Always-On Display |
-| Graphics | Metal on the Mali-G77; OpenGL ES games through Mesa |
-| Cellular | 4G data, VoLTE calls both ways, SMS in Messages |
-| Cameras | front + three rear lenses by zoom, photo and video with sound |
-| Connectivity | Wi-Fi 2.4/5 GHz, Bluetooth audio, USB networking, Finder file access |
+| Display | FHD+ up to 120 Hz with ProMotion, auto-brightness, Always-On Display (off by default) |
+| Touch and buttons | Multitouch, lock-screen pocket rejection, power and volume buttons |
+| Motion and environmental sensors | Accelerometer, gyroscope, compass, proximity sensor, and ambient light sensor |
+| Graphics | Metal on the Mali-G77 and OpenGL ES through Mesa for supported apps |
+| Audio and haptics | Speaker, earpiece, microphone, Bluetooth audio, and vibration |
+| Cellular | 4G data, incoming and outgoing VoLTE calls, and carrier SMS in Messages |
+| Cameras | Front and three rear lenses with zoom switching, photos, video with sound, main-camera autofocus, and flashlight |
+| Wi-Fi and Bluetooth | 2.4 GHz and 5 GHz Wi-Fi, plus Bluetooth A2DP audio |
+| USB | USB networking, serial console, and Finder file access |
+| Internal storage | Persistent iOS data on UFS and local files under On My iPhone |
 | microSD | Native exFAT read/write in Files. Boot with the card inserted. |
-| System | touch, buttons, vibration, charging, sensors and compass, passcode, persistent data, thermal control |
-| Not yet | fingerprint, full GPS, App Store purchases |
+| Power and charging | Battery level, charging, CPU frequency scaling, idle on small cores with the screen off, and thermal throttling |
+| Lock screen | Passcode setup and unlock |
 
 The full status per part is in [`devices/exynos990/x1slte/device.conf`](devices/exynos990/x1slte/device.conf),
 and every change is logged in [SHIPPING.md](docs/SHIPPING.md).
@@ -28,6 +33,14 @@ A clean exFAT card with an MBR partition mounts automatically under **Files → 
 The card keeps its volume label. Automatic mounting and read/write persistence were verified on the
 SM-G980F across reboots. Shut down before removing the card. Live removal and reinsertion remain
 unsupported. See the [microSD notes](docs/devices/x1slte/sdcard.md).
+
+**Limited or unavailable**
+
+- **GPS** has produced host-assisted fixes. Standalone Core Location fixes are still pending.
+- **Touch ID** has experimental enrollment. Fingerprint unlock is still pending.
+- **App Store** FairPlay DRM, including protected app downloads and purchases, is unfinished.
+- **iMessage, FaceTime, and related Apple services** are unavailable. Carrier SMS works.
+- **Apple Account (Apple ID)** sign-in works with a Hackintosh to supply MID. Standalone sign-in on the S20 remains pending.
 
 ## Install
 
