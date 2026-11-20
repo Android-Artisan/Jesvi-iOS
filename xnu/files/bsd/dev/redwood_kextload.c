@@ -41,7 +41,7 @@ extern const size_t redwood_kextsyms_count;
 extern int redwood_pmap_kernel_text(vm_offset_t va, vm_size_t size, int upto, uint64_t *out_pte);
 static int lifs_text_upto;      /* kern.redwood.lifs_text: 1..4 do only the first steps of making text executable */
 static uint64_t lifs_text_pte;
-extern unsigned redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count);
+extern unsigned redwood_kalloc_type_adopt(vm_offset_t sect, vm_size_t bytes, unsigned *count);
 typedef void (*redwood_ctor_t)(void);
 extern int redwood_kext_classes(redwood_ctor_t *ctors, unsigned count);
 extern bool redwood_kext_lifs_personality(void);
@@ -268,9 +268,13 @@ lifs_load(void)
 		FAIL("no page entry for the text (pte %#llx)", lifs_text_pte);
 	}
 	STEP("text done (sub-steps %d, first pte was %#llx); typed views", lifs_text_upto, lifs_text_pte);
-	r = (int)redwood_kalloc_type_adopt((struct kalloc_type_view **)(base + kt_off), (unsigned)(kt_size / sizeof(void *)));
-	printf("lifs: %llu KB at %p, text %#llx-%#llx, %u+%u relocations, %d of %llu typed views placed\n",
-	    (uint64_t)vmsize / 1024, (void *)base, text_lo, text_hi, dy->nlocrel, dy->nextrel, r, kt_size / sizeof(void *));
+	{
+		unsigned nviews = 0;
+
+		r = (int)redwood_kalloc_type_adopt(base + kt_off, kt_size, &nviews);
+		printf("lifs: %llu KB at %p, text %#llx-%#llx, %u+%u relocations, %d of %u typed views placed\n",
+		    (uint64_t)vmsize / 1024, (void *)base, text_lo, text_hi, dy->nlocrel, dy->nextrel, r, nviews);
+	}
 	STEP("classes (%llu constructors)", ctor_size / sizeof(void *));
 	error = redwood_kext_classes((redwood_ctor_t *)(base + ctor_off), (unsigned)(ctor_size / sizeof(void *)));
 	if (error != 0) {

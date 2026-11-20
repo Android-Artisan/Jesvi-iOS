@@ -3686,10 +3686,10 @@ index 809dafaaa2a7..71c6580f44e2 100644
  
  	/*
 diff --git a/osfmk/kern/kalloc.c b/osfmk/kern/kalloc.c
-index e08348bf856f..c5df0c7f0642 100644
+index e08348bf856f..780296ffac9c 100644
 --- a/osfmk/kern/kalloc.c
 +++ b/osfmk/kern/kalloc.c
-@@ -3086,3 +3086,34 @@ run_kalloc_test(int64_t in __unused, int64_t *out)
+@@ -3086,3 +3086,37 @@ run_kalloc_test(int64_t in __unused, int64_t *out)
  SYSCTL_TEST_REGISTER(kalloc, run_kalloc_test);
  
  #endif
@@ -3701,17 +3701,20 @@ index e08348bf856f..c5df0c7f0642 100644
 + * isolation, as for a view the boot parser could not place); views for large types (KT_VM) keep the VM path.
 + * Returns the views placed.
 + */
-+unsigned redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count);
++unsigned redwood_kalloc_type_adopt(vm_offset_t sect, vm_size_t bytes, unsigned *count);
 +unsigned
-+redwood_kalloc_type_adopt(struct kalloc_type_view **views, unsigned count)
++redwood_kalloc_type_adopt(vm_offset_t sect, vm_size_t bytes, unsigned *count)
 +{
-+	unsigned placed = 0;
++	/* the section holds the views themselves, one after another (as kalloc_type_view_copy walks it) */
++	struct kalloc_type_view *views = (struct kalloc_type_view *)sect;
++	unsigned placed = 0, n = (unsigned)(bytes / sizeof(struct kalloc_type_view));
 +
-+	for (unsigned i = 0; i < count; i++) {
-+		struct kalloc_type_view *kt = views[i];
++	*count = n;
++	for (unsigned i = 0; i < n; i++) {
++		struct kalloc_type_view *kt = &views[i];
 +		zone_t z;
 +
-+		if (kt == NULL || (kt->kt_flags & KT_VM) || kt->kt_size == 0 || kt->kt_size > KHEAP_MAX_SIZE) {
++		if ((kt->kt_flags & KT_VM) || kt->kt_size == 0 || kt->kt_size > KHEAP_MAX_SIZE) {
 +			continue;
 +		}
 +		z = kalloc_zone_for_size(KHEAP_DEFAULT->kh_zstart, kt->kt_size);
