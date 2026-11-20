@@ -84,7 +84,8 @@ wr(unsigned off, uint32_t v)
 static int
 sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 {
-	uint32_t want = count * 128, got = 0, st, idle_us = 0;  /* 32-bit words */
+	/* HCON 0x08e42541: H_DATA_WIDTH 2, a 64-bit FIFO -- only 64-bit reads pop it (Linux: dw_mci_pull_data64) */
+	uint32_t want = count * 64, got = 0, st, idle_us = 0;   /* 64-bit entries */
 
 	if (count == 0 || count > SD_MAX_BLOCKS || lba > 0xffffffffull) {
 		return EINVAL;
@@ -118,7 +119,7 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 		/* drain the FIFO until it says empty (STATUS bit 2, FIFO_EMPTY) */
 		uint32_t before = got;
 		while (got < want && !(rd(R_STATUS) & (1u << 2))) {
-			((uint32_t *)out)[got++] = rd(R_FIFO);
+			((uint64_t *)out)[got++] = *(volatile uint64_t *)(sd + R_FIFO);
 		}
 		if (st & (INT_RXDR | INT_HTO)) {
 			wr(R_RINTSTS, st & (INT_RXDR | INT_HTO));
