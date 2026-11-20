@@ -5,7 +5,7 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 artifact_dir=${1:?output directory required}
 mkdir -p "$artifact_dir"
 sdk=${CAMERA_SDK:-$HOME/theos/sdks/iPhoneOS16.5.sdk}
-ldid=${CAMERA_LDID:-$repo_root/../../tools/bin/ldid}
+ldid=${CAMERA_LDID:-$(command -v ldid || echo $repo_root/../../tools/bin/ldid)}
 clang -target arm64-apple-ios16.5 -isysroot "$sdk" -O2 -fobjc-arc -fblocks -Wall -Wextra -Werror \
  -framework Foundation -framework UIKit -framework IOKit -dynamiclib \
  "$repo_root/userland/src/camera_brightness_rule.m" -o "$artifact_dir/RedwoodCameraBrightness.dylib"

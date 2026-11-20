@@ -7,7 +7,7 @@ mkdir -p "$artifact_dir"
 artifact_dir=$(CDPATH= cd -- "$artifact_dir" && pwd)
 camera_sdk=${CAMERA_SDK:-$HOME/theos/sdks/iPhoneOS16.5.sdk}
 camera_h264=${CAMERA_OPENH264:-$repo_root/../third-party/openh264}
-camera_ldid=${CAMERA_LDID:-$repo_root/../../tools/bin/ldid}
+camera_ldid=${CAMERA_LDID:-$(command -v ldid || echo $repo_root/../../tools/bin/ldid)}
 camera_cc=${CC:-clang}
 [ -d "$camera_sdk" ] && [ -f "$camera_h264/libopenh264.a" ] || {
   echo 'Set CAMERA_SDK and CAMERA_OPENH264 to the local iOS SDK and built OpenH264 tree.' >&2

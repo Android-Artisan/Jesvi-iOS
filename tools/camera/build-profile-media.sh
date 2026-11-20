@@ -8,7 +8,7 @@ mkdir -p "$artifact_dir"
 artifact_dir=$(CDPATH= cd -- "$artifact_dir" && pwd)
 camera_sdk=${CAMERA_SDK:-$HOME/theos/sdks/iPhoneOS16.5.sdk}
 camera_h264=${CAMERA_OPENH264:-$repo_root/../third-party/openh264}
-camera_ldid=${CAMERA_LDID:-$repo_root/../../tools/bin/ldid}
+camera_ldid=${CAMERA_LDID:-$(command -v ldid || echo $repo_root/../../tools/bin/ldid)}
 python3 "$repo_root/tools/camera/prepare-profile-sources.py" "$artifact_dir"
 camera_name=/var/redwood/libredwood-media-dev.dylib
 camera_define=-DREDWOOD_DEV
