@@ -48,7 +48,10 @@ static char lifs_state[200] = "off (boot-arg lifs=1: on request, 2: at boot)";
 SYSCTL_DECL(_kern_redwood);
 SYSCTL_STRING(_kern_redwood, OID_AUTO, lifs, CTLFLAG_RD | CTLFLAG_LOCKED, lifs_state, 0, "Apple's lifs.kext, loaded at run time");
 
-#define STEP(...) do { printf("lifs: step: " __VA_ARGS__); printf("\n"); IOSleep(50); } while (0)
+static int lifs_stop, lifs_step;       /* kern.redwood.lifs_stop: stop after step N (1..6), to find a hang */
+#define STEP(...) do { lifs_step++; printf("lifs: step %d: ", lifs_step); printf(__VA_ARGS__); printf("\n"); \
+	if (lifs_stop != 0 && lifs_step > lifs_stop) { snprintf(lifs_state, sizeof(lifs_state), "stopped before step %d", lifs_step); kept = 1; goto out; } \
+	IOSleep(50); } while (0)
 #define FAIL(...) do { snprintf(lifs_state, sizeof(lifs_state), __VA_ARGS__); printf("lifs: %s\n", lifs_state); goto out; } while (0)
 
 static const void *
@@ -125,8 +128,10 @@ lifs_load(void)
 	vm_offset_t base = 0;
 	vm_size_t vmsize = 0;
 	kmod_info_t *ki;
-	int error, r;
+	int error, r, kept = 0;
 	const uint8_t *lc, *lc_end;
+
+	lifs_step = 0;
 
 	STEP("read %s", LIFS_PATH);
 	error = read_file(LIFS_PATH, &file, &flen);
@@ -287,13 +292,11 @@ lifs_load(void)
 	printf("lifs: %s\n", lifs_state);
 	base = 0;               /* it stays */
 out:
-	if (base != 0) {
-		/* failed before anything ran: give the memory back unless text was made executable (then keep it) */
-		if (strncmp(lifs_state, "class", 5) != 0 && strncmp(lifs_state, "start", 5) != 0 &&
-		    strncmp(lifs_state, "IOKit", 5) != 0) {
-			kmem_free(kernel_map, base, vmsize);
-		}
+	if (base != 0 && lifs_step <= 3) {
+		/* nothing of it ran or became executable yet: give the memory back */
+		kmem_free(kernel_map, base, vmsize);
 	}
+	(void)kept;
 	if (file != NULL) {
 		kfree_data(file, flen);
 	}
@@ -334,9 +337,14 @@ sysctl_lifs_load SYSCTL_HANDLER_ARGS
 	if (v == 1 && !lifs_loaded) {
 		lifs_loaded = 1;
 		lifs_load();
+		if (strncmp(lifs_state, "stopped", 7) == 0) {
+			lifs_loaded = 0;        /* a staged run: may run again */
+		}
 	}
 	return 0;
 }
+SYSCTL_INT(_kern_redwood, OID_AUTO, lifs_stop, CTLFLAG_RW | CTLFLAG_LOCKED, &lifs_stop, 0, "stop the load after step N (1..6)");
+SYSCTL_INT(_kern_redwood, OID_AUTO, lifs_step, CTLFLAG_RD | CTLFLAG_LOCKED, &lifs_step, 0, "the last step begun");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, lifs_load, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_lifs_load, "I",
     "1: load Apple's lifs.kext now (boot-arg lifs=1 or 2)");
 
