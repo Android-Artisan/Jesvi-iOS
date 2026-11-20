@@ -2410,7 +2410,7 @@ index 39daaf8db949..64ceb1a5f201 100644
  	}
  	os_atomic_clear_exclusive();
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096fa0010..36bb64b4f467 100644
+index fc2096fa0010..e09b109a61c6 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -93,6 +93,8 @@
@@ -2463,7 +2463,7 @@ index fc2096fa0010..36bb64b4f467 100644
  #endif
  }
  
-@@ -14294,3 +14299,53 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
+@@ -14294,3 +14299,54 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
  }
  
  #endif /* DEVELOPMENT || DEBUG */
@@ -2501,12 +2501,13 @@ index fc2096fa0010..36bb64b4f467 100644
 +		for (vm_offset_t v = va; v < end; v += PAGE_SIZE) {
 +			pt_entry_t *ptep = pmap_pte(kernel_pmap, v);
 +
-+			for (unsigned i = 0; i < PAGE_RATIO; i++) {
-+				pt_entry_t spte = ptep[i];
++			/* one write per VM page, from its first hardware entry: write_pte_strong itself fills the PAGE_RATIO
++			 * entries of a 16 KB page on 4 KB tables (+0x1000 each). Writing each sub-entry here (the first try)
++			 * spilled into the next page's entries with doubled offsets and froze the phone (2026-11-21). */
++			pt_entry_t spte = ptep[0];
 +
-+				spte = (spte & ~(ARM_PTE_APMASK | ARM_PTE_PNX)) | ARM_PTE_AP(AP_RONA) | ARM_PTE_NX;
-+				write_pte_strong(&ptep[i], spte);
-+			}
++			spte = (spte & ~(ARM_PTE_APMASK | ARM_PTE_PNX)) | ARM_PTE_AP(AP_RONA) | ARM_PTE_NX;
++			write_pte_strong(ptep, spte);
 +		}
 +	}
 +	if (upto == 0 || upto >= 3) {
