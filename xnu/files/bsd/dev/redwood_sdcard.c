@@ -158,9 +158,10 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 static int sd_probe(void);
 
 static int
-sd_copen(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
+sd_copen(dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
 {
-	if (flags & FWRITE) {
+	/* UVFS opens the partition O_RDWR before querying DKIOCISWRITABLE. */
+	if (minor(dev) != 1 && (flags & FWRITE)) {
 		return EROFS;
 	}
 	if (!sd_ready) {

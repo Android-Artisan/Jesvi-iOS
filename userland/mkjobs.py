@@ -362,9 +362,16 @@ if rest:
         program = job.get('Program') or (job.get('ProgramArguments') or [''])[0]
         if not job.get('MachServices') or not present(program):
             continue
+        sd_userfs = label == 'com.apple.filesystems.userfsd' and os.environ.get('SD_USERFS') == 'x1slte'
         for key in ('RunAtLoad', 'KeepAlive', 'StartInterval', 'StartCalendarInterval', 'WatchPaths',
                     'QueueDirectories', 'StartOnMount', 'LaunchEvents'):
-            job.pop(key, None)
+            if key != 'LaunchEvents' or not sd_userfs:
+                job.pop(key, None)
+        if sd_userfs:
+            if not os.access(os.path.join(dest, '../bin/sd-userfs-start'), os.X_OK):
+                raise SystemExit('missing SD Files startup program in root image')
+            job['Program'] = '/redwood/bin/sd-userfs-start'
+            job['RunAtLoad'] = True
         # QUIET=1 (build.sh): the on-demand jobs' chatter (CoreData alone is thousands of lines) goes
         # nowhere, so that a whole boot's kernel log and the test list's output fit in what is kept
         quiet = os.environ.get('QUIET') and not os.environ.get('REST_LOUD')

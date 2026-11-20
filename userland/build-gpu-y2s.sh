@@ -75,6 +75,9 @@ $DYN -o obj/m2m_mark src/m2m_mark.c
 $DYN -framework CoreFoundation -o obj/prefset src/prefset.c
 ${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
 cp obj/prefset ../prebuilt/userland/prefset
+$DYN -framework CoreFoundation -o obj/sd-userfs-start src/sd-userfs-start.c
+${LDID:-ldid} -Cadhoc -S obj/sd-userfs-start
+cp obj/sd-userfs-start ../prebuilt/userland/sd-userfs-start
 $DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
 ${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond
 cp obj/redwood-motiond ../prebuilt/userland/redwood-motiond

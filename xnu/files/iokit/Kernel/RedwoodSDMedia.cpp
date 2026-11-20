@@ -96,6 +96,8 @@ redwood_sdmedia_publish(unsigned unit, int major, uint64_t whole_blocks, uint64_
 	pc->setObject("Physical Interconnect", OSString::withCString("SATA"));
 	pc->setObject("Physical Interconnect Location", OSString::withCString("External"));
 	dev->setProperty("Protocol Characteristics", pc);
+	/* userfsd searches the IOService parent chain for this key directly. */
+	dev->setProperty("Physical Interconnect Location", "External");
 	dc->setObject("Product Name", OSString::withCString("SD Card"));
 	dc->setObject("Vendor Name", OSString::withCString("microSD"));
 	dc->setObject("Medium Type", OSString::withCString("Solid State"));
