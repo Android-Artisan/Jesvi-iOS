@@ -1,8 +1,7 @@
 # Native Touch ID on the S20 — status and handoff (2026-11-19)
 
 Merged into `main` (2026-11-19). Boot argument **`touchid=1`** switches everything on and is in the default
-cmdline (`devices/exynos990/x1slte/x1slte.cmdline`); remove it to turn Touch ID off. Plan and background:
-[docs/research/proposals/touchid/README.md](../../research/proposals/touchid/README.md).
+cmdline (`devices/exynos990/x1slte/x1slte.cmdline`); remove it to turn Touch ID off. The research notes behind it stay with the developers (not published).
 
 ## What works (verified on the phone)
 

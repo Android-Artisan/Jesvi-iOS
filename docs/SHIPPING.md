@@ -903,3 +903,11 @@ this file is the changelog; "Open" lists what a release must mention as known is
 Charging (watchdog kick, PD/AFC 9 V, limits), live battery %, USB serial + USB networking + SSH, flashlight, Wi-Fi
 signal and power save, Samsung DVFS tables, iOS-only storage (system on `super`, 108 GB `/var`), UFS TurboWrite
 (`ufs_tw=1`, `6dbc8c5`), rotation (`shub=6`), vibration (`haptic=5`), Location Services, Bluetooth audio fixes.
+
+## 2026-11-20 publication review (A, user decisions)
+- Prebuilt programs (prebuilt/userland, kernel/loader prebuilts): published, each by SHA-256 in
+  tools/release/publication-reviewed.json; tools/release/audit.py skips a reviewed file only while its content is
+  unchanged, and never skips a credential match.
+- Default wallpaper: the user's own image, deliberately the single clean-install default (stock gallery otherwise).
+- docs/research: not published; untracked and git-ignored, kept on the developers' Mac.
+- Deleted: legacy y2s UEFI DTBs, an unused 64 GB HFS kit, an unused fingerprint image, an empty job file.

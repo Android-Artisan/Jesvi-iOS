@@ -6,6 +6,7 @@ Strict mode blocks release creation until all reported files have been reviewed
 and removed from the release branch or explicitly handled in a follow-up change.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -14,10 +15,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARY_SUFFIXES = {'.img', '.apfs', '.bin', '.dtb', '.efi', '.fd', '.dylib', '.o', '.a', '.jpg', '.png'}
+REVIEWED = ROOT / 'tools/release/publication-reviewed.json'
 SECRET = re.compile(rb'-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}')
 
 
+def reviewed():
+    """Files a person reviewed and decided to publish, by content: a changed file is reviewed again."""
+    try:
+        return {k: v['sha256'] for k, v in json.loads(REVIEWED.read_text())['files'].items() if v.get('decision') == 'publish'}
+    except FileNotFoundError:
+        return {}
+
+
 def audit():
+    ok = reviewed()
+    skipped = 0
     names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
     findings = []
     for name in filter(None, names):
@@ -34,10 +46,13 @@ def audit():
             reasons.append('possible credential; value redacted')
         if name.endswith(('.orig', '.rej', '.log')):
             reasons.append('generated/debug file')
+        if reasons and 'possible credential; value redacted' not in reasons and ok.get(name) == hashlib.sha256(data).hexdigest():
+            skipped += 1
+            continue
         if reasons:
             findings.append({'path': name, 'bytes': len(data), 'reasons': reasons})
     return {'schema': 1, 'scope': 'tracked working tree only; full-history scan still required',
-            'findings': findings, 'count': len(findings)}
+            'findings': findings, 'count': len(findings), 'reviewed_and_unchanged': skipped}
 
 
 if __name__ == '__main__':
