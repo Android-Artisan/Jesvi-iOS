@@ -110,9 +110,8 @@ sd_read_blocks(uint64_t lba, uint32_t count, uint8_t *out)
 		if (st & INT_ERR) {
 			break;
 		}
-		/* drain whatever the FIFO holds (STATUS[29:17] = words in the FIFO) */
-		uint32_t n = (rd(R_STATUS) >> 17) & 0x1fff;
-		while (n-- > 0 && got < want) {
+		/* drain the FIFO until it says empty (STATUS bit 2, FIFO_EMPTY) */
+		while (got < want && !(rd(R_STATUS) & (1u << 2))) {
 			((uint32_t *)out)[got++] = rd(R_FIFO);
 		}
 		if (st & (INT_RXDR | INT_HTO)) {
