@@ -33,7 +33,7 @@ itself. Write in `docs/SHIPPING.md` that it survived a clean install.
 
 | Feature | Needed on the data volume | Status |
 |---|---|---|
-| SIM, data, VoLTE | `/var/root/cell-*` modem files | **made automatically** by `cell-provision` from RADIO + EFS ([cellular/provisioning.md](devices/x1slte/cellular/provisioning.md)) |
+| SIM, data, VoLTE | `/var/root/cell-*` modem files | **made automatically, clean-install tested** by `cell-provision` from RADIO + EFS ([cellular/provisioning.md](devices/x1slte/cellular/provisioning.md)) |
 | Location Services (Compass, Maps, GPS) | `LocationServicesEnabledIn7.0` in locationd's preferences | first-boot default: to do |
 | Keyboard haptics on | Sounds & Haptics preference | first-boot default: to do |
 | Live Photo off | Camera preference | first-boot default: to do |

@@ -21,7 +21,9 @@ written.
 | `cell-nv.bin` | `nv_data.bin`, the modem's own settings, read out of the EFS ext4 file system `/dev/rufs_efs` |
 
 Only missing files are made; an existing `cell-nv.bin` (the modem updates its private copy) is kept. Verified on the
-phone: the five radio-derived files came out byte-identical to the hand-made copies of 2026-11-15.
+phone (2026-11-20): the five radio-derived files came out byte-identical to the hand-made copies of
+2026-11-15, and a clean-install test (all six moved aside, reboot) made them all, `cell-nv.bin` from EFS included,
+and registered on Jio with 4 bars and data in about 20 s.
 
 Run it by hand: `ssh s20 /redwood/bin/cell-provision --check` (what is missing) or without `--check` (make it).
 A test beside the real files: `CELL_PROVISION_DIR=/var/root/cell-test/ /redwood/bin/cell-provision`.

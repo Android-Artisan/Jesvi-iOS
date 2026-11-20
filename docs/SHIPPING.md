@@ -1,3 +1,13 @@
+## 2026-11-20 (B) — SIM and data survive a clean install
+
+- What: a clean data volume had no modem files, so no SIM/data. redwood-cellulard now runs cell-provision when any
+  is missing: the modem image, TOC, BOOT, boot info and download plan from the phone's own RADIO partition, and NV
+  (nv_data.bin) from its EFS ext4 file system, all read-only (nothing Samsung's shipped or committed). Data APN from
+  /var/root/cell-apn (default jionet). Docs: docs/devices/x1slte/cellular/provisioning.md (other regions/carriers),
+  docs/clean-install.md (the rule).
+- Tested on the phone: all six files moved aside, reboot: made by the phone, Jio 4 bars + data in ~20 s.
+- Commit 4efe500f (main).
+
 ## 2026-11-20 (A) — 0.1.1 with iPhone's boot and charging pictures, installed from the Mac with no key press
 
 - What: the release ZIP (9d9e8dc5) carries iOS's boot logo and iBoot's charging pictures (lpm.jpg = charging,
