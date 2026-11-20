@@ -85,7 +85,8 @@ void redwood_usb_gadget_vbus(bool present);    /* redwood_dwc3.c: the cable, for
 #define PS_STATUS_FULL          4
 
 static struct redwood_bbi2c bus = { .name = "max77705 bus gpp1-6/7", .scl = 6, .sda = 7, .half_us = 4 };
-static uint32_t trace, wdt_kick, ilim;
+static uint32_t trace, wdt_kick, ilim = 1;      /* ilim on by default (2026-11-20): a computer port capped, see usb_ma */
+static uint32_t usb_ma = 1500;                  /* boot-arg bms_usb_ma: the cap on a computer port (USB host / charging host) */
 static uint64_t wdt_kicks, wdt_expired_seen;
 
 static bool
@@ -332,6 +333,8 @@ charger_write_limits(unsigned in_ma, unsigned cc_ma)
 	if (boot_c2 < 0) {
 		boot_c2 = c2;
 		boot_c9 = c9;
+		m2m_klog('I', "DEV", "bms: the bootloader's limits: input %u mA (CNFG_09 %#x), charge %u mA (CNFG_02 %#x)",
+		    ((c9 & 0x7fU) + 1) * 25, c9, (c2 & 0x3fU) * 50, c2);
 	}
 	if (in_ma) {
 		cc_ma = cc_ma ? cc_ma : 1500;
@@ -416,7 +419,9 @@ charger_limits(bool external, int32_t temp_hundredths)
 			in_ma = 1650;
 			cc_ma = temp_hundredths >= 1500 && temp_hundredths <= 4000 ? 2500 : 1500;
 		} else {
-			in_ma = type == 3 ? 1650 : type == 2 ? 1500 : 0;
+			/* a Mac/PC port: no more than it offers (a Mac cuts the port, charge and data both, when overdrawn:
+			 * 1.7-2.0 A at 4.6 V seen, 2026-11-20); a wall charger: Samsung's 1650 mA */
+			in_ma = type == 3 ? 1650 : (type == 1 || type == 2) ? usb_ma : 0;
 			/* a 5 V USB PD contract (a USB-C laptop: 5 V 3 A) says what may be taken: up to Samsung's 3000 mA */
 			if (pd5_ma >= 1500) {
 				in_ma = pd5_ma > 3000 ? 3000 : pd5_ma;
@@ -559,6 +564,10 @@ bms_thread(__unused void *parameter, __unused wait_result_t result)
 	PE_parse_boot_argn("bms_trace", &trace, sizeof(trace));
 	PE_parse_boot_argn("bms_wdt", &wdt_kick, sizeof(wdt_kick));
 	PE_parse_boot_argn("bms_ilim", &ilim, sizeof(ilim));
+	PE_parse_boot_argn("bms_usb_ma", &usb_ma, sizeof(usb_ma));
+	if (usb_ma < 100 || usb_ma > 3000) {
+		usb_ma = 1500;
+	}
 	PE_parse_boot_argn("bms_hv", &hv_on, sizeof(hv_on));
 	if (secs < 1 || secs > 600) {
 		secs = 5;
