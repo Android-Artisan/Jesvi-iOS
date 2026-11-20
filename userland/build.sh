@@ -747,9 +747,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		[ -f $IOS/rootfs/$CSD ] || { [ -f $IOS/rootfs.dmg ] && 7z x -y -o$IOS/rootfs $IOS/rootfs.dmg $CSD >/dev/null 2>&1; } || true
 	fi
 	if [ -f $IOS/rootfs/$CSD ] && [ -f $IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist ]; then
-		plutil -convert xml1 -o root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist \
-			$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
-		plutil -replace ProgramArguments -json '["/var/jb/redwood/callservicesd"]' root/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist
+		# The plist is rewritten with plistlib after mkjobs below, which handles both binary and XML.
+		cp "$IOS/rootfs/System/Library/LaunchDaemons/com.apple.telephonyutilities.callservicesd.plist" root/LaunchDaemons/
 		cp $CALL_PROVIDER root/LaunchDaemons/
 	else
 		# a machine without the extracted iOS root (B, 2026-11-14: a macOS build left mkjobs' stock job, which
