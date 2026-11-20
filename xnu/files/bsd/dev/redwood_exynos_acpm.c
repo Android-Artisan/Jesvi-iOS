@@ -549,13 +549,22 @@ LCK_MTX_DECLARE(scroff_lock, &scroff_lck_grp);
 static uint32_t bigoff = 1, bigoff_out = 96, bigoff_in = 91;
 static int bigoff_on;                   /* cpu6-7 out of the scheduler now */
 static uint32_t bigoff_switches;
+/*
+ * Big cores parked while the A76s cope (A, 2026-11-20): Samsung's scheduler weights the M5s 20-25 against the A76s'
+ * 200 and moves a task up only above ~57 % of a core (EMS ontime), so in UI use they mostly sleep; XNU here spreads
+ * work over all eight. kern.redwood.bigpark=1: cpu6-7 out of the recommended cores until the A76s are at least
+ * bigpark_up % busy for 3 ticks (150 ms); back out after 2 s with the A76s under bigpark_down % and the M5s idle.
+ */
+static uint32_t bigpark = 0, bigpark_up = 80, bigpark_down = 40;
+static int bigpark_on;
+static uint32_t bigpark_switches;
 
 static void
 cores_apply(void)                       /* scroff_lock held */
 {
 	uint32_t m = scroff_little_on ? 0x0fu : 0xffu;
 
-	if (bigoff_on) {
+	if (bigoff_on || bigpark_on) {
 		m &= ~0xc0u;
 	}
 	sched_perfcontrol_update_recommended_cores(m == 0xffu ? 0xffffffffu : m);
@@ -570,6 +579,39 @@ scroff_little_set(int on)               /* scroff_lock held */
 	scroff_little_on = on;
 	scroff_little_switches++;
 	cores_apply();
+}
+
+/* every tick (screen on), with the A76s' (gov[1]) and the M5s' (gov[2]) last busy % */
+static void
+bigpark_check(int a76, int m5)
+{
+	static unsigned up, down;
+	int want = bigpark_on;
+
+	if (!bigpark || !redwood_screen_on) {
+		want = 0;
+		up = down = 0;
+	} else if (bigpark_on) {
+		up = a76 >= (int)bigpark_up ? up + 1 : 0;
+		if (up >= 3) {
+			want = 0;
+			up = 0;
+		}
+	} else {
+		down = a76 >= 0 && a76 < (int)bigpark_down && m5 < 20 ? down + 1 : 0;
+		if (down >= 40) {               /* 2 s */
+			want = 1;
+			down = 0;
+		}
+	}
+	if (want == bigpark_on) {
+		return;
+	}
+	lck_mtx_lock(&scroff_lock);
+	bigpark_on = want;
+	bigpark_switches++;
+	cores_apply();
+	lck_mtx_unlock(&scroff_lock);
 }
 
 /* from the thermal step, with the BIG zone's temperature */
@@ -686,6 +728,12 @@ SYSCTL_UINT(_kern_redwood, OID_AUTO, efficiency_mask, CTLFLAG_RD | CTLFLAG_LOCKE
     &efficiency_mask, 0, "Automatic cooling bits: A55=1 A76=2 M5=4 GPU=8; memory independent");
 SYSCTL_PROC(_kern_redwood, OID_AUTO, scroff_little, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED,
     NULL, 0, sysctl_scroff_little, "I", "Screen off: the small cores (0-3) only; 1 on (default), 0 off");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bigpark, CTLFLAG_RW | CTLFLAG_LOCKED, &bigpark, 0,
+    "1: the M5s (cpu6-7) parked until the A76s are bigpark_up % busy (Samsung's EMS: big cores last)");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bigpark_up, CTLFLAG_RW | CTLFLAG_LOCKED, &bigpark_up, 0, "A76 busy % that unparks the M5s");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bigpark_down, CTLFLAG_RW | CTLFLAG_LOCKED, &bigpark_down, 0, "A76 busy % under which they park");
+SYSCTL_INT(_kern_redwood, OID_AUTO, bigpark_now, CTLFLAG_RD | CTLFLAG_LOCKED, &bigpark_on, 0, "1: the M5s are parked now");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, bigpark_switches, CTLFLAG_RD | CTLFLAG_LOCKED, &bigpark_switches, 0, "park/unpark count");
 SYSCTL_INT(_kern_redwood, OID_AUTO, bigoff_now, CTLFLAG_RD | CTLFLAG_LOCKED,
     &bigoff_on, 0, "1: cores 6-7 are out of the scheduler (BIG zone hot, Samsung's 96/91 C hotplug)");
 SYSCTL_UINT(_kern_redwood, OID_AUTO, bigoff_switches, CTLFLAG_RD | CTLFLAG_LOCKED,
@@ -717,8 +765,10 @@ static const struct {
 	 * cores (EMS), XNU here has one performance level for all eight (hw.nperflevels 1), so a UI thread can be on one.
 	 */
 	{ D_CL0, 0, 4, { 806000, 1053000, 1248000, 1456000, 1690000, 2002000, 0, 0 }, 60, 70, 1456000, 1248000 },
-	{ D_CL1, 4, 2, { 1066000, 1404000, 1794000, 2106000, 2304000, 2504000, 0, 0 }, 60, 70, 1404000, 1222000 },
-	{ D_CL2, 6, 2, { 1196000, 1586000, 1898000, 2208000, 2504000, 2730000, 0, 0 }, 60, 70, 1066000, 858000 },
+	/* rung 0 of the A76 and M5: Samsung's own idle floors (DTS user-default-qos 845 / 962 MHz); used with
+	 * kern.redwood.gov_lowfloor=1 (A, 2026-11-20), else the old lowest 1066 / 1196 */
+	{ D_CL1, 4, 2, { 845000, 1066000, 1404000, 1794000, 2106000, 2304000, 2504000, 0 }, 60, 70, 1404000, 1222000 },
+	{ D_CL2, 6, 2, { 962000, 1196000, 1586000, 1898000, 2208000, 2504000, 2730000, 0 }, 60, 70, 1066000, 858000 },
 	{ D_G3D, 0, 0, { 156000, 260000, 377000, 455000, 572000, 702000, 800000, 0 }, 40, 60, 572000, 572000 },
 };
 #define TOUCH_HEAD_MS   130
@@ -764,6 +814,10 @@ static uint32_t gov_frame = 1;                  /* dvfs_frame= (on by default; 0
  */
 static uint32_t gov_frame_khz[] = { 1456000, 2106000, 1898000, 572000 };  /* cl0, cl1, cl2, g3d (gov[] order) */
 static uint32_t gov_frame_ticks;                /* ticks with the frame floor on (for the 10 s line) */
+SYSCTL_UINT(_kern_redwood, OID_AUTO, ffl_cl0, CTLFLAG_RW | CTLFLAG_LOCKED, &gov_frame_khz[0], 0, "frame floor, A55 kHz");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, ffl_cl1, CTLFLAG_RW | CTLFLAG_LOCKED, &gov_frame_khz[1], 0, "frame floor, A76 kHz");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, ffl_cl2, CTLFLAG_RW | CTLFLAG_LOCKED, &gov_frame_khz[2], 0, "frame floor, M5 kHz");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, ffl_g3d, CTLFLAG_RW | CTLFLAG_LOCKED, &gov_frame_khz[3], 0, "frame floor, GPU kHz");
 
 /* the lowest rung the touch booster holds cluster `g` at now (0: no boost) */
 static unsigned
@@ -792,6 +846,23 @@ gov_touch_floor(unsigned g)
 }
 extern int redwood_mali_busy_pct(void);
 #define NGOV            (sizeof(gov) / sizeof(gov[0]))
+
+/*
+ * Live tuning (A, 2026-11-20; docs/devices/x1slte/power-thermal-samsung.md): every value below is a sysctl, so the
+ * clocks can be tried on a running phone (temperatures, frame times) before one becomes a default.
+ */
+static uint32_t gov_lowfloor = 1;       /* kern.redwood.gov_lowfloor: 1 Samsung's idle floors (A76 845, M5 962) */
+static unsigned
+gov_min_rung(unsigned g)
+{
+	return !gov_lowfloor && (gov[g].domain == D_CL1 || gov[g].domain == D_CL2) ? 1 : 0;
+}
+uint32_t redwood_wake_boost_ms = 1000;  /* kern.redwood.wake_boost_ms: the frame floor after a key press / display on */
+static int gov_last_busy[8];            /* each gov[] entry's last busy % (for the big-core parking) */
+SYSCTL_UINT(_kern_redwood, OID_AUTO, gov_lowfloor, CTLFLAG_RW | CTLFLAG_LOCKED, &gov_lowfloor, 0,
+    "1: Samsung's idle floors (A76 845, M5 962 MHz); 0: the old 1066 / 1196");
+SYSCTL_UINT(_kern_redwood, OID_AUTO, wake_boost_ms, CTLFLAG_RW | CTLFLAG_LOCKED, &redwood_wake_boost_ms, 0,
+    "frame floor held after a key press or the display coming on, ms");
 
 static uint32_t gov_ticks[8][2];        /* busy, all: the last reading of each core */
 
@@ -1158,6 +1229,10 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 				want = gov_touch_floor(g);
 				gov_low[g] = 0;
 			}
+			if (want < gov_min_rung(g)) {
+				want = gov_min_rung(g);
+			}
+			gov_last_busy[g] = busy;
 			gov_rung[g] = want;
 			cap = level[d] == 2 ? domains[d].safe : level[d] == 1 ? domains[d].mid : targets[d];
 			cap = profile_cap(d, cap, power_profile());
@@ -1172,6 +1247,9 @@ acpm_thread(void *arg, wait_result_t wr_unused)
 					gov_changes++;
 				}
 			}
+		}
+		if (mode >= 2) {
+			bigpark_check(gov_last_busy[1], gov_last_busy[2]);
 		}
 		/* the temperatures and the thermal steps: every 250 ms (once a second was too slow for the M5 cores), and every
 		 * tick (50 ms) once a zone is at 80 C or more -- Samsung's IPA polls every 50 ms while hot (A, 2026-11-20) */

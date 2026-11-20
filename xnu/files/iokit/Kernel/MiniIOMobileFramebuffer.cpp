@@ -76,7 +76,8 @@ SYSCTL_UINT(_kern, OID_AUTO, redwood_fb_shown_sid, CTLFLAG_RD | CTLFLAG_LOCKED, 
 extern "C" void redwood_tl(const char * format, ...) __printflike(1, 2);
 extern "C" uint64_t redwood_fb_swap_at;        /* the clock governor's frame floor (redwood_exynos_acpm.c, dvfs_frame=) */
 extern "C" int redwood_gov_wake;
-extern "C" void redwood_gov_boost(uint32_t ms);  /* the wake boost (redwood_exynos_acpm.c) */
+extern "C" void redwood_gov_boost(uint32_t ms);
+extern "C" uint32_t redwood_wake_boost_ms;          /* kern.redwood.wake_boost_ms (redwood_exynos_acpm.c) */  /* the wake boost (redwood_exynos_acpm.c) */
 extern "C" void redwood_dvfs_display(int on);     /* the screen-off power profile (redwood_exynos_acpm.c) */
 extern "C" void loader_log_line(const char * line);
 extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
@@ -2387,13 +2388,13 @@ IOMobileFramebuffer::displayPower(bool on)
 		fOffPending = false;
 		if (fOffCall != NULL) thread_call_cancel(fOffCall);
 		alphaFadeIn();                  /* (the picture had been fading out) */
-		redwood_gov_boost(1000);
+		redwood_gov_boost(redwood_wake_boost_ms);
 		IOLockUnlock(fDsimLock);
 		fbSay("fb: bl: display off cancelled by wake\n");
 		return;
 	}
 	if (fDisplayOff == !on || (!on && fOffPending)) { IOLockUnlock(fDsimLock); return; }
-	if (on) { offFrames(false); alphaFadeIn(); redwood_dvfs_display(1); redwood_gov_boost(1000); }
+	if (on) { offFrames(false); alphaFadeIn(); redwood_dvfs_display(1); redwood_gov_boost(redwood_wake_boost_ms); }
 	if (!on) {
 		uint64_t at = 0, settle;
 		IOLockLock(fBLLock);
