@@ -36,7 +36,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build restore ZIPs for every measured target
-        run: ./build.sh release --set OUTPUTS=restore --set OUT=dist/ci
+        run: ./build.sh release --set OUTPUTS=restore --set WRITES=false --set OUT=dist/ci
+      - name: Audit the exact firmware-free Restore preflight packages
+        run: python3 tools/release/restore_audit.py dist/ci
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: restore-zips-${{ github.sha }}
