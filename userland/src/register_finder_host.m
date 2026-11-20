@@ -51,7 +51,10 @@ static NSDictionary *record(NSString *path, NSString *owner) {
     if (!identifier || !executable) return nil;
     NSDictionary *rights = entitlements([path stringByAppendingPathComponent:executable]);
     NSMutableDictionary *r = [@{
-        @"ApplicationType": owner ? @"PluginKitPlugin" : @"User",
+        /* (A, 2026-11-20) the host as a System app: SpringBoard ignored SBAppTags=hidden on this User app and kept
+         * a dead "Jesvi Files" icon on the home screen (iOS honours the tag for system apps). Cost: Finder's
+         * File Sharing lists user apps only. */
+        @"ApplicationType": owner ? @"PluginKitPlugin" : @"System",
         @"CFBundleIdentifier": identifier, @"CodeInfoIdentifier": identifier, @"CompatibilityState": @0,
         @"Path": path, @"Entitlements": rights, @"IsDeletable": @NO,
         @"SignerOrganization": @"Apple Inc.", @"SignatureVersion": @132352,
