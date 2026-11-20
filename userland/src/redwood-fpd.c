@@ -354,6 +354,50 @@ cbge_chain(uint32_t g)
 	lg("background calibration done");
 }
 
+/*
+ * Samsung's unlock wraps the identify in BAuth CONTROL operations (libbauthserver, ExtremeROM log of 2026-11-19,
+ * docs/devices/x1slte/android-reference.md): 108, 101 (76 = diagnostics) then 74, 49 before the touch, 75, 46 after.
+ * Ours sent none of them and got NO MATCH. The lists are read from /private/var/redwood/match-ops when it exists
+ * ("pre=108,101 arm=74,49 post=75,46"; an empty list or "off" skips that part), so the order can be tried on the
+ * phone without a rebuild. Failures are logged, never fatal: the identify runs either way.
+ */
+#define MATCH_OPS "/private/var/redwood/match-ops"
+static char ops_pre[64] = "108,101", ops_arm[64] = "74,49", ops_post[64] = "75,46";
+static void
+match_ops_load(void)
+{
+	char b[256];
+	FILE *f = fopen(MATCH_OPS, "r");
+	if (!f) return;
+	size_t n = fread(b, 1, sizeof(b) - 1, f);
+	fclose(f);
+	b[n] = 0;
+	struct { const char *k; char *v; } kv[] = { { "pre=", ops_pre }, { "arm=", ops_arm }, { "post=", ops_post } };
+	for (unsigned i = 0; i < 3; i++) {
+		const char *p = strstr(b, kv[i].k);
+		if (!p) continue;
+		p += strlen(kv[i].k);
+		size_t l = strcspn(p, " \t\n");
+		if (l >= 64) l = 63;
+		memcpy(kv[i].v, p, l);
+		kv[i].v[l] = 0;
+		if (!strcmp(kv[i].v, "off")) kv[i].v[0] = 0;
+	}
+	lg("match ops from " MATCH_OPS ": pre=%s arm=%s post=%s", ops_pre, ops_arm, ops_post);
+}
+static void
+match_ops(const char *list, uint32_t g)
+{
+	char c[32];
+	for (const char *p = list; *p && g == gen; ) {
+		int o = (int)strtol(p, (char **)&p, 10);
+		if (o <= 0) break;
+		snprintf(c, sizeof(c), "fp 12:%d", o);
+		if (step(c, g)) lg("%s: not accepted (going on)", c);
+		while (*p == ',') p++;
+	}
+}
+
 static void *
 run(void *arg)
 {
@@ -382,8 +426,12 @@ run(void *arg)
 		for (int runs = 0; !bad && op == 2 && g == gen && runs < 8; runs++) {
 			if (runs) usleep(300000);
 			ring(grip_phase ? 1 : 2);       /* the lock closed phase 2 mid-loop: show the lock-screen ring again */
+			if (!runs) match_ops_load();
+			match_ops(ops_pre, g);
 			bad = step("fp idinit", g);
+			if (!bad) match_ops(ops_arm, g);
 			if (!bad) bad = step("fp run 6 1 15 0", g);
+			match_ops(ops_post, g);
 		}
 	} else {
 		/* a run ends after its step budget; enrolment goes on in the next one until the template is saved (op 0),
@@ -627,8 +675,9 @@ main(void)
 	if (getuid() != 0) return 1;
 	/* no iPhone 8 cache, no Touch ID: biometrickitd would run on the iPhone X cache and SpringBoard wait on it for ever
 	 * (src/init.c touchid_early, 2026-11-20) */
-	if (access("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", F_OK) != 0) {
-		lg("no iPhone 8 cache (tools/touchid/push-iphone8-cache.sh): Touch ID off");
+	if (access("/usr/lib/libBKDM1.dylib", F_OK) != 0 &&
+	    access("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", F_OK) != 0) {
+		lg("no ported libBKDM1 (tools/touchid/fetch-bkdm1.sh) nor iPhone 8 cache: Touch ID off");
 		return 0;
 	}
 	umask(0077);

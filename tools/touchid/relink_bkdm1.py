@@ -15,7 +15,7 @@ What ties an extracted dylib to its old cache, and what this does about it (A, 2
 MAP.json: {"0x<old address>": "<symbol>"} for the pooled GOT slots and the constant-object classes (ipsw dyld a2s).
 Binds outside the GOT use a flat lookup (the classes and data live in libSystem / CoreFoundation / Foundation).
 """
-import collections, json, struct, sys
+import collections, json, os, struct, sys
 import lief
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
 from capstone.arm64 import ARM64_INS_ADRP, ARM64_OP_MEM
@@ -93,6 +93,34 @@ if ii is not None:
     _v, _f = struct.unpack('<II', bytes(mem['__DATA_CONST'][1][ii.virtual_address - mem['__DATA_CONST'][0]:][:8]))
     wr(ii.virtual_address, 0, 4)
     wr(ii.virtual_address + 4, _f & ~((1 << 3) | (1 << 7)), 4)
+
+# method lists: the cache marks them "fixed up" (entsizeAndFlags & 3 == 3: selectors uniqued, list sorted by SEL
+# address). In a loose image that makes libobjc skip registering the names and binary-search an order that was the
+# iPhone 8 cache's: -[BiometricKitXPCServerMesa init] resolved to the superclass, the sensor was never opened
+# (2026-11-20). Clear the bits: libobjc uniques the selector refs and searches the (small, read-only) lists linearly.
+def unfix_ml(ml):
+    if ml and in_keep(ml):
+        f = rd(ml, 4)
+        if f is not None and f & 3:
+            wr(ml, f & ~3, 4)
+            return 1
+    return 0
+nml = 0
+_cl = b.get_section('__objc_classlist')
+for k in range((_cl.size // 8) if _cl is not None else 0):
+    c = rd(_cl.virtual_address + 8 * k)
+    for cls in (c, rd(c) if c else 0):
+        if not cls or not in_keep(cls):
+            continue
+        ro = (rd(cls + 32) or 0) & ~7
+        if ro and in_keep(ro):
+            nml += unfix_ml(rd(ro + 32))
+_cat = b.get_section('__objc_catlist')
+for k in range((_cat.size // 8) if _cat is not None else 0):
+    cat = rd(_cat.virtual_address + 8 * k)
+    if cat and in_keep(cat):
+        nml += unfix_ml(rd(cat + 16)) + unfix_ml(rd(cat + 24))
+print(f'relink: {nml} method lists un-marked "fixed up"')
 
 binds = {}     # slot -> (ordinal, name, weak)
 rebases = set()
@@ -173,44 +201,56 @@ for segname in [n for n in mem if n != '__TEXT']:
         elif 0x180000000 <= v < 0x300000000 and v & 7 == 0:
             unknown[slot] = v
 
+if os.environ.get('RELINK_UNKNOWN'):
+    json.dump({hex(k): hex(v) for k, v in unknown.items()}, open(os.environ['RELINK_UNKNOWN'], 'w'), indent=1)
+
 # 3. pooled GOT loads -> a GOT of our own
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 md.detail = True
 text = b.get_section('__text')
 tb, tbuf = mem['__TEXT']
-pooled = sorted({v for v in names if not in_keep(v) and names[v].startswith('_ptr.')})
+# pooled slots: outside the image, or inside a segment's range but past its sections (the iPhone 8 cache put part
+# of its GOT pool right after libBKDM1's __DATA_CONST sections: ___stack_chk_guard, __os_log_default, ...)
+SECTS = [(x.virtual_address, x.virtual_address + x.size) for x in b.sections]
+def in_section(a):
+    return any(lo <= a < hi for lo, hi in SECTS)
+pooled = sorted({v for v in names if not in_section(v) and names[v].startswith('_ptr.')})
 last_end = max(base + len(buf) for base, buf in mem.values())
 relink_base = (last_end + PAGE - 1) & ~(PAGE - 1)
 newslot = {v: relink_base + 8 * i for i, v in enumerate(pooled)}
 mem['__RELINK'] = (relink_base, bytearray(max(PAGE, 8 * len(pooled))))
 for v, slot in newslot.items():
     binds[slot] = (FLAT, names[v][len('_ptr.'):], False)
+# Decoded by bits, not capstone: capstone's disasm() stops at the first word it cannot decode (data in __text), and
+# only 583 of ~1,100 pooled loads had been repointed (2026-11-20). Conservative: any other instruction forgets its
+# Rd/Rt register, a branch forgets all.
 regs, fixed = {}, 0
-code = bytes(tbuf[text.virtual_address - tb:text.virtual_address - tb + text.size])
-for i in md.disasm(code, text.virtual_address):
-    if i.mnemonic in ('ret', 'b', 'br'):
-        regs.clear()
-    if i.id == ARM64_INS_ADRP:
-        regs[i.operands[0].reg] = (i.operands[1].imm, i.address)
-        continue
-    if i.mnemonic == 'ldr' and len(i.operands) == 2 and i.operands[1].type == ARM64_OP_MEM \
-            and i.operands[1].mem.base in regs and i.operands[1].mem.index == 0:
-        page, at = regs[i.operands[1].mem.base]
-        t = page + i.operands[1].mem.disp
-        if t in newslot:
-            ns = newslot[t]
-            delta = ((ns & ~0xfff) - (at & ~0xfff)) >> 12
-            ins = rd(at, 4)
-            ins = (ins & 0x9f00001f) | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5)
-            wr(at, ins, 4)
-            ins = rd(i.address, 4)                       # LDR Xt, [Xn, #imm12*8]
-            ins = (ins & ~(0xfff << 10)) | (((ns & 0xfff) >> 3) << 10)
-            wr(i.address, ins, 4)
-            regs[i.operands[1].mem.base] = (ns & ~0xfff, at)   # the ADRP now points at our page
-            fixed += 1
-    for r in i.regs_access()[1]:
-        if r in regs:
-            regs.pop(r)
+for sx in [x for x in b.sections if x.name == '__text']:
+    for at in range(sx.virtual_address, sx.virtual_address + sx.size, 4):
+        ins = rd(at, 4)
+        if ins & 0x9f000000 == 0x90000000:                      # ADRP Xd, page
+            imm = ((ins >> 29) & 3) | (((ins >> 5) & 0x7ffff) << 2)
+            if imm & (1 << 20):
+                imm -= 1 << 21
+            regs[ins & 31] = ((at & ~0xfff) + (imm << 12), at)
+            continue
+        if ins & 0xffc00000 == 0xf9400000 and ((ins >> 5) & 31) in regs:   # LDR Xt, [Xn, #imm12*8]
+            n = (ins >> 5) & 31
+            page, adrp_at = regs[n]
+            t = page + (((ins >> 10) & 0xfff) << 3)
+            if t in newslot:
+                ns = newslot[t]
+                delta = ((ns & ~0xfff) - (adrp_at & ~0xfff)) >> 12
+                ai = rd(adrp_at, 4)
+                wr(adrp_at, (ai & 0x9f00001f) | ((delta & 3) << 29) | (((delta >> 2) & 0x7ffff) << 5), 4)
+                wr(at, (ins & ~(0xfff << 10)) | (((ns & 0xfff) >> 3) << 10), 4)
+                regs[n] = (ns & ~0xfff, adrp_at)
+                fixed += 1
+        if (ins & 0x7c000000) == 0x14000000 or (ins & 0xfe000000) == 0xd6000000 or (ins & 0x7e000000) == 0x34000000 \
+                or (ins & 0x7e000000) == 0x36000000 or (ins & 0xff000010) == 0x54000000:
+            regs.clear()                                        # B/BL, BR/BLR/RET, CBZ/CBNZ, TBZ/TBNZ, B.cond
+        else:
+            regs.pop(ins & 31, None)
 
 # 4. stubs: the cache builder pointed them at the cache's own pointer area (outside this image; read as 0 -> a jump to
 # address 0 in BKDMInitialize, 2026-11-20). Each stub k is named by the indirect symbol table: point its ADRP+LDR at
@@ -263,6 +303,54 @@ if os_ is not None:
             wr(at + 4, (i1 & ~(0xfff << 10)) | (((ms & 0xfff) >> 3) << 10), 4)
             osf += 1
 assert 8 * nrelink <= len(mem['__RELINK'][1])
+
+# 6. the classes' relative ("small") method lists -> classic lists in __RELINK. A small list's names are offsets to
+# selector refs that libobjc expects in __objc_selrefs (uniqued by _read_images); DyldExtractor's refs live in
+# __EXTRA_OBJC, so they stayed raw strings: no method was found by its selector where the cache's SEL differed
+# (-[BiometricKitXPCServerMesa init] -> the superclass, so the sensor was never opened, 2026-11-20). libobjc uniques
+# and sorts classic lists itself (they must be writable: __RELINK is).
+rb, rbuf = mem['__RELINK']
+cur = (8 * nrelink + 63) & ~63
+holders = []
+_cl = b.get_section('__objc_classlist')
+for k in range((_cl.size // 8) if _cl is not None else 0):
+    c = rd(_cl.virtual_address + 8 * k)
+    for cls in (c, rd(c) if c else 0):
+        ro = (rd(cls + 32) or 0) & ~7 if cls and in_keep(cls) else 0
+        if ro and in_keep(ro):
+            holders.append(ro + 32)
+_cat = b.get_section('__objc_catlist')
+for k in range((_cat.size // 8) if _cat is not None else 0):
+    cat = rd(_cat.virtual_address + 8 * k)
+    if cat and in_keep(cat):
+        holders += [cat + 16, cat + 24]
+nconv = nmeth = 0
+for h in holders:
+    ml = rd(h)
+    if not ml or not in_keep(ml) or not (rd(ml, 4) & 0x80000000):
+        continue
+    cnt = rd(ml + 4, 4)
+    ents = []
+    for j in range(cnt):
+        e = ml + 8 + 12 * j
+        n, t, i = struct.unpack('<iii', struct.pack('<III', rd(e, 4), rd(e + 4, 4), rd(e + 8, 4)))
+        ents.append((rd(e + n), e + 4 + t, e + 8 + i))      # name: the string the ref points at
+    need = 8 + 24 * cnt
+    if cur + need > len(rbuf):
+        rbuf.extend(bytearray(((cur + need - len(rbuf)) + PAGE - 1) & ~(PAGE - 1)))
+    nl = rb + cur
+    wr(nl, 24, 4)                                           # entsize 24, flags 0: not uniqued, not sorted
+    wr(nl + 4, cnt, 4)
+    for j, (nm, ty, imp) in enumerate(ents):
+        for q, v in enumerate((nm, ty, imp)):
+            wr(nl + 8 + 24 * j + 8 * q, v)
+            rebases.add(nl + 8 + 24 * j + 8 * q)
+    wr(h, nl)
+    rebases.add(h)
+    cur += (need + 15) & ~15
+    nconv += 1
+    nmeth += cnt
+print(f'relink: {nconv} method lists ({nmeth} methods) rewritten as classic lists in __RELINK')
 
 # what still loads from outside the image (for the log; should be 0)
 def image_has(a):

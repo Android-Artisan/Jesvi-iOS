@@ -111,8 +111,9 @@ touchid_early(void)
 	 * persona exists. No cache: no persona, Touch ID unavailable, the phone starts (2026-11-20). */
 	struct stat cache;
 
-	if (stat("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", &cache) != 0) {
-		printf("  Touch ID: no iPhone 8 cache in /private/var/redwood/iphone8-dsc: not published\n");
+	if (stat("/usr/lib/libBKDM1.dylib", &cache) != 0 &&
+	    stat("/private/var/redwood/iphone8-dsc/dyld_shared_cache_arm64", &cache) != 0) {
+		printf("  Touch ID: no ported libBKDM1 (/usr/lib) nor iPhone 8 cache: not published\n");
 		return;
 	}
 	sysctlbyname("kern.sweet_mesa_offline", NULL, NULL, &one, sizeof(one));

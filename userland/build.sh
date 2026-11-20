@@ -1028,6 +1028,14 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		sysroot/System/Library/LaunchAngels sysroot/System/Library/xpc/launchd.plist
 	ln -s /redwood/LaunchDaemons sysroot/System/Library/LaunchDaemons
 	mkdir -p sysroot/redwood sysroot/sbin
+	# Touch ID's sensor module: the iPhone 8's libBKDM1, ported onto this (iPhone X) cache by tools/touchid/relink_bkdm1.py
+	# (tools/touchid/fetch-bkdm1.sh; Apple's code, never in the repository). biometrickitd loads it from /usr/lib: every
+	# install has Touch ID without the iPhone 8's 3 GB cache (A, 2026-11-20). Sparse: ~130 MB, mostly zeros.
+	if [ -f ../sysimage/iphone8/libBKDM1.dylib ]; then
+		cp ../sysimage/iphone8/libBKDM1.dylib sysroot/usr/lib/libBKDM1.dylib
+		chmod 755 sysroot/usr/lib/libBKDM1.dylib
+		echo "  Touch ID: ported libBKDM1.dylib in /usr/lib"
+	fi
 	# The default wallpaper (B, 2026-11-14, the user's pick): a Photos poster with its lock-screen clock style,
 	# layout and paired home screen -- PosterBoard's store (PRBPosterExtensionDataStore) reduced to that one poster.
 	# init copies it into a data volume that has no poster store yet (userland/src/init.c, default_wallpaper); a
