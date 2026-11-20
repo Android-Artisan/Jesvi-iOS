@@ -43,6 +43,25 @@ gets NO MATCH. Compare opcode by opcode with the unlock line above: 108 and 101 
 + 46 after; enrolment's CBGE chain matches what we added on 2026-11-19 (73/68/70/67). Next: log our TA opcodes for one
 "fp run 6" (kern.redwood.tee "last:" lines) and line them up with this table. Handoff: work/hackios-touchid/docs/devices/x1slte/touchid.md.
 
+### Samsung's identify, from libbauthserver/libbauthtzcommon (A, 2026-11-20)
+
+`FPBAuthService::identify` (0x50684) and `BAuth_Control_OP` (tzcommon 0x6038) read against the log above:
+- **22, 49, 108 never reach the TA**: `BAuth_Control_OP` answers them client-side (22 sets the enrol-session flag,
+  49 = "send HAT HMAC key" returns 0, 108 returns 0). Sending them to the TA is wrong. 0x5b/0x5c are client-side too.
+- **74** carries a value in the length field (service +0x724): 0 on this phone (`iae 74 0 0` in logcat) = what we send.
+- **75** returns up to 1000 bytes; **46** sends that reply back (`[sp+0x380]` -> in, buffer, length) = template update
+  data; then **IDENTIFY_FINAL (cmd 7)** x3.
+- **IDENTIFY_INIT** (tzcommon 0x4f9c): +0x8 chunk, +0xc op, +0x10 user id (<= 0x100), +0x110 template chunk
+  (<= 0x64000, len +0x64110), **+0x64114 metadata type 3** (<= 0x400, len +0x64514), **+0x64518 params 0x45 bytes**
+  (byte 0 = 0, +1 = operation id u64 (0 on the lock screen), **+0x19 = 2**), +0x6455d string <= 0x64.
+- **Metadata type 3 = the reply of CONTROL 45 (SAVE_SECAUTH_ID)** at the end of `enroll` (0x4ff94..0x4ffe8, in = user
+  string, out <= 0xa000), stored with `storeMetaData(3, ...)`; also refreshed by `set_active_group` and `update_sid`.
+  45 needs the secure user ID from the enrolment HAT (**command 13**, `enroll(hw_auth_token_t*)`); ours refuses with
+  "sid is 0". **Most likely cause of NO MATCH: no HAT -> no sid -> no type-3 metadata -> identify cannot match.**
+- `send_hat_hmackey` (0x505a4) sends the HMAC key with CONTROL 49, which is client-side here: the TA gets the HAT key
+  inside the secure world. A valid HAT has to come from Samsung's Gatekeeper TA (`...474154454b45`, GATEKE): enrol
+  and verify our passcode with it, pass its token to command 13. Next work item.
+
 ## 2. Heat: what keeps Android cool here
 
 Android does not set CPU governors from init on this ROM: the **kernel's EMS** (Exynos Mobility Scheduler: `/sys/kernel/ems`,
