@@ -23,8 +23,8 @@ class ReleaseConfigTests(unittest.TestCase):
         self.assertEqual([(t, o) for t, o, _ in todo], [('x1slte', 'twrp'), ('x1slte', 'restore')])
         self.assertEqual([t for t, _ in skipped], ['y2s'])
         n = release_config.names(c, 'x1slte', '20260101')
-        self.assertEqual(n['twrp'], 'Jesvi-iOS_0.1.1_20260101_x1slte.zip')
-        self.assertEqual(n['restore'], 'Jesvi-iOS-Restore_0.1.1_20260101_x1slte.zip')
+        self.assertEqual(n['twrp'], 'Jesvi-iOS_0.1.2_20260101_x1slte.zip')
+        self.assertEqual(n['restore'], 'Jesvi-iOS-Restore_0.1.2_20260101_x1slte.zip')
 
     def test_preflight_names_say_so(self):
         c = self.conf('VERSION=1.2\nWRITES=false\n')
