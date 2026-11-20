@@ -1,0 +1,2 @@
+/jesvios_system emmc /dev/block/bootdevice/by-name/super flags=backup=1;flashimg=0;wipeingui=0;display="JesviOS System (Super)"
+/jesvios_data emmc /dev/block/bootdevice/by-name/userdata flags=backup=1;flashimg=0;wipeingui=0;display="JesviOS Data (Userdata)"

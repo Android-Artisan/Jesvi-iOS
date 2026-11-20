@@ -203,3 +203,23 @@ Sources: [AOSP recovery ZIP layout](https://source.android.com/docs/core/ota/non
 For previous iOS candidate restoration and stock Android return, see
 [rollback](rollback.md). The [ExtremeROM comparison](extremerom-review.md) records
 which source details were used and why S10 repartition steps are not copied.
+
+## JesviOS recovery build and backups
+
+The SM-G980F recovery workflow builds TeamWin 3.7.1 on the Android 12.1
+base with the ExtremeXT device tree. The GitHub Actions artifact `twrp-x1s`
+contains the recovery image, Odin tar, SHA-256 checksums, and the pinned
+recovery and device source revisions. These files are for the recovery
+environment. The install ZIP uses the separate private image workflow.
+
+In TWRP, select **Backup** and choose **JesviOS System (Super)** and
+**JesviOS Data (Userdata)**. These entries use raw images of the physical
+partitions, so recovery does not have to mount APFS or HFSX. **Boot** and
+**Recovery** are also available. Recovery backs up whatever is installed
+in that partition at the time, which may already be TWRP. Use a separate
+microSD card or USB-OTG drive with enough space for both full partitions.
+Full userdata is about 108 GiB before compression. Restore should use the
+same model and partition sizes and still needs hardware qualification.
+
+These aliases do not add any PIT or GPT changes. The recovery customization
+leaves EFS and Sec EFS out of its backup and restore menus.

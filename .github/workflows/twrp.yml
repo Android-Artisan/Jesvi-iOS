@@ -10,6 +10,10 @@ on:
   workflow_dispatch:
 concurrency: {group: twrp, cancel-in-progress: true}
 permissions: {contents: read}
+env:
+  TWRP_VERSION: "3.7.1_12"
+  TWRP_RECOVERY_REV: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
+  TWRP_DEVICE_REV: eb8805d3a76df92aa52b3b96bafcd1a07a06253f
 jobs:
   recovery:
     runs-on: ubuntu-22.04
@@ -36,7 +40,13 @@ jobs:
           mkdir -p ~/twrp && cd ~/twrp
           ~/bin/repo init --depth=1 -q -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
           ~/bin/repo sync -q -c -j"$(nproc)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
-          git clone -q --depth=1 -b android-12.1 https://github.com/ExtremeXT/android_device_samsung_exynos990.git device/samsung/exynos990
+          git -C bootable/recovery fetch -q --depth=1 https://github.com/TeamWin/android_bootable_recovery.git "$TWRP_RECOVERY_REV"
+          git -C bootable/recovery checkout -q --detach FETCH_HEAD
+          awk -v version="$TWRP_VERSION" '$2 == "TW_MAIN_VERSION_STR" && $3 == "\"" version "\"" { found=1 } END { exit !found }' bootable/recovery/variables.h
+          mkdir -p device/samsung/exynos990
+          git -C device/samsung/exynos990 init -q
+          git -C device/samsung/exynos990 fetch -q --depth=1 https://github.com/ExtremeXT/android_device_samsung_exynos990.git "$TWRP_DEVICE_REV"
+          git -C device/samsung/exynos990 checkout -q --detach FETCH_HEAD
           bash "$GITHUB_WORKSPACE/tools/twrp/apply.sh" ~/twrp
           df -h /
       - name: Build recovery.img
@@ -47,14 +57,20 @@ jobs:
           lunch twrp_x1s-eng
           mka -j"$(nproc)" recoveryimage
           ls -la out/target/product/x1s/recovery.img
+          flags=out/target/product/x1s/recovery/root/system/etc/twrp.flags
+          grep -Fxf "$GITHUB_WORKSPACE/tools/twrp/jesvios.flags" "$flags" | diff - "$GITHUB_WORKSPACE/tools/twrp/jesvios.flags"
       - name: Odin tar
         run: |
           cd ~/twrp/out/target/product/x1s
           tar -H ustar -cf twrp-x1s.tar recovery.img
           sha256sum recovery.img twrp-x1s.tar | tee SHA256SUMS
-          mkdir -p "$GITHUB_WORKSPACE/out" && cp recovery.img twrp-x1s.tar SHA256SUMS "$GITHUB_WORKSPACE/out/"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp recovery.img twrp-x1s.tar SHA256SUMS "$GITHUB_WORKSPACE/out/"
+          printf 'TWRP %s\nRecovery source %s\nDevice source %s\nJesvi source %s\n' \
+            "$TWRP_VERSION" "$TWRP_RECOVERY_REV" "$TWRP_DEVICE_REV" "$GITHUB_SHA" > "$GITHUB_WORKSPACE/out/BUILD-SOURCES.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: twrp-x1s
           path: out/
           retention-days: 30
+          if-no-files-found: error
