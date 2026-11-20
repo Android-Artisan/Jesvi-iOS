@@ -91,6 +91,70 @@ restart_locationd(void)
 	}
 }
 
+/*
+ * The region from the SIM (A, 2026-11-20). A clean install skips the setup assistant, so there is no AppleLocale and
+ * iOS takes en_US: Phone and Messages put +1 in front of local numbers. Once per data volume (its own marker), and only
+ * when the user has chosen no region: wait for the modem service's MCC (/var/tmp/redwood-cell/call-ui/mcc, written
+ * once the SIM is registered) and set AppleLocale to the language with the SIM's country, e.g. en_IN for MCC 404-406.
+ */
+#define REGION_MARKER "/var/root/.redwood-region-v1"
+static const char *
+mcc_country(int m)
+{
+	static const struct { int lo, hi; const char *cc; } t[] = {
+		{ 404, 406, "IN" }, { 310, 316, "US" }, { 302, 302, "CA" }, { 234, 235, "GB" }, { 262, 262, "DE" },
+		{ 208, 208, "FR" }, { 222, 222, "IT" }, { 214, 214, "ES" }, { 204, 204, "NL" }, { 505, 505, "AU" },
+		{ 530, 530, "NZ" }, { 440, 441, "JP" }, { 450, 450, "KR" }, { 460, 460, "CN" }, { 525, 525, "SG" },
+		{ 502, 502, "MY" }, { 510, 510, "ID" }, { 515, 515, "PH" }, { 520, 520, "TH" }, { 452, 452, "VN" },
+		{ 424, 424, "AE" }, { 420, 420, "SA" }, { 427, 427, "QA" }, { 419, 419, "KW" }, { 422, 422, "OM" },
+		{ 426, 426, "BH" }, { 410, 410, "PK" }, { 470, 470, "BD" }, { 413, 413, "LK" }, { 429, 429, "NP" },
+		{ 655, 655, "ZA" }, { 621, 621, "NG" }, { 639, 639, "KE" }, { 602, 602, "EG" }, { 724, 724, "BR" },
+		{ 334, 334, "MX" }, { 722, 722, "AR" }, { 250, 250, "RU" }, { 255, 255, "UA" }, { 286, 286, "TR" },
+		{ 260, 260, "PL" }, { 240, 240, "SE" }, { 242, 242, "NO" }, { 238, 238, "DK" }, { 244, 244, "FI" },
+		{ 228, 228, "CH" }, { 232, 232, "AT" }, { 206, 206, "BE" }, { 272, 272, "IE" }, { 268, 268, "PT" },
+	};
+	for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) if (m >= t[i].lo && m <= t[i].hi) return t[i].cc;
+	return NULL;
+}
+
+static void
+region_from_sim(void)
+{
+	struct stat st;
+	char buf[16] = "";
+	const char *cc = NULL;
+
+	if (stat(REGION_MARKER, &st) == 0) return;
+	CFPropertyListRef have = CFPreferencesCopyValue(CFSTR("AppleLocale"), kCFPreferencesAnyApplication, CFSTR("mobile"),
+	    kCFPreferencesAnyHost);
+	if (have) {                     /* the user (or an earlier setup) chose a region: leave it */
+		CFRelease(have);
+		close(open(REGION_MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644));
+		return;
+	}
+	for (int i = 0; i < 90 && !cc; i++) {           /* up to 3 minutes for the SIM to register */
+		FILE *f = fopen("/var/tmp/redwood-cell/call-ui/mcc", "r");
+		if (f) {
+			if (fgets(buf, sizeof(buf), f)) cc = mcc_country(atoi(buf));
+			fclose(f);
+			if (!cc && buf[0]) break;               /* an MCC this table does not know: keep iOS's default */
+		}
+		if (!cc) sleep(2);
+	}
+	if (!cc) {
+		printf("redwood-defaults: region: no SIM country yet (MCC '%s'), tries again at the next boot\n", buf);
+		return;
+	}
+	char locale[16];
+	snprintf(locale, sizeof(locale), "en_%s", cc);
+	CFStringRef v = CFStringCreateWithCString(NULL, locale, kCFStringEncodingUTF8);
+	CFPreferencesSetValue(CFSTR("AppleLocale"), v, kCFPreferencesAnyApplication, CFSTR("mobile"), kCFPreferencesAnyHost);
+	Boolean ok = CFPreferencesSynchronize(kCFPreferencesAnyApplication, CFSTR("mobile"), kCFPreferencesAnyHost);
+	CFRelease(v);
+	printf("redwood-defaults: region %s from the SIM (MCC %d)%s\n", locale, atoi(buf), ok ? "" : " NOT written");
+	if (ok) close(open(REGION_MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644));
+}
+
 int
 main(void)
 {
@@ -98,6 +162,7 @@ main(void)
 	int r = 0;
 
 	if (stat(MARKER, &st) == 0) {
+		region_from_sim();
 		return 0;               /* applied on this data volume already: the user's choices stand */
 	}
 	/* cfprefsd must be up to write mobile's preferences: wait for it (up to a minute after boot) */
@@ -116,6 +181,7 @@ main(void)
 		int fd = open(MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		if (fd >= 0) close(fd);
 		printf("redwood-defaults: applied (marker %s)\n", MARKER);
+		region_from_sim();
 	} else {
 		printf("redwood-defaults: some not written; tries again at the next boot\n");
 	}
