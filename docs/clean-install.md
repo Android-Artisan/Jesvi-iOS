@@ -34,10 +34,10 @@ itself. Write in `docs/SHIPPING.md` that it survived a clean install.
 | Feature | Needed on the data volume | Status |
 |---|---|---|
 | SIM, data, VoLTE | `/var/root/cell-*` modem files | **made automatically, clean-install tested** by `cell-provision` from RADIO + EFS ([cellular/provisioning.md](devices/x1slte/cellular/provisioning.md)) |
-| Location Services (Compass, Maps, GPS) | locationd's switch | **first-boot default** (`redwood-defaults`: `+[CLLocationManager setLocationServicesEnabled:]`, entitled; the preferences key alone is ignored by iOS 16.5 and Settings then hides the row) |
+| Location Services (Compass, Maps, GPS) | locationd's switch | **first-boot default, verified on a clean install 2026-11-20** (`redwood-defaults`: `+[CLLocationManager setLocationServicesEnabled:]`, entitled; the preferences key alone is ignored by iOS 16.5 and Settings then hides the row) |
 | Keyboard haptics on | `com.apple.keyboard.preferences` `KeyboardVisceral = 2` | **first-boot default** (`redwood-defaults`) |
 | Live Photo off | `com.apple.camera` `CAMUserPreferencePreserveLivePhoto = true`, `..DesiredIrisMode = 0` | **first-boot default** (`redwood-defaults`) |
-| Files: On My iPhone | the local file provider's setup | to do |
+| Files: On My iPhone | LaunchServices record of `org.hakios.LocalFilesHost` **with its 3 extensions** (`com.apple.FileProvider.LocalStorage`) | **fixed**: `register_finder_host` checks each extension and registers the whole record when one is missing (a plain `registerApplication:` of the app in `/Applications` left them out on a clean volume). Verified on the phone 2026-11-20 |
 | Touch ID: the fingerprint TA set | `/var/root/tee` (Samsung vendor/tee: FINGE TA + driver TAs) | copied by `redwood-fpd` from the system image (`/System/Library/Redwood/Fingerprint/tee`, from `device/firmware/vendor-tee`); **local builds only, never `SHARE=1`** (Samsung firmware). Public images: to do, capture the phone's own `/vendor/tee` at install time, before `super` gets placeholders |
 | Touch ID: sensor calibration | `/var/root/fp-calib/cbge_0.dat`, `cbge_8.dat`, `sensor_id` | **made automatically** by `cell-provision --fp` from the phone's `sec_efs` (`biometrics/meta`), read-only; byte-identical to Samsung's (2026-11-20) |
 | Touch ID: the sensor module | `/usr/lib/libBKDM1.dylib` | in the image: `tools/touchid/fetch-bkdm1.sh` ports the iPhone 8's onto the iPhone X cache ([touchid-port.md](devices/x1slte/touchid-port.md)) |
