@@ -2410,7 +2410,7 @@ index 39daaf8db949..64ceb1a5f201 100644
  	}
  	os_atomic_clear_exclusive();
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096fa0010..e09b109a61c6 100644
+index fc2096fa0010..fee959720e62 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
 @@ -93,6 +93,8 @@
@@ -2463,7 +2463,7 @@ index fc2096fa0010..e09b109a61c6 100644
  #endif
  }
  
-@@ -14294,3 +14299,54 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
+@@ -14294,3 +14299,74 @@ pmap_test_text_corruption_internal(pmap_paddr_t pa)
  }
  
  #endif /* DEVELOPMENT || DEBUG */
@@ -2510,8 +2510,28 @@ index fc2096fa0010..e09b109a61c6 100644
 +			write_pte_strong(ptep, spte);
 +		}
 +	}
++	/*
++	 * XNU builds every table over dynamic kernel memory with PXNTable (arm_vm_init.c ARM_DYNAMIC_TABLE_XN): no heap page
++	 * can run, whatever its own entry says, and the first call into the code faulted (2026-11-21). Clear PXNTable on
++	 * the tables above these pages; every other page under them keeps its own PNX, so only these become executable.
++	 */
++	if (upto == 0 || upto >= 2) {
++		const pt_attr_t *pt_attr = pmap_get_pt_attr(kernel_pmap);
++
++		for (vm_offset_t v = va; v < end; v += PAGE_SIZE) {
++			for (unsigned lvl = pt_attr_root_level(pt_attr); lvl < pt_attr_leaf_level(pt_attr); lvl++) {
++				tt_entry_t *ttep = pmap_ttne(kernel_pmap, lvl, v);
++
++				if (ttep != NULL && (*ttep & ARM_TTE_TYPE_MASK) == ARM_TTE_TYPE_TABLE && (*ttep & ARM_TTE_TABLE_PXN)) {
++					*ttep &= ~ARM_TTE_TABLE_PXN;
++					__builtin_arm_dsb(DSB_ISH);
++				}
++			}
++		}
++	}
 +	if (upto == 0 || upto >= 3) {
-+		flush_mmu_tlb_region(va, (unsigned)(end - va));
++		/* table entries live in the walk caches too: everything */
++		flush_mmu_tlb();
 +	}
 +	if (upto == 0 || upto >= 4) {
 +		InvalidatePoU_IcacheRegion(va, end - va);
