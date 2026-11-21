@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Apple's lifs.kext, loaded by this kernel at run time (A, 2026-11-20; docs/devices/x1slte/lifs-loader.md).
  *
  * Files shows external drives through userfsd and livefileproviderd, and livefileproviderd needs lifs (IOKit

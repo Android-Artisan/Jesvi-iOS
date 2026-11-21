@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline Shannon firmware inventory and SIPC5 framing checks. No device I/O.
 
 MIT. Written from the on-disk format and Samsung CPIF protocol facts; no vendor

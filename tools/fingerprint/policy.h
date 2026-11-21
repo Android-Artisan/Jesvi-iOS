@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Experimental biometric policy core, NOT an authenticator or unlock API.
  * No production consumer until a trusted matcher and keybag bridge exist.
  * Only a backend that has verified the secure-world result may pass

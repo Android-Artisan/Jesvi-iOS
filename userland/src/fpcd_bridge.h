@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* From DenialOfGravity/ios-redfin redfin-int 7f0764b (phone/fpc/fpcd_bridge.h), MIT License, Copyright (c) 2026 dipa-studio. */
 /*
  * sweetfpcd <-> SweetMesa kernel bridge (ws-fpcd-a). Two parts:

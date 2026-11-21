@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Rebuild the stock partitions from the local firmware (private, gitignored): super.img -> system, vendor, product (ext4)
 set -e
 # needs: python3 -m venv out/cellular/tools/venv && out/cellular/tools/venv/bin/pip install lz4

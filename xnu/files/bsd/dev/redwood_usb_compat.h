@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * x1slte (SM-G980F, 2026-11-06): what Scion's sys/hakios.log.h and sys/hakios.xnu.h gave hakios.dwc3.c, for its
  * copy here (redwood_dwc3.c). say() is printf: it lands in the loader's log, which the tap streams to the host.
  */

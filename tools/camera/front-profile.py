@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Choose ORIGINAL or EXPERIMENTAL front worker for the next Camera stream.
 Requires the dual-profile development library. Does not restart Camera or reboot.
 Rear selection is independent. Experimental is NOT verified Samsung factory tuning.

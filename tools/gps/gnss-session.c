@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded S20 navigation/pass-through handshake, not a positioning service.
  * Recovered stock messages only; root diagnostic through existing SPI owner.
  * Metadata on stdout, optional private raw capture. Always attempts channel stop.

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-eagl.dylib: OpenGL ES for applications (games) by Mesa, the way the window server has it
  * (src/eagl.c), instead of iOS's own OpenGL ES.
  *

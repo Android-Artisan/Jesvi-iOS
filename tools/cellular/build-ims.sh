@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # build-ims.sh [OUT]: redwood-ims for the phone, with the AP voice path (ims-media.h: opencore-amr AMR-NB, static)
 # opencore-amr 0.1.6 (Apache-2.0) from sourceforge, configured for arm64-apple-ios16 into work/third_party/amr-build/out
 set -e

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte-pinfiles.sh: the iOS root and /private/var as pinned files in Android's userdata (SM-G980F).
 #
 #   tools/x1slte-pinfiles.sh create [ROOT_MB] [VAR_MB]   /data/darwin/system.img and var.img (default 2600, 16384):

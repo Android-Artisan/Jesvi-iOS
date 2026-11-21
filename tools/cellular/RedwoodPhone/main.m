@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * RedwoodPhone (A, 2026-11-14): the S20's VoLTE calls on iOS's own call screen. There is no CommCenter; redwood-ims
  * (root) does SIP and the voice. This is the CallKit provider for it: a registered app (CallKit refuses a plain process:
  * "a CXXPCCallSource couldn't be created"), run by launchd as mobile, always on, with no UI of its own.

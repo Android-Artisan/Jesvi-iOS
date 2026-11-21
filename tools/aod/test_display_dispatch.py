@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Run the real framebuffer power/swap dispatch cases against a recording owner."""
 from pathlib import Path
 import re

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check S20 CP reserved memory against loader/audio sources and a saved boot log.
 
 Offline only. A clean report is necessary, not sufficient, for modem DMA safety.

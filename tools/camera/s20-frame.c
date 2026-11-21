@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Download the last successful bounded S20 camera diagnostic frame to stdout.
  * Build for iOS; run as root. The RWCAM001 result is decoded by tools/camraw.py. */
 #include <stdio.h>

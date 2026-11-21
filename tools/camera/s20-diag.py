@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Collect a read-only Galaxy S20 camera bring-up snapshot.
 
     python3 tools/camera/s20-diag.py [--out PATH]

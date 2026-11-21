@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * en1: Ethernet over the USB cable (x1slte, SM-G980F, 2026-11-06), the network side of the CDC-ECM function the USB
  * device link offers next to its serial port (redwood_dwc3.c with usb_ecm=1; the descriptors in redwood_usb_acm.h).
  * The computer's own driver (macOS, Linux: CDC-ECM, nothing to install) sees an Ethernet adapter.

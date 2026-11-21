@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The phone's UFS host controller, driven from this kernel -- read only, next to UEFI's driver.
  *
  * Reading the storage through the loader (redwood_ufs.c) is one request at a time: Qualcomm's

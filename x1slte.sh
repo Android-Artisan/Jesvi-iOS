@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte.sh: build, pack, flash, and read back the kernel log for the Galaxy S20 (SM-G980F, x1slte).
 # Derived from y2s.sh. Differences: a 20 MiB kernel slot (root.apfs at 52 MiB, up to 14.4 MB), the iOS system image
 # from a pinned file in userdata (common/devices/x1slte.conf), never y2s's super offset.

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read only six S5123 GPIO banks in always-on CMGP, via the existing kernel.
 
 Default prints the plan. --read requires the normal phone lock and executes

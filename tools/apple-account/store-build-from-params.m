@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Mac-side helper: given {endpoint, parameters{...}}, run the native AMSURLRequestEncoder
  * to build + sign a complete Store request (self-consistent AMD + ActionSignature + body)
  * from those exact parameters, and emit it as a request_dump for verbatim replay.

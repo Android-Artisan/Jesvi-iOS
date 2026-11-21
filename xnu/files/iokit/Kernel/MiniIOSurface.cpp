@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * MiniIOSurface: a stand-in for Apple's closed IOSurface.kext (see MiniIOSurface.h).
  *
  * A surface is a piece of wired kernel memory: one page of state that clients read directly,

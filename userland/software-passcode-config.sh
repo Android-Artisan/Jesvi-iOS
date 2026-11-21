@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Sourced from userland/build.sh after changing into userland/.
 # Preserve explicit overrides. Unprofiled builds in this S20 checkout follow
 # its tracked boot line; an explicit other DEVICE keeps its existing behavior.

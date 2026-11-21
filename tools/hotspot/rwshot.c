@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * rwshot OUT.bmp [SCALE]: what the screen shows, without hands (A, 2026-11-19). The display driver publishes the
  * IOSurface id of the frame on the panel (kern.redwood_fb_shown_sid); the surface is looked up, read, and written as
  * a 24-bit BMP, every SCALE-th pixel (default 2). For checking UI work from the Mac: rwshot /tmp/s.bmp, then scp.

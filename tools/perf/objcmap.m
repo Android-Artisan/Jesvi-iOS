@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* objcmap: every Objective-C method of the named images, as "OFFSET -[Class sel]", OFFSET from the shared cache's base
  * (the same offsets kern.redwood.ksample prints). usage: objcmap IMAGE_PATH... */
 #include <dlfcn.h>

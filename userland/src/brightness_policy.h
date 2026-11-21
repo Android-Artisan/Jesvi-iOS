@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Adaptive ambient brightness policy. Original implementation informed by
  * AOSP AutomaticBrightnessController's hysteresis/debounce/short-term-model
  * design; no Android source copied. Times are monotonic seconds, nits nominal.

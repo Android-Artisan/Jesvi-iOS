@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * teetsd: TEEGRIS trusted storage for iOS (A, 2026-11-14) -- the file half of Samsung's tzdaemon_ts.c.
  * The kernel (bsd/dev/redwood_teegris.c) holds the session with the secure world's storage service and hands
  * each request over kern.redwood.tee_ts: a 0x41000-byte buffer, u32 group (5), u32 TS_CMD_*, u32 length,

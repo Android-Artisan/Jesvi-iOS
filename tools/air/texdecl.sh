@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # What every function of the corpus declares it wants bound in each texture slot.
 #
 # This is the host half of the draw sweep in userland/src/metal_drv_test.m. That

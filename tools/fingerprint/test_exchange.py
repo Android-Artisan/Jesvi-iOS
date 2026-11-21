@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic protocol and local-file tests; no device, credentials or real biometrics."""
 import os
 from contextlib import nullcontext

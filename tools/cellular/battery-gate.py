@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read only battery metadata; --require-ready gates repeated modem reboots."""
 import argparse
 import json

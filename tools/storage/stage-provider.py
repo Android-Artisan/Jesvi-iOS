@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Place the local Files provider in its registration host in a private image tree.
 
 Usage: stage-provider.py SYSROOT HOST_EXECUTABLE INPUT_MANIFEST OUTPUT_MANIFEST

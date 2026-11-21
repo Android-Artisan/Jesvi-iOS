@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 import importlib.util
 from pathlib import Path
 import struct

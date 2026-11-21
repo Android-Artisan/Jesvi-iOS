@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The S20+'s (y2s, Exynos 990) loudspeakers: what iOS plays (/dev/redwood-audio, redwood_audio.c) through the
  * SoC's audio block (ABOX) to the two Cirrus Logic CS35L41 amplifiers. Boot-arg snd=1.
  *

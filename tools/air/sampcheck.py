@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Metal's own sampler state, against what Apple's header says it should do.
 
 Every texture check before this one used the API's sampler -- nearest,

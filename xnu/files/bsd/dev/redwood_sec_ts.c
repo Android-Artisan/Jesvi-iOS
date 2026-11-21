@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The touchscreen of the Galaxy S20+ (y2s, Exynos 990): a Samsung System LSI
  * touch controller (S6SY79A, Samsung's "sec_ts" driver, firmware
  * "tsp_sec/y79a_y2.bin") at I2C address 0x48 on the pins of HSI2C_15.

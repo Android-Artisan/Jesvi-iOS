@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compile actual camera pool get/put with narrow IOKit allocation mocks."""
 from pathlib import Path
 import subprocess,tempfile,unittest

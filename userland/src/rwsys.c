@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* rwsys NAME [STRING]: read a sysctl as a string, or write STRING to it and print what it reads back (the phone has no sysctl(8)) */
 #include <stdio.h>
 #include <string.h>

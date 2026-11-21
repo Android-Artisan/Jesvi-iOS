@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only stock firmware inspection and return-to-Android planning. Never flashes."""
 import argparse
 import hashlib

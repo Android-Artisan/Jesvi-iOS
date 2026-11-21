@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* S20 rear controls shared with host fault-injection tests. No device I/O here. */
 #ifndef REDWOOD_CAMERA_S20_CONTROLS_H
 #define REDWOOD_CAMERA_S20_CONTROLS_H

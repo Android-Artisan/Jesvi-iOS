@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * x1slte (SM-G980F, 2026-11-06): the USB console's commands (redwood_dwc3.c, from Scion's hakios.dwc3.c) that
  * reach drivers of the Galaxy S9 this tree does not have. Each says so; nothing else.
  */

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Settings Low Power Mode -> kernel, driven only by notifications.
  * Independent thermal control belongs to the kernel's existing ACPM loop.
  * No temperature polling, log buffer, timer or whole-device thermal fallback.

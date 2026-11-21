@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Capture current BOOT/recovery/kernel under the phone lock; phone reads only.
 
 Run in a visible Terminal job. Never reuses an output directory. Private firmware

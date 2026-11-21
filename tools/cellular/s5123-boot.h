@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Bounded one-attempt S5123 power/SPI lifecycle. No physical I/O here.
  * Board facts: pinned modem_ctrl_s5100.c + x1slte overlay (see docs).
  * GPIO callbacks must set direction/value glitch-free and verify readback.

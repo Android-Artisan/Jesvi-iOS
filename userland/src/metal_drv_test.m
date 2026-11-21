@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Does the driver's device object, built as an ordinary library, get through Metal?
  *
  * metal_stubdev proved the contract with classes assembled at runtime. This asks the same

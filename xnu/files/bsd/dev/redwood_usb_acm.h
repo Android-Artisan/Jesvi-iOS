@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * A USB CDC-ACM function's descriptors and its control requests, as plain C: what the USB gadget driver
  * (drivers/usb/hakios.dwc3.c) answers a host with, and what tools/usb_acm_test.c checks on the build machine
  * (tools/usb-acm-test.sh) by playing the requests Linux, macOS and Windows make when a device is plugged in.

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Process 1 of the Darwin bring-up, until it hands over to the real launchd.
  *
  * It lives in the small image mounted on /redwood (see stage0.c) and

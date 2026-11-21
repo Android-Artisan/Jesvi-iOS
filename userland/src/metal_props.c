@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * metal_props: put Metal's two discovery properties on the IOAcceleratorES service, read them
  * back, and take them off again.
  *

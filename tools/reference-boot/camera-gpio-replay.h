@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* GPIO-I2C isolation under Samsung. Only GPP0-2/3 are requested, open-drain.
  * The reference owns the sensor exclusively while replaying; restore the mux
  * before any further hardware-I2C operation or V4L2 teardown.

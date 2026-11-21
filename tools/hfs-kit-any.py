@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """
 A format kit (the HFSKIT01 format of tools/hfs-kit.py, read by userland/src/init.c) for an HFSX of ANY size, read
 straight from a device or image that macOS's newfs_hfs has just formatted. Unlike hfs-kit.py (made for the S20+'s

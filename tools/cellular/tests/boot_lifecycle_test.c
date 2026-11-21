@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Power lifecycle model; no physical GPIO, firmware, SIM or modem access. */
 #include <assert.h>
 #include <stdio.h>

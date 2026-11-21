@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check clean S20 assembly without requiring private iOS/firmware assets."""
 from pathlib import Path
 import os

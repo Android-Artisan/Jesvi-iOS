@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Request a signature for public fixture bytes. No account, password or login. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

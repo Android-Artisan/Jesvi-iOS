@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Scoped laboratory transport substitution. Native authentication/parser unchanged. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

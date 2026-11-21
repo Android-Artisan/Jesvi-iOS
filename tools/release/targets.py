@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Per-device targets, modelled on UN1CA/ExtremeROM.
 
     devices/exynos990/platform.conf        shared Exynos 990 settings (PLATFORM_*)

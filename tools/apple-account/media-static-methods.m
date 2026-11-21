@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Static method addresses only; no account/task creation or authentication. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

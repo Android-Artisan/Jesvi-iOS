@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Exact native failure labels only. Never return raw NSError text/userInfo. */
 #import <Foundation/Foundation.h>
 static inline NSString *rw_srp_error_category(NSError *error) {

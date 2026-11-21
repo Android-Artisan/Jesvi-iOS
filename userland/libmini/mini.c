@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libmini: system call wrappers, string routines and a small printf.
  */
 #include "mini.h"

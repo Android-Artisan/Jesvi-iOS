@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Inspect native signing-input transformation with synthetic markers only.
  * No requests sent; no account APIs, real credentials or signing calls.
  */

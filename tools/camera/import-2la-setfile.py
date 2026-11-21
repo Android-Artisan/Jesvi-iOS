@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Export only ordinary register settings for the verified 2LA A202 probe.
 Global_1/OTP firmware payloads are deliberately excluded.
 """

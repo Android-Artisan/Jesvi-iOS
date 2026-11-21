@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Evaluate the production black interpolation against an independent covered RAW.
  * Host only: no device access. Signed residuals are measured BEFORE clipping. */
 #include <stdio.h>

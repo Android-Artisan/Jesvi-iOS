@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded native management diagnostic. Reports public state/capacity and app
  * counts only. Optional service probes start and close connections; they do
  * not request a backup, restore, account operation or file transfer.

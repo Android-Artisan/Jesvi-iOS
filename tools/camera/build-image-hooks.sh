@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build the native Camera dial and foreground brightness rule for image seeding.
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)

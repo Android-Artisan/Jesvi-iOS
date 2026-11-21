@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Execute the actual hub pump with a fake clock and GPIO transport."""
 from pathlib import Path
 import subprocess

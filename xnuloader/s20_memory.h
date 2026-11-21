@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. S20 CP regions from exynos9830.dts. Half-open physical intervals.
  * Pure address selection: never maps memory or grants DMA permissions.
  */

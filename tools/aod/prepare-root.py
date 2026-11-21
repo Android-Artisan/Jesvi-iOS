@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Install native AOD into an assembled S20 root, without touching user settings."""
 import argparse
 from pathlib import Path

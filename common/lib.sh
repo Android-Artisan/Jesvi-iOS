@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Shared by common/*.sh: find the workspace and load a device profile.
 #   . "$(dirname "$(readlink -f "$0")")/lib.sh"; load_device "$1"
 # Portable (no readlink -f): works on macOS, where the GNU userland comes from Homebrew.

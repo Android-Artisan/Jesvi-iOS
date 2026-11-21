@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Store pre-auth gate probe for the S20 port.
  *
  * Builds the phone's native, signed /auth/v1/native request using a NON-EXISTENT

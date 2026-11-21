@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Which kernels need structure in their buffers, and so cannot be dispatched here.
 
 `air_run` fills every buffer a kernel reads with `(i * 7 + 13) & 0xff`. For a

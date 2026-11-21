@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Loopback-only broker for an already provisioned, isolated ADI identity.
 
 Accepts only a version and random nonce. Never accepts account credentials,

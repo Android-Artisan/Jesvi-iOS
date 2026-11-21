@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One-shot, credential-free parameter construction inside akd. No login call.
  * Never serialize native parameters: they can contain sensitive account data. */
 #import <Foundation/Foundation.h>

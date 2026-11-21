@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * u2f_test: what this GPU makes of an unsigned 32-bit integer turned into a float, through
  * OpenGL ES and nothing of ours.
  *

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Local Finder compatibility for the unprotected research port. This library
  * is loaded into lockdownd only; account/activation daemons retain real state.
  */

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # install.sh: RedwoodPhone.app to /var/jb/Applications, registered (uicache), run by launchd as mobile.
 set -e
 cd "$(dirname "$0")"

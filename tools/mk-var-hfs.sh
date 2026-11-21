@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte: the format kit for iOS's /private/var in the pinned /data/darwin/var.img (common/devices/x1slte.conf,
 # VAR_UD_BLOCKS). A sparse disk image of exactly that size, formatted by macOS's own newfs_hfs as a case-sensitive
 # journaled HFS+ (as tools/mk-userdata-hfs.sh does for the S20+'s whole userdata), turned into userland/hfs-kit.bin

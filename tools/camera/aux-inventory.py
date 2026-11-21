@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline camera wiring inventory. Never opens or writes a device.
 
 Inputs are trusted local FDT captures. Output contains hardware metadata only.

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Synthetic bytes only. Exercise real helper signing and rejection, no login. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>

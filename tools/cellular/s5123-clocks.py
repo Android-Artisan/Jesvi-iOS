@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only SPI16 clock/USI baseline from documented PERIC1 CMU/SYSREG.
 
 Default prints a plan. --read requires the phone lock. Thirteen single-word reads

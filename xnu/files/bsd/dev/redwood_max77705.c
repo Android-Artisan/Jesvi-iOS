@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20+'s (y2s, Exynos 990) battery: the MAX77705's fuel gauge and charger, read over
  * I2C bit-banged on the pins of HSI2C_7 (gpp1-6 SCL, gpp1-7 SDA: bsd/dev/redwood_bbi2c.c), and
  * handed to iOS as the power source (redwood_battery_report() -> iokit/Kernel/RedwoodBattery.cpp).

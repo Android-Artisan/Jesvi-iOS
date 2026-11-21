@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Local-only HTTP test; no account/Apple connection or credentials. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Content receipt for the pinned Apple extraction and its selection recipe."""
 import json
 from pathlib import Path

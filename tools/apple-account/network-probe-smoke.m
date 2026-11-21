@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Loopback status/error checks only. No Apple connection or account operation. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>

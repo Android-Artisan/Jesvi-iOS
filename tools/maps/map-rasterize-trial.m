@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Apple Maps-only workaround for the portrait compositor failure. Keep the
  * exact tested VKMapView rasterization, without layer dumps or coordinates.
  * This is a scoped workaround; it does not repair the global compositor. */

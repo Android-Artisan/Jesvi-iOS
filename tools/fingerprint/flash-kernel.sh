@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # flash-kernel.sh [KERNEL]   fast kernel-only test cycle (A, 2026-11-14): only the recovery partition's 16 MiB kernel slot
 # at 0x2000000 changes -- loader, boot line, root.apfs, system image and userdata stay. Backs the running slot up first
 # (out/fingerprint/slot-backup-<time>.bin), writes the new one with the loader's read-back, reboots, waits for SSH and

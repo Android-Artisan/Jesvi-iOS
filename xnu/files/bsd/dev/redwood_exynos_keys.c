@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20+'s (y2s, Exynos 990) power and volume keys.
  *
  * All three are plain GPIOs of the ALIVE pinctrl, low while pressed (the phone's device tree,

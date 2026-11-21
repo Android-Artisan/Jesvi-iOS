@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Compare native GSA metadata sources. Availability/equality only; no accounts. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

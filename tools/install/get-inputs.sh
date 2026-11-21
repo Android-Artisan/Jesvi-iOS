@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # get-inputs.sh — everything the release build needs that cannot be in the repository, fetched or made on this
 # computer and checked against known hashes (inputs/, then ./build.sh lock-inputs). Run from the checkout's root.
 #   inputs/tools/avbtool.py, testkey_rsa4096.pem   AOSP external/avb at a pinned commit (Apache 2.0)

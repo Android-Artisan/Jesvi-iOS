@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Optional loadable form of the same home-wallpaper effect built into the
  * SpringBoard bridge. Lets the effect be updated with a SpringBoard restart. */
 #include <CoreFoundation/CoreFoundation.h>

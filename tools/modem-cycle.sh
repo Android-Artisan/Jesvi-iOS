@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # tools/modem-cycle.sh "KERNEL ARGS" [SECS] [LOG]: wait for the phone (up to 6 h), enter the loader, upload the
 # system image, run the kernel with those args, summarize the modem's log, and leave the phone in the loader
 # (or fastboot) for the next run (XL_END=android: back to Android).

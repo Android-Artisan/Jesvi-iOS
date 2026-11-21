@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * TEEGRIS client inside the kernel (bsd/dev/redwood_teegris.c): open a trusted application's session with its image,
  * invoke its commands. Wire structures are Samsung tzdev's (tz_common.h).
  */

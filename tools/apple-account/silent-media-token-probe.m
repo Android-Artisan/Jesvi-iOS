@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One owner-authorized native service-token check. No UI or raw token output.
  * Uses existing account through native AuthKit; never reads stored credentials. */
 #import <Foundation/Foundation.h>

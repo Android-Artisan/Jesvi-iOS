@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Inspect Samsung Exynos ISP setfile containers offline; never execute payloads.
 
 Layout: Exynos990 hardware/is-hw-control.{h,c}, parse_setfile_header/info.

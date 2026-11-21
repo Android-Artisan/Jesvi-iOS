@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Stop the modem service on the phone cleanly (SIGTERM -> its own shutdown), wait up to 30 s, report CP power.
 ssh -o BatchMode=yes -o ConnectTimeout=5 s20 '
 for p in $(ps -A -o pid= -o comm= | grep -E "redwood-cellulard|cell-live-modem" | sed "s/^ *//; s/ .*//"); do kill -TERM "$p"; done

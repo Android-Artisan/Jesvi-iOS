@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * rwlogd: the kernel's log over the network while iOS runs (PLANS/09-standalone.md, P4).
  *
  *   GET /log                  both logs so far, oldest first, as the loader saves them on return: the

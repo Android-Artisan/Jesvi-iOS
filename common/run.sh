@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Boot HackiOS on a device whose images are built (common/build.sh <device>).
 #
 # usage: common/run.sh <device> [seconds]

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # push-private.sh [REPO]: push every local branch and tag of this repository to the PRIVATE GitHub repo
 # jesvi-eulah/REPO (default Jesvi-iOS), creating it if needed. Refuses to push if any branch contains
 # secrets or files that must stay on this Mac (Samsung/Apple firmware, ssh/, jb/, local configs).

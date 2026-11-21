@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The inventory of this port's refusals, and how often each one CAN fire.
 
 This port refuses things BY NAME on purpose: a shader it cannot translate, a

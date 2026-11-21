@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Kernel source identity, independent of checkout location and documentation."""
 from pathlib import Path
 import subprocess

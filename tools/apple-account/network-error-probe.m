@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Passive completion metadata and selected machine-proof presence booleans.
  * Never logs credential headers, request bodies or authentication result values.
  * Explicitly armed one-shot comparison forwards a phone PET privately in memory.

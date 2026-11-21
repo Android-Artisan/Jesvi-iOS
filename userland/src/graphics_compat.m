@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Shared presentation compatibility for ordinary UIKit applications.
  * Metal discovery is published centrally by the graphics startup job. This
  * library does not hook IOKit, patch code, alter opacity or change orientation. */

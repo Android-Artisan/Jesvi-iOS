@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Opt-in isolation test, only in the temporary Samsung reference boot.
  * The sensor must be stopped. Samsung retains power/clocks and V4L2 ownership.
  * Unlike dump_camera_clocks(), this uses SFR's WRITE operation, restricted to

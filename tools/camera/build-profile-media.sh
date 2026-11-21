@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build a dual backend: original front by default, experimental front opt-in;
 # rear always independent experimental backend. Build only: no phone changes.
 set -eu

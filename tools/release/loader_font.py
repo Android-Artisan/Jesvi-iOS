@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Generate the boot menu font from the pinned XNU source used by this build."""
 import json
 from pathlib import Path

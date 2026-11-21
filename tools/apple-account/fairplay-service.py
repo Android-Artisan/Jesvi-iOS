@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Register the unmodified owner-supplied FairPlay daemon, or remove its job.
 
 Does not patch/re-sign Apple code or provide replacement licensing responses.

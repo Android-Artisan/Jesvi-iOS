@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 ir3: round integer-to-float conversions to nearest when nothing says otherwise.
 
 The a6xx `cov` instruction has a rounding-mode field, and create_cov() sets it

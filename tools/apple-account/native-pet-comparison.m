@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One native, unsaved Mac login comparison using an owner-authorized phone PET.
  * Input is private stdin only. Output is statuses/booleans; never payload/token.
  * --build-test sends nothing; --loopback-test sends only an unauthenticated fixture.

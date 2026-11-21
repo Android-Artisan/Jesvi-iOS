@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * /dev/redwood-audio: the sound iOS plays, on its way to whatever can make it heard.
  *
  * iOS expects its output devices from Apple's audio drivers through IOAudio2; neither exists

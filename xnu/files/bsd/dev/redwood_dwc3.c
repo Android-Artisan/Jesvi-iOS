@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * A USB device ("gadget") link for phones with a DesignWare DWC3: the kernel's log streamed to a host over a CDC-ACM
  * serial port (Linux /dev/ttyACM0, macOS /dev/cu.usbmodem*, Windows COMn), and a small line console back. For a run that
  * has no serial port and gave back only what fits in pstore (32 KB on the Galaxy S9, read in TWRP), this is the whole

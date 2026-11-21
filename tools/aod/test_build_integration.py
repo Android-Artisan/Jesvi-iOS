@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Verify AOD (default on, wallpaper off) ships in clean S20 root assembly with no data tweaks."""
 import importlib.util
 from pathlib import Path

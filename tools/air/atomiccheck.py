@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check the atomics with a kernel written for the purpose.
 
 docs/dev/air.md said what was missing and why none of Apple's kernels could supply

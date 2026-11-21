@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Restore a software keybag BEFORE launchd/UI. No passcode input or KDF here.
  * Invalid/missing partial records fail closed. Active only with softpasscode=1.
  */

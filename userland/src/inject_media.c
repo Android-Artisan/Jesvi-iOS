@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-media.dylib: code of ours inside mediaserverd (see inject.c for how it gets there).
  *
  * mediaserverd is the audio server, and also the camera's: the capture stack of CMCapture lives

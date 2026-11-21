@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * An Exynos SPI master -- the SPI of a USI block (Samsung's "samsung,exynos-spi", the s3c64xx family) -- polled, without
  * DMA or interrupts, the chip select held by hand: bsd/dev/redwood_exynos_spi.c, ported from Scion's
  * drivers/soc/exynos/hakios.exynos_spi.c (Exynos 9810, Galaxy S9; the Exynos 990's controller is the same: spi-s3c64xx.c

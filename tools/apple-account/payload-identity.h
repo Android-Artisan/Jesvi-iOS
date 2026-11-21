@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Pure dictionary adapter. Inputs are never printed, serialized or persisted. */
 #import <Foundation/Foundation.h>
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Inspect a complete RWFRAME1 RAW10 dump without image libraries.
 
 Spatial statistics are scene-dependent. Use an opaque covered lens to measure

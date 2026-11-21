@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* S6E3HAB gamma: three 10-bit values, 27 byte values, six packed nibbles.
  * Interpolate channel values, never the packed bytes (a carry changes colors).
  * Input/output are 34 parameter bytes, excluding DCS command 0xCA.

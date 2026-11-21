@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Host regression: defaults (AOD on, wallpaper/notifications off) and rejection of unsafe/malformed config files. */
 #import <Foundation/Foundation.h>
 #include <assert.h>

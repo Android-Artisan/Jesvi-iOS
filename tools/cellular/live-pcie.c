@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* SPDX-License-Identifier: GPL-2.0-only
  * Live S20 PCIe diagnostics. Original diagnostic code is MIT; the combined
  * helper includes Samsung's GPL-2.0-only PHY sequence (s5123-phy-evt1.h).

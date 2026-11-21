@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* UI-only state. No state grants authentication or unlocks a keybag. */
 #ifndef RW_FP_UI_MODEL_H
 #define RW_FP_UI_MODEL_H

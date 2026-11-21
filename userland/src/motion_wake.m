@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Port-side table pickup wake without an Apple SPU gesture stream.
  * Real CoreMotion samples; same wake event as the port's Tap to Wake.
  * --probe never wakes, --once tests a pickup, --daemon runs the service. */

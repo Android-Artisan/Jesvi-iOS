@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Synthetic in-memory account only. Never save, authenticate, or send requests. */
 #import <Foundation/Foundation.h>
 #import <Accounts/Accounts.h>

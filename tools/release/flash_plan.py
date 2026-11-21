@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Verify a local candidate and produce a read-only installation plan.
 
 Deliberately contains no adb, fastboot, Odin, Heimdall, dd or block-write call.

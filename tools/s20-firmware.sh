@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # s20-firmware.sh: rebuild the gitignored Samsung/Broadcom/Cirrus firmware folders (fw-wifi, fw-sound,
 # fw-haptic, fw-sensors) from YOUR phone's stock /vendor/firmware. These files are Samsung's: never commit them.
 #

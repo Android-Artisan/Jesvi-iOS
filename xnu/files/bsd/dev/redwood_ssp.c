@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20's sensors (x1slte, SM-G980F, Exynos 990): the accelerometer and gyroscope (LSM6DSO), the magnetometer
  * (AK09918-class, "ssp-mag-type 1"), the barometer (LPS22HH), the front light and proximity sensor (TMD4907) all sit
  * behind one sensor hub, the MCU inside the Broadcom BCM4775 B1 GNSS chip ("ssp,BCM4773"), which the AP reaches over

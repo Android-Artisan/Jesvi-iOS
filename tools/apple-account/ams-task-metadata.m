@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Framework task method metadata only. No task creation/account authentication. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

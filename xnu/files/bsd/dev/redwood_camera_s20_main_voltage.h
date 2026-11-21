@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Fixed x1slte primary-only selectors. Change voltages only with outputs off. */
 #ifndef REDWOOD_CAMERA_S20_MAIN_VOLTAGE_H
 #define REDWOOD_CAMERA_S20_MAIN_VOLTAGE_H

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Root sensor coordinator for the rejection-only preview. No auth provider,
  * keybag writes, passwords, tokens or successful-match IPC exist here. */
 #import <Foundation/Foundation.h>

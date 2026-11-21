@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Run internal SPI loopback live; no reboot, firmware or CP control writes."""
 import os
 import argparse

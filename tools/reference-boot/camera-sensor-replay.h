@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Optional isolation experiment: XNU sensor writes with Samsung's receiver.
  * Included only by camera-ref.c when CAMERA_XNU_SENSOR_REPLAY is defined.
  * Uses the same setfile data as XNU, with hardware I2C instead of GPIO I2C.

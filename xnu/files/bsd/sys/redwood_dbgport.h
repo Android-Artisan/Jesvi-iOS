@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The debug port (kern.redwood.poke): experiments on the running phone without a reboot. See bsd/dev/redwood_dbgport.c.
  * A driver adds its own commands: redwood_dbgport_add("snd.send", "ID TYPE [a..]: one message to Calliope", fn).
  * fn gets the numbers after the command (decimal or 0x hex) and writes its answer into out (cap bytes).

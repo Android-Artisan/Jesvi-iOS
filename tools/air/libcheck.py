@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The 135 library functions: how far each one gets, and against what.
 
 An air.visible function is not a shader. Metal links one into a caller at

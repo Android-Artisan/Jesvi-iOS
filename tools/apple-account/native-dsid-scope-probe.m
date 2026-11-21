@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Compare native generic/account-scoped machine proofs; boolean output only.
  * Reads only PersonID from the already signed-in Mac's account preferences.
  * No account-token, password or keychain APIs. Never performs a login. */

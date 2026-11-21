@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * inject_sensors.c: the S20's sensors for iOS, inside backboardd (part of libredwood.dylib, next to src/inject.c).
  * Ported from Scion's userland/src/inject.c ("backboardd: the sensors", S9, seen working 3 November: rotation, face
  * up, proximity), made self-contained so that inject.c only calls two functions (proposals/sensors/NOTES.md):

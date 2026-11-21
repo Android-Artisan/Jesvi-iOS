@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Bounded ownership checks for a strided UEFI memory map. */
 #ifndef XNULOADER_S20_EFI_MEMORY_H
 #define XNULOADER_S20_EFI_MEMORY_H

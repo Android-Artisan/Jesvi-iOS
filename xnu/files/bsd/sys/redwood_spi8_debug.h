@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. SPI16 debug FIFO command bounds/decoder, shared with host tests. */
 #ifndef REDWOOD_SPI8_DEBUG_H
 #define REDWOOD_SPI8_DEBUG_H

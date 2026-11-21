@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #include "../../xnu/files/bsd/dev/redwood_usb_acm.h"
 #include "../../xnu/files/bsd/dev/redwood_usbmux_wire.h"
 #include <assert.h>

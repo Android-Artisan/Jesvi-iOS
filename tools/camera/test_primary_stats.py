@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compare the actual pinned and optimized ISP statistics on synthetic RAW10."""
 import importlib.util
 from pathlib import Path

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Decode selected FINGE QDBL diagnostics; never print payloads or template IDs.
 
 Evidence: TA 0x15d124 (headers), 0x15e9f0 (sizes), 0x15d644 (metric offsets).

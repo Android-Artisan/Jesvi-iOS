@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Cold-start isolation with Samsung's receiver kept alive. Only the front
  * sensor's established rails, GPM11-0 reset and GPC0-1 MCLK pin are changed.
  * MCLK is held low and reset asserted before switching sensor supplies.

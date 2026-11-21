@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native app-token outcome observer. No tokens, credentials or parameters logged. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

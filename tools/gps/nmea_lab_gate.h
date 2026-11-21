@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Input gate for the temporary native NMEA lab bridge; no device I/O. */
 #ifndef GNSS_NMEA_LAB_GATE_H
 #define GNSS_NMEA_LAB_GATE_H

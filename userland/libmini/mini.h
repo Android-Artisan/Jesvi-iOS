@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libmini: just enough C library for the static test programs of the
  * Darwin bring-up. No dyld, no libSystem: the programs talk to the kernel
  * directly (see start.S).

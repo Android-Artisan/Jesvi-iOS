@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Fixed response status labels only. Never export account, token or raw text. */
 #import <Foundation/Foundation.h>
 static NSDictionary *rw_icloud_status_node(id node) {

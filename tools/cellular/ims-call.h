@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * ims-call.h (B, 2026-11-15): VoLTE calls -- the SIP side of a phone's calls, for several calls at once.
  * Included by redwood-ims.c (it replaces the one-call code of 2026-11-13/14; that history is in git).
  *

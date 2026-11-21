@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 // Read-only probe of the public iOS CoreMotion path. No injected test values.
 #import <Foundation/Foundation.h>
 #import <CoreMotion/CoreMotion.h>

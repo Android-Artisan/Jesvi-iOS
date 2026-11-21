@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* RedwoodCustomWallpaper (SpringBoard): a picture of the user's own as the wallpaper, without
  * PosterBoard's editor. The newest picture in Files > On My iPhone > Wallpaper becomes the lock
  * and home wallpaper; one in Wallpaper/Home overrides the home screen alone. Empty the folder to

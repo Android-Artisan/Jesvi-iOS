@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The cameras of the POCO X5 Pro (redwood): the macro one, an OmniVision OV02B10 (2 MP, Android's
  * camera 2, "redwood_aac_ov02b10_macro"), the wide one, a Samsung S5KHM2SD (108 MP, Android's
  * camera 0, "redwood_sunny_s5khm2sd_wide"), the front one and the ultra-wide one. Every address and

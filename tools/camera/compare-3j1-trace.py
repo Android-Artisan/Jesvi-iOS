@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compare Samsung's i2c_write trace with the SAK3J1 global and PDAF tables.
 
 Usage: compare-3j1-trace.py REFERENCE_LOG

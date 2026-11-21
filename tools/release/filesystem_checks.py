@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only native filesystem checks on private image files, never phone devices."""
 from pathlib import Path
 import plistlib

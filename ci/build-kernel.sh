@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Source-only build. No phone, private firmware, prebuilt fallback or source export.
 set -euo pipefail
 cd "$(dirname "$0")/.."

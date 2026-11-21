@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Build native arm64 TWRP ZIPs: the Jesvi iOS installer and Jesvi-iOS-Restore.
 
 Experimental writes require an explicit opt-in. Both ZIPs share one recovery

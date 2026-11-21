@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Darwin-on-redwood: Apple80211, answered in the kernel.
  *
  * iOS's Wi-Fi side -- wifid, and through it Settings and the status bar -- talks to a Wi-Fi

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # call-audio.sh on|off|status — VoLTE call audio through ABOX (A, 2026-11-13). Run on the Mac; talks to the phone over ssh s20.
 #
 # Needs a kernel booted with cpcall=1 or snd=3 (redwood_exynos_sound.c maps abox-pci-rmem 0xF4200000 at IOVA 0xA2000000 and the

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check the actual hooked initializer obeys Objective-C init ownership."""
 from pathlib import Path
 import re

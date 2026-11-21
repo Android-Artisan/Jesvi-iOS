@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Private, content-addressed file cache. Never use a public Actions cache for images.
 
 Entries are immutable, checksummed and atomically published. A key includes input

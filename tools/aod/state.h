@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Shared native-service diagnostics and idle-timer contract. No hardware writes. */
 #ifndef REDWOOD_AOD_STATE_H
 #define REDWOOD_AOD_STATE_H

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Diagnostic only: does not enable a launch job or alter USB descriptors.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)

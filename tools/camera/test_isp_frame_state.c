@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Synthetic RAW10 regression: black correction follows the frame snapshot. */
 #include <assert.h>
 #include <pthread.h>

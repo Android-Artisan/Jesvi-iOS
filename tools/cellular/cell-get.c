@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Plain app-style fetch: getaddrinfo(HOST) + connect + GET, no interface pinning. */
 #include <netdb.h>
 #include <stdio.h>

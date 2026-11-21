@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One-shot TEEGRIS compatibility diagnostic, not biometric authentication.
  * ABI numbers observed in Samsung's Exynos990 tzdev_internal.h and Kconfig:
  * ARM fast SMC32, trusted OS owner 50, CHECK_VERSION 13, driver ABI 3.0.0.

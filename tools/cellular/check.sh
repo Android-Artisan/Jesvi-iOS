@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Host-only binary-format and actual loader-allocation checks.
 set -euo pipefail
 cd "$(dirname "$0")/../.."

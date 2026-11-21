@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Narrow non-secret signing schema. Never forward account/credential payloads. */
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Phone app's calls go out over VoLTE (A, 2026-11-14). There is no CommCenter: the telephony call provider has
  * nothing behind it, so a dial from the Phone app (and Contacts, Recents) is handed to RedwoodPhone instead, the
  * CallKit provider of redwood-ims (tools/cellular/RedwoodPhone): -[TUDialRequest provider] answers RedwoodPhone's

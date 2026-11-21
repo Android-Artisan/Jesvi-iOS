@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Passive native Media Services completion metadata, no request-body access. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

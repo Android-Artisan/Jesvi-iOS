@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Root-side stdin connector for the temporary locationd NMEA lab socket. */
 #include <sys/socket.h>
 #include <sys/un.h>

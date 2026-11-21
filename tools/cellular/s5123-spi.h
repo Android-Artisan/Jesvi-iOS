@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. S5123 BOOT PIO transport core. No direct physical-memory access.
  * Register/board facts: pinned Samsung spi-s3c64xx.c + x1slte overlay (see docs).
  * Caller must prove mappings, clocks <=2.15 MHz, mode0, pin ownership, CP memory

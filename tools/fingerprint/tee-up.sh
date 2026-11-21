@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # tee-up.sh [FP-COMMAND...]: on a booted phone with the TEEGRIS kernel -- start TEEGRIS, the storage daemon, the driver
 # TAs (as tzts_daemon does), power the sensor (`fp power`), then send each FP-COMMAND ("N[:OP] [HEX]", default "1:2" =
 # PREPARE with op 2) to the fingerprint TA. Prints the result lines and the TA's own log lines.

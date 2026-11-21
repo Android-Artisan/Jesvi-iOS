@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Galaxy S20 (x1slte, Exynos 990) camera bring-up.
  *
  * cam.s20 is a read-only pin inventory; cam.s20.id is a bounded rear-main

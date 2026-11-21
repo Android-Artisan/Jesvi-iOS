@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read only two known framework constant strings, never live account data. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

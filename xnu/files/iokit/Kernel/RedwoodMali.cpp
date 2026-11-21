@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * RedwoodMali: the phone's Mali-G77 for programs to draw with (bsd/dev/redwood_mali.c is the
  * hardware). A program that opens it speaks the interface of Linux's panfrost DRM driver, the one
  * Mesa's panfrost knows (25.0.7: driver version 1.3): every request of that interface is a call of

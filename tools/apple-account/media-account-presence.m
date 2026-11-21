@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Account-type counts only: never access names, IDs, credentials or tokens. */
 #import <Foundation/Foundation.h>
 #import <Accounts/Accounts.h>

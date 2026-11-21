@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only iOS capability probe. Never evaluates a policy, starts a match,
  * enrolls, changes keybags or requests a credential. */
 #import <Foundation/Foundation.h>

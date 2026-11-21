@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline container boundary checks using synthetic bytes only."""
 import importlib.util
 import struct

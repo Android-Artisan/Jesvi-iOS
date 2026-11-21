@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """What to put in the buffers so that the kernels whose loops read control data end.
 
 `tools/air/kstruct.py` sorts the corpus's 47 kernels by what they do with their

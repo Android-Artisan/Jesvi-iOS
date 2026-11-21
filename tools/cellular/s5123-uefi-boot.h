@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Opt-in UEFI adapter for the tested S5123 lifecycle/PIO cores.
  * Included only by the original-loader preflight, after MMIO, internal-loopback
  * and GPIO-low checks. No NV/EFS or modem partition I/O. All addresses fixed.

@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """FINGE research packets. No unlock, credential enrollment or HAT signing API."""
 import struct
 

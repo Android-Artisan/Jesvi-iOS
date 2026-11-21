@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Root, phone-lock holder only. Copies an idle manual test; does not respring.
 set -eu
 [ "$(id -u)" = 0 ] || exit 1

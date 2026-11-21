@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Verify rule surgery preserves unrelated and concurrently added configuration."""
 import importlib.util
 from pathlib import Path

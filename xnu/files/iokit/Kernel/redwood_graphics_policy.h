@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #ifndef REDWOOD_GRAPHICS_POLICY_H
 #define REDWOOD_GRAPHICS_POLICY_H
 #ifndef __cplusplus

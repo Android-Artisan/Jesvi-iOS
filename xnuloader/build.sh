@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build the XNU loader as a freestanding AArch64 UEFI application.
 set -e
 cd "$(dirname "$0")"

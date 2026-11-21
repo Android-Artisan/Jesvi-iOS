@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Owner-authorized one-shot phone-PET -> native Mac comparison.
 Separate from the machine-proof broker. No request/token files or raw logging.
 """

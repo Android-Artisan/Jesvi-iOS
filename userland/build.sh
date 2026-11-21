@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build the user-space side of the bring-up.
 #
 #   hello            one raw-syscall program; as a RAM disk on its own it boots through mockfs

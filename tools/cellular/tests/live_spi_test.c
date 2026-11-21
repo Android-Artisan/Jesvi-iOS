@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Host tests for the real userspace byte-burst adapter and cleanup. */
 #define _DEFAULT_SOURCE
 #define LIVE_SPI_TEST 1

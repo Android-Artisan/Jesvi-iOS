@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Response-summary privacy/protocol checks; no network or real credentials."""
 import importlib.util
 import json

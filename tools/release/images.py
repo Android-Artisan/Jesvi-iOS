@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Structural checks for this board's existing image format, not boot proof."""
 from pathlib import Path
 import struct

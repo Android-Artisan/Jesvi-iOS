@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # jesvi-ios.sh — one command from nothing to Jesvi iOS on your Galaxy S20 (SM-G980F).
 #   curl -fsSL <raw url of this file> | bash        or        bash tools/install/jesvi-ios.sh [--no-flash]
 # 1. gets (or updates) the source into ~/Jesvi-iOS (JESVI_DIR)

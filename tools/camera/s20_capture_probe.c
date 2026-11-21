@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded S20 driver check. Explicit binned modes; optional private RAW dump.
  * usage: probe SENSOR [RAW_PATH [EXPOSURE_LINES GAIN_REGISTER [REAR_MODE]]]
  * REAR_MODE: 2 boot default, 3 native4032x3024, 4 explicit2016x1512 (new kernel).

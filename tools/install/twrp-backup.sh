@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # twrp-backup.sh [DEST_DIR] — full backup of a Galaxy S20 that is in TWRP, into ONE zip on the computer.
 # Every partition (boot, recovery, super, userdata, up_param, dtbo, vbmeta, efs, modem, ...) plus the raw
 # partition tables, read with dd over the USB cable. Nothing on the phone is written. Each image is stored

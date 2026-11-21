@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Opt-in software-passcode additions to an existing small userland tree."""
 import argparse
 from pathlib import Path

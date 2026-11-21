@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Temporary, manually injected Anisette provider. Account verification remains
  * Apple's native HTTPS flow. Never inspect passwords, codes or account tokens. */
 #import <Foundation/Foundation.h>

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Inventory Samsung S5K2LD modes and timing; never enables/advertises modes.
 SSM table labels describe special capture machinery, not normal delivered FPS.
 """

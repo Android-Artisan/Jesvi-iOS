@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Deploy/run one live PCIe helper under the phone lock. Never reboot or flash.
 
 Default --status is prerequisites only. --root-id applies the isolated CP-off

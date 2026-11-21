@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20's sensor hub (x1slte: the MCU inside the Broadcom BCM4775 B1 GNSS chip, "ssp,BCM4773" in Samsung's
  * device tree, on SPI): what travels between the AP and the hub, in plain C with no kernel in it. Ported from Scion's
  * drivers/input/ssp/hakios.bcm_shub.h (the Galaxy S9's BCM4775 B0, same protocol: checked on a computer by Scion's

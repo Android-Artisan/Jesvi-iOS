@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Host refusal checks: never sends to a device. */
 #define main gnss_capture_main
 #include "gnss-read.c"

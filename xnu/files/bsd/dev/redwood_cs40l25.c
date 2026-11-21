@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * DRAFT, NOT BUILT, NOT RUN. A proposal for bsd/dev/redwood_cs40l25.c; see proposals/haptics/NOTES.md.
  *
  * The Galaxy S20's (x1slte, SM-G980F) vibration motor: a linear resonant actuator driven by a Cirrus Logic

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Summarize a private NMEA capture without printing location coordinates."""
 import argparse
 import json

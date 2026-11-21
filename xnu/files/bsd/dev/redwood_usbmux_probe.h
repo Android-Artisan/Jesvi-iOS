@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Temporary, root-only diagnostic for the native USB mux kernel socket path.
  * No host, credential or trust emulation: one read-only native QueryType.
  */

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # The system-image step of userland/build.sh on its own (B, 2026-11-13): Files host staged into /Applications.
 set -e
 cd "$(dirname "$(readlink -f "$0")")"

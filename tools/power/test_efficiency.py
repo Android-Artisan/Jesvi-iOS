@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compile the kernel's actual cap policy on the host and exercise its combinations."""
 from pathlib import Path
 import re

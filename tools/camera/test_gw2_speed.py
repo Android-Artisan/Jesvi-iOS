@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Test the actual upload-speed wrapper, including cold replay and bus restoration."""
 from pathlib import Path
 import subprocess,tempfile

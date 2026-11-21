@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Save the kernel work as it is in the working tree, in the two forms apply.sh puts back:
 #   redwood.patch   the changes to Apple's files (against the tag the work sits on)
 #   files/          the files that are not in Apple's tree, at their paths
@@ -16,7 +20,10 @@ cd "$SRC"
 git cat-file -e "$BASE^{commit}" 2>/dev/null || { echo "export.sh: $SRC is not a clone of xnu at $BASE" >&2; exit 1; }
 
 # no renames: a moved file is a deletion in the patch and a new file in files/
-git -c core.abbrev=12 diff --binary --no-renames --no-color --no-ext-diff --diff-filter=MDT "$BASE" -- . > "$HERE/redwood.patch.new"
+{
+	printf '%s\n' '# JesviOS project contributions' '# By Jesvi Jonathan' '# Adapted by :' ''
+	git -c core.abbrev=12 diff --binary --no-renames --no-color --no-ext-diff --diff-filter=MDT "$BASE" -- .
+} > "$HERE/redwood.patch.new"
 mv "$HERE/redwood.patch.new" "$HERE/redwood.patch"
 
 rm -rf "$HERE/files.new"

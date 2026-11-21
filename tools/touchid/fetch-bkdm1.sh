@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # fetch-bkdm1.sh: Touch ID's sensor module for the system image, ported (A, 2026-11-20).
 #
 # The iPhone 8's /usr/lib/libBKDM1.dylib (Touch ID; the iPhone X image has only libBKDM2, Face ID) is cut out of the

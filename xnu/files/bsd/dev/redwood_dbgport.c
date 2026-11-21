@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The debug port (A, 2026-11-06): one sysctl, kern.redwood.poke, that takes a command and answers it, so a register
  * can be read or tried on the running phone instead of a rebuild and a reboot. From the Mac: tools/poke 'r 0x18c51000 4'
  * (ssh s20 rwsys kern.redwood.poke '...'). Root only (sysctl writes need root).

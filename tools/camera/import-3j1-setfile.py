@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Extract the SAK3J1 global table and conservative 1824x1368 mode from Samsung's setA header."""
 import argparse
 import re

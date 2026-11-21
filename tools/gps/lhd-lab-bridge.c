@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Linux-lab-only FIFO peer for stock Samsung gpsd. No GPS computation or fixes.
  * Typed FIFO framing recovered from a stock daemon capture. USB relay protocol
  * is private to tools/gps/gnss-relay.c. No independent SPI/BBD owner is created.

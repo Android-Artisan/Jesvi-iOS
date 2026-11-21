@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read allocator preflight evidence from its bounded payload RAM entry.
 
 Requires the phone lock. Reads only the manifest's probe.report entry inside

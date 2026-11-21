@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """One live BOOT-only modem attempt, always followed by CP-off cleanup. No reboot."""
 import argparse
 import datetime

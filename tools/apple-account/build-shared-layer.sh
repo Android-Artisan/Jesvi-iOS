@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 set -eu
 cd "$(dirname "$0")/../.."
 AA_LAYER_SDK=${AA_LAYER_SDK:-$HOME/theos/sdks/iPhoneOS16.5.sdk}

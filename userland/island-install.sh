@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build RedwoodIsland.dylib (src/island_tweak.m) and put it on the phone's tweak folder, then respring.
 # The phone lock's holder only: CLAUDE_SESSION=NAME userland/island-install.sh [conf line, e.g. "y=5 w=81"]
 # No conf line: the built-in default (pill top 5 pt) and any existing /var/jb/etc/redwood-island.conf stays.

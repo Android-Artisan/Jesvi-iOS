@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * I2C bit-banged on two GPIOs of the Exynos 990, and shared access to its pinctrl banks
  * (bsd/sys/redwood_bbi2c.h).
  *

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * rwpf: the hotspot's NAT, loaded straight through /dev/pf (A, 2026-11-19). iOS ships no pfctl; this does what
  *   pfctl -f with "scrub on EXT inet all max-mss 1400" + "nat on EXT inet from NET to any -> ADDR" does (replacing both
  *   rulesets),

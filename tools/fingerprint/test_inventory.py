@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic DTB tests; no copied Samsung DTB or biometric data in the repo."""
 from pathlib import Path
 import runpy

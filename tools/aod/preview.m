@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Calls the native CoverSheet AOD appearance transition for 12 seconds.
  * No hardware doze, capability spoof, brightness or authentication changes. */
 #import <UIKit/UIKit.h>

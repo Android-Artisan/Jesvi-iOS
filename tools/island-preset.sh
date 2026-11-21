@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # island-preset.sh [NAME]   pick a Dynamic Island pill preset on the phone (respring only, no reboot).
 # Without NAME: list the presets and show the phone's current setting. See docs/devices/x1slte/dynamic-island.md.
 set -e

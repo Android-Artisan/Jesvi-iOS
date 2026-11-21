@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build only the Files compatibility library, without touching a shared kernel build.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)

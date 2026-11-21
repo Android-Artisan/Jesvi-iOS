@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Build an unsent native request with NO account; inspect machine metadata only. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

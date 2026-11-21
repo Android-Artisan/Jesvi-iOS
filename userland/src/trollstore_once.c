@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * trollstore_once: TrollStore on a fresh data volume (A, 2026-11-20).
  *
  * The image carries the official TrollStore release (opa334, MIT; /System/Library/Redwood/TrollStore/TrollStore.tar,

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Report S5K2LD control/timing differences in local Samsung and port source.
 
 This inspects the known source shapes. It is not a C preprocessor or an on-device

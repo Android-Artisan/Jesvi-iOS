@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Ephemeral keyed comparisons only. Never persist credentials or digest values. */
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonHMAC.h>

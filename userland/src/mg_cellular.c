@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-mgcell: "cellular-data" as true where Personal Hotspot is drawn (Settings) (A, 2026-11-19).
  *
  * MobileGestalt works "cellular-data" out of an Apple baseband (HasBaseband), which the S20 has not: its modem is

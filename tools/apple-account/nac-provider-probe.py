@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline NAC emulator setup with a synthetic profile, no account or network.
 
 Reviewed pypush revision: 6336bba82697b838497ffd774f23e5640c877a85.

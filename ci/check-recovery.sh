@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Host-only file-backed simulation and cross-compilation; never opens phone devices.
 set -euo pipefail
 cd "$(dirname "$0")/.."

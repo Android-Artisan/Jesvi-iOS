@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * vt_enc_test: src/h264_encoder.c through VideoToolbox's public compression API, as the camera's recorder uses it.
  * Registers the OpenH264 encoder in this process, opens a VTCompressionSession for H.264 at WIDTHxHEIGHT, gives it
  * FRAMES moving NV12 test frames, and writes what comes back as an Annex-B elementary stream (play it on the Mac:

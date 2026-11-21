@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Isolated fake getter. No authentication or real token; config must be absent. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Diagnostic empty-to-empty native transaction only. No secret inputs. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

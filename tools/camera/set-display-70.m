@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Explicit manual display diagnostic. Default/status reads only.
  * --set70 disables ALS-driven auto brightness through the native controller and
  * requests UI70% through the port's documented legacy slider curve. Thermal

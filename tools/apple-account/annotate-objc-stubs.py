@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Annotate arm64 Mach-O branch stubs using dyld_info -fixups rebase targets.
 Reads static binaries/disassembly only; never reads process or account memory.
 """

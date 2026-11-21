@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #ifndef REDWOOD_WALLPAPER_POSE_H
 #define REDWOOD_WALLPAPER_POSE_H
 #include <math.h>

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Copyright © 2026 Darwin on redwood contributors
  * SPDX-License-Identifier: MIT
  */

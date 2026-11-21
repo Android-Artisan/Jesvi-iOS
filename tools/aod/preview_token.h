@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #ifndef REDWOOD_AOD_PREVIEW_TOKEN_H
 #define REDWOOD_AOD_PREVIEW_TOKEN_H
 #include <stdbool.h>

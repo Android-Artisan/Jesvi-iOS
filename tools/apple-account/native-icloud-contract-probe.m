@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Account-free native request contract comparison. Never sends a request. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

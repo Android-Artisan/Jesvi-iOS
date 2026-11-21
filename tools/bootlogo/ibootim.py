@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """iBoot's pictures (IPSW Firmware/all_flash/*.im4p: the battery and plug-in screens) as pixels.
 
 IM4P payload "iBootIm": a 0x40 header (adler32, compression "lzss", format "argb" or "grey", width, height), then

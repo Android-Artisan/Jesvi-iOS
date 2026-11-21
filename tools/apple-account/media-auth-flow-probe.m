@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Passive result/transition flags only; no credential values or decision changes. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

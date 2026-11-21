@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only native MKB status, optionally test rejection of an invalid OLD
  * code on a device that has NO passcode. The requested new code is empty.
  * This program cannot set a nonempty device passcode. */

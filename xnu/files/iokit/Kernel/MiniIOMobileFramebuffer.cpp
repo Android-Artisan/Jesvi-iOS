@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * MiniIOMobileFramebuffer: a stand-in for Apple's display driver family, as seen by
  * IOMobileFramebuffer.framework (and through it by CoreAnimation's window server).
  *

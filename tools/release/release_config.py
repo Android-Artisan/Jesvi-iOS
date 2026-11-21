@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """release.conf: one preference file for local and CI release builds."""
 import datetime
 import os

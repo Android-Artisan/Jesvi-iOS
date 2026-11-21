@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read Apple's code where mali2metal's crash records point (CRASH records carry "[cache 0x...]").
 
 usage: tools/dsc.py ADDRESS [--before N] [--count N] [--cache PATH]

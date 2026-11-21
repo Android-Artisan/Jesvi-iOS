@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Hash locally supplied inputs; a lock records identity, not redistribution rights."""
 import json
 from pathlib import Path

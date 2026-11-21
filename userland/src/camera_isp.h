@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * What the phone's ISP would do with the cameras' RAW10 frames, done by the processor instead
  * (src/camera_isp.c): the levels of a frame, the exposure for the next ones (AE), the white balance
  * (AWB), and a picture: each 2x2 Bayer cell one pixel of colour, scaled to the size asked for, or

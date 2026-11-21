@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Isolated pinned source build; never use a library from another agent's tree.
 set -euo pipefail
 cd "$(dirname "$0")/.."

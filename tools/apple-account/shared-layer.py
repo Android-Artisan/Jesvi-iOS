@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Install/rollback one immutable native account layer; preserve unrelated rules."""
 import argparse
 import hashlib

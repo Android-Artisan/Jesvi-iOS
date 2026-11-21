@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * More than one processor on generic (non-Apple) ARMv8 boards.
  *
  * On Apple hardware the other cores are powered up by closed drivers. Here

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded 2LA rail transaction; shared by kernel adapter and host fault tests.
  * DT: BUCK2 1.3V, LDO12 analog2.8V, LDO3 core1.05V, LDO8 IO1.8V.
  * Samsung regulator formulas: BUCK400mV+6.25mV*n; LDO600mV+step*n.

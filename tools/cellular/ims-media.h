@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Calls, step 3 (2026-11-13, A): the call's voice on the AP. The S5123's own voice engine does not take the RTP stream
  * (the caller's packets, dport 50010/50011, arrive at the AP as ordinary data on the IMS PDN: "SBD RX ch 11"), so the
  * AP plays the part of the voice engine, as any VoIP app does:

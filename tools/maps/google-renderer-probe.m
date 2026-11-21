@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only Google Maps renderer metadata. No hooks, locations or user content. */
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>

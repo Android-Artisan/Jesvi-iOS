@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # deploy-native-calls.sh: puts the native-calls pieces on a running phone, no reboot (B, 2026-11-15). Refuses during a call.
 #   redwood-ims (/var/root, old kept as redwood-ims.before-native), libredwood-calls, redwood-telephonyd (+ callctl)
 # Rollback: tools/cellular/telephonyd/deploy-native-calls.sh rollback

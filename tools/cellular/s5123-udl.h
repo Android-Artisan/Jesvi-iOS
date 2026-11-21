@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Original bounded SIPC UDL wire codec; no device I/O.
  * Protocol facts: Samsung cpboot_v3 ProtocolSipc/BootDumpExt and S20 CPIF.
  * Pinned references and stage ordering: docs/devices/x1slte/cellular/download-plan.md.

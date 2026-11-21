@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * MiniAppleKeyStore: a stand-in for Apple's AppleKeyStore (the kernel side of the keybag,
  * which on real hardware talks to the Secure Enclave), as seen by MobileKeyBag.framework
  * and libaks.

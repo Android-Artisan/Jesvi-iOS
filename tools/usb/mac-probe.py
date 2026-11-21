@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only native usbmuxd/lockdown queries. Never pair or read credentials."""
 import argparse
 import plistlib

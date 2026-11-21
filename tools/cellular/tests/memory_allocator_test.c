@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Exercise the loader's actual range selector, without UEFI or firmware. */
 #include <assert.h>
 #include <stdint.h>

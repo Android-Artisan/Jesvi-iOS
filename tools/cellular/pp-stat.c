@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Print the pktproc control words and the descriptors around fore/rear (through the kernel's packet window). */
 #include <stdio.h>
 #include <string.h>

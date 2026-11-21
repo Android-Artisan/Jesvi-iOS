@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Argument buffers at RUN TIME: the same picture through an MTLArgumentEncoder's
 # records as through direct arguments, and a named different picture for every
 # record that is deliberately wrong.

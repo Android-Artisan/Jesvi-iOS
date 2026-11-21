@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Isolate service verification from shared HTTP auth/cookies. Native request,
  * TLS/authentication delegate, queue, protocols and completion remain intact. */
 #import <Foundation/Foundation.h>

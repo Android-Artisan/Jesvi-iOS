@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Return-to-loader debug channel.
  *
  * On hardware without a serial port there is no way to get the kernel log

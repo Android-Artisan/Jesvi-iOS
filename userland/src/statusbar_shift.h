@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The status bar's left side a little nearer the screen edge (user, 2026-11-13: "the carrier name or the time ...
  * can go a bit more to the left, just a tiny bit"). With island=1 iOS lays the status bar out with
  * _UIStatusBarVisualProvider_DynamicSplit (the 14 Pro's); its -edgeInsets' leading value is the gap at the left.

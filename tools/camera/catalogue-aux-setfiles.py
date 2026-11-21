@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Inventory Samsung 2LA/GW2 set-A tables without copying their payloads.
 
 Labels are stock-source names, not verified iOS capture capabilities.

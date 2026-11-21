@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. S20 Cellular Settings UI, independent of the radio driver.
  * Loaded only in Preferences by the port's existing tweak loader. Shows the live state that
  * redwood-cellulard publishes (/var/tmp/redwood-cell/state) and drives mobile data through its pipe.

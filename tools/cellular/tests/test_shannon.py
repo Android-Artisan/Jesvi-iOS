@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic malformed-input tests; no firmware, SIM data or phone needed."""
 import importlib.util
 import io

@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read Apple's CgBI PNG (iOS "optimised" PNG: BGRA, premultiplied, raw deflate) into (width, height, coverage bytes).
 The boot logo is one colour, so only its coverage (alpha, or luminance on an opaque image) is kept."""
 import struct

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """tools/kext/mksyms.py IMPORTS OUT.c: the kernel's addresses for a kext's imports, by name.
 
 IMPORTS: one Mach-O symbol name a line (`nm -u` of the kext). OUT.c: a sorted table {name, address}; each address is

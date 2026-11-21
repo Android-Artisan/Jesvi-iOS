@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Build a private, exact-readout S5K2LD pedestal map from covered-lens RAWs.
 
 Usage: make-rear-dark-grid.py OUTPUT RAW [RAW ...]

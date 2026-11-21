@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Temporary, metadata-only locationd probe. Never publishes a location. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

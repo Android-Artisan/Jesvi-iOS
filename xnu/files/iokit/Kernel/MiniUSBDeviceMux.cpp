@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native lockdown cable notifications for the real Redwood USB mux transport.
  * Only published when usb_mux is enabled. IsActive follows USB configuration;
  * no pairing, activation or account state is invented here.

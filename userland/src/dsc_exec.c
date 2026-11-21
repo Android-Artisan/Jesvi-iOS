@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * dsc-exec DIR PROGRAM [ARG...]: run PROGRAM on the dyld shared cache in DIR (DYLD_SHARED_CACHE_DIR).
  * launchd drops DYLD_SHARED_CACHE_DIR from a job's EnvironmentVariables ("Disallowing environment variable"), so the
  * job runs this, which sets it and execs the program: same process, so its Mach services stay checked in. dyld then

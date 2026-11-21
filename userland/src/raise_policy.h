@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Table pickup detector for a port without Apple's wake-gesture processor.
  * Gravity is in iOS axes (face up: z=-1; portrait: y=-1), rate in rad/s.
  * Only feed fresh, paired sensor samples. Never arm while the display is on. */

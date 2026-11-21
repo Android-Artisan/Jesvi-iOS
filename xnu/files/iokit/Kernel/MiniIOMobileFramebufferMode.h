@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The DECON half of fb_mode=1 (MiniIOMobileFramebuffer.cpp, modeSetFhd120): what Samsung's decon_reg_set_mres writes
  * (cal_9830/decon_reg.c: blender background, scaled size, the two DSC encoders at DECON+0x4000 and +0x5000, OUTFIFO), in
  * Samsung's order, with the native (1440x3200) value checked first and the 1080x2400 one. Computed by

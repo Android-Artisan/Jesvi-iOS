@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Keep the Apple-account Store broker + phone USB tunnel running on this Mac.
 # Re-resolves the Hackintosh's link-local IPv6 (it changes per boot) by matching the
 # pinned host key, rewrites the SSH config's account-hackintosh HostName, then starts

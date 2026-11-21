@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* User-requested identity comparison only. Expected email arrives over stdin;
  * output is counts/booleans. Never access credentials, tokens or keychains. */
 #import <Foundation/Foundation.h>

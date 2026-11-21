@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The RAW diagnostic must reject partial transfers and preserve all CFA/low bits."""
 import importlib.util
 from pathlib import Path

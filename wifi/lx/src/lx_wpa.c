@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The arithmetic of WPA2 with a passphrase (lx_wpa.h): SHA-1 and HMAC over it (FIPS 180, RFC
  * 2104), the key of a name and a passphrase (PBKDF2, RFC 8018), the function that makes the
  * handshake's keys out of that key, two addresses and two nonces (IEEE 802.11-2020, 12.7.1.2),

@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build libredwood-media as the development copy and load it into mediaserverd without a reboot
 # (inject_media.c: /var/redwood/libredwood-media-dev.dylib is loaded instead of /redwood/lib's when it is there).
 # usage: tools/camera/media-dev.sh [off]     (off: back to the flashed copy)

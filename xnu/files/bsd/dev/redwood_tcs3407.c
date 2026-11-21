@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20's (x1slte, SM-G980F) rear light sensor: the ams TCS3407 ("als_rear", Samsung's flicker sensor for the
  * cameras) at I2C 0x29 on HSI2C_25, bit-banged here (bsd/dev/redwood_bbi2c.c). Its lux goes into /dev/redwood-sensors
  * (sys/redwood_sensors.h, bsd/dev/redwood_sensors.c) as a LIGHT sample marked REDWOOD_LIGHT_REAR.

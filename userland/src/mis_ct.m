@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-mis: the carrier side of iOS's own Personal Hotspot, inside misd (A, 2026-11-19).
  *
  * misd (MobileInternetSharing) runs the hotspot itself -- DHCP, NAT, NAT64 for an IPv6-only carrier, the Wi-Fi

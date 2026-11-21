@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * prefset: set boolean preferences of the user mobile, as Settings would, without Settings' UI.
  *   prefset [-u USER] DOMAIN KEY 0|1 [KEY 0|1 ...]      (USER: mobile by default; root for daemons such as locationd)
  * x1slte (2026-11-06): Settings > Safari aborts (SafariCore, start page folder), so WebKit's feature flags

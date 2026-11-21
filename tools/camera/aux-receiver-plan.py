@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline effective receiver plan; board overlay must explicitly select PHY/DMA.
 No hardware access. Never infer C-/D-PHY from the generic phy-names string.
 """

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Stand-ins for Apple's closed kernel extensions: just enough of each for the stock iOS
  * user space to work on a machine without Apple hardware. The platform expert
  * (GenericARMPE) starts them once the registry is up.

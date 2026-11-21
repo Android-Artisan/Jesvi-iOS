@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Device test of the actual selector/delegate, with an isolated control file. */
 #define RW_LENS_TELE_ENABLE_PATH "/var/root/native-lens-test-tele-enable"
 #define RW_LENS_PRIMARY_TEST_PATH "/var/root/native-lens-test-primary-default"

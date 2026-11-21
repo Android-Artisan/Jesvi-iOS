@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Export Samsung GW2 setA TNP/global and bounded diagnostic modes."""
 import argparse,hashlib,runpy
 from pathlib import Path

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * redwood_teegris.c -- Samsung TEEGRIS (the S20's secure OS) from XNU (A, 2026-11-14).
  *
  * A port of the normal-world half of Samsung's tzdev driver (drivers/misc/tzdev of the Exynos990 kernel,

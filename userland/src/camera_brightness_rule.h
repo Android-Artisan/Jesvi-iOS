@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Camera-only display policy. No camera AE/AF or authentication code. */
 #ifndef REDWOOD_CAMERA_BRIGHTNESS_RULE_H
 #define REDWOOD_CAMERA_BRIGHTNESS_RULE_H

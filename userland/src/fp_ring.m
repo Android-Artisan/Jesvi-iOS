@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The fingerprint sensor's spot on screen, while Touch ID waits for a finger (part of libredwood-sb, in SpringBoard).
  *
  * The S20's sensor sits under the display, but iOS's Touch ID screens were made for a home button and show nothing

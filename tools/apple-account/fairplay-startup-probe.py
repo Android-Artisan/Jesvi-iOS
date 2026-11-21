@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Bounded stock-daemon startup check; no signing patches or account calls.
 
 Input directory contains the original extracted usr/sbin/fairplayd.H2.

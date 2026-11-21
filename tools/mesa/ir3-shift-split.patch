@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 ir3: moving a shift inside an add changes the number when the constant is
 negative.
 

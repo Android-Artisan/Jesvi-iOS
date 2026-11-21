@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """encodedLength and alignment: Apple's own numbers for an argument buffer.
 
 -[MTLArgumentEncoder encodedLength] is what an APPLICATION allocates its

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Galaxy S20's (x1slte, SM-G980F) flashlight: the rear flash LED of the S2MPB02 (camera PMIC with a flash driver),
  * at I2C 0x59 on HSI2C_27 (gpp3-2 SCL, gpp3-3 SDA; bit-banged here, bsd/dev/redwood_bbi2c.c). From the phone's dtbo
  * (fragment@5, s2mpb02_pmic@59: torch table 3 5 5 6 6 8 8 8 10 10; torch1-gpio gpp4-4, flash1-gpio gpp4-0) and Samsung's

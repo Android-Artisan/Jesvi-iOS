@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Copy the current live-modem build to the phone as the service override, restart the service, and wait
 # (at most 5 min) for a log line matching $1 (default: the IMS interface). Phone lock holder only.
 pat=${1:-"IMS utun[0-9]+ up"}

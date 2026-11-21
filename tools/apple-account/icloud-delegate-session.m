@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native delegate verification transport. Credential-bearing body stays on phone. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One coordinated, opt-in plaintext RESPONSE recorder. Request bodies/credentials
  * are never recorded. Response tokens may exist ONLY in protected capture files.
  * Native data/completion/error objects and authentication decisions are unchanged. */

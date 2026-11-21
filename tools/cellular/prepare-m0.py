@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Prepare an S20 memory-layout test from the phone's own recovery backup.
 
 Offline only. Preserve installed BootShim, DT table, kernel, root and payload

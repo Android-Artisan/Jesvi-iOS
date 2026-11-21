@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only fingerprint wiring inventory from locally owned DTBs.
 Prints only selected hardware properties; never templates, keys, or firmware data.
 DTBO fixups are reported as unresolved rather than guessed or used as addresses.

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only account counts and native boolean state. No identities/credentials. */
 #import <Foundation/Foundation.h>
 #import <Accounts/Accounts.h>

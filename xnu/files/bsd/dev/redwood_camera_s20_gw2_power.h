@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* GW2 power-on order from x1slte DT; fixed rails, never arbitrary PMIC writes.
  * Snapshot both PMICs before writes; restore across both in reverse order. */
 #ifndef REDWOOD_CAMERA_S20_GW2_POWER_H

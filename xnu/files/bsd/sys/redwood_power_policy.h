@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Pure thermal policy shared with host tests. Times are monotonic seconds. */
 #ifndef REDWOOD_CLUSTER_COOLING_H
 #define REDWOOD_CLUSTER_COOLING_H

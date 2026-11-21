@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The lowerings this frontend does by hand, against LLVM on this processor.
 
 Three things AIR has and NIR does not, so the frontend builds them out of

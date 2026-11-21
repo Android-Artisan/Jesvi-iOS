@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The CPU reference: run an AIR shader through LLVM on this machine.
 
 This is the strongest check the project has (docs/dev/air.md section 4) and it

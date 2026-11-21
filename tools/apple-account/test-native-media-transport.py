@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic RPC-schema checks; no network, account or proof operations."""
 import base64
 import importlib.util

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Find the Metal libraries in an RE Engine pak, inside an app package, by content.
 
 A game does not ship `.metallib` files. Resident Evil 4's are inside

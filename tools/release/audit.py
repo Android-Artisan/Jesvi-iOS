@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Inventory publication risks without printing matched secrets or rewriting history.
 
 This is a triage tool, not a substitute for a full-history secret/license audit.

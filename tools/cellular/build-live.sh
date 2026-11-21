@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 out="$repo/out/cellular/live"

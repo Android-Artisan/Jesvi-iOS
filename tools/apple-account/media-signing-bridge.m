@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Owner-native Mac Mescal signing AND verification over private SSH broker.
  * No credential/proof logging or fabricated validation success. */
 #import <Foundation/Foundation.h>

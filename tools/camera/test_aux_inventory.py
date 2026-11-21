@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Fixup safety tests, without firmware or device dependencies."""
 import runpy
 import unittest

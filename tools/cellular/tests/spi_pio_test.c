@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Controller model: byte order, FIFO bounds, chip select, RX draining,
  * failures/deadlines and one-attempt latch. No firmware or physical MMIO.
  */

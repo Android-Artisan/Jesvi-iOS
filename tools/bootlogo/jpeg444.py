@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """A small baseline JPEG writer for grey pictures, 3 components at 4:4:4 (Y, Cb=Cr=128): the format of Samsung's own
 up_param images (S-Boot's decoder is only known to take what Samsung ships). Standard Annex K tables. Blocks of one
 flat value (nearly all of a logo on black) are coded without a DCT."""

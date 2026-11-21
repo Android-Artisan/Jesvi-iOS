@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check S20 recovery packing against the loader's fixed read windows."""
 import argparse
 import hashlib

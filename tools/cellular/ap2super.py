@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 import sys,tarfile,struct,lz4.frame
 ap,out=sys.argv[1:3]
 t=tarfile.open(ap,'r|')

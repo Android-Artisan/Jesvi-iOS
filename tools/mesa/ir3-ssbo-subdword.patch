@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 ir3: an SSBO is a buffer of dwords to the Gallium driver, so keep sub-dword
 access off it.
 

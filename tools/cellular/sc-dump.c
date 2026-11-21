@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Print SCDynamicStore keys matching a regex (default State:/Network/.*) -- a tiny scutil for the phone. */
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>

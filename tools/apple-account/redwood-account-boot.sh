@@ -1,4 +1,8 @@
 #!/var/jb/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Re-apply Store account injection rules at boot (survives reboot). Race-proof:
 # waits for init's base rules to settle, then applies account rules ON TOP and
 # restarts the account services; re-applies for ~2 min if the rules get reset.

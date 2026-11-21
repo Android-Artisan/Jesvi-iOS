@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdio.h>
 #include <string.h>

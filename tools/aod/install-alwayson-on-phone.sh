@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Independent native AOD service + Settings, default OFF. No hardware reboot.
 set -eu
 [ "$(id -u)" = 0 ] || exit 1

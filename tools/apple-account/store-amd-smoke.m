@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Unsent synthetic requests through real private AMD provider; no account login. */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>

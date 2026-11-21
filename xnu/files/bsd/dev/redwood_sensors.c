@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * /dev/redwood-sensors (sys/redwood_sensors.h): one queue of samples that every sensor driver of the S20 posts into
  * (bsd/dev/redwood_ssp.c, the hub; bsd/dev/redwood_tcs3407.c, the rear light sensor) and backboardd reads
  * (userland/src/inject_sensors.c). The device is made by whichever driver asks first, so it is there before backboardd

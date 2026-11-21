@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * rwdhcpd: the hotspot's DHCP server (A, 2026-11-19). iOS's bootpd exits at once when not started by Personal Hotspot,
  * so the S20's access point hands out addresses with this: 172.20.10.2-14 on IF (the phone is 172.20.10.1, as on an
  * iPhone hotspot), router 172.20.10.1, DNS as given.

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # build.sh: out/redwood-telephonyd, the phone's telephony call provider (CommCenter's CallKit identity). install.sh puts it on the phone.
 set -e
 cd "$(dirname "$0")"

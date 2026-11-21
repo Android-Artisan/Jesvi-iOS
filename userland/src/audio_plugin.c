@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * RedwoodAudio.driver: the output device of iOS on this machine.
  *
  * Audio devices reach the audio server's hardware layer (the "HAL" of CoreAudio, inside

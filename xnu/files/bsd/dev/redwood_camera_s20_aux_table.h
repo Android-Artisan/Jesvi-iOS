@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Checked executor for the ordinary A202 registers: no burst/firmware ops. */
 #ifndef REDWOOD_CAMERA_S20_AUX_TABLE_H
 #define REDWOOD_CAMERA_S20_AUX_TABLE_H

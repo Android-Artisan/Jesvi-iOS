@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The status bar's cellular icon from the S20's own modem (x1slte, 2026-11-13). Included by inject_sb.c.
  *
  * There is no CommCenter here (Apple's baseband daemon has no Apple baseband to talk to), so SpringBoard's

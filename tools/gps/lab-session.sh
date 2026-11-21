@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Run inside the isolated ARM64 Linux VM, with only its private /share mounted.
 # Start the phone relay and host TCP proxy first. This is not an iOS boot job.
 set -eu

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The S20+'s Bluetooth: the BT side of the Broadcom BCM4375 (its Wi-Fi side is on PCIe, redwood_bcm4375.c), an
  * HCI controller on UART1, and iOS's bluetoothd talking to it (PLANS/06-wireless.md, B1-B3). Boot-arg bt=1.
  *

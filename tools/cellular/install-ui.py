@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Install/remove only the Cellular Settings tweak, while holding the phone lock.
 
 Does not acquire/steal a lock, flash, reboot, or restart a system service.

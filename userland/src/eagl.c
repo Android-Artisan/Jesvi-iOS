@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-gl.dylib: an OpenGL ES implementation behind iOS's EAGLContext, inside the window
  * server (backboardd; libredwood.dylib loads this when the image has it: build.sh GL=1).
  *

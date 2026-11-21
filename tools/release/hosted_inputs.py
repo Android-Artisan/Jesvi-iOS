@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Transport reviewed board inputs to a disposable hosted runner, never OS images.
 
 Apple extraction and Touch ID's Apple library are fetched by the shared build.

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #ifndef REDWOOD_ALWAYS_ON_CONFIG_H
 #define REDWOOD_ALWAYS_ON_CONFIG_H
 #import <Foundation/Foundation.h>

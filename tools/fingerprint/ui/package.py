@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Package only explicit UI binaries/configuration; exclude all private data."""
 from pathlib import Path
 import hashlib

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Fetch one member of the iOS 16.5 iPhone X firmware archive without downloading the rest.
 
 usage: fetch-from-ipsw.py MEMBER OUTPUT

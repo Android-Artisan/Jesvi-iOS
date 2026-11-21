@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Compiled by test_s20_controls.py with the real exposure_limits() body. */
 struct event { uint16_t reg, value; unsigned width; };
 static struct event events[8];

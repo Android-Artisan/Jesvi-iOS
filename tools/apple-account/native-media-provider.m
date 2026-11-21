@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Private stdio RPC to owner's native Mescal implementation. No raw logging.
  * Inputs/proofs may be sensitive: stdin/stdout only through authenticated broker.
  * Uses Apple's real signing and verification; no fabricated success results. */

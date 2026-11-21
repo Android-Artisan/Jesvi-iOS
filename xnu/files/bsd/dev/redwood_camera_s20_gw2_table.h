@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Checked GW2 setfile executor. Validate all records before changing hardware;
  * preserve indirect address auto-increment across bounded I2C burst chunks. */
 #ifndef REDWOOD_CAMERA_S20_GW2_TABLE_H

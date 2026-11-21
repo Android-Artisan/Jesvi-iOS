@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Battery monitor for Xiaomi redwood (POCO X5 Pro).
  *
  * Redwood selects PM7325B and qcom,battery-charger over PMIC GLINK/ADSP, not

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* First-boot additions through iOS 16.5 WebBookmarks, never direct SQLite writes.
  * Selector signatures verified in the target 20F66 arm64 cache. */
 #import <Foundation/Foundation.h>

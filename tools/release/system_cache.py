@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Called *after compilation* by userland/build.sh to cache system.apfs only.
 
 Conservative dependency set: the entire selected IPSW tree and image recipe,

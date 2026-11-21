@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compile the actual kernel adapter against narrow host IOKit mocks.
 Does not open a real AppleKeyStore or touch device/system credentials.
 """

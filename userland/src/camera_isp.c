@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The cameras' frames made into pictures by the processor (see camera_isp.h): one pixel per 2x2
  * cell, the nearest cell for each pixel of the picture (previews), or every pixel by bilinear
  * demosaic (stills); per pixel, in this order: the black level off, lens shading (a grid of gains per

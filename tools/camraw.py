@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Make pictures of the frames the kernel's camera driver left in memory (boot-arg cam=3 and up;
 bsd/dev/redwood_camera.c), as the loader hands them over ("xl camera").
 

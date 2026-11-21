@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * What the USB gadget driver (drivers/usb/hakios.dwc3.c, device-neutral: a DesignWare DWC3 in device mode with a
  * CDC-ACM function) needs from the SoC it runs on: where the controller is, and how its clocks, power and PHY are
  * brought up. One of these per SoC; the Exynos 9810's is drivers/usb/hakios.exynos_usb.c.

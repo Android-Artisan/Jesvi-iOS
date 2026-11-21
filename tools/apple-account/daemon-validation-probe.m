@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Passive background AppleAccount response summary. No request/body/token logs. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compare the shared camera register list: Samsung reference (sec_debug SFR lines) vs XNU (cam.s20.front.stream bit 8).
 usage: compare-regdump.py REFERENCE_MAIN_TXT XNU_STREAM_TXT [OUT_JSON]"""
 import json, re, sys

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Loopback broker for a strictly scoped native machine-data helper over SSH.
 
 No account-login endpoint, arbitrary signing input, headers/proofs in logs,

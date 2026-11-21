@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Execute the actual framebuffer fade methods with deterministic wake interleavings."""
 from pathlib import Path
 import subprocess

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* One-shot owner-authorized PET comparison, no raw-password/token logging.
  * Fixed local SSH tunnel endpoint; transient reference expires after120s. */
 #import <Foundation/Foundation.h>

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Probe an isolated macOS ADI emulator; no account credentials or header output.
 
 The Apple binary stays outside git. --provision contacts Apple's provisioning

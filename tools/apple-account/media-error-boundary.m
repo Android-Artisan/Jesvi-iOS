@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only NSError code observer for native media clients. No descriptions logged. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline reconstruction of the DDK's ConvertVectorsCcm9ToMatrices (0x2b4938).
 
 This reproduces one helper, not the whole stock CCM pipeline. Inputs are 27

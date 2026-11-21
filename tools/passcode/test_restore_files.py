@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Exercise the restore helper's real read-only parser in a disposable directory.
 Host tests substitute the fixture path/owner; never open the phone's keybag.
 """

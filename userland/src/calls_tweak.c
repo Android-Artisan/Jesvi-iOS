@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-calls.dylib (A, 2026-11-14): the call hooks of the Phone app and the call screen, kept outside the boot
  * image so they can change without a reboot. Loaded by libredwood.dylib (src/inject.c) in MobilePhone and InCallService
  * from /var/jb/redwood/lib. Build: userland/build-calls.sh; install: copy, then restart InCallService.

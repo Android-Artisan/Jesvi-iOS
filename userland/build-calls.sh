@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # build-calls.sh [install]: libredwood-calls.dylib (src/calls_tweak.c + src/phone_dial.h); "install" copies it to the phone
 # and restarts the Phone app and the call screen (no reboot). Never while a call is up.
 set -e

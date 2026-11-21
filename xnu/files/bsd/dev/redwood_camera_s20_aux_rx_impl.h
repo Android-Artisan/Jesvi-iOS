@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded 2LA native RAW10 -> CSIS4 C-PHY3 -> WDMA0, unpacked16-bit.
  * Included after the existing S20 hardware helpers. No automatic invocation.
  * All writes journaled; DMA memory is retained if abort is not acknowledged. */

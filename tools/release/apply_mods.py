@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """apply_mods.py TARGET root|system DIR: copy the target's active mods into an image tree.
 
 Called by userland/build.sh when JESVI_TARGET is set. JESVI_MODS_DISABLE lists

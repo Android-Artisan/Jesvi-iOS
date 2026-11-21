@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Minimal UEFI definitions for the XNU loader (freestanding, no EDK2).
  * Only what the loader touches is declared; unused slots are void pointers
  * so that structure layouts still match the UEFI specification.

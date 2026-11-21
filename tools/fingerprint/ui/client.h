@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Small bounded UI-only IPC client. Call off the main queue. */
 #import <Foundation/Foundation.h>
 #include <sys/socket.h>

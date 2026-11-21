@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Repack the saved Samsung kernel with the bounded camera reference initramfs."""
 from pathlib import Path
 import gzip

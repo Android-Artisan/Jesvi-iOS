@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Summarize public bag signing policy only. No account or request-body access. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

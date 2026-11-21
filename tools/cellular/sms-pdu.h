@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. SMS TPDU text decoding (GSM 7-bit, UCS-2) shared by redwood-cellulard and redwood-ims. */
 #ifndef REDWOOD_SMS_PDU_H
 #define REDWOOD_SMS_PDU_H

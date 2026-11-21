@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compare reconstructed CCM9 maths with one isolated AArch64 helper in Unicorn.
 
 Hash-pinned stock routine 0x2b4938..0x2b4bdc only. Read-only library mapping,

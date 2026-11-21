@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded Samsung V4L2 front sensor stream for the temporary reference boot. */
 #include <errno.h>
 #include <fcntl.h>

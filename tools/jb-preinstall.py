@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Put packages of the repository into the prefix as installed, newest version first.
 
 usage: jb-preinstall.py PREFIX PACKAGES-INDEX DEBS-DIR NAME...

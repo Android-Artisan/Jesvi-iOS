@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Choose the part of the iOS root filesystem that goes into the in-memory system image.
 
 usage: select-system.py rootfs.slt system.files system.manifest

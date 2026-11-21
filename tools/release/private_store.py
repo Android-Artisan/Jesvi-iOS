@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Private persistent-volume adapters for disposable image CI workers.
 
 Stage only the known private-input paths; retain images by SHA-256 so unchanged

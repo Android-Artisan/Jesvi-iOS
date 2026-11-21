@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Start a port of HackiOS to another device: a profile and a loader platform description to fill in.
 #
 # usage: common/new-device.sh <codename> [path/to/device.dtb]

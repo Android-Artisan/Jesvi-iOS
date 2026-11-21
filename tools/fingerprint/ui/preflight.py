@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only phone preflight. Never starts TEE, copies files or changes state."""
 import json
 import subprocess

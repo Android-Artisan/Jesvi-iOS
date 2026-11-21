@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Darwin-on-redwood: the station boundary.
  *
  * On one side whatever does the scanning and the joining with a radio: the station logic over

@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte-auto.sh [system.apfs]   hands-free system-image update while iOS runs on Wi-Fi (uroot)
 # x1slte-auto.sh --recovery      the same for out/x1slte-recovery.img (kernel, loader, root.apfs: uflash)
 # x1slte-auto.sh --all           both (userland/system.apfs, then the recovery image), one restart

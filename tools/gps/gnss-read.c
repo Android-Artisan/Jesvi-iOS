@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only Broadcom GNSS firmware capture through the existing SPI owner.
  * RPC7/8 field layout recovered from the owner's stock S20 lhd. No resets,
  * memory writes or SSP changes. Output files are private and exclusive.

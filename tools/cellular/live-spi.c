@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Live SPI16 INTERNAL loopback through fixed byte-FIFO debug commands.
  * No CP power, GPIO writes, firmware, DMA or external SPI pad ownership.
  * The callback core is the same byte-transport core proven in UEFI.

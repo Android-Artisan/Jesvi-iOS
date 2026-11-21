@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Private native Mescal stdio transport; no input/proof/credential logging."""
 import base64
 import json

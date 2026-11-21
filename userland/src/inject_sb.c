@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-sb.dylib: code of ours inside SpringBoard (see inject.c for how it gets there).
  *
  *   - The phone is "activated". SpringBoard asks mobileactivationd, which is not running (and

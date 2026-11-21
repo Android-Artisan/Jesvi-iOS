@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. One SIP request over UDP from the IMS interface to a P-CSCF; prints the answer. Test tool. */
 #include <arpa/inet.h>
 #include <net/if.h>

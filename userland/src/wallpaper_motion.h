@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* The iOS 16 home background is a poster composite (snapshot + blur/portals).
  * Move that whole home-only view using normal public CoreMotion device motion.
  * UIKit's gyro-only parallax path is not used. All UI work stays on main. */

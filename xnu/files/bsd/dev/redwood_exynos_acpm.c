@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * redwood_exynos_acpm.c: the clocks of the Exynos 990's processors, GPU and memory, set through
  * Samsung's ACPM (the power-management core that owns the PLLs and the regulators), and the
  * temperatures it reads -- PLANS/01-performance.md P5, PLANS/04-gpu.md G8.

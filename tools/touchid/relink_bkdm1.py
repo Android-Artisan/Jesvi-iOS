@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """relink_bkdm1.py IN OUT MAP.json -- make a dylib cut out of a dyld shared cache (DyldExtractor's output) loadable on
 ANOTHER cache of the same iOS build: here the iPhone 8's libBKDM1 (Touch ID) on the iPhone X's 20F66 cache.
 

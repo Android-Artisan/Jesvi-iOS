@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Device-side USB mux: USB framing -> real kernel TCP sockets on loopback.
  * Stock lockdownd checks TCP_PEERPID and accepts these as USB connections.
  * This layer neither answers lockdown requests nor modifies native trust.

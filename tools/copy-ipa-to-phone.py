@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Copy an IPA to Files > On My iPhone > Downloads for installation in TrollStore.
 
 Uses the port's registered Jesvi Files container. Resumes partial SFTP uploads,

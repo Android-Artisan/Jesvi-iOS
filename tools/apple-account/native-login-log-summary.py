@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Native macOS login comparison. Keep fixed categories/codes, never raw log text.
 Runs locally on the Mac being observed. Does not authenticate or change accounts.
 """

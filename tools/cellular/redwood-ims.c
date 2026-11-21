@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. redwood-ims: a small IMS (VoLTE signalling) client for the S20 port: registration on the carrier's
  * P-CSCF with IMS AKA and the IPsec (ESP transport) security agreement of TS 33.203, then it stays and answers.
  * Reads /var/tmp/redwood-cell/ims (interface, IMS address, P-CSCFs, IMSI, IMEI) written by redwood-cellulard and

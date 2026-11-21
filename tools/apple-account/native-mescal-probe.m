@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Owner's native Mac signing availability. Synthetic literal input only.
  * No account login, account-store/keychain APIs, token fetch or signature output.
  */

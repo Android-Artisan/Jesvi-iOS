@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Vertex attributes: `[[stage_in]]` / `[[attribute(n)]]`, which no value here can draw.
 
 A vertex shader that reads its vertices from a vertex BUFFER -- Apple's three in

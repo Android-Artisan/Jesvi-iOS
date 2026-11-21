@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Package S20 Camera for clean installs; seed only missing data-volume files."""
 import argparse
 from pathlib import Path

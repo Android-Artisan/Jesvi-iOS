@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # hotspot-up.sh start [NAME [CHANNEL [PASSWORD]]] | stop | status -- the S20's Personal Hotspot, by hand (A, 2026-11-19).
 #
 #   cellular  CLAT46 on the data tunnel (Jio is IPv6-only): NAT64 prefix 64:ff9b::/96, 192.0.0.2, IPv4 default route

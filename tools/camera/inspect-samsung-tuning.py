@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Locate named blocks and inspect decoded fields in Samsung ISV8 ISP tuning.
 
 Offline only. Requires the layout recovered from the DDK identified in the schema.

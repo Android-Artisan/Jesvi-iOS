@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Exercise clean-root Camera assembly with no pre-existing data files."""
 import importlib.util
 from pathlib import Path

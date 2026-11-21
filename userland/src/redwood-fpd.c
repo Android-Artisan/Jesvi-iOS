@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * redwood-fpd: the S20's fingerprint sensor behind iOS's native Touch ID.
  *
  * RedwoodMesa (iokit/Kernel/RedwoodMesa.cpp, a port of redfin's SweetMesa) plays the Secure Enclave's Touch ID part

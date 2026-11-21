@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Copy mutable image staging trees without sharing writable inodes with inputs."""
 import argparse
 from pathlib import Path

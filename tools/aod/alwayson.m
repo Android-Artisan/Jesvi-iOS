@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Persistent iOS AOD policy on the S20. Native BacklightServices owns the
  * transition, clock, wake, focus and suppression logic. Panel ALPM is separate. */
 #import <UIKit/UIKit.h>

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Known error fields/categories only. Never return server text or account data. */
 #import <Foundation/Foundation.h>
 static NSDictionary *rw_media_response_summary(id object){

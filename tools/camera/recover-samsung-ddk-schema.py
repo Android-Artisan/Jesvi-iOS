@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Recover key order/sizes by bounded symbolic tracing of one known DDK dispatch.
 
 Requires capstone. Only the allowlisted initializer at 0x1523cc..0x152c60 is

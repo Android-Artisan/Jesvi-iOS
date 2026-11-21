@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * RedwoodIsland.dylib: the Dynamic Island's pill sized and placed for the S20's camera hole.
  *
  * iOS 16.5 does not take the pill from the hardware: SpringBoardUIServices returns it from two small

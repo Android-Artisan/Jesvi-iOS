@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Mac-side helper: given a fully-built Store request (url, headers, body), run the
  * native AMSURLSession._prepareRequest: so Apple's own AMS attaches a self-consistent
  * proof set (X-Apple-AMD / X-Apple-AMD-M / X-Apple-ActionSignature) bound to THAT exact

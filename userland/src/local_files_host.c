@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Registration host for the user's LocalStorageFileProvider extension.
  * Hidden from SpringBoard; no app UI or background process is needed.
  * Keeping the extension in an app bundle lets LaunchServices register its

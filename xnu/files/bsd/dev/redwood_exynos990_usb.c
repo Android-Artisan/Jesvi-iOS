@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The Exynos 990's (SM-G980F, x1slte) side of the USB device link (redwood_dwc3.c, from Scion's hakios.dwc3.c): the
  * USB 2.0 PHY brought up in device mode. The sequence is Mu-Silicium's, the one behind the loader's working fastboot on
  * this very phone (Silicon/Samsung/S5E9830Pkg/Library/PlatformUsbfnLib/BoardInit.c, UsbfnPlatformPhyInit, BSD-2-Clause):

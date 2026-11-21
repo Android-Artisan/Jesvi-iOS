@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Stage shared graphics support into an existing root; preserve unrelated files."""
 import argparse
 from pathlib import Path

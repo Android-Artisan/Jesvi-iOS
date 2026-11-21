@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Export only this process's loaded framework STATIC text and symbol/selector
  * names. Never reads daemon memory, account state, tokens or writable data. */
 #import <Foundation/Foundation.h>

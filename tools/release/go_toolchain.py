@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Fetch a checksum-pinned Go toolchain for the standalone recovery installer."""
 import fcntl
 import os

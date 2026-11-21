@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* S20 GNSS wire facts recovered from stock lhd/gpsd. Independent implementation.
  * Pure codec: no device I/O, power changes, acquisition or position fabrication.
  */

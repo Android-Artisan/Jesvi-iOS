@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #ifndef REDWOOD_SENSOR_POWER_POLICY_H
 #define REDWOOD_SENSOR_POWER_POLICY_H
 #include <stdbool.h>

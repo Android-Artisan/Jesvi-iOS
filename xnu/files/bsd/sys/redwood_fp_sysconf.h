@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Explicit, one-shot TEEGRIS SYSCONF exchange. No scheduler or matcher.
  * Protocol: normal-world event IRQ, panic IRQ, flags (three LE uint32s);
  * response begins with OS version, CPU count, big mask and flags.

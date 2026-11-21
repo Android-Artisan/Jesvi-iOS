@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # While a run is in progress on the phone: follow what the kernel's log says about the buttons
 # (the driver's "buttons:" lines, backboardd's "[Button]" lines, button presses a script makes
 # with rwtouch), print each new line, and take pictures of the screen after every press -- one at

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. redwood-commcenter: stands in for Apple's CommCenter (absent: there is no Apple baseband) on the
  * S20 port. Claims com.apple.commcenter.coretelephony.xpc, the NSXPC service CoreTelephonyClient talks
  * to, and answers from redwood-cellulard's state (/var/tmp/redwood-cell/state).

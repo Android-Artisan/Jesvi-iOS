@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # push-iphone8-cache.sh: put the iPhone 8's iOS 16.5 (20F66) dyld shared cache on the phone's data volume, for Touch ID.
 # biometrickitd's Touch ID job (userland/com.apple.biometrickitd.mesa.plist) runs on this cache, where Apple's
 # libBKDM1 (the Touch ID sensor module) lives; nothing else uses it. Apple's file, from Apple's CDN

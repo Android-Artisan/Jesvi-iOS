@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <mach-o/dyld.h>

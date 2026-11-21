@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Check the texture operations one at a time, on more than one texel.
 
 tools/air/texcheck.sh runs the corpus's own texture shaders, and 6 of its 55

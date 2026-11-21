@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 sdk="${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk"

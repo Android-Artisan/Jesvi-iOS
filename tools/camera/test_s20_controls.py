@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compile real kernel normalization and I/O helper with host test doubles."""
 import os
 from pathlib import Path

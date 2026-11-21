@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * redwood-defaults: this port's defaults for a fresh data volume, applied ONCE (2026-11-20).
  *
  * A clean install starts the data volume empty, so preferences that make the phone work as shipped were missing:

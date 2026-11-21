@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Forward Exynos TMU pressure to the Darwin notification that SpringBoard
  * and ProcessInfo already observe. SpringBoard owns the temperature screen.
  */

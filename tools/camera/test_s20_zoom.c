@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #include <assert.h>
 #include <stdio.h>
 #include "../../userland/src/camera_s20_zoom.h"

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* S20 lens selection; stock-style0.5 ultra-wide UI scale; no per-device focal calibration. */
 #ifndef CAMERA_S20_ZOOM_H
 #define CAMERA_S20_ZOOM_H

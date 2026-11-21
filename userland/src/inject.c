@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood.dylib: code of ours inside stock iOS programs.
  *
  * launchd starts the jobs named in INJECT (see build.sh / mkjobs.py) with

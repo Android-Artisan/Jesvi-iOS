@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Exynos SPI: the SPI master of a USI block, polled, chip select by hand. sys/redwood_exynos_spi.h says how a driver
  * describes its bus.
  *

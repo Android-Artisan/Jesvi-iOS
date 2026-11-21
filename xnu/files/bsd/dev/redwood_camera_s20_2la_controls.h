@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Fixed full12MP mode controls from Samsung2LA driver: CIT16..FLL-16,
  * again0x20..0x200 (1..16x), dgain0x100 unity, normal non-WDR/non-LTE. */
 #ifndef REDWOOD_CAMERA_S20_2LA_CONTROLS_H

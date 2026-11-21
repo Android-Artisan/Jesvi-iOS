@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # flash-twrp.sh [TWRP.img] — put TWRP into the S20's recovery partition and boot it, with no buttons.
 # From a phone running Jesvi iOS (USB cable; its log server at 10.77.0.2:8080): iOS hands over to our loader's Log
 # access, TWRP is written into recovery there (fastboot stage + "oem write recovery 0", read back), and

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline S20 external-SIPC download plan. No device I/O or NV reads. MIT.
 
 Protocol source and limits: docs/devices/x1slte/cellular/download-plan.md. A plan describes

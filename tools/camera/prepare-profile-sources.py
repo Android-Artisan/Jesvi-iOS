@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Prepare isolated original/experimental workers; fail if their shared ABI differs.
 
 The device, stream start/stop, cross-camera exclusion and object ownership remain

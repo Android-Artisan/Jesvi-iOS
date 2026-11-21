@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """One local preparation/build/package command. Never accesses a phone."""
 import fcntl
 import json

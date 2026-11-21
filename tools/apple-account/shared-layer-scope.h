@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native account clients only; account verification remains native. */
 #import <Foundation/Foundation.h>
 static inline BOOL rw_shared_account_process(void){

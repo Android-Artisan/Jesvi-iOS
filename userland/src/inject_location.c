@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood.dylib inside locationd: the compass (and device motion) without Apple's motion coprocessor.
  *
  * locationd picks its compass from a table of capabilities per iPhone model, CLPlatformInfo::queryMotionCaps().

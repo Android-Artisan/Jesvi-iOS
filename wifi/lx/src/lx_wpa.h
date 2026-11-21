@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * WPA2 with a passphrase, as a station sees it: the key a name and a passphrase make, and the
  * four-way handshake in which an access point and a station prove that key to each other and
  * arrive at the keys their frames are ciphered with (IEEE 802.11-2020, 12.7; RSN, AKM "PSK",

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Experimental first TEEGRIS transport handshake. No trustlet, sensor or auth.
  * Included after fixed platform helpers. Pages remain wired until reboot once
  * exposed to firmware, including on errors; never reclaim a potentially shared

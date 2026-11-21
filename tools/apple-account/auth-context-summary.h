@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Selected public service labels/flags only; unknown strings never leave process. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

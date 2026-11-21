@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # build.sh: out/RedwoodPhone.app (the CallKit provider for redwood-ims). Install: install.sh (phone lock holder).
 set -e
 cd "$(dirname "$0")"

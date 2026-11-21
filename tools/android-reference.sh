@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # android-reference.sh [OUT] — while the S20 runs an Android ROM (USB debugging on), record what we compare Jesvi iOS
 # against: CPU/GPU/memory frequency governors and limits, cpuidle, scheduler, thermal zones and trips, the power
 # HAL's init files, and the fingerprint stack's log during a live enrol + unlocks. No root needed. The output holds

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. RedwoodSMS: the S20's texts in the Messages app (loaded into imagent by the port's tweak loader).
  *
  * There is no CommCenter: texts travel over VoLTE (IMS) through redwood-ims. This bridge, inside imagent,

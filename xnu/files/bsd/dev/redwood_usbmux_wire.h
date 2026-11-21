@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* USB mux wire framing. Independent implementation of the public usbmuxd
  * device.c framing (network byte order); not the host daemon socket protocol.
  */

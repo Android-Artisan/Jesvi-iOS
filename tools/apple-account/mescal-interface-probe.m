@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Objective-C interface metadata only. No signing or account operations. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

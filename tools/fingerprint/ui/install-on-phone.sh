@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Run on the S20 as root, by the current phone-lock holder, from the bundle.
 # Does not restart SpringBoard or reboot. Relaunch Preferences manually.
 set -eu

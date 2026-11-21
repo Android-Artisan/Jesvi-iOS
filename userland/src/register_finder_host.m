@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Register the local Files host as a containerized user app, so Finder's
  * user-app sharing query includes it. Keep its existing identifier and data.
  * Copy the immutable system bundle once; never replace user documents. */

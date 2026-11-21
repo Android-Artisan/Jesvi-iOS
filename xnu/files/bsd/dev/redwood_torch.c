@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The flashlight of the POCO X5 Pro (redwood): the flash LED module of the PM8350C (SPMI slave 2,
  * registers 0xee00; "qcom,pm8350c-flash-led", four channels), the rear flash LED on its channel 0.
  * Every address and number below belongs to this phone, from Android's own device tree, Xiaomi's

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Compare ported rear-main triplets to Samsung source, without touching hardware."""
 import argparse
 import importlib.util

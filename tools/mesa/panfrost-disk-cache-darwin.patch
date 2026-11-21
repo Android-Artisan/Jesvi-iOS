@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 Redwood (the Exynos 990 port): Panfrost's disk shader cache on Mach-O. The cache keys its directory by the
 library's ELF build-id, which a Mach-O image does not have (build_id_find_nhdr_for_addr finds nothing and
 the upstream code reads through NULL); LC_UUID, which ld64 derives from the contents, stands in for it.

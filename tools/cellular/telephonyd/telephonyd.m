@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * redwood-telephonyd (B, 2026-11-15): the phone's telephony call provider -- the part of Apple's CommCenter that iOS's
  * call system talks to. It registers with CallKit under CommCenter's identity (application-identifier
  * com.apple.coretelephony + com.apple.callkit private-provider-api), so callservicesd lists it as THE telephony

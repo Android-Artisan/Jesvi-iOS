@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # One-time setup of a HackiOS workspace.
 #
 # HackiOS lives in two repositories that are built as one tree:

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * I2C bit-banged on two Exynos 990 GPIOs (open-drain: low = output 0, high = input, the
  * board's pull-ups raise it), and access to the pinctrl banks. Used where the HSI2C
  * controllers are not set up (their clocks are not ours to turn on): the touch controller,

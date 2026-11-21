@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """The corpus report: how far every module of every .metallib gets.
 
 This is the project's progress meter (docs/dev/air.md section 5). Each module goes

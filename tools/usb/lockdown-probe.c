@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Bounded QueryType probe for the user's stock lockdownd; no pairing/state change. */
 #include <sys/types.h>
 #include <sys/socket.h>

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # install.sh: redwood-telephonyd to /var/jb/redwood/bin, launchd job com.redwood.telephonyd (as mobile); RedwoodPhone (the
 # third-party CallKit app it replaces) stopped. Phone lock holder only; never while a call is up.
 set -e

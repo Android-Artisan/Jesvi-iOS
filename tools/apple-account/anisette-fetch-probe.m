@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Request Anisette data without account login. Provisioning requires an
  * explicit --provision-if-needed invocation; no identity resets are called.
  * Output is limited to availability booleans and error domain/code. */

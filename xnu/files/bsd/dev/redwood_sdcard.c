@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The S20's microSD slot (A, 2026-11-20; docs/devices/x1slte/sdcard.md): Synopsys DesignWare MMC 2.70a ("dwmmc2" at
  * 0x132E0000 in HSI1, the block of the embedded UFS and the Wi-Fi PCIe, so always powered while iOS runs).
  *

@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # macOS host environment for the HackiOS build (build natively on Apple silicon, no Linux).
 #
 # The project's shell is written for GNU userland (readlink -f, stat -c, nproc, cp -rs,

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Boot logo from YOUR iOS root, for every screen before iOS draws (A, 2026-11-15).
 
   python3 tools/bootlogo/mkbootlogo.py [--rootfs DIR] [--up-param STOCK_UP_PARAM.img]

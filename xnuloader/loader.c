@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * XNU loader: a UEFI application that plays the role of iBoot for an
  * open-source arm64 XNU kernel on non-Apple hardware.
  *

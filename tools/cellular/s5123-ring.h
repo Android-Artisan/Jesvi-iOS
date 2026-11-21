@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Bounded single-owner circular queue operations for the S20 IPC backend.
  * Geometry from own DT; arithmetic follows one-empty-byte ring convention.
  * Backend must establish memory ownership/cache policy and acquire/release

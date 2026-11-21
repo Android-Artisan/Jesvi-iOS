@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Passive promise-failure observation; preserves native return/arguments. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

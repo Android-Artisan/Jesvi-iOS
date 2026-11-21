@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Temporary diagnostic alert and Metal availability check; no account UI reads. */
 #import <UIKit/UIKit.h>
 #include <dlfcn.h>

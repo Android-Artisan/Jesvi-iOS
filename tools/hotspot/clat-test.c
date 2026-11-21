@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * clat-test: switch on iOS's own CLAT46 (bsd/net/nat464_utils.c) on the cellular tunnel, by hand, for the hotspot
  * bring-up (2026-11-19). Jio is IPv6-only: IPv4 from apps and from hotspot clients must be translated to IPv6 and sent
  * to the carrier's NAT64. On a real iPhone configd/CommCenter do these steps; here nobody does.

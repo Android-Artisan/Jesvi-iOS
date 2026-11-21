@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """How far every compute kernel of the corpus gets, as a table that has to add up.
 
 The corpus's 47 kernels are the part of it a draw cannot test, and air_run

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Audit one bounded CP BOOT preflight report, offline. Never proves LTE/CP acceptance."""
 import argparse
 import json

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Fixed-command client for the manually armed TEE diagnostic. No credentials. */
 #include <sys/sysctl.h>
 #include <stdio.h>

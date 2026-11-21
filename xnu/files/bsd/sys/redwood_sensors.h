@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * /dev/redwood-sensors: the phone's motion and environment sensors, sample by sample, from the kernel drivers that read
  * them to the code of ours in backboardd that turns them into the HID events iOS's own consumers read
  * (userland/src/inject_sensors.c). On the Galaxy S20 (x1slte) two drivers feed it:

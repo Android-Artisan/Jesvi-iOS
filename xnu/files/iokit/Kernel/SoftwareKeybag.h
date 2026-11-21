@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Software-only authentication for SEP-less development devices.
  * Does not encrypt existing class keys or attest hardware identity. No secrets
  * are logged. The caller supplies HMAC-SHA256 and random bytes, and serializes

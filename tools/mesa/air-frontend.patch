@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 Build the AIR frontend as part of Mesa.
 
 src/compiler/air is this repository's tools/mesa/air: the frontend that reads Apple's shader

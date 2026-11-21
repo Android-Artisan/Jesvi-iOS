@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read-only list from the Mac's existing usbmuxd; no pairing or credentials."""
 import json
 import plistlib

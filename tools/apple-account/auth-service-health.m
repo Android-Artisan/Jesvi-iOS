@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only native AuthKit RPC. No authentication, accounts or credential access.
  * Intentionally discards the passcode-state result; reports RPC error only. */
 #import <Foundation/Foundation.h>

@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # ui.sh — the look of the install scripts (sourced): a title, numbered steps, ✓ / ! / ✗ lines.
 #   STEPS=5; source ui.sh; title "Jesvi iOS: install"; step "Checking the phone"; ok "TWRP 3.7.1"; die "..."
 if [ -t 1 ]; then

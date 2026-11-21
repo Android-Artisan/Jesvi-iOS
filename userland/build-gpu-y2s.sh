@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # The GPU pieces of the small image for the Galaxy S20+ (y2s, Mali-G77), built on macOS, where
 # build.sh does not compile (it wants the Linux toolchain's ld64 and falls back to prebuilt/userland):
 #

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Build only our Settings tweak. No system image, firmware or shared build tree.
 set -euo pipefail
 cd "$(dirname "$0")/../.."

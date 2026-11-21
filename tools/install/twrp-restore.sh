@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # twrp-restore.sh BACKUP.zip [PARTITION ...] — put a twrp-backup.sh backup back on an S20 that is in TWRP.
 # Default: boot recovery super userdata up_param dtbo vbmeta vbmeta_samsung metadata misc cache (what any ROM or
 # Jesvi iOS install changes). EFS, modem, bootloader and param are NEVER written, even if named.

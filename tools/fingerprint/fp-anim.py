@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # fp-anim.py: animated live view of the fingerprint enroll loop (kern.redwood.tee "fp run 3 ...") from the phone's
 # kernel message buffer over SSH. Green reports reading/candidate, not verified iOS authentication.
 import argparse, re, struct, subprocess, sys, tempfile, time

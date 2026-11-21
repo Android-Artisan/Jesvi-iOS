@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Host helper. The current phone-lock holder may install/respring/begin/end.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

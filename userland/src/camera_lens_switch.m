@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Use Camera's existing lens selector. No overlay window or sensor writes here. */
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>

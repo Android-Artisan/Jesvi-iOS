@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * A software H.264 encoder for VideoToolbox (B, 2026-11-12): the Galaxy S20 has no AVE, the iPhone's video
  * encoder, so Apple's only H.264/HEVC encoders (/System/Library/VideoEncoders/AppleVideoEncoder.bundle) cannot
  * run and every recording came out as an empty file. This one encodes with OpenH264 (Cisco, BSD licence;

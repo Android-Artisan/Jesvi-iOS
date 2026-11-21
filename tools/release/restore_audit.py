@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Audit only firmware-free Restore preflight ZIPs; never clears the source inventory."""
 import argparse
 import hashlib

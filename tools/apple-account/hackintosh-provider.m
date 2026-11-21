@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native machine metadata helper. No account-store, keychain or credential API.
  * --check prints availability only. --stdio is exclusively an SSH/broker RPC:
  * replies contain short-lived machine proofs and must never be printed/logged.

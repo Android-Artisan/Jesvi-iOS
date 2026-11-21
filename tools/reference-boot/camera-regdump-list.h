@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Shared S20 camera register list (session B, 2026-11-11): Samsung reference (sec_debug SFR reads) and XNU
  * (cam.s20.front.stream third-arg bit 8) read the same addresses while the front SAK3J1 streams.
  * Sources: exynos9830 cmucal-sfr.c (all CMU_CSIS), is-hw-csi-v5_3.h csi_regs (CSIS1 core), PHY offsets used by

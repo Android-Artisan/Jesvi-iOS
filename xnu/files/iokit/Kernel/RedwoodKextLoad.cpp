@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The IOKit side of bsd/dev/redwood_kextload.c (A, 2026-11-20; docs/devices/x1slte/lifs-loader.md): a kext's C++
  * classes registered the way OSKext::load does it (preModLoad, the constructors, postModLoad), owned by the kernel's
  * own OSKext ("__kernel__": postModLoad wants a kext it knows), and its IOKit personality given to the catalogue so

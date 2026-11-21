@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Construct an empty native context only. Never calls authenticate. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

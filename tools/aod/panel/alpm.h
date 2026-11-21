@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* S20 hubble1 ALPM protocol facts from Samsung GPL kernel 69515fbb7:
  * s6e3hab_hubble1_a3_s0_panel.h tables/packets and panel_drv.c sequencing.
  * This portable transport core does not change clocks, rails or display modes.

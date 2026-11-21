@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. One bounded S5123 BOOT attempt, followed by verified CP-off cleanup.
  * Reuses the live hardware-proven SPI adapter and tested power lifecycle.
  * No DMA, shared-RAM writes, NV, MAIN, calls or network activity. */

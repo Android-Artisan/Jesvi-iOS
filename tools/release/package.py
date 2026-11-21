@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Assemble a PRIVATE development candidate. Never a flashable release ZIP.
 
 No arbitrary globs: exactly the three images plus provenance/checksums. The boot

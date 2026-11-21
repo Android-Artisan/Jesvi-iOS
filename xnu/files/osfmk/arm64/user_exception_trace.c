@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Bring-up aid: with boot-arg systrace set, describe every fatal-looking
  * exception a user thread takes, before it is delivered. There is no crash
  * reporter in this system, so this is the only place a crash is recorded.

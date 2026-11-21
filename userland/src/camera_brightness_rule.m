@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Persistent display-only rule, loaded into Camera + SpringBoard by TweakInject.
  * Camera renews a foreground lease; SpringBoard owns native brightness writes
  * and a crash/reboot recovery record. No ISP, sensor, AE/AF or lock-screen hooks. */

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """
 The S20+'s data volume (PLANS/09-standalone.md, P6): from the HFS+ that tools/mk-userdata-hfs.sh made with macOS's
 newfs_hfs (head.img: its first 512 MB, catalog.img: the catalog B-tree's blocks, tail.img: its last 2 MB), a

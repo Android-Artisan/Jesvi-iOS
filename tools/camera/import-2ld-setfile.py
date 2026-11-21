@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Extract the S5K2LD (rear main) global A3 table and its modes from Samsung's is-cis-2ld-setA.h."""
 import argparse
 import re

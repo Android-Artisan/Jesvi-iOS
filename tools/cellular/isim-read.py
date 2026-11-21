@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Read the ISIM identity (IMPI, home domain, IMPU) through redwood-cellulard's `apdu` command.
 Prints identities masked; with --save PATH writes them unmasked to a local private file. MIT."""
 import subprocess,sys,time,re

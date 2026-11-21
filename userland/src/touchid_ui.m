@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * libredwood-touchid-ui: Touch ID's on-screen place on the S20, whose sensor is under the display (iOS's Touch ID
  * screens were made for a home button). Loaded into SpringBoard and Preferences (kern.exec_inject).
  *

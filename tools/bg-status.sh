@@ -1,4 +1,8 @@
 #!/bin/sh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # bg-status.sh: what of ours (and the known iOS offenders) runs in the background on the phone, what it costs,
 # and how each debug switch stands. Read-only. See docs/devices/x1slte/background.md.
 ssh -o ConnectTimeout=6 -o BatchMode=yes s20 '

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Readers at once over an APFS volume on the phone (boot-arg apfs_check=5), one line per run.
 # The volume has to be the phone's resident image already (`./xnu/xl ramdisk IMAGE`); it stays
 # there across runs as long as none of them hangs.

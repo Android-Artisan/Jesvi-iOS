@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* MIT. Pure GPIO field updates; no physical I/O. Preserve every other pin. */
 #ifndef S5123_GPIO_FIELDS_H
 #define S5123_GPIO_FIELDS_H

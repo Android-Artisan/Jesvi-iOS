@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The S20's main PMIC (S2MPS19) through ACPM: a register read and write, and three of its LDOs switched on, for the
  * sensors (bsd/dev/redwood_ssp.c, bsd/dev/redwood_tcs3407.c). The AP has no bus of its own to the PMIC: SPEEDY belongs to
  * the APM core, and Linux asks ACPM over its "mfd" IPC channel (drivers/soc/samsung/acpm/acpm_mfd.c).

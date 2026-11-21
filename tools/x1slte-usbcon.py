@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte-usbcon.py PORT [COMMAND...]: the phone's USB serial link (usb_gadget=5): reads the kernel log for W seconds
 # (env W, default 3), then sends each COMMAND to the line console and prints its "usb" answers. PORT: /dev/cu.usbmodem*
 

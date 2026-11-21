@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * misctl on|off|state: iOS's own Personal Hotspot switch from the command line (A, 2026-11-19), the call Settings'
  * "Allow Others to Join" makes: -[MISManager setState:] (WirelessModemSettings.bundle), 1023 on, 1022 off. Signed
  * with Settings' MobileInternetSharing entitlements (misctl.ent). For automatic tests without hands on the phone.

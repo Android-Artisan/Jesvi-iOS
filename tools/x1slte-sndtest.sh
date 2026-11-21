@@ -1,4 +1,8 @@
 #!/bin/zsh
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # x1slte-sndtest.sh "KNOBS" ["KNOBS" ...]: for each set of sound boot-args: payload + pack + hands-free flash + boot,
 # then the audio driver's own start-up check from the kernel log (does RDMA3 read frames?).
 cd "$(dirname "$0")/.."

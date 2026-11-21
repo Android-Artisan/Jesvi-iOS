@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * MIT. cell-provision: the modem service's files in /var/root, made from the phone's OWN firmware (2026-11-20).
  *
  * A clean data volume had none of them, so redwood-cellulard ended at once ("no modem", no SIM) although everything

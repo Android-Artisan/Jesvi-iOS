@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * RedwoodMesa: native Touch ID for the S20 (iOS's own biometrickitd, Settings enrolment and lock-screen unlock).
  * Ported from redfin's SweetMesa (DenialOfGravity/ios-redfin, redfin-int 7f0764b, MIT License, Copyright (c) 2026
  * dipa-studio): their patches 1192, 1198-1207, 1210-1213. Changes for this port: built on every arm64 board (off

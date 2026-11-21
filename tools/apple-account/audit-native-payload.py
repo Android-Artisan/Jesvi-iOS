@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Offline audit of the reviewed iOS 16.5 akd binary; no device or account access.
 
 Requires capstone. Addresses are deliberately pinned to one binary hash. This

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Build the Store /auth/v1/native request on the owner's Mac so the Mescal proof set
  * (X-Apple-AMD / X-Apple-AMD-M / X-Apple-ActionSignature) is self-consistent with the body.
  *

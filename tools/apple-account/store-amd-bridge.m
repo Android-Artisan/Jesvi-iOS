@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Attach genuine owner-Mac Store AMD type2 proofs at native request preparation.
  * No endpoint rewriting, request-body forwarding, SAP replacement or success stub. */
 #import <Foundation/Foundation.h>

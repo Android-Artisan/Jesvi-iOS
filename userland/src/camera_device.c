@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The phone's cameras as iOS's capture stack wants them: a FigCaptureDevice with two FigCaptureStreams,
  * the wide camera as the back camera and the front one as the front camera, made for mediaserverd's
  * BWFigCaptureDeviceVendor in place of the device Apple's H10ISP.mediacapture makes of the iPhone's ISP

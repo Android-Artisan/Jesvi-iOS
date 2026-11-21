@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """
 Build the "XNUP" payload consumed by the boot shim and the XNU loader.
 

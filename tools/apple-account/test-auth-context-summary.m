@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #import <Foundation/Foundation.h>
 #include "auth-context-summary.h"
 @interface SyntheticContext:NSObject

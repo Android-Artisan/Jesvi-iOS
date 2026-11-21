@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* First-write MMIO journal. Masks exclude status/self-clearing command bits.
  * A failed/latched write is still recorded and rolled back. */
 #ifndef REDWOOD_CAMERA_S20_AUX_JOURNAL_H

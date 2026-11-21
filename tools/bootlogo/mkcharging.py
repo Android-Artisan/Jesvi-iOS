@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """iPhone's own charging pictures for Samsung's bootloader (A, 2026-11-20).
 
 With the phone off, S-Boot shows up_param's lpm.jpg when a charger is plugged in and low_battery_alert.jpg when the

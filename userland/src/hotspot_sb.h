@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Personal Hotspot in SpringBoard (B, 2026-11-19): the status bar's hotspot bubble and its device count.
  * On an iPhone CommCenter tells SpringBoard (-[... _setIsNetworkTethering:withNumberOfDevices:], SBTelephonyManager);
  * the S20 has no CommCenter. libredwood-mis (misd) posts com.redwood.hotspot when the access point or the number of

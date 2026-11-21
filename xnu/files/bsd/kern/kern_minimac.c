@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * Stand-ins for the two closed security policies user space cannot do
  * without: AMFI and the Sandbox. On a device they are kexts that register
  * MAC policies of those names; system software talks to them through

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Samsung FINGE wire replies, research diagnostics only.
  * A candidate below is not an authenticated iOS unlock result. No HAT HMAC,
  * challenge, SID, freshness or keybag binding is verified by this parser.

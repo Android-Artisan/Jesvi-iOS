@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Report upstream movement without pulling into, merging or rewriting this tree."""
 import json
 from pathlib import Path

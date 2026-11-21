@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Record provenance of a source-built kernel; a kernel is not a flashable image."""
 import json
 from pathlib import Path

@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* gnsstool: Scion-Project/scion-kernel userland/src/gnsstool.c (origin/main, 2026-11-12), unchanged but for the device name (/dev/redwood-gnss). */
 /*
  * gnsstool: the GNSS bring-up's hands on the BCM4775's link, through the kernel's /dev/redwood-gnss

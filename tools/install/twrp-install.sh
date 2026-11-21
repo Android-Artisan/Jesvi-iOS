@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # twrp-install.sh [--erase] [--yes] [--no-reboot] ZIP — install a Jesvi iOS ZIP (or the Restore ZIP) on a phone that is
 # in TWRP, from a Mac or PC over USB. You confirm once, here, before anything is copied: "yes" for an update that
 # keeps the phone's data, "ERASE" for anything that erases it (a fresh install, Jesvi-iOS-Restore). After that it

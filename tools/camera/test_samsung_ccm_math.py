@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic properties of the reconstructed stock CCM9 helper."""
 import unittest
 from samsung_ccm_math import ccm9_to_matrices

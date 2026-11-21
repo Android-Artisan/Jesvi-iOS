@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* GPU checks against Apple's documented RGB10A2Unorm bit layout.
  * https://developer.apple.com/documentation/metal/mtlpixelformat/rgb10a2unorm */
 #include "../mesa/air/air_metal.h"

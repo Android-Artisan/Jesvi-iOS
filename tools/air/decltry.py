@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Ask the frontend, one declaration at a time, whether it translates that call.
 
 The corpus report (`corpus.py`) says where a *module* stops, which is the first

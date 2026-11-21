@@ -1,3 +1,7 @@
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 diff --git a/Makefile b/Makefile
 index e78d8476c346..03fc3ff646b8 100644
 --- a/Makefile

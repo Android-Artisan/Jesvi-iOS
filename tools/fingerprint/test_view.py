@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """Synthetic message-buffer snapshots; importing the view must not contact a phone."""
 import runpy
 from pathlib import Path

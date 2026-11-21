@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * en0: a network interface that is Ethernet as far as the rest of the kernel and iOS can tell.
  *
  * iOS expects its interfaces from IONetworkingFamily, which this kernel does not have; the BSD

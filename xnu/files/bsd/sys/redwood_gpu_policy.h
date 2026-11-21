@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Samsung-derived GPU policy. Threshold progression and dwell are our policy,
  * not Samsung IPA. No timer or hardware access; caller supplies monotonic ms. */
 #ifndef REDWOOD_GPU_POLICY_H

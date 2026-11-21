@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Inspect local AOSKit support; --generate checks header availability in memory.
  * Never print/persist header values, account identities, passwords or OTPs. */
 #import <Foundation/Foundation.h>

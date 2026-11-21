@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # The frontend's whole test run, in the order of what it proves (docs/dev/air.md
 # section 4): first that the bitcode reader agrees with LLVM on every module of
 # the corpus, then how far every module gets through translation and ir3.

@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Get the files of iOS 16.5 (20F66, iPhone X) that the system image is made of, straight from
 # Apple's servers, and lay them out the way ../userland/build.sh expects them:
 #

@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The vibration motor of the POCO X5 Pro (redwood): a linear resonant actuator driven by an
  * Awinic AW86927 (chip ID 0x9270), Android's "haptic_hv" (Xiaomi's driver aw8692x, version 1.7.0).
  * Every address and number below belongs to this phone, from Android's own device tree, its

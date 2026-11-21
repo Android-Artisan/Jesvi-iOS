@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Read-only csops status/identity/one entitlement. Never emits entitlement blob. */
 #import <Foundation/Foundation.h>
 #include <errno.h>

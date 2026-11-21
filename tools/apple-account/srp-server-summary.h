@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Native server error codes/flags only; no response, token or raw-text logging. */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>

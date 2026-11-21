@@ -1,4 +1,10 @@
 /*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
+/*
  * The microSD card as an external disk in IOKit (A, 2026-11-21; docs/devices/x1slte/lifs-loader.md).
  *
  * userfsd (Files' external drives, with Apple's lifs.kext loaded by bsd/dev/redwood_kextload.c) matches an IOMedia under

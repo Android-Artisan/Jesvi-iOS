@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 #include "../../xnu/files/iokit/Kernel/redwood_graphics_policy.h"
 #include <assert.h>
 #include <stdio.h>

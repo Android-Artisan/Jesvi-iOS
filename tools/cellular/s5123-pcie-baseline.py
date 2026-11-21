@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 """PCIe1 prerequisites only: read CMU/GPIO/PMU, never isolated PHY/DBI/ELBI.
 
 Addresses from pinned Exynos9830 cmucal-sfr.c and HSI2 pinctrl. HSI2 also

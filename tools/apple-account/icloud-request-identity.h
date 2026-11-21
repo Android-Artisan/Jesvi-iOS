@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Preserve the native request and credentials; replace only selected lab metadata. */
 #import <Foundation/Foundation.h>
 static NSURLRequest *rw_auth_lab_align_icloud_request(NSURLRequest *request,NSDictionary *identity) {

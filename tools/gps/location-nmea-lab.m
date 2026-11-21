@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* 20F66-only bring-up bridge, loaded for one locationd launch by the operator.
  * Root-only local socket; live checksum-valid RMC+GGA epochs only. No simulated
  * CLLocation, authorization override, saved-position replay or authentication hook.

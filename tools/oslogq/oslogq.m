@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 // oslogq SECONDS [PROCESS...]: stream the live system log for SECONDS, optionally only the named processes
 // (LoggingSupport's live stream, as Apple's `log stream`; the public OSLogStore has no system scope on iOS).
 // Entitlements: oslogq.ent. Build: build.sh here.

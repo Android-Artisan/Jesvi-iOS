@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Temporary USB-only bridge for the owner's stock GLL in an isolated Linux lab.
  * One client, bounded deadline (default two minutes), existing kernel SPI owner, paired nav cleanup.
  * Never resets/powers down the shared hub or accepts memory-write RPCs.

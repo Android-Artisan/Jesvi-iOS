@@ -1,3 +1,9 @@
+/*
+ * JesviOS project contributions
+ * By Jesvi Jonathan
+ * Adapted by :
+ */
+
 /* Inspect/apply the project's default name through configd, preserving network settings.
  * Usage: device_name [--set-default]
  * Fresh images seed the same preferences only when no preferences file exists.

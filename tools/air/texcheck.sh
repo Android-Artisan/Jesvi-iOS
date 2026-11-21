@@ -1,4 +1,8 @@
 #!/bin/bash
+# JesviOS project contributions
+# By Jesvi Jonathan
+# Adapted by :
+
 # Run every texture shader of the corpus and check the texel it returns.
 #
 # air_run binds a texture whose texel (x, y, z) is (100+x, 200+y, 300+x+y+z, 400) --
