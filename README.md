@@ -5,9 +5,12 @@ iOS 16.5 running natively on the **Samsung Galaxy S20 (SM-G980F, Exynos 990)**.
 This tree builds the XNU kernel, the boot loader, the drivers and the user-space glue. The iOS system comes from
 Apple's own iOS 16.5 firmware, downloaded at build time. Nothing of Apple's or Samsung's is in this repository.
 
-> **Experimental.** It replaces Android on the phone. Read the [install guide](docs/release/install.md) and
-> [rollback](docs/release/rollback.md) first.
 
+[![Jesvi iOS 16.5 Demo](https://img.youtube.com/vi/-4pcSUe0ny0/hqdefault.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)<br>
+[Watch on YouTube](https://www.youtube.com/watch?v=-4pcSUe0ny0)
+
+
+## Info
 | | |
 |---|---|
 | **Version** | 0.1.3 in preparation (last tag: [v0.1.2](https://github.com/jesvi-eulah/Jesvi-iOS/releases)) |
