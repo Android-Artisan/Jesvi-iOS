@@ -63,16 +63,14 @@ empty maintainer arrays until owners volunteer.
   Reports changes; never merges or silently updates the build inputs. Dependabot
   opens reviewed action-version changes. "Auto pull" means check out the triggering
   commit for builds; upstream source updates remain reviewed lock changes.
-- **Private TWRP candidate:** disabled unless `ENABLE_PRIVATE_IMAGE_BUILDS=true`
-  in a private repository and run on its default branch. A dedicated disposable
-  macOS worker stages the locked input snapshot, builds, verifies and retains it
-  on a private persistent volume. The final TWRP ZIP/checksum/provenance are uploaded
-  as a **private workflow artifact** for seven days; source/public CI still uploads
-  no OS images. Artifact storage quota must cover the multi-GB package.
-  Each run attempt uses its own output directory and links its artifact from the
-  run summary. The workflow verifies the checksums before upload. For a
-  write-enabled fresh-install candidate, choose `writes=true`, `mode=fresh`,
-  and `outputs=twrp` when dispatching the workflow. This does not flash a phone.
+- **Private TWRP release:** manual dispatch, default branch only, gated by
+  `ENABLE_PRIVATE_IMAGE_BUILDS=true`. `runner=hosted` uses GitHub's `macos-15`
+  compute; `runner=self-hosted` uses the provisioned `exynos990-private` worker.
+  Both call **the same `./build.sh release` and `release.conf` as local builds**.
+  Only tool/input setup and retention differ. Each attempt uses a fresh output
+  directory, verifies ZIP checksums, and uploads an artifact for seven days.
+  `writes=true` creates an installable ZIP; `mode=update` preserves installed data.
+  No workflow flashes a phone. Ordinary CI's Restore ZIP is not the iOS installer.
 - **Draft source release:** disabled unless `ENABLE_DRAFT_RELEASES=true`. A `v*`
   tag runs strict publication inventory and host checks, then creates a **draft**
   behind the release environment. Initial inventory deliberately blocks this
@@ -80,7 +78,39 @@ empty maintainer arrays until owners volunteer.
 
 Action pins were resolved from official action repositories during this review.
 `actionlint` 1.7.12 validates the YAML, including the configured custom runner label.
-No workflow was dispatched; the repository has not been pushed.
+Inspect current repository visibility and run status rather than treating configuration as proof of execution.
+
+## GitHub-hosted full builds
+
+1. Check the account's Actions billing/usage first. Private repositories draw from
+   the plan's included allowance; additional compute and artifact storage can cost
+   money. Standard macOS compute is not unlimited free compute. A billing rejection
+   prevents even the configuration job from starting.
+2. Prepare the small board/bootstrap archive from an isolated, reviewed checkout:
+   `python3 tools/release/hosted_inputs.py pack --root /path/to/clean-checkout --output /private/staging/board-inputs.tar.gz`.
+   It verifies the selected inputs against their existing private-input lock,
+   includes firmware (including fingerprint), board/tool files, HFS kits and the
+   reviewed bootstrap, and rejects personal Wi-Fi configuration. It does not include
+   built images, Apple extraction, SSH settings or the development workspace.
+3. Upload `board-inputs.tar.gz` as an asset of a release in the build repository, using a non-version tag such as `private-build-inputs-YYYYMMDD`.
+   Set `PRIVATE_INPUTS_TAG` to that tag and `PRIVATE_INPUTS_SHA256` to the archive's
+   checksum. The input archive follows repository visibility; it is input storage, not a product release.
+4. Set `ENABLE_PRIVATE_IMAGE_BUILDS=true`. Public repositories also require
+   explicit `ENABLE_PUBLIC_IMAGE_BUILDS=true` authorization for public image artifacts. Dispatch **Full TWRP release** with
+   `runner=hosted`, the desired mode, `outputs=twrp`, and writes as appropriate.
+
+`ci/setup-hosted-images.sh` only runs on disposable GitHub-hosted macOS machines.
+It retains the selected Xcode, removes unused Xcode versions/simulator data,
+installs tools and checks for at least 45 GiB free after setup. GitHub's documented
+standard runner free-space allowance alone is insufficient; if reclamation does
+not leave enough room, the job stops. It never cleans the local Mac.
+
+The SHA-pinned archive is extracted with path/type/symlink checks, then its content
+hashes are verified. The shared release build fetches Apple extraction and the
+Touch ID library from Apple, builds the kernel and userland from source, assembles
+images and packages them. There is no fallback to a previously built local image.
+Hosted execution remains unverified until a full run passes. Local tests cannot
+prove hosted capacity, external downloads or runtime performance.
 
 ## Private worker setup
 
@@ -141,21 +171,20 @@ explain cache visibility, immutable keys, least privilege and action pinning.
 
 ## Retrieving the final TWRP ZIP
 
-The full private workflow now calls the same `build.sh local` pipeline as local
-builds and requires its `.zip`, `.zip.sha256` and `.zip.build.json` outputs before
-retention/upload. Its dispatch checkbox `experimental_installer` defaults false
-(read-only TWRP preflight); selecting it enables the unqualified writer, which
-still requires physical holds on the phone. No workflow flashes or reboots a phone.
+Open the successful **Full TWRP release** run and follow its summary download
+link (`jesvi-ios-<run-id>-<attempt>` artifact). GitHub wraps the output files in an
+outer artifact ZIP. Extract that, verify the inner `Jesvi-iOS_*.zip` using its
+`.sha256` file, and install the **inner ZIP**, not the outer GitHub artifact ZIP.
 
-Download `x1slte-twrp-<commit>-<run-id>` from the private run's artifacts. GitHub's
-UI wraps the files in an outer artifact ZIP: extract that outer ZIP, verify the
-inner `candidate.zip` checksum, and use only **candidate.zip** as the TWRP package.
-Do not select GitHub's outer download ZIP in recovery. The source-only `CI`
-workflow remains kernel/checks only. Remote repository/worker/environment/volumes
-must still be configured; a GitHub run has not been demonstrated in this session.
+The shared `release.conf` version determines names for both local and hosted
+packages. No product release or version tag is created by this workflow. Public repositories expose the artifacts publicly.
 
-Apple-framework passcode tests run on macOS, including kernel-cache hits and
-private full builds. The portable Ubuntu checks do not attempt to link Darwin
-frameworks. Full private builds run both source checks and the recovery test suite
-before staging inputs. Workflow lint is local evidence; it is not an actual
-successful GitHub execution.
+Apple-framework passcode tests run on macOS. Full private builds run source and
+recovery checks before assembly. Workflow lint and host tests are local evidence,
+not proof of a successful GitHub full image build. In the 2026-11-21 investigation,
+GitHub rejected the latest CI jobs before execution with an account payment or
+spending-limit error; no hosted full ZIP was produced.
+
+The owner made Jesvi-iOS public on 2026-11-21 and explicitly authorized a public
+full installer ZIP. The workflow keeps a separate public-output opt-in so a future
+visibility change alone does not publish full images.

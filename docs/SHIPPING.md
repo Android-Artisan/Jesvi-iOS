@@ -1,3 +1,14 @@
+## 2026-11-21 — 0.1.3 and hosted full-package workflow
+
+- Bump the shared release.conf version to 0.1.3. Local and Actions packaging use it.
+- Add a GitHub-hosted macOS option to Private TWRP release, with isolated tool setup,
+  reviewed board/bootstrap archive transport and the unchanged build.sh release entry point.
+- Full ZIP upload is checksum-verified; public output requires explicit opt-in; ordinary CI still only builds
+  the kernel and Restore ZIP. No version tag or public release is created.
+- Hosted runtime verification is pending: GitHub rejected current jobs before execution
+  due to account billing/spending limits. No paid spending settings were changed. The owner subsequently made the repository public
+  and explicitly approved a publicly downloadable full ZIP.
+
 ## 2026-11-21 — Keep the Live Photo default off on first Camera launch
 
 - CameraUI 16.5's first-launch migration overwrites DesiredIrisMode unless

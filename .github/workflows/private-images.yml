@@ -1,8 +1,13 @@
-name: Private TWRP release
-# Only enable in a PRIVATE build repository with disposable macOS workers.
+name: Full TWRP release
+# Same build.sh release as local builds; public image output requires explicit opt-in.
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: GitHub compute (hosted) or an already provisioned private Mac
+        type: choice
+        options: [hosted, self-hosted]
+        default: hosted
       writes:
         description: Override release.conf WRITES (hardware-unqualified writes after physical confirmation)
         type: choice
@@ -32,31 +37,42 @@ jobs:
           REPO_PRIVATE: ${{ github.event.repository.private }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           BUILDS_ENABLED: ${{ vars.ENABLE_PRIVATE_IMAGE_BUILDS }}
+          PUBLIC_IMAGES_ENABLED: ${{ vars.ENABLE_PUBLIC_IMAGE_BUILDS }}
         run: |
-          if [[ "$REPO_PRIVATE" != true || "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
-            echo "::error::Run the full iOS package build on the default branch of the private repository."
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Run the full iOS package build on the default branch."
+            exit 1
+          fi
+          if [[ "$REPO_PRIVATE" != true && "$PUBLIC_IMAGES_ENABLED" != true ]]; then
+            echo "::error::Public image artifacts require explicit ENABLE_PUBLIC_IMAGE_BUILDS=true approval."
             exit 1
           fi
           if [[ "$BUILDS_ENABLED" != true ]]; then
-            echo "::error::Register the exynos990-private macOS runner, provision its private inputs, and set ENABLE_PRIVATE_IMAGE_BUILDS=true."
+            echo "::error::Provision the reviewed private inputs and set ENABLE_PRIVATE_IMAGE_BUILDS=true."
             exit 1
           fi
   candidate:
     needs: configuration
     environment: private-images
-    runs-on: [self-hosted, macOS, exynos990-private]
-    timeout-minutes: 180
+    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || 'macos-15' }}
+    timeout-minutes: 360
     env:
       RELEASE_OUT: dist/release-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHONUNBUFFERED: '1'
+      SHARE: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Provision disposable GitHub compute
+        if: inputs.runner != 'self-hosted'
+        run: bash ci/setup-hosted-images.sh
       - name: Validate source and native recovery backend
         run: |
           bash ci/check.sh
           bash ci/check-recovery.sh
       - name: Stage private input snapshot
+        if: inputs.runner == 'self-hosted'
         env:
           PRIVATE_INPUTS_ROOT: ${{ vars.PRIVATE_INPUTS_ROOT }}
         run: |
@@ -65,9 +81,23 @@ jobs:
             exit 1
           fi
           python3 tools/release/private_store.py stage --snapshot "$PRIVATE_INPUTS_ROOT"
+          echo 'HACKIOS_IMAGE_CACHE=/var/cache/exynos990/private-images' >> "$GITHUB_ENV"
+      - name: Download reviewed board inputs from this repository
+        if: inputs.runner != 'self-hosted'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
+          INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+        run: |
+          test -n "$INPUTS_TAG" && test -n "$INPUTS_SHA256"
+          gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs"
+          python3 tools/release/hosted_inputs.py unpack \
+            --archive "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz" \
+            --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
+          rm "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
       - name: Build everything release.conf asks for
         env:
-          HACKIOS_IMAGE_CACHE: /var/cache/exynos990/private-images
           WRITES_INPUT: ${{ inputs.writes }}
           OUTPUTS_INPUT: ${{ inputs.outputs }}
           MODE_INPUT: ${{ inputs.mode }}
@@ -84,6 +114,7 @@ jobs:
             shasum -a 256 -c ./*.sha256
           )
       - name: Retain deduplicated image objects privately
+        if: inputs.runner == 'self-hosted'
         env:
           PRIVATE_STORE_ROOT: ${{ vars.PRIVATE_STORE_ROOT }}
         run: |
@@ -92,7 +123,7 @@ jobs:
             [ -d "$bundle" ] || continue
             python3 tools/release/private_store.py retain --bundle "$bundle" --store "$PRIVATE_STORE_ROOT"
           done
-      - name: Upload this run's private packages
+      - name: Upload this run's verified packages
         id: packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -105,3 +136,13 @@ jobs:
         env:
           PACKAGE_URL: ${{ steps.packages.outputs.artifact-url }}
         run: printf '[Download package ZIPs and SHA-256 checksums](%s)\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: private-build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/local-build/*.log
+            out/kernel/build.log
+          retention-days: 7
+          if-no-files-found: ignore
