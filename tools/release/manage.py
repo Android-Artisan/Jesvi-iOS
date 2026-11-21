@@ -74,6 +74,23 @@ def run(*args, env=None):
     subprocess.run(args, cwd=ROOT, env=env, check=True)
 
 
+def touchid_inputs():
+    """Touch ID in a clean build: the ported libBKDM1 (made from Apple's iPhone 8 firmware by tools/touchid/fetch-bkdm1.sh,
+    once) and Samsung's fingerprint TA set (fw-fingerprint, the phone's vendor/tee). touchid=1 without libBKDM1 leaves
+    SpringBoard waiting on the Apple logo, so a missing piece stops the build; JESVI_TOUCHID=0 builds without Touch ID."""
+    if os.environ.get('JESVI_TOUCHID', '1') == '0':
+        return
+    if not (ROOT / 'sysimage/iphone8/libBKDM1.dylib').is_file():
+        tools = ROOT.parents[1] / 'tools/bin'   # ipsw, ldid of the research tree, when the checkout is inside it
+        env = dict(os.environ, PATH=f'{tools}:{os.environ.get("PATH", "")}') if tools.is_dir() else None
+        run('bash', 'tools/touchid/fetch-bkdm1.sh', env=env)
+    if not (ROOT / 'sysimage/iphone8/libBKDM1.dylib').is_file():
+        raise ValueError('Touch ID: no sysimage/iphone8/libBKDM1.dylib after tools/touchid/fetch-bkdm1.sh')
+    if not (ROOT / 'fw-fingerprint').is_dir():
+        raise ValueError('Touch ID: no fw-fingerprint/ (the phone\'s /vendor/tee: FINGE TA + driver TAs); '
+                         'copy it in and regenerate the private-inputs lock, or JESVI_TOUCHID=0')
+
+
 def doctor(device, images=False, experimental_kernel=False):
     d = profile(device)
     problems = []
@@ -216,6 +233,7 @@ def main():
         userdata = profile(a.device)['partitions']['userdata']
         data = targets.data_bytes(userdata)
         hfs_kit(targets.kit_path(ROOT, data, userdata), data)
+        touchid_inputs()
         env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1', JESVI_TARGET=a.device)
         env['HACKIOS_IMAGE_CACHE'] = str(Path(env.get('HACKIOS_IMAGE_CACHE', ROOT / '.cache/private-images')).resolve())
         # Build locally, never export xnu-src over the source under review.

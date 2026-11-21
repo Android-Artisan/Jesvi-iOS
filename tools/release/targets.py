@@ -213,7 +213,8 @@ def without_unbuilt_touchid(line, root=ROOT):
     """touchid=1 only when the image carries the ported libBKDM1 (userland/build.sh copies sysimage/iphone8/libBKDM1.dylib,
     a local file: Apple's code). Without it the loader's /arm-io/mesa node still makes MobileGestalt answer "Touch ID",
     SpringBoard asks biometrickitd at start-up, biometrickitd never answers: Apple logo for ever on a fresh install
-    (0.1.2 from a clean checkout, 2026-11-21; touchid=0 booted it)."""
+    (0.1.2 from a clean checkout, 2026-11-21; touchid=0 booted it). manage.touchid_inputs() makes libBKDM1 first, so
+    this only acts for JESVI_TOUCHID=0: a safety net, never a silent loss of Touch ID."""
     words = line.split()
     if 'touchid=1' in words and not (root / 'sysimage/iphone8/libBKDM1.dylib').is_file():
         print('  Touch ID: no sysimage/iphone8/libBKDM1.dylib (tools/touchid/fetch-bkdm1.sh): touchid=0 in the boot line')

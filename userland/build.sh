@@ -1065,11 +1065,15 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	fi
 	# The fingerprint TA set for a clean data volume (A, 2026-11-20): redwood-fpd copies it to /var/root/tee when that
 	# is missing (src/redwood-fpd.c fp_provision). It is Samsung's vendor/tee from THIS phone (device/firmware/vendor-tee),
-	# so only in a build for this machine's own phone: never in a SHARE=1 image (docs/clean-install.md).
-	if [ -z "$SHARE" ] && [ -d ../../../device/firmware/vendor-tee ]; then
+	# Private release builds take it from ../fw-fingerprint (a private input like fw-sound/fw-wifi, the same vendor/tee
+	# folder); a build for this machine's own phone also from device/firmware/vendor-tee (docs/clean-install.md).
+	FPTEE=
+	if [ -d ../fw-fingerprint ]; then FPTEE=../fw-fingerprint
+	elif [ -z "$SHARE" ] && [ -d ../../../device/firmware/vendor-tee ]; then FPTEE=../../../device/firmware/vendor-tee; fi
+	if [ -n "$FPTEE" ]; then
 		mkdir -p sysroot/System/Library/Redwood/Fingerprint
 		rm -rf sysroot/System/Library/Redwood/Fingerprint/tee
-		cp -R ../../../device/firmware/vendor-tee sysroot/System/Library/Redwood/Fingerprint/tee
+		cp -R "$FPTEE" sysroot/System/Library/Redwood/Fingerprint/tee
 		find sysroot/System/Library/Redwood/Fingerprint/tee -name '._*' -delete
 		chmod -R go-rwx sysroot/System/Library/Redwood/Fingerprint/tee
 		echo "  Touch ID: fingerprint TA set in the system image (fresh data volumes)"
