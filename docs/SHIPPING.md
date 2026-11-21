@@ -1,3 +1,13 @@
+## 2026-11-21 — Keep the Live Photo default off on first Camera launch
+
+- CameraUI 16.5's first-launch migration overwrites DesiredIrisMode unless
+  CAMUserPreferenceForcedLivePhotoOnTenTwo exists (cache address 0x1cdccd898).
+  Seed this and CAMUserPreferenceDidPerformAutoLivePhotoUpgrade alongside the off/preserve settings.
+- A separate .redwood-camera-defaults-v2 marker repairs existing installs once without
+  reapplying keyboard, location or region defaults. Subsequent Camera choices remain user-controlled.
+- Validation: inspected the installed-version CameraUI migration code; iOS arm64 compiler
+  syntax check passed (two existing warnings); all 61 release tests passed. Device verification pending.
+
 ## 2026-11-20 (B) — SIM and data survive a clean install
 
 - What: a clean data volume had no modem files, so no SIM/data. redwood-cellulard now runs cell-provision when any

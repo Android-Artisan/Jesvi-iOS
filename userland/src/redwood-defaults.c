@@ -20,11 +20,13 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #define MARKER "/var/root/.redwood-defaults-v1"
+#define CAMERA_MARKER "/var/root/.redwood-camera-defaults-v2"
 
 /* libproc (in libSystem; no header in the iOS SDK) */
 int proc_listallpids(void *buffer, int buffersize);
@@ -49,6 +51,27 @@ set_int(CFStringRef user, const char *domain, const char *key, int v)
 	CFNumberRef n = CFNumberCreate(NULL, kCFNumberIntType, &v);
 	int r = set(user, domain, key, n);
 	CFRelease(n);
+	return r;
+}
+
+/* CameraUI 16.5 resets IrisMode on its first launch unless ForcedLivePhotoOnTenTwo
+ * exists (0x1cdccd898). Its next migration can upgrade On to Auto (0x1cdccd948).
+ * Seed both migration flags, not just the desired mode. A separate marker repairs
+ * v1 installs once without resetting location, keyboard feedback or region. */
+static int
+camera_defaults(void)
+{
+	if (access(CAMERA_MARKER, F_OK) == 0) return 0;
+	int r = set(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferenceForcedLivePhotoOnTenTwo", kCFBooleanTrue);
+	r |= set(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferenceDidPerformAutoLivePhotoUpgrade", kCFBooleanTrue);
+	r |= set(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferencePreserveLivePhoto", kCFBooleanTrue);
+	r |= set_int(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferenceDesiredIrisMode", 0);
+	if (r == 0) {
+		int fd = open(CAMERA_MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd < 0) return 1;
+		close(fd);
+		printf("redwood-defaults: Live Photo off; Camera migrations seeded\n");
+	}
 	return r;
 }
 
@@ -162,8 +185,9 @@ main(void)
 	int r = 0;
 
 	if (stat(MARKER, &st) == 0) {
+		r = camera_defaults();
 		region_from_sim();
-		return 0;               /* applied on this data volume already: the user's choices stand */
+		return r;               /* other defaults already applied: the user's choices stand */
 	}
 	/* cfprefsd must be up to write mobile's preferences: wait for it (up to a minute after boot) */
 	for (int i = 0; i < 30; i++) {
@@ -175,8 +199,7 @@ main(void)
 	}
 	r |= location_services_on();
 	r |= set_int(CFSTR("mobile"), "com.apple.keyboard.preferences", "KeyboardVisceral", 2);
-	r |= set(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferencePreserveLivePhoto", kCFBooleanTrue);
-	r |= set_int(CFSTR("mobile"), "com.apple.camera", "CAMUserPreferenceDesiredIrisMode", 0);
+	r |= camera_defaults();
 	if (r == 0) {
 		int fd = open(MARKER, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		if (fd >= 0) close(fd);
