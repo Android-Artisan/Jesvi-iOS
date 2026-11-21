@@ -172,3 +172,18 @@
  
  	// Check for and load custom theme if present
  	TWFunc::check_selinux_support();
+@@ -491,7 +494,13 @@
+ 	PageManager::LoadLanguage(DataManager::GetStrValue("tw_language"));
+ 	GUIConsole::Translate_Now();
+ 
+-	TWFunc::checkforapp(); //Checking compatibility for TWRP app
++	// The optional TWRP Android app requires an Android system partition.
++	char jesvi_layout[PROPERTY_VALUE_MAX];
++	property_get("twrp.jesvios.layout", jesvi_layout, "0");
++	if (strcmp(jesvi_layout, "1") == 0)
++		DataManager::SetValue("tw_app_install_status", 2);
++	else
++		TWFunc::checkforapp();
+ 
+ 	// Launch the main GUI
+ 	gui_start();
