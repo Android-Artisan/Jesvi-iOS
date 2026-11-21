@@ -621,9 +621,7 @@ bigpark_check(int a76, int m5)
 	lck_mtx_unlock(&scroff_lock);
 }
 
-/* Darwin thermal pressure values used by SpringBoard on iOS 16.5.
- * Critical at the default 96 C M5 hotplug threshold, kept down to 93 C. This does not change hardware protection.
- */
+/* Darwin thermal pressure values used by SpringBoard on iOS 16.5. */
 static int thermal_pressure = -1;
 
 static int
@@ -656,9 +654,9 @@ thermal_pressure_sample(const int temp[4])
 	}
 	int previous = os_atomic_load(&thermal_pressure, relaxed);
 	int pressure = 0;
-	/* The Exynos 990 works at 80-90 C (A, 2026-11-21): heavy at 88 C greyed out iOS's flashlight on a phone that was
-	 * not hot. Moderate 88, heavy 93, critical 96 (Samsung's M5 hotplug), each with a 3 C hysteresis. */
-	if (hottest >= 96 || (previous >= 40 && hottest > 93)) {
+	/* Let the default 96 C M5 hotplug respond before SpringBoard shows its temperature screen.
+	 * Enter critical at 98 C and hold it through small swings until the chip cools to 93 C. */
+	if (hottest >= 98 || (previous >= 40 && hottest > 93)) {
 		pressure = 40;
 	} else if (hottest >= 93 || (previous >= 30 && hottest > 90)) {
 		pressure = 30;
