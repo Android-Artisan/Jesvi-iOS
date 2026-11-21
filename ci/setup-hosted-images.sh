@@ -19,7 +19,7 @@ if sim.is_dir():
     subprocess.run(['sudo', 'rm', '-rf', str(sim)], check=True)
 PY
 brew install coreutils gnu-tar gnu-sed findutils bison m4 sevenzip llvm lld ldid \
-  ninja meson cmake pkg-config autoconf automake libtool zstd lz4
+  ninja meson cmake pkg-config autoconf automake libtool zstd lz4 age
 brew install blacktop/tap/ipsw
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
 set +u

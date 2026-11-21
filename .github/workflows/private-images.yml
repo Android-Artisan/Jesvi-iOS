@@ -90,13 +90,19 @@ jobs:
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
           INPUTS_URL: ${{ secrets.HOSTED_BOARD_INPUTS_URL }}
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
           STOCK_AP_URL: ${{ vars.STOCK_AP_URL }}
         run: |
           archive="$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
           mkdir -p "$(dirname "$archive")"
           flags=()
           if [[ -n "$STOCK_AP_URL" ]]; then flags+=(--stock); fi
-          if [[ -n "$INPUTS_URL" ]]; then
+          if [[ -n "$INPUTS_AGE_KEY" ]]; then
+            test -n "$INPUTS_TAG"
+            gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz.age --dir "$(dirname "$archive")"
+            printf '%s\n' "$INPUTS_AGE_KEY" | age --decrypt --identity - --output "$archive" "$archive.age"
+            rm "$archive.age"
+          elif [[ -n "$INPUTS_URL" ]]; then
             curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' \
               -o "$archive" "$INPUTS_URL"
           else

@@ -112,6 +112,17 @@ images and packages them. There is no fallback to a previously built local image
 Hosted execution remains unverified until a full run passes. Local tests cannot
 prove hosted capacity, external downloads or runtime performance.
 
+### Encrypted inputs on GitHub Releases
+
+Generate a dedicated `age` identity and encrypt `board-inputs.tar.gz` to its
+recipient, producing `board-inputs.tar.gz.age`. Upload the encrypted file as
+the asset of the release named by `PRIVATE_INPUTS_TAG`. Store the identity in
+`HOSTED_BOARD_INPUTS_AGE_KEY` on the `private-images` Actions environment and
+set `PRIVATE_INPUTS_SHA256` to the plaintext archive digest. Restrict the
+environment to the default branch. The runner authenticates and decrypts the
+asset before verifying and unpacking it. Keep the plaintext and identity out
+of releases, caches, artifacts and Git.
+
 ### Staging Samsung firmware from stock Odin
 
 Set `STOCK_AP_URL` and `STOCK_AP_SHA256` to a direct HTTPS download and SHA-256
