@@ -119,7 +119,8 @@ recipient, producing `board-inputs.tar.gz.age`. Upload the encrypted file as
 the asset of the release named by `PRIVATE_INPUTS_TAG`. Store the identity in
 `HOSTED_BOARD_INPUTS_AGE_KEY` on the `private-images` Actions environment and
 set `PRIVATE_INPUTS_SHA256` to the plaintext archive digest. Restrict the
-environment to the default branch. The runner authenticates and decrypts the
+environment to the default branch or the exact branch set in
+`HOSTED_RELEASE_BRANCH` for a hosted candidate. The runner authenticates and decrypts the
 asset before verifying and unpacking it. Keep the plaintext and identity out
 of releases, caches, artifacts and Git.
 

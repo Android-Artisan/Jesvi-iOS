@@ -36,11 +36,17 @@ jobs:
         env:
           REPO_PRIVATE: ${{ github.event.repository.private }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HOSTED_RELEASE_BRANCH: ${{ vars.HOSTED_RELEASE_BRANCH }}
+          RUNNER_CHOICE: ${{ inputs.runner }}
           BUILDS_ENABLED: ${{ vars.ENABLE_PRIVATE_IMAGE_BUILDS }}
           PUBLIC_IMAGES_ENABLED: ${{ vars.ENABLE_PUBLIC_IMAGE_BUILDS }}
         run: |
-          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
-            echo "::error::Run the full iOS package build on the default branch."
+          release_branch="$DEFAULT_BRANCH"
+          if [[ "$RUNNER_CHOICE" == hosted && -n "$HOSTED_RELEASE_BRANCH" ]]; then
+            release_branch="$HOSTED_RELEASE_BRANCH"
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/$release_branch" ]]; then
+            echo "::error::Run the full iOS package build on the configured release branch."
             exit 1
           fi
           if [[ "$REPO_PRIVATE" != true && "$PUBLIC_IMAGES_ENABLED" != true ]]; then
