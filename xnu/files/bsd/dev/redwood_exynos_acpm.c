@@ -622,8 +622,7 @@ bigpark_check(int a76, int m5)
 }
 
 /* Darwin thermal pressure values used by SpringBoard on iOS 16.5.
- * The warning starts just before the default 96 C M5 hotplug threshold.
- * Keep it active down to 91 C. This does not change hardware protection.
+ * Critical at the default 96 C M5 hotplug threshold, kept down to 93 C. This does not change hardware protection.
  */
 static int thermal_pressure = -1;
 
@@ -657,11 +656,13 @@ thermal_pressure_sample(const int temp[4])
 	}
 	int previous = os_atomic_load(&thermal_pressure, relaxed);
 	int pressure = 0;
-	if (hottest >= 95 || (previous >= 40 && hottest > 91)) {
+	/* The Exynos 990 works at 80-90 C (A, 2026-11-21): heavy at 88 C greyed out iOS's flashlight on a phone that was
+	 * not hot. Moderate 88, heavy 93, critical 96 (Samsung's M5 hotplug), each with a 3 C hysteresis. */
+	if (hottest >= 96 || (previous >= 40 && hottest > 93)) {
 		pressure = 40;
-	} else if (hottest >= 88 || (previous >= 30 && hottest > 86)) {
+	} else if (hottest >= 93 || (previous >= 30 && hottest > 90)) {
 		pressure = 30;
-	} else if (hottest >= 80 || (previous >= 20 && hottest > 78)) {
+	} else if (hottest >= 88 || (previous >= 20 && hottest > 85)) {
 		pressure = 20;
 	}
 	/* A missing reading can never clear a warning. */
