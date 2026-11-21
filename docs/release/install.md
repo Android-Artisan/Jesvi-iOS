@@ -118,14 +118,6 @@ An [experimental TWRP ZIP](twrp.md) is now implemented, including a preflight-on
 mode and an explicitly enabled writer. It still needs controlled hardware
 qualification; the guide below describes the transaction and the older tar archive.
 
-## Pick the correct path
-
-| Starting point | Intended path | Current limit |
-|---|---|---|
-| Stock Android on a new supported S20 | Exact-device Download Mode/TWRP preparation, backups, explicit fresh installation | Experimental ZIP implements initialization/transaction; hardware qualification remains |
-| Existing iOS development phone | Controlled update preserving existing HFSX userdata and software keybags | The new candidate and update/readback/rescue path need device testing |
-| Other Exynos 990 model or storage variant | Add and qualify that board first | The S20 package cannot be reused solely because the SoC matches |
-
 The current measured target is **SM-G980F, Exynos 990, 8 GB / 128 GB**, bootloader
 `G980FXXSNHYB7`. The development profile is `x1slte`; recovery may identify its
 family as `x1s`. Read [device evidence](device-evidence.md). This is not a general
