@@ -112,6 +112,25 @@ images and packages them. There is no fallback to a previously built local image
 Hosted execution remains unverified until a full run passes. Local tests cannot
 prove hosted capacity, external downloads or runtime performance.
 
+### Staging Samsung firmware from stock Odin
+
+Set `STOCK_AP_URL` and `STOCK_AP_SHA256` to a direct HTTPS download and SHA-256
+for the stock SM-G980F AP tar or decrypted Odin ZIP. Use the same firmware
+revision as the qualified local build. The hosted runner verifies the download,
+extracts `boot.img` and the vendor partition from `super.img`, and stages the
+Samsung DT table and shared Wi-Fi, sound, haptics and fingerprint files.
+
+Use `hosted_inputs.py pack --stock` to prepare the smaller supplemental archive.
+It supplies the custom UEFI, reviewed tool inputs, HFS kits, and the sensor hub
+blob, which this port builds from a Samsung kernel-source header. Set
+`PRIVATE_INPUTS_SHA256` to the supplemental archive checksum. A private HTTPS
+download can be provided through the `HOSTED_BOARD_INPUTS_URL` environment
+secret. Without `STOCK_AP_URL`, the existing complete input archive is used.
+
+For the installable TWRP ZIP, dispatch with `runner=hosted`, `outputs=twrp`,
+`writes=true` and the intended install mode. GitHub uploads the ZIP and checksum
+only after the shared release build and installer verification succeed.
+
 ## Private worker setup
 
 Never register the active development Mac as this worker. Use a disposable VM/host

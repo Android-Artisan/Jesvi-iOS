@@ -82,20 +82,36 @@ jobs:
           fi
           python3 tools/release/private_store.py stage --snapshot "$PRIVATE_INPUTS_ROOT"
           echo 'HACKIOS_IMAGE_CACHE=/var/cache/exynos990/private-images' >> "$GITHUB_ENV"
-      - name: Download reviewed board inputs from this repository
+      - name: Download reviewed board inputs
         if: inputs.runner != 'self-hosted'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+          INPUTS_URL: ${{ secrets.HOSTED_BOARD_INPUTS_URL }}
+          STOCK_AP_URL: ${{ vars.STOCK_AP_URL }}
         run: |
-          test -n "$INPUTS_TAG" && test -n "$INPUTS_SHA256"
-          gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs"
+          archive="$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+          mkdir -p "$(dirname "$archive")"
+          flags=()
+          if [[ -n "$STOCK_AP_URL" ]]; then flags+=(--stock); fi
+          if [[ -n "$INPUTS_URL" ]]; then
+            curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' \
+              -o "$archive" "$INPUTS_URL"
+          else
+            test -n "$INPUTS_TAG"
+            gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz --dir "$(dirname "$archive")"
+          fi
           python3 tools/release/hosted_inputs.py unpack \
-            --archive "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz" \
-            --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
-          rm "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+            --archive "$archive" --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256" "${flags[@]}"
+          rm "$archive"
+      - name: Prepare SM-G980F firmware from stock Odin
+        if: inputs.runner != 'self-hosted' && vars.STOCK_AP_URL != ''
+        env:
+          STOCK_AP_URL: ${{ vars.STOCK_AP_URL }}
+          STOCK_AP_SHA256: ${{ vars.STOCK_AP_SHA256 }}
+        run: bash ci/stage-stock-odin.sh
       - name: Build everything release.conf asks for
         env:
           WRITES_INPUT: ${{ inputs.writes }}

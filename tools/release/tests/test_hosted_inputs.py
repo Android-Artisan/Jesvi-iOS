@@ -26,6 +26,7 @@ class HostedInputsTests(unittest.TestCase):
             else:
                 p.mkdir(parents=True, exist_ok=True)
                 (p / 'fixture').write_bytes(b'reviewed fixture')
+        (self.source / hosted.STOCK_UEFI).write_bytes(b'reviewed UEFI')
         jb = self.source / 'jb/root/usr/bin'
         jb.mkdir(parents=True)
         (jb / 'tool').write_bytes(b'program')
@@ -45,6 +46,14 @@ class HostedInputsTests(unittest.TestCase):
             self.assertEqual(fingerprint({name: self.source / name}, {}), fingerprint({name: self.dest / name}, {}))
         self.assertFalse((self.dest / 'sysimage').exists())
         self.assertFalse((self.dest / 'inputs/private-inputs.lock.json').exists())
+
+    def test_stock_archive_omits_odin_inputs(self):
+        hosted.pack(self.source, self.archive, stock=True)
+        hosted.unpack(self.archive, self.dest, digest(self.archive), stock=True)
+        self.assertTrue((self.dest / hosted.STOCK_UEFI).is_file())
+        self.assertTrue((self.dest / 'fw-sensors').is_dir())
+        self.assertFalse((self.dest / 'fw-fingerprint').exists())
+        self.assertFalse((self.dest / 'inputs/x1slte/fixture').exists())
 
     def test_modified_reviewed_inputs_refused(self):
         (self.source / 'fw-fingerprint/fixture').write_bytes(b'changed')

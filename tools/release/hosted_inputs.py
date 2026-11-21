@@ -16,6 +16,9 @@ from cache import digest, fingerprint
 
 FIXED = {'inputs/x1slte', 'inputs/tools', 'inputs/toolchain.json', 'userland/hfs-kit.bin', 'jb'}
 REQUIRED = FIXED - {'jb'} | {'fw-fingerprint', 'fw-wifi', 'fw-haptic', 'fw-sound', 'fw-sensors'}
+STOCK_OMIT = {'inputs/x1slte', 'fw-fingerprint', 'fw-wifi', 'fw-haptic', 'fw-sound'}
+STOCK_UEFI = 'inputs/x1slte/Mu-x1slte.img'
+STOCK_REQUIRED = (REQUIRED - STOCK_OMIT) | {STOCK_UEFI}
 MANIFEST = 'hosted-inputs.json'
 
 
@@ -23,8 +26,16 @@ def allowed(name):
     return name in FIXED or re.fullmatch(r'fw-[a-z0-9-]+|userland/hfs-kit-[1-9][0-9]*\.bin', name)
 
 
-def verify(root, records):
-    if not REQUIRED <= records.keys() or any(not allowed(n) for n in records):
+def valid(records, stock):
+    if stock:
+        return STOCK_REQUIRED <= records.keys() and all(
+            n == STOCK_UEFI or (allowed(n) and n not in STOCK_OMIT) for n in records
+        )
+    return REQUIRED <= records.keys() and all(allowed(n) for n in records)
+
+
+def verify(root, records, stock=False):
+    if not valid(records, stock):
         raise ValueError('missing required inputs or unexpected input paths')
     if (root / 'fw-wifi/network').exists():
         raise ValueError('personal Wi-Fi configuration must not be uploaded')
@@ -33,10 +44,14 @@ def verify(root, records):
             raise ValueError('reviewed input hash mismatch: ' + name)
 
 
-def pack(root, output):
+def pack(root, output, stock=False):
     lock = json.loads((root / 'inputs/private-inputs.lock.json').read_text())
     records = {n: v for n, v in lock['inputs'].items() if allowed(n)}
-    verify(root, records)
+    if stock:
+        verify(root, records)
+        records = {n: v for n, v in records.items() if n not in STOCK_OMIT}
+        records[STOCK_UEFI] = fingerprint({STOCK_UEFI: root / STOCK_UEFI}, {})
+    verify(root, records, stock)
     if output.exists():
         raise ValueError('archive already exists; choose a new path')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +69,7 @@ def pack(root, output):
                     # Store each regular file itself; no archive hard-link dependencies.
                     archive.inodes.clear()
                     archive.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
-        verify(root, records)  # refuse inputs changed while reading
+        verify(root, records, stock)  # refuse inputs changed while reading
         pending.replace(output)
         Path(str(output) + '.sha256').write_text(f'{digest(output)}  {output.name}\n')
     finally:
@@ -62,14 +77,14 @@ def pack(root, output):
     print('Reviewed board/bootstrap archive: ' + str(output))
 
 
-def unpack(archive_path, root, sha256):
+def unpack(archive_path, root, sha256, stock=False):
     root = root.resolve()
     if not re.fullmatch('[0-9a-f]{64}', sha256) or digest(archive_path) != sha256:
         raise ValueError('archive SHA-256 mismatch')
     with tarfile.open(archive_path, 'r:gz') as archive:
         manifest = json.load(archive.extractfile(MANIFEST))
         records = manifest['inputs']
-        if manifest.get('schema') != 1 or not REQUIRED <= records.keys() or any(not allowed(n) for n in records):
+        if manifest.get('schema') != 1 or not valid(records, stock):
             raise ValueError('invalid hosted input manifest')
         members, seen, links = [], set(), set()
         for member in archive.getmembers():
@@ -109,7 +124,7 @@ def unpack(archive_path, root, sha256):
                     shutil.copyfileobj(src, out)
             if not member.issym():
                 os.chmod(dest, member.mode & 0o777)
-        verify(root, records)
+        verify(root, records, stock)
     print('Hosted board/bootstrap inputs verified; Apple inputs will be fetched by the build')
 
 
@@ -118,16 +133,18 @@ if __name__ == '__main__':
     sub = p.add_subparsers(dest='action', required=True)
     q = sub.add_parser('pack')
     q.add_argument('--root', type=Path, required=True)
+    q.add_argument('--stock', action='store_true')
     q.add_argument('--output', type=Path, required=True)
     q = sub.add_parser('unpack')
+    q.add_argument('--stock', action='store_true')
     q.add_argument('--archive', type=Path, required=True)
     q.add_argument('--root', type=Path, required=True)
     q.add_argument('--sha256', required=True)
     a = p.parse_args()
     try:
         if a.action == 'pack':
-            pack(a.root.resolve(), a.output.resolve())
+            pack(a.root.resolve(), a.output.resolve(), a.stock)
         else:
-            unpack(a.archive, a.root.resolve(), a.sha256)
+            unpack(a.archive, a.root.resolve(), a.sha256, a.stock)
     except (ValueError, OSError, KeyError, tarfile.TarError) as exc:
         p.exit(1, f'hosted-inputs: {exc}\n')
