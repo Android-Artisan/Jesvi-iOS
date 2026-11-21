@@ -65,7 +65,7 @@
  * Limits, whatever asks: nothing louder than haptic_max_pct of Samsung's 100 % (the DSP's GAIN_CONTROL,
  * Samsung's own attenuation table); no vibration longer than haptic_max_ms -- cut by this driver and, as a
  * second line, by the DSP itself (its TIMEOUT_MS set to haptic_max_ms + 50, where Samsung sets 174 s), then a
- * rest as long; no new vibration with the battery at 45 C or more. Any hardware error the chip reports
+ * rest as long (no battery-temperature cutoff: the chip's own temperature faults below). Any hardware error the chip reports
  * (amplifier short, over-temperature, temperature rise, boost short, under- or over-voltage: IRQ2_STATUS1),
  * a known register that no longer reads as written (the chip reset itself: Samsung's "auto-recovery"), a
  * write that does not read back or a byte nobody acknowledges: the chip is put into reset and nothing more
@@ -232,7 +232,6 @@ extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint
 #define CHUNK                   256             /* ours: a bit-banged write that short rarely meets a disturbance */
 
 #define TAP_MS                  30              /* haptic_tap=0: a tap is waveform 0 for this long */
-#define HOTTEST_BATTERY_C       45
 
 /* ---- state -------------------------------------------------------------------------------------------- */
 
@@ -1385,20 +1384,13 @@ serve(void)
 		uint64_t now = now_us();
 		bool active = heard_us != 0 && now - heard_us < ACTIVE_US;
 		uint32_t peak = heard_peak, pct = pct_for(peak);
-		int temp = redwood_battery_temperature();
-
-		if (temp >= HOTTEST_BATTERY_C) {
-			if ((state == TAP || state == LOOP) && stop()) {
-				state = rest_until > now ? REST : IDLE;
-			}
-			/* A tap requested while hot must not replay after cooling. */
-			tap_onset = onset_us;
-		}
+		/* No battery-temperature cutoff (user, 2026-11-21: haptics stay on when the phone is warm; torch and camera keep
+		 * theirs). The chip's own over-temperature and temperature-rise faults still stop it (IRQ2_STATUS1 below). */
 
 		switch (state) {
 		case IDLE:
 		case TAP:
-			if (active && onset_us != tap_onset && now - onset_us >= SETTLE_US && temp < HOTTEST_BATTERY_C) {
+			if (active && onset_us != tap_onset && now - onset_us >= SETTLE_US) {
 				tap_onset = onset_us;
 				if (state == TAP && tap_index == 0 && !stop()) {
 					break;
