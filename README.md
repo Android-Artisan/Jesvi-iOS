@@ -111,3 +111,6 @@ tree and storage layout ([porting](docs/release/porting.md)). Snapdragon models 
 Built on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel). Apple's open-source XNU (APSL 2.0), Mu-Silicium,
 Mesa and the others in [NOTICE](NOTICE) and [third-party licenses](docs/legal/THIRD_PARTY_LICENSES.md).
 Not affiliated with Apple or Samsung. [Legal](docs/legal/LEGAL.md).
+
+
+Please feel free to use this project for further developement, Just make sure to add me in credits, Cheers
