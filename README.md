@@ -8,6 +8,8 @@ iOS 16.5 running natively on the **Samsung Galaxy S20 (SM-G980F, Exynos 990)**.
 ![Model](https://img.shields.io/badge/Model-SM--G980F%20%7C%20x1slte-555555?style=flat-square)
 ![iOS](https://img.shields.io/badge/iOS-16.5-007AFF?style=flat-square&logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square)
+[![Telegram](https://img.shields.io/badge/Telegram-@eulah__rom-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/eulah_rom)
+
 
 
 
