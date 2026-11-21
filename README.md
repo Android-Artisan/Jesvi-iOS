@@ -6,7 +6,7 @@ This tree builds the XNU kernel, the boot loader, the drivers and the user-space
 Apple's own iOS 16.5 firmware, downloaded at build time. Nothing of Apple's or Samsung's is in this repository.
 
 
-[![Jesvi iOS 16.5 Demo](https://img.youtube.com/vi/-4pcSUe0ny0/hqdefault.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)<br>
+[![Jesvi iOS 16.5 Demo](https://raw.githubusercontent.com/jesvi-eulah/Jesvi-iOS/main/docs/IMG_5690%202.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)<br>
 [Watch on YouTube](https://www.youtube.com/watch?v=-4pcSUe0ny0)
 
 
