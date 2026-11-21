@@ -272,7 +272,7 @@ enum hv_state { HV_IDLE, HV_ACTIVE, HV_FAILED, HV_FAULT };
 static uint32_t hv_on;
 static unsigned plugged_polls;          /* polls since the cable went in (charger_limits) */
 static enum hv_state hv_state;
-static unsigned hv_tries, hv_pdo, pd5_ma;   /* pd5_ma: the 5 V PD contract's current, when 9 V is not had */
+static unsigned hv_tries, pd9_ma, pd5_ma;   /* pd5_ma: the 5 V PD contract's current, when 9 V is not had */
 static bool hv_pd;
 
 static bool
@@ -378,7 +378,7 @@ hv_try(unsigned charger_type)
 			hv_tries = 99;
 			return false;
 		}
-		hv_pdo = best;
+		pd9_ma = best_ma;
 		charger_write_limits(500, 0);
 		n = (uint8_t)best;
 		if (!muic_opcode(OP_SRCCAP_REQUEST, &n, 1, a, 2, 1500) || a[1] != 0) {
@@ -471,6 +471,7 @@ charger_limits(bool external, int32_t temp_hundredths)
 		}
 		hv_state = HV_IDLE;
 		hv_tries = 0;
+		pd9_ma = 0;
 		pd5_ma = 0;
 		plugged_polls = 0;
 		charger_write_limits(0, 0);
@@ -513,7 +514,8 @@ charger_limits(bool external, int32_t temp_hundredths)
 	}
 	if (warm_ok) {
 		if (hv_state == HV_ACTIVE) {
-			in_ma = 1650;
+			/* Respect the selected PD profile as well as Samsung's 9 V input limit. */
+			in_ma = hv_pd && pd9_ma < 1650 ? pd9_ma : 1650;
 			cc_ma = temp_hundredths >= 1500 && temp_hundredths <= 4000 ? 2500 : 1500;
 		} else {
 			/* a Mac/PC port: no more than it offers (a Mac cuts the port, charge and data both, when overdrawn:
