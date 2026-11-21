@@ -28,7 +28,8 @@ def stage(snapshot):
     import re
     names = list(lock['inputs']) + ['inputs/private-inputs.lock.json']
     for name in names:
-        if name not in allowed and name != 'inputs/private-inputs.lock.json' and not re.fullmatch('fw-[a-z0-9-]+', name):
+        if name not in allowed and name != 'inputs/private-inputs.lock.json' and not re.fullmatch(
+                r'fw-[a-z0-9-]+|userland/hfs-kit-[1-9][0-9]*\.bin', name):
             raise ValueError(f'input path not allowed: {name}')
         src, dst = snapshot / name, ROOT / name
         if src.is_symlink() or not src.resolve().is_relative_to(snapshot):

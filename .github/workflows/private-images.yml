@@ -8,6 +8,11 @@ on:
         type: choice
         options: [from-release.conf, 'true', 'false']
         default: from-release.conf
+      mode:
+        description: Override the iOS installer mode in release.conf
+        type: choice
+        options: [from-release.conf, choose, update, fresh]
+        default: from-release.conf
       outputs:
         description: Override release.conf OUTPUTS (e.g. "twrp restore tar"); empty keeps the file's value
         type: string
@@ -18,11 +23,31 @@ concurrency:
   group: private-image-candidate
   cancel-in-progress: false
 jobs:
+  configuration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check private release configuration
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUILDS_ENABLED: ${{ vars.ENABLE_PRIVATE_IMAGE_BUILDS }}
+        run: |
+          if [[ "$REPO_PRIVATE" != true || "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Run the full iOS package build on the default branch of the private repository."
+            exit 1
+          fi
+          if [[ "$BUILDS_ENABLED" != true ]]; then
+            echo "::error::Register the exynos990-private macOS runner, provision its private inputs, and set ENABLE_PRIVATE_IMAGE_BUILDS=true."
+            exit 1
+          fi
   candidate:
-    if: github.event.repository.private && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && vars.ENABLE_PRIVATE_IMAGE_BUILDS == 'true'
+    needs: configuration
     environment: private-images
     runs-on: [self-hosted, macOS, exynos990-private]
     timeout-minutes: 180
+    env:
+      RELEASE_OUT: dist/release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -35,20 +60,29 @@ jobs:
         env:
           PRIVATE_INPUTS_ROOT: ${{ vars.PRIVATE_INPUTS_ROOT }}
         run: |
-          test -n "$PRIVATE_INPUTS_ROOT"
+          if [[ -z "$PRIVATE_INPUTS_ROOT" || ! -f "$PRIVATE_INPUTS_ROOT/inputs/private-inputs.lock.json" ]]; then
+            echo "::error::Set PRIVATE_INPUTS_ROOT to the reviewed snapshot on the macOS runner."
+            exit 1
+          fi
           python3 tools/release/private_store.py stage --snapshot "$PRIVATE_INPUTS_ROOT"
       - name: Build everything release.conf asks for
         env:
           HACKIOS_IMAGE_CACHE: /var/cache/exynos990/private-images
           WRITES_INPUT: ${{ inputs.writes }}
           OUTPUTS_INPUT: ${{ inputs.outputs }}
+          MODE_INPUT: ${{ inputs.mode }}
         run: |
-          args=(--set OUT=dist/release)
+          test ! -e "$RELEASE_OUT"
+          args=(--set "OUT=$RELEASE_OUT")
+          if [ "$MODE_INPUT" != from-release.conf ]; then args+=(--set "MODE=$MODE_INPUT"); fi
           if [ "$WRITES_INPUT" != from-release.conf ]; then args+=(--set "WRITES=$WRITES_INPUT"); fi
           if [ -n "$OUTPUTS_INPUT" ]; then args+=(--set "OUTPUTS=$OUTPUTS_INPUT"); fi
           ./build.sh release --dry-run "${args[@]}"
           ./build.sh release "${args[@]}"
-          ls dist/release/*.zip
+          (
+            cd "$RELEASE_OUT"
+            shasum -a 256 -c ./*.sha256
+          )
       - name: Retain deduplicated image objects privately
         env:
           PRIVATE_STORE_ROOT: ${{ vars.PRIVATE_STORE_ROOT }}
@@ -58,11 +92,16 @@ jobs:
             [ -d "$bundle" ] || continue
             python3 tools/release/private_store.py retain --bundle "$bundle" --store "$PRIVATE_STORE_ROOT"
           done
-      - name: Downloadable ZIP in this private workflow run
+      - name: Upload this run's private packages
+        id: packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: jesvi-ios-${{ github.sha }}-${{ github.run_id }}
-          path: dist/release/
+          name: jesvi-ios-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.RELEASE_OUT }}/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
+      - name: Link to the verified packages
+        env:
+          PACKAGE_URL: ${{ steps.packages.outputs.artifact-url }}
+        run: printf '[Download package ZIPs and SHA-256 checksums](%s)\n' "$PACKAGE_URL" >> "$GITHUB_STEP_SUMMARY"

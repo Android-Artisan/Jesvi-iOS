@@ -69,6 +69,10 @@ empty maintainer arrays until owners volunteer.
   on a private persistent volume. The final TWRP ZIP/checksum/provenance are uploaded
   as a **private workflow artifact** for seven days; source/public CI still uploads
   no OS images. Artifact storage quota must cover the multi-GB package.
+  Each run attempt uses its own output directory and links its artifact from the
+  run summary. The workflow verifies the checksums before upload. For a
+  write-enabled fresh-install candidate, choose `writes=true`, `mode=fresh`,
+  and `outputs=twrp` when dispatching the workflow. This does not flash a phone.
 - **Draft source release:** disabled unless `ENABLE_DRAFT_RELEASES=true`. A `v*`
   tag runs strict publication inventory and host checks, then creates a **draft**
   behind the release environment. Initial inventory deliberately blocks this
@@ -89,7 +93,8 @@ least 60–100 GB free, measure actual usage). The workflow label is
 Provision two restricted volumes outside the checkout:
 
 - `PRIVATE_INPUTS_ROOT`: a reviewed immutable snapshot with exactly the path layout
-  in [building](building.md), including `inputs/private-inputs.lock.json`.
+  in [building](building.md), including `inputs/private-inputs.lock.json` and the HFSX format kit for the
+  configured data size.
 - `PRIVATE_STORE_ROOT`: retained image objects/candidate manifests. Set the Actions
   variables to these local mount paths. The separate system cache path defaults
   in the workflow to `/var/cache/exynos990/private-images`.
