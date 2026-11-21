@@ -22,6 +22,17 @@ class TargetTests(unittest.TestCase):
         self.assertEqual(sorted(line.split()), sorted((ROOT / 'devices/exynos990/x1slte/x1slte.cmdline').read_text().split()))
         self.assertLessEqual(len(line), targets.BOOTLINE_MAX)
 
+    def test_touchid_off_without_ported_libbkdm1(self):
+        import tempfile
+        line = targets.bootline(targets.load('x1slte'))
+        with tempfile.TemporaryDirectory() as d:
+            words = targets.without_unbuilt_touchid(line, Path(d)).split()
+            self.assertIn('touchid=0', words)
+            self.assertNotIn('touchid=1', words)
+            (Path(d) / 'sysimage/iphone8').mkdir(parents=True)
+            (Path(d) / 'sysimage/iphone8/libBKDM1.dylib').write_bytes(b'')
+            self.assertEqual(targets.without_unbuilt_touchid(line, Path(d)), line)
+
     def test_ios_data_size_window(self):
         import os
         u = 116253523968

@@ -233,7 +233,8 @@ def main():
         # Boot line from the target config: platform + hardware + target + mods.
         # data_bytes and hfs_kit checked the explicitly configured data window.
         payload_env = dict(env, WIN_OK='1' if data < userdata else '0')
-        run('bash', 'x1slte.sh', 'payload', targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split(), data, userdata), env=payload_env)
+        line = targets.bootline(targets.load(a.device), env.get('JESVI_MODS_DISABLE', '').split(), data, userdata)
+        run('bash', 'x1slte.sh', 'payload', targets.without_unbuilt_touchid(line), env=payload_env)
         run('bash', 'x1slte.sh', 'pack', env=env)
         verify()
         print('Private development images built. Next: build.sh package --output dist/CANDIDATE')
