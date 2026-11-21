@@ -20,22 +20,24 @@ Apple's own iOS 16.5 firmware, downloaded at build time. Nothing of Apple's or S
 
 | Area | Status |
 |---|---|
-| Display | FHD+/QHD/FHD, 60 and 120 Hz, True Tone, auto-brightness, Always-On Display (off by default) |
-| Touch, buttons | Multitouch, pocket rejection, power and volume buttons |
-| Graphics | Metal on the Mali-G77, OpenGL ES through Mesa |
-| Cellular | 4G data, VoLTE calls in and out, carrier SMS |
-| Wi-Fi, Bluetooth | 2.4 and 5 GHz Wi-Fi, Bluetooth audio |
-| Cameras | Front and three rear lenses, zoom switching, photo, video with sound, autofocus |
-| Audio | Speaker, earpiece, microphone |
-| Sensors, location | Motion, compass, proximity, light; standalone GPS |
-| Haptics, flashlight | Vibration (always on); rear LED (off above 45 °C battery) |
-| Power | Charging, battery level and temperature, Samsung-tuned CPU/GPU governor, thermal throttling |
-| Storage | Persistent iOS data, Files "On My iPhone", microSD (exFAT, read/write) in Files |
-| USB | Networking, Finder file access, serial console |
-| Security | Passcode; Touch ID enrolment |
+| Display | All, FHD+/QHD/FHD, 60 and 120 Hz, True Tone, auto-brightness, Always-On Display, Touch, buttons |
+| Graphics | Accelerated, Metal on the Mali-G77, OpenGL ES through Mesa |
+| Cellular | All, 4G/LTE data, VoLTE calls in and out, carrier SMS |
+| Connectivity | Wi-Fi 2.4 and 5 GHz, Bluetooth, Bluetooth audio, hotspot |
+| Cameras | All, camera, Front and three rear lenses |
+| Audio | All, Speaker, earpiece, microphone |
+| Sensors | All, Motion, compass, proximity, gyro, ambient light; GPS, Fingerprint, thermals, Haptics, flashlight |
+| Power | All, PD Charging, battery level and temperature, Tuned CPU/GPU governor, thermal manageament |
+| Storage | All, Full speed peristent UFS storage, Ram allocate max & at full speed, microSD (exFAT, read/write) in Files |
+| USB | Networking, Finder file access, serial console, tethered |
+| Security | Passcode; Touch ID enrolment, Apple-Id (Requires Hackintosh) |
 
-**Not yet:** Touch ID unlock (enrolment works, matching does not), App Store downloads (FairPlay), iMessage and
-FaceTime, standalone Apple ID sign-in, microSD hot-plug (insert the card before booting).
+**Partial or Not yet:** 
+ - Touch ID unlock (enrolment works, matching does not), 
+ - App Store downloads (FairPlay DRM needs to be eumulated/cracked yet), 
+ - iMessage and FaceTime (Not possible), 
+ - Standalone Apple ID sign-in (it does work but currently requires a peer hackintosh to set it up)
+ - Bugs & glithces 
 
 Per-part detail: [`device.conf`](devices/exynos990/x1slte/device.conf). Every change: [SHIPPING.md](docs/SHIPPING.md).
 
