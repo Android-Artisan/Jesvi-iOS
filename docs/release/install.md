@@ -3,12 +3,6 @@
 For the **Galaxy S20 LTE (SM-G980F)** with bootloader **G980FXXSNHYB7**. The installer checks both before it writes
 anything; another model or bootloader is refused.
 
-| Path | Tested on a real phone |
-|---|---|
-| Update an S20 already on Jesvi iOS | **Yes**, 2026-11-18 ([record](qualification-x1slte.md)); from the computer with no key press 2026-11-20 |
-| Android ROM (ExtremeROM, UN1CA, stock...) → Jesvi iOS | Not yet (same installer; tested on simulated partitions) |
-| Jesvi iOS → back to Android | Not yet (tested on simulated partitions, against this S20's real partition map) |
-
 ## Before you start
 
 - **Back up** anything you want to keep. Installing over Android wipes the data partition; going back to Android wipes iOS's.
