@@ -73,15 +73,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |
-          if [[ -z "$INPUTS_TAG" || ! "$INPUTS_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+          if [[ -z "$INPUTS_TAG" || ! "$INPUTS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::Set PRIVATE_INPUTS_TAG and PRIVATE_INPUTS_SHA256 to the release tag and SHA-256 of board-inputs.tar.gz."
             exit 1
           fi
-          if ! asset=$(gh release view --repo "$GH_REPO" --json assets \
-              --jq '.assets[] | select(.name == "board-inputs.tar.gz") | .name' -- "$INPUTS_TAG") ||
-              [[ "$asset" != board-inputs.tar.gz ]]; then
-            echo "::error::The configured release must be visible to this workflow and contain board-inputs.tar.gz."
+          asset=board-inputs.tar.gz
+          if [[ -n "$INPUTS_AGE_KEY" ]]; then asset+=.age; fi
+          if ! found=$(gh release view --repo "$GH_REPO" --json assets \
+              --jq '.assets[].name' -- "$INPUTS_TAG") ||
+              ! grep -Fxq "$asset" <<< "$found"; then
+            echo "::error::The configured release must be visible to this workflow and contain $asset."
             exit 1
           fi
       - name: Provision disposable GitHub compute
@@ -109,12 +112,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |
-          gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs" -- "$INPUTS_TAG"
+          archive="$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+          mkdir -p "$(dirname "$archive")"
+          if [[ -n "$INPUTS_AGE_KEY" ]]; then
+            gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz.age --dir "$(dirname "$archive")" -- "$INPUTS_TAG"
+            printf '%s\n' "$INPUTS_AGE_KEY" | age --decrypt --identity - --output "$archive" "$archive.age"
+            rm "$archive.age"
+          else
+            gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz --dir "$(dirname "$archive")" -- "$INPUTS_TAG"
+          fi
           python3 tools/release/hosted_inputs.py unpack \
-            --archive "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz" \
-            --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
-          rm "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+            --archive "$archive" --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
+          rm "$archive"
       - name: Build everything release.conf asks for
         env:
           WRITES_INPUT: ${{ inputs.writes }}

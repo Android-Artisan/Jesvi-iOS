@@ -93,7 +93,11 @@ Inspect current repository visibility and run status rather than treating config
    includes firmware (including fingerprint), board/tool files, HFS kits and the
    reviewed bootstrap, and rejects personal Wi-Fi configuration. It does not include
    built images, Apple extraction, SSH settings or the development workspace.
-3. Upload `board-inputs.tar.gz` as an asset of a release in the build repository, using a non-version tag such as `private-build-inputs-YYYYMMDD`.
+3. For a public build repository, encrypt `board-inputs.tar.gz` with age and upload
+   `board-inputs.tar.gz.age` as a release asset. Set
+   `HOSTED_BOARD_INPUTS_AGE_KEY` in the `private-images` environment to the age
+   identity. A private build repository can also use the plaintext asset without
+   the age secret. Use a non-version release tag such as `private-build-inputs-YYYYMMDD`.
    Set `PRIVATE_INPUTS_TAG` to that tag and `PRIVATE_INPUTS_SHA256` to the archive's
    checksum. The hosted job checks the settings and confirms the asset exists
    before installing build tools. The input archive follows repository visibility; it is input storage, not a product release.
