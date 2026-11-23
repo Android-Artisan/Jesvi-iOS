@@ -18,6 +18,23 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
+# y2s has its own extracted sysimage tree so its selector and IconState overlay
+# cannot change x1slte or the release pipeline. It uses the default debloated
+# selector; set Y2S_FULL_ROOT=1 in sysimage-y2s/fetch.sh only for diagnostics.
+export IOS_INPUT_DIR=${IOS_INPUT_DIR:-../sysimage-y2s}
+[ -d "$IOS_INPUT_DIR/cryptex" ] || {
+	echo "build-gpu-y2s.sh: $IOS_INPUT_DIR is missing; run tools/y2s/fetch-full-root.sh" >&2
+	exit 1
+}
+# Only y2s gets the full IconState. The shared userland/var tree stays the one
+# x1slte has always used; this overlay is applied by build.sh when assembling root.
+export VAR_OVERLAY=var-y2s
+# y2s has no rootless /var/jb prefix: the inherited x1slte account-store job
+# would fail at /var/jb/bin/sh on every boot. Opt out unless explicitly enabled.
+export ACCOUNT_RELAY=${ACCOUNT_RELAY:-0}
+# The shared softpasscode mod belongs to x1slte's bootline and software bag; y2s
+# boots without it. The target carries the same opt-out for generated bootlines.
+export JESVI_MODS_DISABLE=${JESVI_MODS_DISABLE:-softpasscode}
 set +u # Legacy environment setup reads optional unset variables.
 source ../xnu/xnu-env.sh
 set -u
@@ -71,16 +88,21 @@ cp ../out/aod/libredwood-alwayson.dylib ../prebuilt/userland/libredwood-alwayson
 cp ../out/aod/aod-preview ../prebuilt/userland/aod-preview
 # mali2metal's marker for scripts (src/m2m_mark.c; the tour, m2m.tour, uses it)
 $DYN -o obj/m2m_mark src/m2m_mark.c
-# preferences without Settings' UI (x1slte: WebKit's VP9/VP8 software decoders; src/prefset.c)
-$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
-${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
-cp obj/prefset ../prebuilt/userland/prefset
-$DYN -framework CoreFoundation -o obj/sd-userfs-start src/sd-userfs-start.c
-${LDID:-ldid} -Cadhoc -S obj/sd-userfs-start
-cp obj/sd-userfs-start ../prebuilt/userland/sd-userfs-start
-$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
-${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond
-cp obj/redwood-motiond ../prebuilt/userland/redwood-motiond
+# preferences without Settings' UI (x1slte: WebKit's VP9/VP8 software decoders; src/prefset.c).
+# These three prebuilts are shared with x1slte and their sources have not changed; rebuilding
+# them on macOS only churns the tracked binaries (different load-command/signature layout).
+# Refresh them explicitly when their sources really change.
+if [ "${REFRESH_UNRELATED_PREBUILTS:-0}" = 1 ]; then
+	$DYN -framework CoreFoundation -o obj/prefset src/prefset.c
+	${LDID:-ldid} -Cadhoc -S obj/prefset 2>/dev/null || codesign -s - -f obj/prefset
+	cp obj/prefset ../prebuilt/userland/prefset
+	$DYN -framework CoreFoundation -o obj/sd-userfs-start src/sd-userfs-start.c
+	${LDID:-ldid} -Cadhoc -S obj/sd-userfs-start
+	cp obj/sd-userfs-start ../prebuilt/userland/sd-userfs-start
+	$DYN -framework Foundation -framework CoreMotion -o obj/redwood-motiond src/motion_wake.m
+	${LDID:-ldid} -Cadhoc -S obj/redwood-motiond 2>/dev/null || codesign -s - -f obj/redwood-motiond
+	cp obj/redwood-motiond ../prebuilt/userland/redwood-motiond
+fi
 cp obj/m2m_mark ../prebuilt/userland/m2m_mark
 $DYN -dynamiclib -install_name /redwood/lib/libredwood.dylib -framework CoreFoundation -framework IOKit -lobjc \
 	-o obj/libredwood.dylib.new src/inject.c src/inject_sensors.c src/inject_location.c   # (sensors; locationd/CoreMotion compass)

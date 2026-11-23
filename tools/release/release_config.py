@@ -115,7 +115,9 @@ def build(conf, dry_run=False):
         if out == 'tar':
             write_tar(b, path)
         else:
-            package(b, path, conf['MODE'], conf['WRITES'] and out == 'twrp')
+            # y2s's TWRP ZIP is first-install only; loader flashes carry updates.
+            mode = 'fresh' if target == 'y2s' else conf['MODE']
+            package(b, path, mode, conf['WRITES'] and out == 'twrp')
     print(f'Release files in {conf["OUT"].relative_to(ROOT)}; hardware qualification pending')
     return 0
 

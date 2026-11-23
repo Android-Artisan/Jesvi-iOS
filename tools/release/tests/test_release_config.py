@@ -17,11 +17,12 @@ class ReleaseConfigTests(unittest.TestCase):
         finally:
             os.unlink(f.name)
 
-    def test_repository_config_plans_s20_zips_and_skips_unmeasured(self):
+    def test_repository_config_plans_s20_and_y2s_and_skips_unmeasured(self):
         c = release_config.load(None, ['TARGETS=x1slte y2s', 'WRITES=true'])
         todo, skipped = release_config.plan(c)
-        self.assertEqual([(t, o) for t, o, _ in todo], [('x1slte', 'twrp'), ('x1slte', 'restore')])
-        self.assertEqual([t for t, _ in skipped], ['y2s'])
+        self.assertEqual([(t, o) for t, o, _ in todo],
+                         [('x1slte', 'twrp'), ('x1slte', 'restore'), ('y2s', 'twrp'), ('y2s', 'restore')])
+        self.assertEqual(skipped, [])
         n = release_config.names(c, 'x1slte', '20260101')
         self.assertEqual(n['twrp'], 'Jesvi-iOS_0.1.3_20260101_x1slte.zip')
         self.assertEqual(n['restore'], 'Jesvi-iOS-Restore_0.1.3_20260101_x1slte.zip')

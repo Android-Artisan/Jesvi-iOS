@@ -74,7 +74,6 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	ui.header("iOS 16.5 for the Galaxy S20", releaseVersion(), "SM-G980F")
 	ui.steps = 9
 	ui.begin("Checking the package")
 	log("Verifying every file in the ZIP before anything is written...")
@@ -82,6 +81,13 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	headerName, headerModel := "Galaxy S20", "SM-G980F"
+	if b.Config.Device == "y2s" {
+		headerName, headerModel = "Galaxy S20+ 5G", "SM-G986B"
+	} else if len(b.Config.Models) > 0 {
+		headerModel = b.Config.Models[0]
+	}
+	ui.header("iOS 16.5 for the "+headerName, releaseVersion(), headerModel)
 	if b.Config.Action == "restore" {
 		ui.steps = 6
 		log("Jesvi-iOS-Restore: back to Android.")
