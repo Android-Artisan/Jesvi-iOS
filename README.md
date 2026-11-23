@@ -6,22 +6,6 @@ Jesvi iOS runs iOS 16.5 (20F66) on the Exynos 990 **Galaxy S20 LTE** and include
 
 [![Jesvi iOS running on a Galaxy S20. Watch the demo on YouTube.](docs/IMG_5690%202.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)
 
-## Tested devices
-
-| Phone | Tested model and reference firmware | What was verified on hardware | Install and update |
-|---|---|---|---|
-| Galaxy S20 LTE | **SM-G980F** · `x1slte` · `G980FXXSNHYB7` | A v0.1.0 TWRP update completed on 18 November 2026. The phone booted into iOS with the owner's data intact. [Test record](docs/release/qualification-x1slte.md) | TWRP fresh install or a data-preserving update ZIP. [S20 guide](docs/release/install.md) |
-| Galaxy S20+ 5G | **SM-G986B** · `y2s` · `G986BXXSNHYB1` | The contributor measured the board and partition layout and boot-tested the device configuration. Qualification of the fresh-install ZIP and peripherals is pending. [Board evidence](docs/release/device-evidence-y2s.md) | Fresh installation from a y2s TWRP ZIP. Subsequent updates use the loader over USB. [S20+ guide](tools/y2s/README.md) |
-
-### Other Exynos variants
-
-| Phone | Available check |
-|---|---|
-| Galaxy S20 5G (G981, including SM-G981B) | Run the `x1slte` read-only preflight. The 5G model has a different modem and RAM configuration. |
-| Galaxy S20+ LTE (G985, including SM-G985F) | Run the `y2s` read-only preflight. The LTE model still needs boot-chain and partition measurements. |
-
-For G980 and G986 regional variants, recovery checks that the firmware identifies the phone's model. An untested revision triggers a warning. Recovery also checks the Exynos SoC, unlock state and partition sizes. Snapdragon models are outside the scope of these builds.
-
 ## Feature status
 
 The following features are reported for the **S20 LTE**. For S20+ hardware coverage, use the [y2s evidence record](docs/release/device-evidence-y2s.md).
@@ -39,7 +23,7 @@ App Store downloads, iMessage and FaceTime remain unavailable. On builds with th
 
 ## Download and install
 
-1. Match the **model number** in the tested-device table to the target in the ZIP name. Get the package and checksum from [GitHub Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases). For a development build, extract the artifact from a successful [TWRP workflow run](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml).
+1. Match the **model number** in the [device table](#tested-devices) to the target in the ZIP name. Get the package and checksum from [GitHub Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases). For a development build, extract the artifact from a successful [TWRP workflow run](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml).
 2. Verify the installer against its supplied SHA-256 checksum. Keep a backup off the phone. A ZIP ending in `_preflight.zip` runs checks only.
 3. Choose the procedure for your phone below. **Fresh install erases existing Android or iOS userdata.** Write-enabled installers built from current main start after a 45-second cancel window when launched from TWRP's Install screen. Press Volume Down or Power during that window to cancel.
 
@@ -85,6 +69,17 @@ For S20+ 5G, use the [y2s build guide](tools/y2s/README.md) to prepare the board
 | [userland](userland) and [sysimage](sysimage) | Native services, first-boot setup and system-image assembly |
 | [tools/install](tools/install) and [tools/y2s](tools/y2s) | Recovery helpers and S20+ build tools |
 | [docs](docs) | Device evidence, release procedures and development notes |
+
+## Tested devices
+
+| Family | Variant and model | Hardware test status | Install or update |
+|---|---|---|---|
+| **x1s · Galaxy S20** | LTE · G980 · **SM-G980F** (`x1slte`) | **Update tested.** On firmware `G980FXXSNHYB7`, a v0.1.0 TWRP update booted into iOS with user data intact. [Test record](docs/release/qualification-x1slte.md) | Use an `x1slte` fresh-install or update ZIP. [S20 guide](docs/release/install.md) |
+| x1s · Galaxy S20 | 5G · G981 · **SM-G981B** (`x1s`) | **Preflight only.** This variant uses a different modem and RAM configuration from the LTE phone. | Use the read-only `x1slte` preflight ZIP. |
+| **y2s · Galaxy S20+** | 5G · G986 · **SM-G986B** (`y2s`) | **Boot-tested development port.** The contributor measured the partitions on firmware `G986BXXSNHYB1`. Fresh-install ZIP and peripheral qualification are pending. [Board evidence](docs/release/device-evidence-y2s.md) | Use the `y2s` TWRP ZIP for a fresh install. Update through the loader over USB. [S20+ guide](tools/y2s/README.md) |
+| y2s · Galaxy S20+ | LTE · G985 · **SM-G985F** | **Preflight only.** Boot-chain and partition measurements for the LTE variant are pending. | Use the read-only `y2s` preflight ZIP. |
+
+For regional G980 and G986 devices, recovery accepts firmware revisions that identify the phone’s model and warns on untested revisions. It also checks the Exynos SoC, bootloader unlock state and partition sizes. These builds support Exynos hardware only.
 
 ## Credits and licenses
 
