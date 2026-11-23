@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: GitHub compute (hosted) or an already provisioned private Mac
+        description: GitHub macOS 15 (hosted), GitHub macOS 26, or a provisioned private Mac
         type: choice
-        options: [hosted, self-hosted]
+        options: [hosted, macos-26, self-hosted]
         default: hosted
       mode:
         description: Install mode (fresh erases userdata; update requires existing iOS data)
@@ -56,7 +56,7 @@ jobs:
     name: Build and verify release packages
     needs: configuration
     environment: private-images
-    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || 'macos-15' }}
+    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || (inputs.runner == 'macos-26' && 'macos-26' || 'macos-15') }}
     timeout-minutes: 360
     env:
       RELEASE_OUT: dist/release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -66,6 +66,24 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Check hosted board inputs
+        if: inputs.runner != 'self-hosted'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
+          INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+        run: |
+          if [[ -z "$INPUTS_TAG" || ! "$INPUTS_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Set PRIVATE_INPUTS_TAG and PRIVATE_INPUTS_SHA256 to the release tag and SHA-256 of board-inputs.tar.gz."
+            exit 1
+          fi
+          if ! asset=$(gh release view --repo "$GH_REPO" --json assets \
+              --jq '.assets[] | select(.name == "board-inputs.tar.gz") | .name' -- "$INPUTS_TAG") ||
+              [[ "$asset" != board-inputs.tar.gz ]]; then
+            echo "::error::The configured release must be visible to this workflow and contain board-inputs.tar.gz."
+            exit 1
+          fi
       - name: Provision disposable GitHub compute
         if: inputs.runner != 'self-hosted'
         run: bash ci/setup-hosted-images.sh
@@ -92,8 +110,7 @@ jobs:
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
         run: |
-          test -n "$INPUTS_TAG" && test -n "$INPUTS_SHA256"
-          gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs"
+          gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs" -- "$INPUTS_TAG"
           python3 tools/release/hosted_inputs.py unpack \
             --archive "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz" \
             --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"

@@ -64,8 +64,8 @@ func openRecovery(c Config, archive *os.File, log func(string)) (*linuxDevice, e
 		return strconv.Atoi(strings.TrimSpace(string(b)))
 	}
 	level, e := readInt("/sys/class/power_supply/battery/capacity")
-	if e != nil || level < 50 || level > 100 {
-		return nil, errors.New("battery must report at least 50 percent")
+	if e != nil || level < 10 || level > 100 {
+		return nil, errors.New("battery must report at least 10 percent")
 	}
 	temp, e := readInt("/sys/class/power_supply/battery/temp")
 	if e != nil || temp < 0 || temp > 550 {

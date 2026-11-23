@@ -131,7 +131,7 @@ path and explicit device/reboot authorization; this ZIP builder does not do it.
    preserve the log and use the prepared rescue procedure. Coordinate the shared
    phone and obtain explicit reboot permission before an agent changes its state.
 
-Battery must report at least 50% and temperature within 0–45 °C. Unknown battery,
+Battery must report at least 10% and temperature within 0–45 °C. Unknown battery,
 bootloader or mount evidence is not accepted. The package is about 2.5 GiB; the
 specific TWRP build's ZIP/ZIP64 and sideload handling still need a real test.
 Signature-verification settings and authenticated distribution also need to be

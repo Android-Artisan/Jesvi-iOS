@@ -6,7 +6,7 @@ anything; another model or bootloader is refused.
 ## Before you start
 
 - **Back up** anything you want to keep. Installing over Android wipes the data partition; going back to Android wipes iOS's.
-- Battery **at least 50 %**: the installer refuses below that.
+- Battery **at least 10 %**: the installer refuses below that.
 - **TWRP 3.7.1 or newer** for the S20. The official TWRP 3.7.0 (2022) is too old for current bootloaders: its USB drops
   out. ExtremeROM's TWRP (unified Exynos 990 build, 3.7.1_12) works.
 - For the computer method: `adb` and this repository, and the cable **straight into the computer**. Through a USB hub
@@ -89,7 +89,7 @@ partition table were never touched.
 
 - **Computer does not see the phone in TWRP:** cable straight into the computer, another port or cable; in TWRP
   *Mount → Enable MTP*; unplug and plug again.
-- **"battery must report at least 50 percent":** charge in TWRP and run it again.
+- **"battery must report at least 10 percent":** charge in TWRP and run it again.
 - **"physical confirmation timed out"** (TWRP's Install button only): restore requires a three-second Volume Up hold within 45 seconds; run
   it again. From the computer there is no key press.
 - **"the iOS data here is damaged or a different size than this package":** the package's iOS data size

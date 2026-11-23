@@ -65,7 +65,8 @@ empty maintainer arrays until owners volunteer.
   commit for builds; upstream source updates remain reviewed lock changes.
 - **Private TWRP release:** manual dispatch, default branch only, gated by
   `ENABLE_PRIVATE_IMAGE_BUILDS=true`. `runner=hosted` uses GitHub's `macos-15`
-  compute; `runner=self-hosted` uses the provisioned `exynos990-private` worker.
+  compute, `runner=macos-26` selects GitHub’s macOS 26 image, and
+  `runner=self-hosted` uses the provisioned `exynos990-private` worker.
   Both call **the same `./build.sh release` and `release.conf` as local builds**.
   Only tool/input setup and retention differ. Each attempt uses a fresh output
   directory, verifies ZIP checksums, and uploads an artifact for seven days.
@@ -94,7 +95,8 @@ Inspect current repository visibility and run status rather than treating config
    built images, Apple extraction, SSH settings or the development workspace.
 3. Upload `board-inputs.tar.gz` as an asset of a release in the build repository, using a non-version tag such as `private-build-inputs-YYYYMMDD`.
    Set `PRIVATE_INPUTS_TAG` to that tag and `PRIVATE_INPUTS_SHA256` to the archive's
-   checksum. The input archive follows repository visibility; it is input storage, not a product release.
+   checksum. The hosted job checks the settings and confirms the asset exists
+   before installing build tools. The input archive follows repository visibility; it is input storage, not a product release.
 4. Set `ENABLE_PRIVATE_IMAGE_BUILDS=true`. Public repositories also require
    explicit `ENABLE_PUBLIC_IMAGE_BUILDS=true` authorization for public image artifacts. Dispatch **Full TWRP release** with
    `runner=hosted`, the desired mode, `outputs=twrp`, and writes as appropriate.
