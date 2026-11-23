@@ -92,6 +92,7 @@ func TestRegionalFirmwareIdentity(t *testing.T) {
 		model, firmware, soc string
 		accepted             bool
 	}{
+		{"SM-G986B", "g986b-lab", "exynos990", true},
 		{"SM-G986B/DS", "G986BXXU1ABCD", "exynos990", true},
 		{"SM-G986N", "G986NKSU1ABCD", "exynos9830", true},
 		{"SM-G986N", "G986BXXU1ABCD", "exynos990", false},

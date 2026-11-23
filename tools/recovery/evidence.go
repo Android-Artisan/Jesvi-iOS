@@ -32,11 +32,16 @@ func mountedDevices(text string) (map[string]bool, error) {
 }
 
 var regionalModel = regexp.MustCompile(`^SM-(G980|G981|G985|G986)[A-Z](/DS)?$`)
-var samsungFirmware = regexp.MustCompile(`^[A-Z0-9]{12,16}$`)
+
+// Only the model prefix identifies hardware. Firmware revision length and formatting vary.
+func firmwareMatchesModel(model, firmware string) bool {
+	prefix := strings.TrimSuffix(strings.TrimPrefix(model, "SM-"), "/DS")
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(firmware)), prefix)
+}
 
 func regionalIdentity(c Config, model, firmware string) bool {
 	actual := regionalModel.FindStringSubmatch(model)
-	if actual == nil || !samsungFirmware.MatchString(firmware) || !strings.HasPrefix(firmware, strings.TrimSuffix(strings.TrimPrefix(model, "SM-"), "/DS")) {
+	if actual == nil || !firmwareMatchesModel(model, firmware) {
 		return false
 	}
 	for _, qualified := range c.Models {
@@ -74,8 +79,13 @@ func verifyRecoveryIdentity(c Config, get func(string) string, warnings ...func(
 		model = get("ro.product.model")
 	}
 	bootloader, fallback := get("ro.bootloader"), get("ro.boot.bootloader")
-	if bootloader != "" && fallback != "" && bootloader != fallback {
+	if bootloader != "" && fallback != "" && bootloader != fallback && !(firmwareMatchesModel(model, bootloader) && firmwareMatchesModel(model, fallback)) {
 		return errors.New("conflicting bootloader properties")
+	}
+	if bootloader != "" && fallback != "" && bootloader != fallback {
+		for _, warn := range warnings {
+			warn("WARNING: recovery reports different revisions for the same hardware model.")
+		}
 	}
 	if bootloader == "" {
 		bootloader = fallback

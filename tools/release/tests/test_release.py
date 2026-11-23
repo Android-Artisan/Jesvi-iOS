@@ -230,6 +230,9 @@ class SafetyTests(unittest.TestCase):
     def test_exact_board_report(self):
         match_report(profile('x1slte'), self.report())
 
+    def test_unlisted_same_model_revision(self):
+        match_report(profile('x1slte'), dict(self.report(), bootloader='G980F-LAB'))
+
     def test_other_models_capacities_bootloaders_and_mounts_fail(self):
         for patch in ({'model': 'SM-G981B'}, {'product': 'y2s'}, {'bootloader': 'newer'},
                       {'partitions': {}}, {'mounted_targets': ['/data']}, {'root': False},

@@ -59,7 +59,11 @@ def match_report(d, report):
     if report.get('model') not in d['models'] or report.get('product') not in d['recovery_products']:
         raise ValueError('model/product mismatch; same SoC is insufficient')
     if report.get('bootloader') not in d['bootloaders']:
-        raise ValueError('unqualified bootloader')
+        firmware = report.get('bootloader')
+        prefix = report['model'].removeprefix('SM-').removesuffix('/DS')
+        if not isinstance(firmware, str) or not firmware.strip().upper().startswith(prefix):
+            raise ValueError('bootloader does not identify the reported model')
+        print(f'Warning: untested firmware {firmware!r} for {report["model"]}', file=sys.stderr)
     if report.get('partitions') != d['partitions']:
         raise ValueError('partition geometry mismatch (including userdata capacity)')
     if report.get('environment') != 'twrp' or report.get('root') is not True:
