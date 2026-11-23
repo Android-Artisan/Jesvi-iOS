@@ -12,7 +12,7 @@ separate and is unchanged; the70% override request was withdrawn.
 
 `tools/camera/build-profile-media.sh OUTPUT` builds two isolated ISP backends.
 `prepare-profile-sources.py` obtains original sources from pinned ancestor
-`d5b02944ec77e3d63dd550db8af0780a42d8b973`. The original device factory, object
+`508c8d3e2bb327aca02dba57c908e7a8bfd33c57`. The original device factory, object
 ownership, stream start/stop and cross-camera exclusion remain shared. At the
 worker-body boundary only:
 
