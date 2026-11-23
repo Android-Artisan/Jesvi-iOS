@@ -69,6 +69,12 @@ jobs:
           fetch-depth: 0
       - name: Check camera profile source generation
         run: python3 tools/camera/test_profile_sources.py
+      - name: Check generated APFS with the runner's native checker
+        run: |
+          mkdir -p "$RUNNER_TEMP/apfs-smoke"
+          printf 'filesystem check\n' > "$RUNNER_TEMP/apfs-smoke/probe"
+          python3 tools/apfs/mkapfs.py -o "$RUNNER_TEMP/apfs-smoke.apfs" "Test=$RUNNER_TEMP/apfs-smoke"
+          /sbin/fsck_apfs -n "$RUNNER_TEMP/apfs-smoke.apfs"
       - name: Check hosted board inputs
         if: inputs.runner != 'self-hosted'
         env:
