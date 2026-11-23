@@ -9,7 +9,7 @@ import tarfile
 from manage import ROOT, profile
 
 KEYS = {'NAME': 'Jesvi-iOS', 'VERSION': '0.0.0', 'TARGETS': 'x1slte', 'OUTPUTS': 'twrp restore',
-        'MODE': 'choose', 'IOS_DATA_GB': 'all', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release', 'MODS_DISABLE': ''}
+        'MODE': 'fresh', 'IOS_DATA_GB': 'all', 'WRITES': 'false', 'BUNDLE': '', 'OUT': 'dist/release', 'MODS_DISABLE': ''}
 OUTPUTS = ('twrp', 'preflight', 'restore', 'tar')
 
 
@@ -72,8 +72,9 @@ def check(conf):
 def names(conf, target, date=None):
     stamp = date or datetime.date.today().strftime('%Y%m%d')
     base = f'{conf["NAME"]}_{conf["VERSION"]}_{stamp}_{target}'
-    return {'twrp': base + ('' if conf['WRITES'] else '_preflight') + '.zip',
-            'preflight': base + '_preflight.zip',
+    install = base if conf['MODE'] == 'choose' else f'{conf["NAME"]}_{conf["VERSION"]}_{stamp}_{conf["MODE"]}_{target}'
+    return {'twrp': install + ('' if conf['WRITES'] else '_preflight') + '.zip',
+            'preflight': install + '_preflight.zip',
             'restore': f'{conf["NAME"]}-Restore_{conf["VERSION"]}_{stamp}_{target}'
                        + ('' if conf['WRITES'] else '_preflight') + '.zip',
             'tar': base + '_images.tar'}
@@ -87,6 +88,8 @@ def plan(conf):
         if d['status'] == 'unmaintained':
             skipped.append((target, 'no measured device profile yet (docs/release/porting.md)'))
             continue
+        if target == 'y2s' and conf['MODE'] != 'fresh' and set(conf['OUTPUTS']) & {'twrp', 'preflight'}:
+            raise ValueError('y2s TWRP requires MODE=fresh; use the loader for updates')
         n = names(conf, target)
         for out in dict.fromkeys(conf['OUTPUTS']):
             todo.append((target, out, conf['OUT'] / n[out]))
@@ -99,6 +102,8 @@ def build(conf, dry_run=False):
         print(f'SKIP {target}: {reason}')
     for target, out, path in todo:
         print(f'{"PLAN" if dry_run else "BUILD"} {target} {out:9} -> {path.relative_to(ROOT)}')
+        if out in ('twrp', 'preflight'):
+            print(f'  install mode={conf["MODE"]}; writes={conf["WRITES"] and out == "twrp"}')
     if dry_run:
         return 0 if todo else 1
     if not todo:
@@ -128,6 +133,9 @@ def bundle_for(conf, target):
         b = b if b.is_absolute() else ROOT / b
         if not (b / 'manifest.json').is_file():
             raise ValueError(f'BUNDLE has no manifest.json: {b}')
+        import json
+        if json.loads((b / 'manifest.json').read_text()).get('device') != target:
+            raise ValueError(f'BUNDLE was not built for {target}')
         return b
     if target != 'x1slte':
         raise ValueError(f'{target}: no image build adapter yet; set BUNDLE to a verified candidate')

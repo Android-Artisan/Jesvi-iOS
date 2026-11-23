@@ -104,11 +104,18 @@ Guides: [building](docs/release/building.md), [local build](docs/release/local-b
 
 ## Other Exynos 990 phones
 
-Only the SM-G980F boots. The S20+ (`y2s`) and S20 Ultra (`z3s`) kernels build
-(`./build.sh kernel --device y2s --experimental`) but have never booted; each needs its own boot chain, device
-tree and storage layout ([porting](docs/release/porting.md)). Snapdragon models are not supported.
+| Galaxy model | Exynos recovery support |
+|---|---|
+| S20 LTE (G980, measured SM-G980F) | x1slte install and update |
+| S20 5G (G981, including SM-G981B) | x1slte read-only preflight; separate RAM and modem profile, writes unqualified |
+| S20+ LTE (G985, including SM-G985F) | y2s read-only preflight; LTE boot chain and partition layout unmeasured |
+| S20+ 5G (G986, measured SM-G986B) | y2s development port; fresh TWRP install, then loader updates |
+
+Regional firmware on the measured model families can proceed with a warning when the model, firmware, Exynos SoC and partition sizes agree. [S20+ build and update guide](tools/y2s/README.md)
 
 ## Credits
+
+[Android-Artisan](https://github.com/Android-Artisan) contributed the measured S20+ port and loader update tools in [PR #7](https://github.com/jesvi-eulah/Jesvi-iOS/pull/7).
 
 Built on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel). Apple's open-source XNU (APSL 2.0), Mu-Silicium,
 Mesa and the others in [NOTICE](NOTICE) and [third-party licenses](docs/legal/THIRD_PARTY_LICENSES.md).

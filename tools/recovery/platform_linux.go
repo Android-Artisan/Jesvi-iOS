@@ -49,11 +49,11 @@ func prop(key string) string {
 	}
 	return ""
 }
-func openRecovery(c Config, archive *os.File) (*linuxDevice, error) {
+func openRecovery(c Config, archive *os.File, log func(string)) (*linuxDevice, error) {
 	if runtime.GOARCH != "arm64" || os.Geteuid() != 0 || prop("ro.twrp.version") == "" {
 		return nil, errors.New("requires arm64 root TWRP")
 	}
-	if e := verifyRecoveryIdentity(c, prop); e != nil {
+	if e := verifyRecoveryIdentity(c, prop, log); e != nil {
 		return nil, e
 	}
 	readInt := func(path string) (int, error) {
@@ -323,10 +323,15 @@ func warmPause(d time.Duration) error {
 }
 
 // A new physical key-down held for three seconds authorizes each destructive mode.
-func confirmKeys(prompt string, log func(string)) error {
+// Install has a cancel window; restore still requires a new Volume Up hold.
+func confirmKeys(prompt string, log func(string), autoProceed bool) error {
 	log(prompt)
-	log("Press VOLUME UP to continue.")
-	log("VOLUME DOWN or POWER cancels (60 s).")
+	if autoProceed {
+		log("INSTALL STARTS AUTOMATICALLY IN 45 SECONDS. Fresh install ERASES ALL USERDATA.")
+		log("Press VOLUME DOWN/POWER to cancel; hold VOLUME UP for 3 seconds to proceed early.")
+	} else {
+		log("Hold VOLUME UP for 3 seconds to confirm; VOLUME DOWN/POWER cancels. Timeout: 45 seconds (cancels).")
+	}
 	paths, e := filepath.Glob("/dev/input/event*")
 	if e != nil || len(paths) == 0 {
 		return errors.New("no physical key input devices")
@@ -367,30 +372,9 @@ func confirmKeys(prompt string, log func(string)) error {
 	if len(files) == 0 {
 		return errors.New("cannot read physical key input")
 	}
-	timeout := time.NewTimer(60 * time.Second)
+	timeout := time.NewTimer(45 * time.Second)
 	defer timeout.Stop()
-	var hold *time.Timer
-	var held <-chan time.Time
-	defer func() {
-		if hold != nil {
-			hold.Stop()
-		}
-	}()
-	for {
-		select {
-		case <-timeout.C:
-			return errors.New("physical confirmation timed out; no writes authorized")
-		case ev := <-events:
-			if (ev[0] == 114 || ev[0] == 116) && ev[1] == 1 {
-				return errors.New("installation cancelled")
-			}
-			if ev[0] == 115 && ev[1] == 1 { // one press of Volume Up (a 3 s hold was clumsy, 2026-11-20)
-				return nil
-			}
-		case <-held:
-			return nil
-		}
-	}
+	return waitForConfirmation(events, timeout.C, autoProceed, log)
 }
 
 // Flush dirty data and invalidate cached block pages before readback.

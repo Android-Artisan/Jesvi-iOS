@@ -11,7 +11,7 @@ import (
 
 type linuxDevice struct{}
 
-func openRecovery(Config, *os.File) (*linuxDevice, error) {
+func openRecovery(Config, *os.File, func(string)) (*linuxDevice, error) {
 	return nil, errors.New("device installation requires Linux arm64 TWRP")
 }
 func (*linuxDevice) OpenWritable(string) (Target, error) {
@@ -22,9 +22,11 @@ func (*linuxDevice) CheckData() error { return errors.New("no device backend on 
 func (*linuxDevice) dataState() (bool, bool, error) {
 	return false, false, errors.New("no device backend on host")
 }
-func (*linuxDevice) Close() error            { return nil }
-func confirmKeys(string, func(string)) error { return errors.New("physical keys unavailable on host") }
-func warmPause(time.Duration) error          { return nil }
+func (*linuxDevice) Close() error { return nil }
+func confirmKeys(string, func(string), bool) error {
+	return errors.New("physical keys unavailable on host")
+}
+func warmPause(time.Duration) error { return nil }
 func (*linuxDevice) plan() (releasePlan, error) {
 	return releasePlan{}, errors.New("no device backend on host")
 }

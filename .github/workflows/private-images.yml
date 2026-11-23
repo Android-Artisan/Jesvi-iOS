@@ -8,15 +8,15 @@ on:
         type: choice
         options: [hosted, self-hosted]
         default: hosted
+      mode:
+        description: Install mode (fresh erases userdata; update requires existing iOS data)
+        type: choice
+        options: [from-release.conf, choose, fresh, update]
+        default: from-release.conf
       writes:
-        description: Override release.conf WRITES (hardware-unqualified writes after physical confirmation)
+        description: Override WRITES (installs proceed after 45 seconds; fresh erases userdata)
         type: choice
         options: [from-release.conf, 'true', 'false']
-        default: from-release.conf
-      mode:
-        description: Override the iOS installer mode in release.conf
-        type: choice
-        options: [from-release.conf, choose, update, fresh]
         default: from-release.conf
       outputs:
         description: Override release.conf OUTPUTS (e.g. "twrp restore tar"); empty keeps the file's value
