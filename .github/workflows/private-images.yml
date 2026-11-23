@@ -1,4 +1,4 @@
-name: Full TWRP release
+name: Build Jesvi iOS for Galaxy S20 (TWRP)
 # Same build.sh release as local builds; public image output requires explicit opt-in.
 on:
   workflow_dispatch:
@@ -29,6 +29,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   configuration:
+    name: Check build settings
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -52,6 +53,7 @@ jobs:
             exit 1
           fi
   candidate:
+    name: Build and verify release packages
     needs: configuration
     environment: private-images
     runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || 'macos-15' }}
