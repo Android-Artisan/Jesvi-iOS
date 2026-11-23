@@ -1,6 +1,6 @@
 # Jesvi iOS
 
-iOS 16.5 running natively on the **Samsung Galaxy S20 (SM-G980F, Exynos 990)**.
+iOS 16.5 running natively on the **Samsung Galaxy S20 LTE (SM-G980F, Exynos 990)**, with a development port for the **S20+ 5G (SM-G986B)**. See [device support](#device-support) before choosing a ZIP.
 
 
 [![Latest Release](https://img.shields.io/github/v/release/jesvi-eulah/Jesvi-iOS?label=Download&style=flat-square&logo=github&color=brightgreen)](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
@@ -30,7 +30,7 @@ Apple's own iOS 16.5 firmware, downloaded at build time. Nothing of Apple's or S
 | **Kernel** | XNU 8796.121.2 (Darwin 22.5) with our drivers |
 | **Install** | TWRP ZIP: fresh install or update, 64 GB iOS data volume |
 
-## What works
+## What works on the S20 LTE
 
 | Area | Status |
 |---|---|
@@ -60,18 +60,20 @@ Per-part detail: [`device.conf`](devices/exynos990/x1slte/device.conf). Every ch
 ## Downloads
 **[Download Latest Release](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)** | [View All Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases)
 
-Download the latest build, SHA-256 checksum, and build information from the release page.
+For a development build, open the [Galaxy S20 TWRP workflow](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml). After a successful run, download the packages artifact, extract it, and verify the installer ZIP against its included SHA-256 checksum.
 
 ## Install
 
 Full steps in the **[install guide](docs/release/install.md)**. In short, with the phone in TWRP 3.7.1 or newer:
 
 ```sh
-tools/install/twrp-install.sh --erase Jesvi-iOS_<version>_x1slte.zip   # fresh install (erases the phone)
-tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip           # update (keeps your data)
+tools/install/twrp-install.sh --erase Jesvi-iOS_<version>_<date>_fresh_x1slte.zip   # fresh install (erases the phone)
+tools/install/twrp-install.sh Jesvi-iOS_<version>_<date>_update_x1slte.zip  # update (keeps your data)
 ```
 
-From a phone already on Jesvi iOS, `tools/install/flash-twrp.sh` puts TWRP back and boots it, with no buttons.
+A write-enabled fresh ZIP erases existing Android or iOS userdata. When started from TWRP’s Install screen, it proceeds after 45 seconds. Press Volume Down or Power to cancel. A ZIP ending in `_preflight.zip` only runs checks.
+
+From an x1slte phone already on Jesvi iOS, `tools/install/flash-twrp.sh` puts TWRP back and boots it, with no buttons.
 Back to Android: the restore ZIP, then *Format Data* and any ROM ([rollback](docs/release/rollback.md)).
 
 ## Build
@@ -102,7 +104,7 @@ Guides: [building](docs/release/building.md), [local build](docs/release/local-b
 | `docs/` | `release/` install and build, `devices/x1slte/` feature notes |
 | `build.sh`, `Makefile`, `x1slte.sh` | Entry points; `x1slte.sh` is the developer flash loop |
 
-## Other Exynos 990 phones
+## Device support
 
 | Galaxy model | Exynos recovery support |
 |---|---|
@@ -111,7 +113,7 @@ Guides: [building](docs/release/building.md), [local build](docs/release/local-b
 | S20+ LTE (G985, including SM-G985F) | y2s read-only preflight; LTE boot chain and partition layout unmeasured |
 | S20+ 5G (G986, measured SM-G986B) | y2s development port; fresh TWRP install, then loader updates |
 
-Regional firmware on the measured model families can proceed with a warning when the model, firmware, Exynos SoC and partition sizes agree. [S20+ build and update guide](tools/y2s/README.md)
+The listed bootloader builds are reference versions. Recovery accepts other revision strings that start with the phone’s Samsung model code (for example, `G980F` for SM-G980F) and warns when the revision is untested. The unlocked bootloader, Exynos SoC and partition-size checks still apply. [S20+ build and update guide](tools/y2s/README.md)
 
 ## Credits
 
