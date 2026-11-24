@@ -48,7 +48,9 @@ tools/install/twrp-install.sh --erase /path/to/fresh_x1slte.zip
 tools/install/twrp-install.sh /path/to/update_x1slte.zip
 ```
 
-The computer helper asks for approval before copying the package. For instructions on returning to TWRP or Android, see the [install guide](docs/release/install.md) and [rollback guide](docs/release/rollback.md).
+The computer helper asks for approval before copying an install ZIP.
+
+**Back to Android:** Use the Restore ZIP for your device. It checks the phone, then waits for a three-second **Volume Up** hold before erasing iOS data. Press **Volume Down** or **Power**, or let the prompt time out, to stop after the checks. The Restore code is shared across devices, and each ZIP contains the partition layout for its own target. [Install guide](docs/release/install.md) · [Rollback guide](docs/release/rollback.md)
 
 **S20+ 5G:** Use the y2s fresh-install ZIP for initial setup. To update an existing installation, select **Log access (USB)** in the loader and follow the y2s guide. `./y2s.sh rflash` updates boot and recovery, including the root image. `./y2s.sh tflash` also updates the system image. Reinstalling the TWRP ZIP erases userdata. [S20+ setup and update instructions](tools/y2s/README.md)
 

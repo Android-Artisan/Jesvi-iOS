@@ -39,8 +39,11 @@ this is an in-place, non-A/B installation with no atomic rollback slot.
 
 ## Return to an Android custom ROM (TWRP only)
 
-Flash TWRP with Odin, then `Jesvi-iOS-Restore_*.zip` in TWRP, then *Format Data*,
-then the ROM ZIP. Details in [TWRP](twrp.md#back-to-android-jesvi-ios-restore).
+Flash TWRP with Odin and run the `Jesvi-iOS-Restore_*.zip` for your device.
+Restore checks the phone first. Hold **Volume Up** for three seconds within
+45 seconds to proceed. Press **Volume Down** or **Power** to cancel.
+After Restore completes, use *Format Data* and flash the Android ROM ZIP.
+[Restore steps](install.md#c-back-to-android-extremerom-or-any-rom)
 No PC firmware download is needed. For stock Samsung firmware use the Odin path below.
 
 ## Return to stock Android

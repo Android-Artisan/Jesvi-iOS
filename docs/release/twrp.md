@@ -45,12 +45,17 @@ The ZIP itself must not be on internal storage: microSD, USB-OTG or `adb sideloa
 ## Back to Android: Jesvi-iOS-Restore
 
 ```sh
-./build.sh restore --device x1slte --output dist/restore.zip [--experimental]
-# or: ./build.sh release --set OUTPUTS=restore
+./build.sh restore --device x1slte --output dist/restore-x1slte.zip --experimental
+# or: ./build.sh release --set OUTPUTS=restore --set WRITES=true
 ```
 
-Flash it in TWRP. It refuses a `super` that still holds Android partitions or
-holds neither iOS nor an Android map. Otherwise it writes a valid, **empty**
+Run the Restore ZIP for your device in TWRP. The shared Restore code uses the
+target's model checks and partition layout. It runs the checks first, then
+requires a three-second **Volume Up** hold before writing. **Volume Down**,
+**Power**, or a 45-second timeout cancels.
+
+Restore refuses a `super` that still holds Android partitions or holds neither
+iOS nor an Android map. After confirmation it writes a valid, **empty**
 Android partition map at the head of `super` (the copy saved at install time
 with its partitions dropped, or the measured stock layout from `android.json`),
 reads it back, and zeroes the HFSX headers (first and last MiB) on `userdata`.

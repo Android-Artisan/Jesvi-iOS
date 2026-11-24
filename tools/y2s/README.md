@@ -162,6 +162,10 @@ erases Android/iOS data, initializes a clean HFSX userdata volume, then flashes
 partition table and does not reboot. Push it to TWRP `/tmp` (2.5 GB, under the
 5.3 GB tmpfs) and flash with `adb twrp install`. Do not use it for updates.
 
+Returning to Android uses the shared Restore flow with a ZIP built for
+`y2s`. It checks the phone before asking for a three-second **Volume Up** hold.
+[Rollback guide](../../docs/release/rollback.md#return-to-an-android-custom-rom-twrp-only)
+
 `tools/y2s/package-candidate.py` remains as a read-only legacy manifest for the
 full-root diagnostic image; it is not an installer input.
 
