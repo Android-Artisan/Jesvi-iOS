@@ -68,8 +68,9 @@ partition table were never touched.
 
 1. `tools/install/flash-twrp.sh` (or **Odin → AP: TWRP**: iOS's runtime took recovery's place). Boot TWRP.
 2. Run the restore ZIP **with the script** (on an iOS phone TWRP's Install button refuses every ZIP):
-   `tools/install/twrp-install.sh Jesvi-iOS-Restore_<version>_x1slte.zip`, type `ERASE`.
-   It puts the saved Android partition map back into `super` (or Samsung's stock layout if none was saved), clears
+   `tools/install/twrp-install.sh Jesvi-iOS-Restore_<version>_x1slte.zip`, wait for the checks, then hold **Volume Up** on the phone for three seconds to restore.
+   Press Volume Down or Power to cancel, or let the 45-second prompt expire.
+   Restore puts the saved Android partition map back into `super` (or Samsung's stock layout if none was saved), clears
    the iOS data headers and puts Samsung's own power-on pictures back. BOOT and recovery are left alone.
 3. Without rebooting: TWRP → *Wipe → Format Data* → type `yes`.
 4. Flash the ROM ZIP (ExtremeROM etc.) as usual. It rebuilds system/vendor/product inside `super` and writes its own boot.
@@ -90,8 +91,7 @@ partition table were never touched.
 - **Computer does not see the phone in TWRP:** cable straight into the computer, another port or cable; in TWRP
   *Mount → Enable MTP*; unplug and plug again.
 - **"battery must report at least 10 percent":** charge in TWRP and run it again.
-- **"physical confirmation timed out"** (TWRP's Install button only): restore requires a three-second Volume Up hold within 45 seconds; run
-  it again. From the computer there is no key press.
+- **"physical confirmation timed out"**: run Restore again and hold Volume Up for three seconds within the confirmation window.
 - **"the iOS data here is damaged or a different size than this package":** the package's iOS data size
   (`IOS_DATA_GB`) differs from the phone's; nothing was written. Use the matching package.
 - **"unqualified recovery product" or "model/bootloader mismatch":** not an SM-G980F on G980FXXSNHYB7: not supported.

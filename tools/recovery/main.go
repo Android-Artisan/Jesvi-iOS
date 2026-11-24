@@ -160,7 +160,7 @@ func run() error {
 	if b.Config.Action == "restore" {
 		log("RESTORE: puts back Android's partition map and clears iOS data headers.")
 		log("ALL iOS DATA WILL BE LOST. BOOT and TWRP stay as they are.")
-		if e = confirm("Erase iOS and prepare the phone for an Android ROM?", true, log); e != nil {
+		if e = confirmKeys("Erase iOS and prepare the phone for an Android ROM?", log, false); e != nil {
 			return e
 		}
 		ui.begin("Freeing the storage")
