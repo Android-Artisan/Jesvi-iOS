@@ -3,8 +3,6 @@
 Jesvi iOS runs iOS 16.5 (20F66) on the Exynos 990 **Galaxy S20 LTE** and includes a development port for the **Galaxy S20+ 5G**. The project builds the XNU 8796.121.2 kernel, UEFI loader, drivers and device services. The iOS system image comes from Apple's iPhone X firmware.
 
 [![Latest Release](https://img.shields.io/github/v/release/jesvi-eulah/Jesvi-iOS?label=Download&style=flat-square&logo=github&color=brightgreen)](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
-[![All Releases](https://img.shields.io/badge/View-All%20Releases-blue?style=flat-square&logo=github)](https://github.com/jesvi-eulah/Jesvi-iOS/releases)
-[![Development builds](https://img.shields.io/badge/Development%20builds-2088FF?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml)
 ![Model](https://img.shields.io/badge/Model-SM--G980F%20%7C%20x1slte-555555?style=flat-square)
 ![iOS](https://img.shields.io/badge/iOS-16.5-007AFF?style=flat-square&logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square)
