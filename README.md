@@ -28,7 +28,7 @@ The following features are reported for the **S20 LTE**. For S20+ hardware cover
 | USB | USB networking, serial console and Finder file access |
 | Security | Passcode and Touch ID enrolment. Fingerprint matching and unlock remain incomplete. Apple ID setup currently requires a companion Hackintosh. |
 
-App Store downloads, iMessage and FaceTime remain unavailable. On builds with the native clock service, the phone uses saved time or image build time until it can synchronize over the network. Offline time is approximate. [Device configuration](devices/exynos990/x1slte/device.conf) · [Clock behavior](docs/devices/x1slte/background.md#clock-restoration-and-network-synchronization) · [Development log](docs/SHIPPING.md)
+App Store downloads, iMessage and FaceTime remain unavailable. [Device configuration](devices/exynos990/x1slte/device.conf) · [Clock behavior](docs/devices/x1slte/background.md#clock-restoration-and-network-synchronization) · [Development log](docs/SHIPPING.md)
 
 ## [Download and install](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
 
