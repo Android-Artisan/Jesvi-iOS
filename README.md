@@ -32,7 +32,7 @@ The following features are reported for the **S20 LTE**. For S20+ hardware cover
 
 App Store downloads, iMessage and FaceTime remain unavailable. On builds with the native clock service, the phone uses saved time or image build time until it can synchronize over the network. Offline time is approximate. [Device configuration](devices/exynos990/x1slte/device.conf) · [Clock behavior](docs/devices/x1slte/background.md#clock-restoration-and-network-synchronization) · [Development log](docs/SHIPPING.md)
 
-## Download and install
+## [Download and install](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
 
 1. Match the **model number** in the [device list](#tested-devices) to the target in the ZIP name. Get the package and checksum from [GitHub Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases). For a development build, extract the artifact from a successful [TWRP workflow run](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml).
 2. Verify the installer against its supplied SHA-256 checksum. Keep a backup off the phone. A ZIP ending in `_preflight.zip` runs checks only.
