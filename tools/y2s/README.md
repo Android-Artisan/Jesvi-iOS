@@ -75,8 +75,12 @@ image and DTBH as an encrypted artifact, builds the iOS images, and verifies
 the installer and Restore ZIPs. The hosted build uses the compact Apple
 extraction, the y2s userland overlay, and the full userdata volume.
 
-The `private-images` GitHub environment needs `Y2S_FUS_IMEI` for the stock
-Samsung download and `HOSTED_BOARD_INPUTS_AGE_KEY` for the artifact handoff.
+Set `Y2S_FUS_IMEI` in the `private-images` environment to download through
+Samsung's firmware service. A direct HTTPS link to the full
+[SM-G986B XSG stock ZIP](https://samfw.com/firmware/SM-G986B/XSG/G986BXXSNHYB1)
+can be supplied as `Y2S_STOCK_FIRMWARE_URL` instead. The runner checks that ZIP
+against the published MD5 before extraction. Both routes use
+`HOSTED_BOARD_INPUTS_AGE_KEY` for the artifact handoff.
 For a local release build with the reviewed shared board inputs already staged,
 place `Mu-y2s.img` and `stock-boot-dtbh.img` in `inputs/y2s/` and run:
 
