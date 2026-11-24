@@ -15,14 +15,15 @@ BOARD_INPUTS = ('inputs/x1slte/Mu-x1slte.img', 'inputs/x1slte/boot-dtb.img',
                 'inputs/tools/avbtool.py', 'inputs/tools/testkey_rsa4096.pem',
                 'inputs/toolchain.json', 'userland/hfs-kit.bin')
 
-def preflight(output):
-    errors = doctor('x1slte')
+def preflight(output, device='x1slte'):
+    from private_inputs import Y2S_BOARD_INPUTS
+    errors = doctor(device)
     if (ROOT / 'dist').resolve() not in output.resolve().parents:
         errors.append('local candidate output must be under this checkout’s dist/ directory')
     for tool in ('7z', 'cc', 'curl', 'tar', 'ldid', 'llvm-ar', 'llvm-ranlib', 'llvm-strip', 'lld-link'):
         if shutil.which(tool) is None:
             errors.append('missing tool: ' + tool)
-    for name in BOARD_INPUTS:
+    for name in BOARD_INPUTS + (Y2S_BOARD_INPUTS if device == 'y2s' else ()):
         p = ROOT / name
         if p.is_symlink() or not p.is_file():
             errors.append('provision reviewed board/tool input: ' + name)
@@ -37,9 +38,9 @@ def preflight(output):
     if errors:
         raise ValueError('\n'.join(errors))
 
-def build(output, check_only=False, twrp=True, experimental=False, bundle_only=False):
+def build(output, check_only=False, twrp=True, experimental=False, bundle_only=False, device='x1slte'):
     output = output.absolute()
-    preflight(output)
+    preflight(output, device)
     if check_only:
         print('Local prerequisites found; extraction/build will be validated during the run.')
         return
@@ -79,8 +80,8 @@ def build(output, check_only=False, twrp=True, experimental=False, bundle_only=F
             if private(previous) != private(current):
                 raise ValueError('board/firmware inputs changed; review and run build.sh lock-inputs explicitly')
         run('02-inputs: lock prepared inputs', ['./build.sh', 'lock-inputs'])
-        run('03-build: compile and assemble images', ['./build.sh', 'images', '--development'])
-        run('04-package: assemble candidate', ['./build.sh', 'package', '--output', str(output)])
+        run('03-build: compile and assemble images', ['./build.sh', 'images', '--development', '--device', device])
+        run('04-package: assemble candidate', ['./build.sh', 'package', '--output', str(output), '--device', device])
         run('05-verify: verify candidate', ['./build.sh', 'verify', '--bundle', str(output)])
         if bundle_only:
             print(f'Verified candidate: {output}', flush=True)

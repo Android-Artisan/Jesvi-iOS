@@ -1,11 +1,13 @@
-name: Prepare stock S20+ 5G board inputs
+name: Build S20+ 5G board inputs
 on:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   firmware:
-    runs-on: ubuntu-24.04
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04-arm
     environment: private-images
     timeout-minutes: 90
     steps:
@@ -31,9 +33,7 @@ jobs:
           file=${inputs[0]}
           "${cmd[@]}" decrypt -v "$version" -V "${file: -1}" -i "$file" -o stock/firmware.zip
           rm -- "$file"
-      - name: Extract and encrypt board trees
-        env:
-          AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+      - name: Extract stock board trees
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -43,11 +43,44 @@ jobs:
           [[ ${#ap[@]} == 1 ]]
           unzip -p firmware.zip "${ap[0]}" | tar -xO -f - boot.img.lz4 | lz4 -dc > boot.img
           python3 "$GITHUB_WORKSPACE/tools/y2s/stock-info.py" boot-trees boot.img trees
+          rm -- firmware.zip boot.img
+      - name: Build Mu-Silicium for y2s
+        run: |
+          set -euo pipefail
+          overlay="$GITHUB_WORKSPACE/devices/exynos990/y2s/legacy/uefi-y2s"
+          git clone --filter=blob:none --no-checkout https://github.com/Project-Silicium/Mu-Silicium.git "$RUNNER_TEMP/mu"
+          cd "$RUNNER_TEMP/mu"
+          git checkout --detach cc64daf0e05b7533995e4fd01e0f5043ec26c137
+          git submodule update --init --depth 1
+          cp -R "$overlay/Platforms/Samsung/y2sPkg" Platforms/Samsung/
+          cp "$overlay/Resources/Configs/y2s.toml" Resources/Configs/
+          cp "$RUNNER_TEMP/stock/trees/stock-boot-dtb.img" Resources/DTBs/y2s.dtb
+          cp "$overlay/BootManagerLib/XnuLoader."{c,h} Silicon/Silicium/SiliciumPkg/Library/BootManagerLib/
+          git apply "$overlay/y2s.patch"
+          python3 -m venv "$RUNNER_TEMP/mu-venv"
+          source "$RUNNER_TEMP/mu-venv/bin/activate"
+          bash setup_env.sh -p apt
+          export CLANGPDB_AARCH64_PREFIX=aarch64-linux-gnu-
+          python3 build_uefi.py -d y2s -r RELEASE
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          data = Path('Mu-y2s.img').read_bytes()
+          slot = data[0x100870:0x180870]
+          if not data.startswith(b'ANDROID!') or slot != b'\xff' * 0x80000:
+              raise SystemExit('Mu boot image does not contain the expected y2s payload slot')
+          PYTHON
+          cp Mu-y2s.img "$RUNNER_TEMP/stock/trees/"
+      - name: Encrypt the board inputs for the macOS build
+        env:
+          AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/stock"
           recipient=$(printf '%s\n' "$AGE_IDENTITY" | age-keygen -y)
-          tar -C trees -czf - stock-boot-dtb.img stock-boot-dtbh.img | age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-trees.tar.gz.age"
+          tar -C trees -czf - Mu-y2s.img stock-boot-dtbh.img | age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-inputs.tar.gz.age"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: y2s-board-trees
-          path: ${{ runner.temp }}/y2s-board-trees.tar.gz.age
+          name: y2s-board-inputs
+          path: ${{ runner.temp }}/y2s-board-inputs.tar.gz.age
           if-no-files-found: error
           retention-days: 7

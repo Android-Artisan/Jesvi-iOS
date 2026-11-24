@@ -222,9 +222,9 @@ def main():
             print(f'{a.device}: building a shared kernel for experimental bring-up', flush=True)
         run('bash', 'ci/build-kernel.sh', str(a.jobs), a.device)
     elif a.command == 'images':
-        if a.device != 'x1slte' or not a.development:
+        if a.device not in ('x1slte', 'y2s') or not a.development:
             raise ValueError('full images are private development candidates only; pass --development')
-        from private_inputs import verify
+        from private_inputs import verify, Y2S_BOARD_INPUTS
         from images import hfs_kit
         from extraction import verify as verify_extraction
         verify_extraction(ROOT)
@@ -233,12 +233,19 @@ def main():
         userdata = profile(a.device)['partitions']['userdata']
         data = targets.data_bytes(userdata)
         hfs_kit(targets.kit_path(ROOT, data, userdata), data)
-        touchid_inputs()
+        if a.device == 'y2s':
+            if data != userdata:
+                raise ValueError('y2s requires IOS_DATA_GB=all for the current loader')
+            if any(not (ROOT / path).is_file() for path in Y2S_BOARD_INPUTS):
+                raise ValueError('missing y2s Mu image or stock DTBH')
+        else:
+            touchid_inputs()
         env = dict(os.environ, SHARE='1', REST='1', IOS_INPUT_DIR='../sysimage', REQUIRE_SOURCE='1', JESVI_TARGET=a.device)
         env['HACKIOS_IMAGE_CACHE'] = str(Path(env.get('HACKIOS_IMAGE_CACHE', ROOT / '.cache/private-images')).resolve())
         # Build locally, never export xnu-src over the source under review.
-        run('bash', 'ci/build-kernel.sh', '4')
-        shutil.copyfile(ROOT / 'out/kernel/mach.x1slte', ROOT / 'out/mach.x1slte')
+        run('bash', 'ci/build-kernel.sh', '4', a.device)
+        if a.device == 'x1slte':
+            shutil.copyfile(ROOT / 'out/kernel/mach.x1slte', ROOT / 'out/mach.x1slte')
         run('bash', 'ci/build-openh264.sh', env=env)
         env['OPENH264'] = str(ROOT / '.cache/release-deps/openh264-source')
         run('bash', 'userland/build-gpu-y2s.sh', env=env)
@@ -247,6 +254,11 @@ def main():
                 raise ValueError(f'image builder produced no {name}')
         run('./build.sh', 'identity', env=env)
         run('python3', 'tools/release/loader_font.py', env=env)
+        if a.device == 'y2s':
+            run('python3', '-I', 'tools/bootlogo/mkbootlogo.py', env=env)
+            run('bash', 'tools/y2s/build-image.sh', env=dict(env, UEFI=Y2S_BOARD_INPUTS[0]))
+            verify()
+            return 0
         run('bash', 'x1slte.sh', 'embed', env=env)
         # Boot line from the target config: platform + hardware + target + mods.
         # data_bytes and hfs_kit checked the explicitly configured data window.

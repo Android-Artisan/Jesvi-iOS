@@ -66,6 +66,25 @@ stock-verified geometry in `devices/exynos990/y2s/target.conf`,
 dumps are only cross-checks; do not widen the model/bootloader allowlists to
 make a check pass.
 
+## Hosted release build
+
+Select `y2s` in the [TWRP release workflow](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml).
+Use fresh mode for the installer. The Ubuntu ARM64 job extracts the stock
+SM-G986B device tree and builds Mu-Silicium. The macOS job receives the Mu
+image and DTBH as an encrypted artifact, builds the iOS images, and verifies
+the installer and Restore ZIPs. The hosted build uses the compact Apple
+extraction, the y2s userland overlay, and the full userdata volume.
+
+The `private-images` GitHub environment needs `Y2S_FUS_IMEI` for the stock
+Samsung download and `HOSTED_BOARD_INPUTS_AGE_KEY` for the artifact handoff.
+For a local release build with the reviewed shared board inputs already staged,
+place `Mu-y2s.img` and `stock-boot-dtbh.img` in `inputs/y2s/` and run:
+
+```sh
+./build.sh release --set TARGETS=y2s --set MODE=fresh --set IOS_DATA_GB=all \
+  --set 'OUTPUTS=twrp restore' --set WRITES=true
+```
+
 ## Development build chain (not a release)
 
 The y2s UEFI is built from upstream Mu-Silicium plus the checked-in y2s overlay:

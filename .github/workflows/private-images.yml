@@ -3,6 +3,11 @@ name: Build Jesvi iOS for Galaxy S20 (TWRP)
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Galaxy S20 LTE (x1slte) or Galaxy S20+ 5G (y2s)
+        type: choice
+        options: [x1slte, y2s]
+        default: x1slte
       runner:
         description: GitHub macOS 15 (hosted), GitHub macOS 26, or a provisioned private Mac
         type: choice
@@ -52,9 +57,16 @@ jobs:
             echo "::error::Provision the reviewed private inputs and set ENABLE_PRIVATE_IMAGE_BUILDS=true."
             exit 1
           fi
+  y2s-board:
+    needs: configuration
+    if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+    uses: ./.github/workflows/y2s-firmware.yml
   candidate:
     name: Build and verify release packages
-    needs: configuration
+    needs: [configuration, y2s-board]
+    if: >-
+      ${{ !cancelled() && needs.configuration.result == 'success' &&
+      (needs.y2s-board.result == 'success' || needs.y2s-board.result == 'skipped') }}
     environment: private-images
     runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || (inputs.runner == 'macos-26' && 'macos-26' || 'macos-15') }}
     timeout-minutes: 360
@@ -141,14 +153,31 @@ jobs:
           python3 tools/release/hosted_inputs.py unpack \
             --archive "$archive" --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
           rm "$archive"
+      - name: Fetch encrypted S20+ board inputs
+        if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: y2s-board-inputs
+          path: ${{ runner.temp }}/y2s
+      - name: Stage the S20+ Mu image and stock DTBH
+        if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+        env:
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          set -o pipefail
+          mkdir -p inputs/y2s
+          printf '%s\n' "$INPUTS_AGE_KEY" | age --decrypt --identity - "$RUNNER_TEMP/y2s/y2s-board-inputs.tar.gz.age" |
+            tar -xzf - -C inputs/y2s Mu-y2s.img stock-boot-dtbh.img
       - name: Build everything release.conf asks for
         env:
           WRITES_INPUT: ${{ inputs.writes }}
           OUTPUTS_INPUT: ${{ inputs.outputs }}
           MODE_INPUT: ${{ inputs.mode }}
+          TARGET_INPUT: ${{ inputs.target }}
         run: |
           test ! -e "$RELEASE_OUT"
-          args=(--set "OUT=$RELEASE_OUT")
+          args=(--set "OUT=$RELEASE_OUT" --set "TARGETS=$TARGET_INPUT")
+          if [ "$TARGET_INPUT" = y2s ]; then args+=(--set IOS_DATA_GB=all); fi
           if [ "$MODE_INPUT" != from-release.conf ]; then args+=(--set "MODE=$MODE_INPUT"); fi
           if [ "$WRITES_INPUT" != from-release.conf ]; then args+=(--set "WRITES=$WRITES_INPUT"); fi
           if [ -n "$OUTPUTS_INPUT" ]; then args+=(--set "OUTPUTS=$OUTPUTS_INPUT"); fi
@@ -189,5 +218,6 @@ jobs:
           path: |
             out/local-build/*.log
             out/kernel/build.log
+            out/experimental/y2s/build.log
           retention-days: 7
           if-no-files-found: ignore

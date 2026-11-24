@@ -6,6 +6,9 @@ from cache import fingerprint
 from manage import ROOT
 
 
+Y2S_BOARD_INPUTS = ('inputs/y2s/Mu-y2s.img', 'inputs/y2s/stock-boot-dtbh.img')
+
+
 def inventory():
     paths = ['inputs/x1slte', 'inputs/tools', 'inputs/toolchain.json',
              'sysimage/rootfs', 'sysimage/cryptex', 'sysimage/cryptex-app',
@@ -13,6 +16,8 @@ def inventory():
              'sysimage/var.skel', 'sysimage/DeviceTree.d22ap.im4p', 'sysimage/extraction.json', 'userland/hfs-kit.bin']
     paths += [str(p.relative_to(ROOT)) for p in sorted(ROOT.glob('userland/hfs-kit-*.bin'))]  # IOS_DATA_GB sizes
     paths += [str(p.relative_to(ROOT)) for p in sorted(ROOT.glob('fw-*')) if p.is_dir()]
+    if any((ROOT / path).exists() for path in Y2S_BOARD_INPUTS):
+        paths.extend(Y2S_BOARD_INPUTS)
     if (ROOT / 'jb').exists():
         paths.append('jb')
     result = {}

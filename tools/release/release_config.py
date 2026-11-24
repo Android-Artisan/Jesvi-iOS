@@ -137,13 +137,13 @@ def bundle_for(conf, target):
         if json.loads((b / 'manifest.json').read_text()).get('device') != target:
             raise ValueError(f'BUNDLE was not built for {target}')
         return b
-    if target != 'x1slte':
+    if target not in ('x1slte', 'y2s'):
         raise ValueError(f'{target}: no image build adapter yet; set BUNDLE to a verified candidate')
     from local_build import build as local
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     out = ROOT / 'dist' / f'candidate-{target}-{stamp}'
     os.environ['JESVI_MODS_DISABLE'] = ' '.join(conf['MODS_DISABLE'].split())
-    local(out, twrp=False, bundle_only=True)
+    local(out, twrp=False, bundle_only=True, device=target)
     return out
 
 

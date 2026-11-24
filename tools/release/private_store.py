@@ -14,6 +14,7 @@ import sys
 import tempfile
 from cache import Cache, digest
 from manage import ROOT
+from private_inputs import Y2S_BOARD_INPUTS, verify
 
 
 def stage(snapshot):
@@ -25,6 +26,7 @@ def stage(snapshot):
                'sysimage/rootfs', 'sysimage/cryptex', 'sysimage/cryptex-app',
                'sysimage/20F66__iPhone10,3_6', 'sysimage/system.manifest',
                'sysimage/var.skel', 'sysimage/DeviceTree.d22ap.im4p', 'sysimage/extraction.json', 'userland/hfs-kit.bin', 'jb'}
+    allowed.update(Y2S_BOARD_INPUTS)
     import re
     names = list(lock['inputs']) + ['inputs/private-inputs.lock.json']
     for name in names:
@@ -34,14 +36,14 @@ def stage(snapshot):
         src, dst = snapshot / name, ROOT / name
         if src.is_symlink() or not src.resolve().is_relative_to(snapshot):
             raise ValueError(f'input escapes snapshot: {name}')
-        if dst.exists() and name != 'userland/hfs-kit.bin':
+        tracked_kit = re.fullmatch(r'userland/hfs-kit(?:-[1-9][0-9]*)?\.bin', name)
+        if dst.exists() and not tracked_kit:
             raise ValueError(f'requires a disposable checkout, destination already exists: {name}')
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             shutil.copytree(src, dst, symlinks=True)
         else:
             shutil.copy2(src, dst)
-    from private_inputs import verify
     verify()
     print('Private snapshot copied and content lock verified')
 
