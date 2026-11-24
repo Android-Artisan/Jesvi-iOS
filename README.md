@@ -2,7 +2,9 @@
 
 Jesvi iOS runs iOS 16.5 (20F66) on the Exynos 990 **Galaxy S20 LTE** and includes a development port for the **Galaxy S20+ 5G**. The project builds the XNU 8796.121.2 kernel, UEFI loader, drivers and device services. The iOS system image comes from Apple's iPhone X firmware.
 
-[Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases) · [Development builds](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml) · [Telegram](https://t.me/eulah_rom)
+[![Releases](https://img.shields.io/badge/Releases-blue?style=flat-square&logo=github&logoColor=white)](https://github.com/jesvi-eulah/Jesvi-iOS/releases)
+[![Development builds](https://img.shields.io/badge/Development%20builds-2088FF?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml)
+[![Telegram](https://img.shields.io/badge/Telegram-@eulah__rom-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/eulah_rom)
 
 [![Jesvi iOS running on a Galaxy S20. Watch the demo on YouTube.](docs/IMG_5690%202.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)
 
@@ -10,14 +12,19 @@ Jesvi iOS runs iOS 16.5 (20F66) on the Exynos 990 **Galaxy S20 LTE** and include
 
 The following features are reported for the **S20 LTE**. For S20+ hardware coverage, use the [y2s evidence record](docs/release/device-evidence-y2s.md).
 
-| Area | S20 LTE |
+| Area | Status on S20 LTE |
 |---|---|
-| Display and graphics | 60/120 Hz, touch, True Tone, auto-brightness and Always-On Display. Metal on Mali-G77 and OpenGL ES through Mesa. |
-| Network and calls | Dual-band Wi-Fi, hotspot, Bluetooth audio, LTE data, VoLTE calls and carrier SMS. |
-| Camera and audio | Front and three rear cameras, speaker, earpiece and microphone. |
-| Sensors and power | Motion, compass, proximity, ambient light, haptics, flashlight, GPS, USB PD charging and thermal management. |
-| Storage and USB | Persistent UFS storage, exFAT microSD in Files, USB networking, serial console and Finder file access. |
-| Security and accounts | Passcode and Touch ID enrolment. Fingerprint matching and unlock remain incomplete. Apple ID setup currently requires a companion Hackintosh. |
+| Display | 60/120 Hz, touch, True Tone, auto-brightness and Always-On Display |
+| Graphics | Metal acceleration on Mali-G77 and OpenGL ES through Mesa |
+| Cellular | LTE data, VoLTE calls and carrier SMS |
+| Connectivity | Dual-band Wi-Fi, Bluetooth audio and hotspot |
+| Cameras | Front and three rear cameras |
+| Audio | Speaker, earpiece and microphone |
+| Sensors | Motion, compass, proximity, ambient light, GPS, haptics and flashlight |
+| Power | USB PD charging and thermal management |
+| Storage | Persistent UFS storage and exFAT microSD in Files |
+| USB | USB networking, serial console and Finder file access |
+| Security | Passcode and Touch ID enrolment. Fingerprint matching and unlock remain incomplete. Apple ID setup currently requires a companion Hackintosh. |
 
 App Store downloads, iMessage and FaceTime remain unavailable. On builds with the native clock service, the phone uses saved time or image build time until it can synchronize over the network. Offline time is approximate. [Device configuration](devices/exynos990/x1slte/device.conf) · [Clock behavior](docs/devices/x1slte/background.md#clock-restoration-and-network-synchronization) · [Development log](docs/SHIPPING.md)
 
@@ -64,11 +71,13 @@ For S20+ 5G, use the [y2s build guide](tools/y2s/README.md) to prepare the board
 
 | Path | Contents |
 |---|---|
-| [devices/exynos990](devices/exynos990) | Shared platform settings and per-device profiles |
-| [xnu](xnu) and [xnuloader](xnuloader) | Kernel, board drivers and UEFI loader |
-| [userland](userland) and [sysimage](sysimage) | Native services, first-boot setup and system-image assembly |
-| [tools/install](tools/install) and [tools/y2s](tools/y2s) | Recovery helpers and S20+ build tools |
-| [docs](docs) | Device evidence, release procedures and development notes |
+| [`xnu/`](xnu) | Kernel patches and board drivers for Apple's XNU 8796.121.2 |
+| [`xnuloader/`](xnuloader) | UEFI loader that starts XNU |
+| [`userland/`](userland) and [`sysimage/`](sysimage) | Native services, injected libraries, first-boot defaults, and system-image assembly |
+| [`devices/`](devices) | Shared Exynos 990 settings and per-device profiles |
+| [`tools/`](tools) | Install, release, camera, cellular, Touch ID, and S20+ build tools |
+| [`docs/`](docs) | Install and build guides, device evidence, and development notes |
+| [`build.sh`](build.sh), [`Makefile`](Makefile), and [`x1slte.sh`](x1slte.sh) | Build entry points and the S20 LTE developer flash loop |
 
 ## Tested devices
 
