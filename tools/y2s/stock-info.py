@@ -3,6 +3,7 @@
 
 Usage:
   tools/y2s/stock-info.py dtb  <stock boot.img> [output-dtb]
+  tools/y2s/stock-info.py boot-trees <stock boot.img> <output-directory>
   tools/y2s/stock-info.py dtbo <stock dtbo.img>
   tools/y2s/stock-info.py super <raw super image>   # output of simg2img super.img
 
@@ -26,13 +27,19 @@ def dt_tables(data, tag):
         i = data.find(DTB_MAGIC, i)
         if i < 0:
             break
+        if i + 32 > len(data):
+            raise ValueError('truncated DTBH header')
         w = struct.unpack_from('>8I', data, i)
         total, entry_size, count, entries_off = w[1], w[3], w[4], w[5]
+        if total < 32 or i + total > len(data) or entry_size < 16 or entries_off < 32 or entries_off + count * entry_size > total:
+            raise ValueError('invalid DTBH table bounds')
         table = data[i:i + total]
         print(f'{tag} table {len(out)} at {i:#x}: {count} entries, {entry_size:#x} B each')
         for n in range(count):
             o = entries_off + n * entry_size
             size, off = struct.unpack_from('>II', table, o)
+            if off + size > total:
+                raise ValueError('device tree exceeds DTBH table')
             ident, rev = struct.unpack_from('>II', table, o + 8)
             name = table[o + 16:o + entry_size].split(b'\0', 1)[0].decode(errors='replace')
             print(f'  {n}: {name!r} size={size:#x} off={off:#x} id={ident:#x} rev={rev:#x}')
@@ -51,6 +58,32 @@ def cmd_dtb(args):
     out = Path(args[1]) if len(args) == 2 else Path('inputs/y2s/stock-boot-dtb.img')
     out.write_bytes(tables[0][1])
     print(f'wrote {out} ({out.stat().st_size} bytes)')
+
+
+def cmd_boot_trees(args):
+    if len(args) != 2:
+        raise SystemExit('usage: stock-info.py boot-trees <stock boot.img> <output-directory>')
+    image = Path(args[0]).read_bytes()
+    if len(image) < 1660 or image[:8] != b'ANDROID!' or struct.unpack_from('<I', image, 40)[0] != 2:
+        raise SystemExit('expected a stock Android v2 boot image')
+    page = struct.unpack_from('<I', image, 36)[0]
+    if page < 1660 or page & (page - 1):
+        raise SystemExit('invalid boot page size')
+    start = page
+    for field in (8, 16, 24, 1632):
+        size = struct.unpack_from('<I', image, field)[0]
+        start += (size + page - 1) // page * page
+    size = struct.unpack_from('<I', image, 1648)[0]
+    table = image[start:start + size]
+    if len(table) != size or len(table) < 32 or table[:4] != DTB_MAGIC:
+        raise SystemExit('missing stock DTBH section')
+    trees = dt_tables(table, 'stock DTBH')
+    if not trees or not trees[0][1].startswith(bytes.fromhex('d00dfeed')) or b'Samsung Y2S' not in trees[0][1]:
+        raise SystemExit('expected an SM-G986B Y2S device tree in the stock boot image')
+    out = Path(args[1])
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'stock-boot-dtbh.img').write_bytes(table)
+    (out / 'stock-boot-dtb.img').write_bytes(trees[0][1])
 
 
 def cmd_dtbo(args):
@@ -116,7 +149,7 @@ def main():
         print(__doc__.strip(), file=sys.stderr)
         return 2
     cmd, args = sys.argv[1], sys.argv[2:]
-    {'dtb': cmd_dtb, 'dtbo': cmd_dtbo, 'super': cmd_super}[cmd](args)
+    {'boot-trees': cmd_boot_trees, 'dtb': cmd_dtb, 'dtbo': cmd_dtbo, 'super': cmd_super}[cmd](args)
     return 0
 
 

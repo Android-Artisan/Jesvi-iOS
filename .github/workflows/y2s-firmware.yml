@@ -1,0 +1,53 @@
+name: Prepare stock S20+ 5G board inputs
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    environment: private-images
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Download and decrypt SM-G986B stock firmware
+        env:
+          DEVICE_IMEI: ${{ secrets.Y2S_FUS_IMEI }}
+        run: |
+          set -euo pipefail
+          [[ "$DEVICE_IMEI" =~ ^[0-9]{15}$ ]] || { echo "::error::Configure Y2S_FUS_IMEI in private-images for the SM-G986B."; exit 1; }
+          python3 -m venv "$RUNNER_TEMP/samloader"
+          "$RUNNER_TEMP/samloader/bin/pip" install git+https://github.com/martinetd/samloader.git@0d724ce27b88915f61111313ce406a12c5c25a4a
+          cd "$RUNNER_TEMP"
+          cmd=("$RUNNER_TEMP/samloader/bin/samloader" -m SM-G986B -r XSG -i "$DEVICE_IMEI")
+          version=G986BXXSNHYB1/G986BOXMNHYB1/G986BXXSNHYB1/G986BXXSNHYB1
+          mkdir stock
+          "${cmd[@]}" download -v "$version" -O stock
+          shopt -s nullglob
+          inputs=(stock/*.enc[24])
+          [[ ${#inputs[@]} == 1 ]]
+          file=${inputs[0]}
+          "${cmd[@]}" decrypt -v "$version" -V "${file: -1}" -i "$file" -o stock/firmware.zip
+          rm -- "$file"
+      - name: Extract and encrypt board trees
+        env:
+          AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y age lz4
+          cd "$RUNNER_TEMP/stock"
+          mapfile -t ap < <(unzip -Z1 firmware.zip | grep -E '(^|/)AP_G986BXXSNHYB1[^/]*\.tar\.md5$')
+          [[ ${#ap[@]} == 1 ]]
+          unzip -p firmware.zip "${ap[0]}" | tar -xO -f - boot.img.lz4 | lz4 -dc > boot.img
+          python3 "$GITHUB_WORKSPACE/tools/y2s/stock-info.py" boot-trees boot.img trees
+          recipient=$(printf '%s\n' "$AGE_IDENTITY" | age-keygen -y)
+          tar -C trees -czf - stock-boot-dtb.img stock-boot-dtbh.img | age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-trees.tar.gz.age"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: y2s-board-trees
+          path: ${{ runner.temp }}/y2s-board-trees.tar.gz.age
+          if-no-files-found: error
+          retention-days: 7
