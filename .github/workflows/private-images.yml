@@ -1,23 +1,30 @@
-name: Full TWRP release
+name: Build Jesvi iOS for Galaxy S20 (TWRP)
 # Same build.sh release as local builds; public image output requires explicit opt-in.
 on:
   workflow_dispatch:
     inputs:
-      runner:
-        description: GitHub compute (hosted) or an already provisioned private Mac
+      target:
+        description: Galaxy S20 LTE (x1slte) or Galaxy S20+ 5G (y2s)
         type: choice
-        options: [hosted, self-hosted]
+        options: [x1slte, y2s]
+        default: x1slte
+      runner:
+        description: GitHub macOS 15 (hosted), GitHub macOS 26, or a provisioned private Mac
+        type: choice
+        options: [hosted, macos-26, self-hosted]
         default: hosted
+      mode:
+        description: Install mode (fresh erases userdata; update requires existing iOS data)
+        type: choice
+        options: [from-release.conf, choose, fresh, update]
+        default: from-release.conf
       writes:
-        description: Override release.conf WRITES (hardware-unqualified writes after physical confirmation)
+        description: Override WRITES (installs proceed after 45 seconds; fresh erases userdata)
         type: choice
         options: [from-release.conf, 'true', 'false']
         default: from-release.conf
-      mode:
-        description: Override the iOS installer mode in release.conf
-        type: choice
-        options: [from-release.conf, choose, update, fresh]
-        default: from-release.conf
+        # y2s is a first-install-only target: from-release.conf is upgraded to
+        # WRITES=true below so a dispatched build produces a flashable TWRP ZIP.
       outputs:
         description: Override release.conf OUTPUTS (e.g. "twrp restore tar"); empty keeps the file's value
         type: string
@@ -29,6 +36,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   configuration:
+    name: Check build settings
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -51,10 +59,22 @@ jobs:
             echo "::error::Provision the reviewed private inputs and set ENABLE_PRIVATE_IMAGE_BUILDS=true."
             exit 1
           fi
-  candidate:
+  y2s-board:
     needs: configuration
+    if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+    uses: ./.github/workflows/y2s-firmware.yml
+    # The firmware download and the encrypted board-input handoff live in the
+    # private-images environment. Without this, the called workflow sees empty
+    # secrets and can neither fetch the stock ZIP nor encrypt Mu-y2s.img.
+    secrets: inherit
+  candidate:
+    name: Build and verify release packages
+    needs: [configuration, y2s-board]
+    if: >-
+      ${{ !cancelled() && needs.configuration.result == 'success' &&
+      (needs.y2s-board.result == 'success' || needs.y2s-board.result == 'skipped') }}
     environment: private-images
-    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || 'macos-15' }}
+    runs-on: ${{ inputs.runner == 'self-hosted' && fromJSON('["self-hosted", "macOS", "exynos990-private"]') || (inputs.runner == 'macos-26' && 'macos-26' || 'macos-15') }}
     timeout-minutes: 360
     env:
       RELEASE_OUT: dist/release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -64,6 +84,42 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Check camera profile source generation
+        run: python3 tools/camera/test_profile_sources.py
+      - name: Check generated APFS with the runner's native checker
+        run: |
+          mkdir -p "$RUNNER_TEMP/apfs-smoke"
+          printf 'filesystem check\n' > "$RUNNER_TEMP/apfs-smoke/probe"
+          python3 tools/apfs/mkapfs.py -o "$RUNNER_TEMP/apfs-smoke.apfs" "Test=$RUNNER_TEMP/apfs-smoke"
+          /sbin/fsck_apfs -n "$RUNNER_TEMP/apfs-smoke.apfs"
+      - name: Check hosted board inputs
+        if: inputs.runner != 'self-hosted'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
+          INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          if [[ -z "$INPUTS_TAG" || ! "$INPUTS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Set PRIVATE_INPUTS_TAG and PRIVATE_INPUTS_SHA256 to the release tag and SHA-256 of board-inputs.tar.gz."
+            exit 1
+          fi
+          asset=board-inputs.tar.gz
+          if [[ -n "$INPUTS_AGE_KEY" ]]; then asset+=.age; fi
+          if ! found=$(gh release view --repo "$GH_REPO" --json assets \
+              --jq '.assets[].name' -- "$INPUTS_TAG") ||
+              ! grep -Fxq "$asset" <<< "$found"; then
+            echo "::error::The configured release must be visible to this workflow and contain $asset."
+            exit 1
+          fi
+      # The pinned Touch ID extractor uses Capstone 4, which imports distutils.
+      - name: Select Python for the hosted build
+        if: inputs.runner != 'self-hosted'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
       - name: Provision disposable GitHub compute
         if: inputs.runner != 'self-hosted'
         run: bash ci/setup-hosted-images.sh
@@ -89,22 +145,62 @@ jobs:
           GH_REPO: ${{ github.repository }}
           INPUTS_TAG: ${{ vars.PRIVATE_INPUTS_TAG }}
           INPUTS_SHA256: ${{ vars.PRIVATE_INPUTS_SHA256 }}
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |
-          test -n "$INPUTS_TAG" && test -n "$INPUTS_SHA256"
-          gh release download "$INPUTS_TAG" --pattern board-inputs.tar.gz --dir "$RUNNER_TEMP/board-inputs"
+          archive="$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+          mkdir -p "$(dirname "$archive")"
+          if [[ -n "$INPUTS_AGE_KEY" ]]; then
+            gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz.age --dir "$(dirname "$archive")" -- "$INPUTS_TAG"
+            printf '%s\n' "$INPUTS_AGE_KEY" | age --decrypt --identity - --output "$archive" "$archive.age"
+            rm "$archive.age"
+          else
+            gh release download --repo "$GH_REPO" --pattern board-inputs.tar.gz --dir "$(dirname "$archive")" -- "$INPUTS_TAG"
+          fi
           python3 tools/release/hosted_inputs.py unpack \
-            --archive "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz" \
-            --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
-          rm "$RUNNER_TEMP/board-inputs/board-inputs.tar.gz"
+            --archive "$archive" --root "$GITHUB_WORKSPACE" --sha256 "$INPUTS_SHA256"
+          rm "$archive"
+      - name: Fetch encrypted S20+ board inputs
+        if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: y2s-board-inputs
+          path: ${{ runner.temp }}/y2s
+      - name: Stage the S20+ Mu image and stock DTBH
+        if: inputs.target == 'y2s' && inputs.runner != 'self-hosted'
+        env:
+          INPUTS_AGE_KEY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$INPUTS_AGE_KEY" || {
+            echo '::error::Set HOSTED_BOARD_INPUTS_AGE_KEY in the private-images environment to decrypt the y2s board inputs.'
+            exit 1
+          }
+          mkdir -p inputs/y2s
+          printf '%s\n' "$INPUTS_AGE_KEY" | age --decrypt --identity - "$RUNNER_TEMP/y2s/y2s-board-inputs.tar.gz.age" |
+            tar -xzf - -C inputs/y2s Mu-y2s.img stock-boot-dtbh.img SHA256SUMS
+          (cd inputs/y2s && shasum -a 256 -c SHA256SUMS)
       - name: Build everything release.conf asks for
         env:
           WRITES_INPUT: ${{ inputs.writes }}
           OUTPUTS_INPUT: ${{ inputs.outputs }}
           MODE_INPUT: ${{ inputs.mode }}
+          TARGET_INPUT: ${{ inputs.target }}
         run: |
           test ! -e "$RELEASE_OUT"
-          args=(--set "OUT=$RELEASE_OUT")
-          if [ "$MODE_INPUT" != from-release.conf ]; then args+=(--set "MODE=$MODE_INPUT"); fi
+          args=(--set "OUT=$RELEASE_OUT" --set "TARGETS=$TARGET_INPUT")
+          if [ "$TARGET_INPUT" = y2s ]; then
+            if [ "$MODE_INPUT" != from-release.conf ] && [ "$MODE_INPUT" != fresh ]; then
+              echo "::error::y2s TWRP is first-install only; choose mode from-release.conf or fresh."
+              exit 1
+            fi
+            # Measured y2s image geometry: full userdata, first-install only.
+            args+=(--set IOS_DATA_GB=all --set MODE=fresh)
+            # release.conf defaults to a read-only preflight for safety. This is
+            # an explicitly dispatched release build: ship a flashable ZIP unless
+            # the operator deliberately asked for a preflight.
+            if [ "$WRITES_INPUT" = from-release.conf ]; then args+=(--set WRITES=true); fi
+          fi
+          if [ "$MODE_INPUT" != from-release.conf ] && [ "$TARGET_INPUT" != y2s ]; then args+=(--set "MODE=$MODE_INPUT"); fi
           if [ "$WRITES_INPUT" != from-release.conf ]; then args+=(--set "WRITES=$WRITES_INPUT"); fi
           if [ -n "$OUTPUTS_INPUT" ]; then args+=(--set "OUTPUTS=$OUTPUTS_INPUT"); fi
           ./build.sh release --dry-run "${args[@]}"
@@ -144,5 +240,6 @@ jobs:
           path: |
             out/local-build/*.log
             out/kernel/build.log
+            out/experimental/y2s/build.log
           retention-days: 7
           if-no-files-found: ignore

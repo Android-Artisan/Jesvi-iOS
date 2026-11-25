@@ -65,7 +65,8 @@ empty maintainer arrays until owners volunteer.
   commit for builds; upstream source updates remain reviewed lock changes.
 - **Private TWRP release:** manual dispatch, default branch only, gated by
   `ENABLE_PRIVATE_IMAGE_BUILDS=true`. `runner=hosted` uses GitHub's `macos-15`
-  compute; `runner=self-hosted` uses the provisioned `exynos990-private` worker.
+  compute, `runner=macos-26` selects GitHub’s macOS 26 image, and
+  `runner=self-hosted` uses the provisioned `exynos990-private` worker.
   Both call **the same `./build.sh release` and `release.conf` as local builds**.
   Only tool/input setup and retention differ. Each attempt uses a fresh output
   directory, verifies ZIP checksums, and uploads an artifact for seven days.
@@ -92,12 +93,23 @@ Inspect current repository visibility and run status rather than treating config
    includes firmware (including fingerprint), board/tool files, HFS kits and the
    reviewed bootstrap, and rejects personal Wi-Fi configuration. It does not include
    built images, Apple extraction, SSH settings or the development workspace.
-3. Upload `board-inputs.tar.gz` as an asset of a release in the build repository, using a non-version tag such as `private-build-inputs-YYYYMMDD`.
+3. For a public build repository, encrypt `board-inputs.tar.gz` with age and upload
+   `board-inputs.tar.gz.age` as a release asset. Set
+   `HOSTED_BOARD_INPUTS_AGE_KEY` in the `private-images` environment to the age
+   identity. A private build repository can also use the plaintext asset without
+   the age secret. Use a non-version release tag such as `private-build-inputs-YYYYMMDD`.
    Set `PRIVATE_INPUTS_TAG` to that tag and `PRIVATE_INPUTS_SHA256` to the archive's
-   checksum. The input archive follows repository visibility; it is input storage, not a product release.
+   checksum. The hosted job checks the settings and confirms the asset exists
+   before installing build tools. The input archive follows repository visibility; it is input storage, not a product release.
 4. Set `ENABLE_PRIVATE_IMAGE_BUILDS=true`. Public repositories also require
-   explicit `ENABLE_PUBLIC_IMAGE_BUILDS=true` authorization for public image artifacts. Dispatch **Full TWRP release** with
-   `runner=hosted`, the desired mode, `outputs=twrp`, and writes as appropriate.
+   explicit `ENABLE_PUBLIC_IMAGE_BUILDS=true` authorization for public image artifacts. Dispatch **Build Jesvi iOS for Galaxy S20 (TWRP)** with `runner=hosted` and `outputs=twrp`.
+   For `target=y2s`, the workflow first calls `y2s-firmware.yml` on Ubuntu ARM64: set either
+   `Y2S_STOCK_FIRMWARE_URL` (a verified SM-G986B XSG stock ZIP, checked against its published
+   MD5) or `Y2S_FUS_IMEI` in the `private-images` environment so the pinned stock boot tree can
+   be fetched. `HOSTED_BOARD_INPUTS_AGE_KEY` encrypts both that handoff and the shared board
+   inputs; the macOS job installs `age` and verifies `SHA256SUMS` before building. With the
+   default `writes=from-release.conf`, y2s produces a flashable first-install ZIP (`MODE=fresh`,
+   `IOS_DATA_GB=all`, `WRITES=true`); choose `writes=false` for a preflight-only ZIP.
 
 `ci/setup-hosted-images.sh` only runs on disposable GitHub-hosted macOS machines.
 It retains the selected Xcode, removes unused Xcode versions/simulator data,

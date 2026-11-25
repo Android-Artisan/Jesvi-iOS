@@ -31,8 +31,9 @@ def _sources():
 
 def _partitions(device):
     """The four iOS destinations, plus up_param (Samsung's power-on pictures) when the profile measured it: the
-    install puts iOS's boot logo there, Jesvi-iOS-Restore puts the phone's own logo back (tools/recovery/splash.go)."""
-    parts = dict(device['partitions'])
+    install puts iOS's boot logo there, Jesvi-iOS-Restore puts the phone's own logo back (tools/recovery/splash.go).
+    Other partitions recorded as stock evidence (dtbo, vbmeta, metadata on y2s) are not installer destinations."""
+    parts = {name: device['partitions'][name] for name in ('boot', 'recovery', 'super', 'userdata')}
     if device.get('splash_partition_bytes'):
         parts['up_param'] = device['splash_partition_bytes']
     return parts
@@ -70,8 +71,8 @@ def _build(output, config, files, readme, inventory, extra_build=None):
         work = Path(work)
         binary = work / 'update-binary'
         base = environment()
-        parts = Path(output).name.removesuffix('.zip').split('_')  # NAME_VERSION_DATE_target
-        shown = f'v{parts[1]} ({parts[2][:4]}-{parts[2][4:6]}-{parts[2][6:]})' if len(parts) == 4 and parts[2].isdigit() else 'build ' + Path(output).stem
+        parts = Path(output).name.removesuffix('.zip').split('_')  # NAME_VERSION_DATE_[MODE_]target[_preflight]
+        shown = f'v{parts[1]} ({parts[2][:4]}-{parts[2][4:6]}-{parts[2][6:]})' if len(parts) >= 4 and parts[2].isdigit() else 'build ' + Path(output).stem
         shown = ''.join(c for c in shown if c.isalnum() or c in '.-() ')
         flags = ['-p', '4', '-trimpath', '-buildvcs=false', '-ldflags', f'-s -w -buildid= -X main.configSHA={sha} -X "main.releaseName={shown}"']
         subprocess.run([str(go), 'build', *flags, '-o', str(binary), '.'],
@@ -109,7 +110,7 @@ def _build(output, config, files, readme, inventory, extra_build=None):
         os.link(pending, output)  # atomic no-clobber publication
         pending.unlink()
     Path(str(output) + '.sha256').write_text(f'{digest(output)}  {output.name}\n')
-    info = {'action': config['action'], 'device': config['device'], 'installer_source_key': source_key,
+    info = {'action': config['action'], 'device': config['device'], 'mode': config['mode'], 'installer_source_key': source_key,
             'zip_sha256': digest(output),
             'go_version': subprocess.check_output([str(go), 'version'], text=True).strip(),
             'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
@@ -119,7 +120,7 @@ def _build(output, config, files, readme, inventory, extra_build=None):
     Path(str(output) + '.build.json').write_text(json.dumps(info, indent=2) + '\n')
 
 
-def package(bundle, output, mode='choose', experimental=False):
+def package(bundle, output, mode='fresh', experimental=False):
     """Jesvi iOS installer ZIP from a verified candidate bundle."""
     from flash_plan import verify
     from images import hfs_kit
@@ -128,6 +129,11 @@ def package(bundle, output, mode='choose', experimental=False):
     if mode not in ('choose', 'update', 'fresh'):
         raise ValueError('unsupported installer mode')
     manifest, device = verify(bundle)
+    # y2s is a first-install target only: this ZIP always erases and initializes
+    # userdata. Once iOS is running, updates come from the loader's Log access
+    # menu (./y2s.sh rflash / tflash), never from a second TWRP flash.
+    if device['id'] == 'y2s' and mode != 'fresh':
+        raise ValueError('y2s TWRP ZIP is first-install only; pass --mode fresh; use the loader for updates')
     avb, avb_key = ROOT / 'inputs/tools/avbtool.py', ROOT / 'inputs/tools/testkey_rsa4096.pem'
     for tool in (avb, avb_key):
         if tool.is_symlink() or not tool.is_file():
@@ -145,18 +151,36 @@ def package(bundle, output, mode='choose', experimental=False):
     config = device_config(device, 'install', mode, experimental)
     config.update(files=manifest['files'], kit_sha256=digest(kit), kit_bytes=kit.stat().st_size,
                   data_bytes=__import__('targets').data_bytes(device['partitions']['userdata']))
-    readme = (f'Jesvi iOS for {device["name"]} ({device["id"]}). Mode: {mode}. Writes enabled: {experimental}.\n'
-              'HARDWARE QUALIFICATION PENDING. No partition-table changes, no automatic reboot.\n'
-              'Works from TWRP whether the phone runs Jesvi iOS or an Android ROM (ExtremeROM, UN1CA, ...).\n'
-              'Keep this ZIP on microSD/USB-OTG or use adb sideload: internal storage is replaced.\n'
-              'Android: the installer unmounts /data and super mappings itself after you confirm;\n'
-              'if a mount is busy, choose Mount > Disable MTP in TWRP and flash again.\n'
-              'Android\'s partition map is saved in super\'s free tail for Jesvi-iOS-Restore.\n'
-              'Existing iOS data is preserved in update/choose mode. Fresh install destroys userdata.\n'
-              'Physical Volume Up holds are required before writes. Volume Down/Power cancels.\n'
-              'TWRP is replaced by the iOS runtime. To update later, flash TWRP with Odin first.\n'
-              'Back to Android: flash Jesvi-iOS-Restore, Format Data, then any Android ROM ZIP.\n'
-              'This is not an authenticated public release. See docs/release/twrp.md and rollback.md.\n')
+    if device['id'] == 'y2s':
+        readme = (f'Jesvi iOS for {device["name"]} ({device["id"]}). Mode: fresh. Writes enabled: {experimental}.\n'
+                  'HARDWARE QUALIFICATION PENDING. No partition-table changes, no automatic reboot.\n'
+                  'FIRST INSTALL ONLY, from TWRP: works from Android or over an old Jesvi iOS install,\n'
+                  'but always erases Android/iOS data and initializes a clean HFSX userdata volume.\n'
+                  'Back up anything you want to keep before flashing; this is not an update.\n'
+                  'Keep this ZIP on microSD or in TWRP /tmp; internal storage is replaced.\n'
+                  'Android: the installer unmounts /data and super mappings itself after you confirm;\n'
+                  'if a mount is busy, choose Mount > Disable MTP in TWRP and flash again.\n'
+                  'Android\'s partition map is saved in super\'s free tail for Jesvi-iOS-Restore.\n'
+                  'Installation proceeds after 45 seconds unless cancelled. Volume Down/Power cancels.\n'
+                  'TWRP is replaced by the iOS runtime. Updates are NEVER flashed with Odin or TWRP:\n'
+                  'boot the loader, choose Log access (USB) and run ./y2s.sh rflash or ./y2s.sh tflash.\n'
+                  'Do not flash this ZIP again over an existing Jesvi iOS installation.\n'
+                  'Back to Android: use the loader\'s restore path or an Android ROM restore ZIP,\n'
+                  'then Format Data and flash any Android ROM.\n'
+                  'This is not an authenticated public release. See tools/y2s/README.md.\n')
+    else:
+        readme = (f'Jesvi iOS for {device["name"]} ({device["id"]}). Mode: {mode}. Writes enabled: {experimental}.\n'
+                  'HARDWARE QUALIFICATION PENDING. No partition-table changes, no automatic reboot.\n'
+                  'Works from TWRP whether the phone runs Jesvi iOS or an Android ROM (ExtremeROM, UN1CA, ...).\n'
+                  'Keep this ZIP on microSD/USB-OTG or use adb sideload: internal storage is replaced.\n'
+                  'Android: the installer unmounts /data and super mappings itself after you confirm;\n'
+                  'if a mount is busy, choose Mount > Disable MTP in TWRP and flash again.\n'
+                  'Android\'s partition map is saved in super\'s free tail for Jesvi-iOS-Restore.\n'
+                  'Existing iOS data is preserved in update/choose mode. Fresh install destroys userdata.\n'
+                  'Installation proceeds after 45 seconds unless cancelled. Volume Down/Power cancels.\n'
+                  'TWRP is replaced by the iOS runtime. To update later, flash TWRP with Odin first.\n'
+                  'Back to Android: flash Jesvi-iOS-Restore, Format Data, then any Android ROM ZIP.\n'
+                  'This is not an authenticated public release. See docs/release/twrp.md and rollback.md.\n')
     files = {'candidate.json': bundle / 'manifest.json', 'hfs-kit.bin': kit,
              'boot.img': bundle / 'boot.img', 'recovery.img': bundle / 'recovery.img', 'system.apfs': bundle / 'system.apfs'}
     inventory = ENTRIES
@@ -199,6 +223,7 @@ def package_restore(device_id, output, experimental=False):
               'HARDWARE QUALIFICATION PENDING. Flash in TWRP (install TWRP with Odin first: iOS replaces it).\n'
               'Puts back Android\'s partition map in super (the copy saved at install time, otherwise the\n'
               'measured stock layout) and clears the iOS data headers on userdata. ALL iOS DATA IS LOST.\n'
+              'Restore requires a Volume Up hold; its 45-second timeout cancels.\n'
               'Refuses to touch a super that already holds Android partitions. BOOT/TWRP/EFS untouched.\n'
               'Then, without rebooting: Wipe > Format Data (type yes), and flash any Android ROM ZIP\n'
               '(ExtremeROM, UN1CA, LineageOS ...). For stock: Odin BL+AP+CP+CSC (not HOME_CSC).\n')

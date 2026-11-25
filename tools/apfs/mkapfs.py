@@ -615,8 +615,9 @@ class Container:
         self.bm_addr_off = SM_BITMAP_XID_OFF + 8 * self.ip_bm_size
         self.bm_free_next_off = self.bm_addr_off + div_up(2 * self.ip_bm_size, 8) * 8
         self.cib_addr_off = self.bm_free_next_off + self.ip_bmap_blocks * 2
-        entries = self.cabs if self.cabs > 1 else self.cibs
-        self.sm_size = div_up(entries * 8 + self.cib_addr_off, BS) * BS
+        entries = self.cabs or self.cibs
+        self.tier2_addr_off = self.cib_addr_off + entries * 8
+        self.sm_size = div_up(self.tier2_addr_off, BS) * BS
         self.sm_blocks = self.sm_size // BS
 
         self.desc_base = 1
@@ -808,6 +809,8 @@ class Container:
         struct.pack_into('<IIII', sm, 32, BS, bpc, self.chunks_per_cib, self.cibs_per_cab)
         struct.pack_into('<QQIIQIIQ', sm, 48, bc, self.chunks, self.cibs, self.cabs, free_total,
                          self.cib_addr_off, 0, 0)
+        # The empty second device table starts after the main address table.
+        struct.pack_into('<I', sm, 128, self.tier2_addr_off)
         struct.pack_into('<IIQIIQQQQ', sm, 144, 0, IP_BM_TX_MULTIPLIER, self.ip_blocks, self.ip_bm_size,
                          self.ip_bmap_blocks, self.ip_bm_base, self.ip_base, 0, 0)
         struct.pack_into('<QQQHHIQ', sm, 200, 0, self.ipfq_oid, 0, ip_fq_node_limit(self.chunks), 0, 0, 0)

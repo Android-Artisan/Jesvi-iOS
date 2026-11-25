@@ -42,9 +42,10 @@ step "Confirm what to keep or erase"
 if [ "$package_mode" = preflight ]; then
 	kind=keep
 	info "No erase confirmation is needed for preflight."
+elif [ "$action" = restore ]; then
+	info "After the checks, hold Volume Up on the phone for three seconds to authorize Restore."
 elif [ $erase = 1 ]; then
-	if [ "$action" = restore ]; then warn "This puts Android's layout back: ALL iOS DATA ON THE PHONE WILL BE ERASED."
-	else warn "Fresh install if the phone has no usable iOS data: ALL DATA ON THE PHONE WILL BE ERASED."; fi
+	warn "Fresh install if the phone has no usable iOS data: ALL DATA ON THE PHONE WILL BE ERASED."
 	info "Back up first if you need anything (tools/install/twrp-backup.sh)."
 	printf '      Type %sERASE%s to continue: ' "$B" "$N"; read -r a
 	[ "$a" = ERASE ] || die "cancelled: nothing was copied or written"
@@ -55,7 +56,9 @@ else
 	if [ $yes = 0 ]; then printf '      Type %syes%s to install: ' "$B" "$N"; read -r a; [ "$a" = yes ] || die "cancelled: nothing was copied or written"; fi
 	kind=keep
 fi
-[ "$package_mode" = preflight ] || ok "Confirmed ($kind). No key presses needed on the phone."
+if [ "$package_mode" != preflight ] && [ "$action" = install ]; then
+	ok "Confirmed ($kind). No key presses needed on the phone."
+fi
 
 step "Transfer the package"
 info "Copying to TWRP's temporary storage. Keep the USB cable connected."
@@ -65,7 +68,11 @@ step "Verify the transferred package"
 want=$(shasum -a 256 "$zip" | cut -d' ' -f1); have=$(adb shell -n sha256sum /tmp/jesvi.zip | cut -d' ' -f1)
 [ "$want" = "$have" ] || die "the copy is damaged (checksum differs): run it again"
 ok "copied and checked (SHA-256)"
-adb shell -n "echo '$sha $kind' > /tmp/jesvi.approve"
+if [ "$action" = restore ]; then
+	adb shell -n "rm -f /tmp/jesvi.approve"
+else
+	adb shell -n "echo '$sha $kind' > /tmp/jesvi.approve"
+fi
 adb shell -n "twrp print 'Jesvi iOS: installing from the computer'" >/dev/null 2>&1 || true
 
 if [ "$package_mode" = preflight ]; then

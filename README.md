@@ -1,118 +1,104 @@
 # Jesvi iOS
 
-iOS 16.5 running natively on the **Samsung Galaxy S20 (SM-G980F, Exynos 990)**.
-
+Jesvi iOS runs iOS 16.5 (20F66) on the Exynos 990 **Galaxy S20 LTE** and includes a development port for the **Galaxy S20+ 5G**. The project builds the XNU 8796.121.2 kernel, UEFI loader, drivers and device services. The iOS system image comes from Apple's iPhone X firmware.
 
 [![Latest Release](https://img.shields.io/github/v/release/jesvi-eulah/Jesvi-iOS?label=Download&style=flat-square&logo=github&color=brightgreen)](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
-[![All Releases](https://img.shields.io/badge/View-All%20Releases-blue?style=flat-square&logo=github)](https://github.com/jesvi-eulah/Jesvi-iOS/releases)
 ![Model](https://img.shields.io/badge/Model-SM--G980F%20%7C%20x1slte-555555?style=flat-square)
 ![iOS](https://img.shields.io/badge/iOS-16.5-007AFF?style=flat-square&logo=apple&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Beta-orange?style=flat-square)
 [![Telegram](https://img.shields.io/badge/Telegram-@eulah__rom-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/eulah_rom)
 
+[![Jesvi iOS running on a Galaxy S20. Watch the demo on YouTube.](docs/IMG_5690%202.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)
 
+## Feature status
 
+The following features are reported for the **S20 LTE**. For S20+ hardware coverage, use the [y2s evidence record](docs/release/device-evidence-y2s.md).
 
-This tree builds the XNU kernel, the boot loader, the drivers and the user-space glue. The iOS system comes from
-Apple's own iOS 16.5 firmware, downloaded at build time. Nothing of Apple's or Samsung's is in this repository.
-
-
-[![Jesvi iOS 16.5 Demo](https://raw.githubusercontent.com/jesvi-eulah/Jesvi-iOS/main/docs/IMG_5690%202.jpg)](https://www.youtube.com/watch?v=-4pcSUe0ny0)<br>
-[Watch on YouTube](https://www.youtube.com/watch?v=-4pcSUe0ny0)
-
-
-## Info
-| | |
+| Area | Status on S20 LTE |
 |---|---|
-| **Version** | 0.1.3 in preparation (last tag: [v0.1.2](https://github.com/jesvi-eulah/Jesvi-iOS/releases)) |
-| **Phone** | Galaxy S20 LTE, SM-G980F (`x1slte`), bootloader G980FXXSNHYB7 |
-| **iOS** | 16.5 (20F66), iPhone X system image |
-| **Kernel** | XNU 8796.121.2 (Darwin 22.5) with our drivers |
-| **Install** | TWRP ZIP: fresh install or update, 64 GB iOS data volume |
+| Display | 60/120 Hz, touch, True Tone, auto-brightness and Always-On Display |
+| Graphics | Metal acceleration on Mali-G77 and OpenGL ES through Mesa |
+| Cellular | LTE data, VoLTE calls and carrier SMS |
+| Connectivity | Dual-band Wi-Fi, Bluetooth audio and hotspot |
+| Cameras | Front and three rear cameras |
+| Audio | Speaker, earpiece and microphone |
+| Sensors | Motion, compass, proximity, ambient light, GPS, haptics and flashlight |
+| Power | USB PD charging and thermal management |
+| Storage | Persistent UFS storage and exFAT microSD in Files |
+| USB | USB networking, serial console and Finder file access |
+| Security | Passcode and Touch ID enrolment. Fingerprint matching and unlock remain incomplete. Apple ID setup currently requires a companion Hackintosh. |
 
-## What works
+App Store downloads, iMessage and FaceTime remain unavailable. [Device configuration](devices/exynos990/x1slte/device.conf) · [Clock behavior](docs/devices/x1slte/background.md#clock-restoration-and-network-synchronization) · [Development log](docs/SHIPPING.md)
 
-| Area | Status |
-|---|---|
-| Display | All, FHD+/QHD/FHD, 60 and 120 Hz, True Tone, auto-brightness, Always-On Display, Touch, buttons |
-| Graphics | Accelerated, Metal on the Mali-G77, OpenGL ES through Mesa |
-| Cellular | All, 4G/LTE data, VoLTE calls in and out, carrier SMS |
-| Connectivity | Wi-Fi 2.4 and 5 GHz, Bluetooth, Bluetooth audio, hotspot |
-| Cameras | All, camera, Front and three rear lenses |
-| Audio | All, Speaker, earpiece, microphone |
-| Sensors | All, Motion, compass, proximity, gyro, ambient light; GPS, Fingerprint, thermals, Haptics, flashlight |
-| Power | All, PD Charging, battery level and temperature, Tuned CPU/GPU governor, thermal manageament |
-| Storage | All, Full speed peristent UFS storage, Ram allocate max & at full speed, microSD (exFAT, read/write) in Files |
-| USB | Networking, Finder file access, serial console, tethered |
-| Security | Passcode; Touch ID enrolment, Apple-Id (Requires Hackintosh) |
+## [Download and install](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)
 
-**Partial or Not yet:** 
- - Touch ID unlock (enrolment works, matching does not), 
- - App Store downloads (FairPlay DRM needs to be eumulated/cracked yet), 
- - iMessage and FaceTime (Not possible), 
- - Standalone Apple ID sign-in (it does work but currently requires a peer hackintosh to set it up)
- - Bugs & glithces 
+1. Match the **model number** in the [device list](#tested-devices) to the target in the ZIP name. Get the package and checksum from [GitHub Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases). For a development build, extract the artifact from a successful [TWRP workflow run](https://github.com/jesvi-eulah/Jesvi-iOS/actions/workflows/private-images.yml).
+2. Verify the installer against its supplied SHA-256 checksum. Keep a backup off the phone. A ZIP ending in `_preflight.zip` runs checks only.
+3. Choose the procedure for your phone below. **Fresh install erases existing Android or iOS userdata.** Write-enabled installers built from current main start after a 45-second cancel window when launched from TWRP's Install screen. Press Volume Down or Power during that window to cancel.
 
-Per-part detail: [`device.conf`](devices/exynos990/x1slte/device.conf). Every change: [SHIPPING.md](docs/SHIPPING.md).
-
-
-
-## Downloads
-**[Download Latest Release](https://github.com/jesvi-eulah/Jesvi-iOS/releases/latest)** | [View All Releases](https://github.com/jesvi-eulah/Jesvi-iOS/releases)
-
-Download the latest build, SHA-256 checksum, and build information from the release page.
-
-## Install
-
-Full steps in the **[install guide](docs/release/install.md)**. In short, with the phone in TWRP 3.7.1 or newer:
+**S20 LTE:** Use TWRP 3.7.1 or newer. With the phone connected directly to your computer, run one of the following commands, substituting the actual path to the verified ZIP. A preserving update requires an existing iOS data volume of the matching size.
 
 ```sh
-tools/install/twrp-install.sh --erase Jesvi-iOS_<version>_x1slte.zip   # fresh install (erases the phone)
-tools/install/twrp-install.sh Jesvi-iOS_<version>_x1slte.zip           # update (keeps your data)
+# First install or deliberate erase
+tools/install/twrp-install.sh --erase /path/to/fresh_x1slte.zip
+
+# Preserve an existing installation
+tools/install/twrp-install.sh /path/to/update_x1slte.zip
 ```
 
-From a phone already on Jesvi iOS, `tools/install/flash-twrp.sh` puts TWRP back and boots it, with no buttons.
-Back to Android: the restore ZIP, then *Format Data* and any ROM ([rollback](docs/release/rollback.md)).
+The computer helper asks for approval before copying an install ZIP.
+
+**Back to Android:** Use the Restore ZIP for your device. It checks the phone, then waits for a three-second **Volume Up** hold before erasing iOS data. Press **Volume Down** or **Power**, or let the prompt time out, to stop after the checks. The Restore code is shared across devices, and each ZIP contains the partition layout for its own target. [Install guide](docs/release/install.md) · [Rollback guide](docs/release/rollback.md)
+
+**S20+ 5G:** Use the y2s fresh-install ZIP for initial setup. To update an existing installation, select **Log access (USB)** in the loader and follow the y2s guide. `./y2s.sh rflash` updates boot and recovery, including the root image. `./y2s.sh tflash` also updates the system image. Reinstalling the TWRP ZIP erases userdata. [S20+ setup and update instructions](tools/y2s/README.md)
 
 ## Build
 
-On macOS:
+For the default S20 LTE target on a prepared macOS checkout:
 
 ```sh
-make doctor     # what this Mac still needs
-make check      # source checks and tests (what CI runs)
-make kernel     # kernel only -> out/kernel/mach.x1slte
-make release    # install ZIPs -> dist/release/
+make doctor    # Check tools and inputs
+make check     # Run source checks and host tests
+make kernel    # Build the x1slte kernel
+make release   # Package the outputs selected in release.conf
 ```
 
-Settings live in [`release.conf`](release.conf); `./build.sh --help` lists every command. A clean build fetches
-iOS 16.5 and the ported Touch ID module from Apple, and takes the phone's Samsung firmware from private `fw-*` folders.
-Guides: [building](docs/release/building.md), [local build](docs/release/local-build.md),
-[CI and releases](docs/release/operations.md), [clean-install rules](docs/clean-install.md).
+The checked-in configuration selects fresh mode, a 64 GB iOS data volume and read-only packages. To build a writable S20 LTE installer, run:
 
-## Layout
+```sh
+./build.sh release --set TARGETS=x1slte --set MODE=fresh --set WRITES=true --set OUTPUTS=twrp
+```
+
+For S20+ 5G, use the [y2s build guide](tools/y2s/README.md) to prepare the board firmware, loader and candidate bundle. For build prerequisites and packaging options, see [local builds](docs/release/local-build.md), [release configuration](docs/release/config.md) and [CI operations](docs/release/operations.md).
+
+## Repository layout
 
 | Path | Contents |
 |---|---|
-| `xnu/` | Kernel: patch on Apple's `xnu-8796.121.2` plus our files (`xnu/files/`) |
-| `xnuloader/` | UEFI loader that starts XNU |
-| `userland/` | System image: daemons, injected libraries, boot jobs, first-boot defaults |
-| `devices/` | Exynos 990 layer and one folder per phone (`x1slte/`) |
-| `tools/` | Per-subsystem tools: `install/`, `release/`, `camera/`, `cellular/`, `touchid/`, ... |
-| `docs/` | `release/` install and build, `devices/x1slte/` feature notes |
-| `build.sh`, `Makefile`, `x1slte.sh` | Entry points; `x1slte.sh` is the developer flash loop |
+| [`xnu/`](xnu) | Kernel patches and board drivers for Apple's XNU 8796.121.2 |
+| [`xnuloader/`](xnuloader) | UEFI loader that starts XNU |
+| [`userland/`](userland) and [`sysimage/`](sysimage) | Native services, injected libraries, first-boot defaults, and system-image assembly |
+| [`devices/`](devices) | Shared Exynos 990 settings and per-device profiles |
+| [`tools/`](tools) | Install, release, camera, cellular, Touch ID, and S20+ build tools |
+| [`docs/`](docs) | Install and build guides, device evidence, and development notes |
+| [`build.sh`](build.sh), [`Makefile`](Makefile), and [`x1slte.sh`](x1slte.sh) | Build entry points and the S20 LTE developer flash loop |
 
-## Other Exynos 990 phones
+## Tested devices
 
-Only the SM-G980F boots. The S20+ (`y2s`) and S20 Ultra (`z3s`) kernels build
-(`./build.sh kernel --device y2s --experimental`) but have never booted; each needs its own boot chain, device
-tree and storage layout ([porting](docs/release/porting.md)). Snapdragon models are not supported.
+### x1s · Galaxy S20
 
-## Credits
+- **SM-G980F** (LTE, `x1slte`) — **Update tested.** The phone booted with user data intact after a TWRP update on `G980FXXSNHYB7`. Use the LTE fresh-install or update ZIP. [Test record](docs/release/qualification-x1slte.md) · [Install guide](docs/release/install.md)
+- **SM-G981B** (5G) — **Preflight only.** Use the read-only `x1slte` ZIP to check the device. The 5G model has a different modem and RAM configuration.
 
-Built on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel). Apple's open-source XNU (APSL 2.0), Mu-Silicium,
-Mesa and the others in [NOTICE](NOTICE) and [third-party licenses](docs/legal/THIRD_PARTY_LICENSES.md).
-Not affiliated with Apple or Samsung. [Legal](docs/legal/LEGAL.md).
+### y2s · Galaxy S20+
 
+- **SM-G985F** (LTE) — **Preflight only.** Use the read-only `y2s` ZIP. The LTE boot chain and partition layout still need measurement.
+- **SM-G986B** (5G) — **Boot-tested.** The board and partitions were measured on `G986BXXSNHYB1`. The development port uses TWRP for fresh installs and the USB loader for updates. Fresh-install and peripheral testing is pending. [Board evidence](docs/release/device-evidence-y2s.md) · [Install guide](tools/y2s/README.md)
 
-Please feel free to use this project for further developement, Just make sure to add me in credits, Cheers
+For regional G980 and G986 devices, recovery accepts firmware revisions that identify the phone’s model and warns on untested revisions. It also checks the Exynos SoC, bootloader unlock state and partition sizes. These builds support Exynos hardware only.
+
+## Credits and licenses
+
+Jesvi Jonathan maintains Jesvi iOS. [Android-Artisan](https://github.com/Android-Artisan) contributed the S20+ 5G port, board measurements, first-install tooling and loader update workflow in [PR #7](https://github.com/jesvi-eulah/Jesvi-iOS/pull/7).
+
+The project builds on [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel), Apple's open-source XNU (APSL 2.0), Mu-Silicium and Mesa. Please credit Jesvi iOS and its contributors when building on this work. Jesvi iOS is independent of Apple and Samsung. [Notices](NOTICE) · [Third-party licenses](docs/legal/THIRD_PARTY_LICENSES.md) · [Legal information](docs/legal/LEGAL.md)

@@ -11,16 +11,18 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tarfile
 from cache import digest, fingerprint
 
+HFS_KIT = r'userland/hfs-kit(?:-[1-9][0-9]*)?\.bin'
 FIXED = {'inputs/x1slte', 'inputs/tools', 'inputs/toolchain.json', 'userland/hfs-kit.bin', 'jb'}
 REQUIRED = FIXED - {'jb'} | {'fw-fingerprint', 'fw-wifi', 'fw-haptic', 'fw-sound', 'fw-sensors'}
 MANIFEST = 'hosted-inputs.json'
 
 
 def allowed(name):
-    return name in FIXED or re.fullmatch(r'fw-[a-z0-9-]+|userland/hfs-kit-[1-9][0-9]*\.bin', name)
+    return name in FIXED or re.fullmatch(r'fw-[a-z0-9-]+', name) or re.fullmatch(HFS_KIT, name)
 
 
 def verify(root, records):
@@ -93,8 +95,11 @@ def unpack(archive_path, root, sha256):
             dest = root / member.name
             if any(p.is_symlink() for p in (dest, *dest.parents)):
                 raise ValueError('destination contains a symlink')
-            if dest.exists() and not (dest.is_dir() and member.isdir()) and member.name != 'userland/hfs-kit.bin':
-                raise ValueError('requires a fresh checkout: ' + member.name)
+            if dest.exists():
+                shared_dir = dest.is_dir() and member.isdir()
+                tracked_kit = dest.is_file() and member.isfile() and re.fullmatch(HFS_KIT, member.name)
+                if not (shared_dir or tracked_kit):
+                    raise ValueError('requires a fresh checkout: ' + member.name)
         # Create all real paths before links. Absolute runtime links in jb are data,
         # never followed by this extractor. Device nodes and hardlinks are refused.
         for member in sorted(members, key=lambda m: (m.issym(), len(PurePosixPath(m.name).parts))):
@@ -108,7 +113,8 @@ def unpack(archive_path, root, sha256):
                 with archive.extractfile(member) as src, dest.open('wb') as out:
                     shutil.copyfileobj(src, out)
             if not member.issym():
-                os.chmod(dest, member.mode & 0o777)
+                # Runtime file modes are part of the reviewed fingerprint.
+                os.chmod(dest, stat.S_IMODE(member.mode))
         verify(root, records)
     print('Hosted board/bootstrap inputs verified; Apple inputs will be fetched by the build')
 

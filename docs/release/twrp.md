@@ -14,7 +14,7 @@ layout.** The installer uses the existing physical partitions:
 | Existing partition | Installation use |
 |---|---|
 | `super` | Writes system APFS at byte 0, at most 4 GiB; saves Android's original 1 MiB partition map in the last 2 MiB (for the restore ZIP); leaves the rest of the tail alone |
-| `userdata` | HFSX persistent data; initialized only with explicit fresh-install confirmation |
+| `userdata` | HFSX persistent data; initialized in fresh mode after its 45-second cancel window |
 | `recovery` | Full runtime image, replacing TWRP |
 | `boot` | Matching Android/Samsung boot head, committed last |
 
@@ -45,12 +45,17 @@ The ZIP itself must not be on internal storage: microSD, USB-OTG or `adb sideloa
 ## Back to Android: Jesvi-iOS-Restore
 
 ```sh
-./build.sh restore --device x1slte --output dist/restore.zip [--experimental]
-# or: ./build.sh release --set OUTPUTS=restore
+./build.sh restore --device x1slte --output dist/restore-x1slte.zip --experimental
+# or: ./build.sh release --set OUTPUTS=restore --set WRITES=true
 ```
 
-Flash it in TWRP. It refuses a `super` that still holds Android partitions or
-holds neither iOS nor an Android map. Otherwise it writes a valid, **empty**
+Run the Restore ZIP for your device in TWRP. The shared Restore code uses the
+target's model checks and partition layout. It runs the checks first, then
+requires a three-second **Volume Up** hold before writing. **Volume Down**,
+**Power**, or a 45-second timeout cancels.
+
+Restore refuses a `super` that still holds Android partitions or holds neither
+iOS nor an Android map. After confirmation it writes a valid, **empty**
 Android partition map at the head of `super` (the copy saved at install time
 with its partitions dropped, or the measured stock layout from `android.json`),
 reads it back, and zeroes the HFSX headers (first and last MiB) on `userdata`.
@@ -70,7 +75,7 @@ From an already built/verified candidate:
 ./build.sh twrp --bundle dist/local-validation \
   --output dist/s20-preflight.zip
 
-# Explicitly enable the experimental writer and physical confirmation flow.
+# Enable the experimental writer: fresh by default, proceeds after 45 seconds unless cancelled.
 ./build.sh twrp --bundle dist/local-validation \
   --output dist/s20-experimental.zip --experimental
 ```
@@ -106,7 +111,7 @@ path and explicit device/reboot authorization; this ZIP builder does not do it.
 1. Preserve verified **off-device** personal-data/EFS backups, a known-good port
    candidate, exact-device stock firmware and a tested Download Mode/TWRP rescue.
    Backups are prepared separately; the installer does not create or authenticate
-   them. Its physical confirmation is an acknowledgement, not proof of a backup.
+   them. Its cancel window does not establish that a backup exists.
 2. Use the exact qualified recovery build during testing. Keep the ZIP on a
    microSD/USB-OTG volume or use TWRP sideload. Do not keep its only copy on internal
    `/data`: targets must be unmounted and fresh install destroys userdata.
@@ -121,16 +126,17 @@ path and explicit device/reboot authorization; this ZIP builder does not do it.
    archive location and battery checks. Missing/ambiguous evidence is a failure;
    record it and fix the profile/backend through review rather than bypassing it.
 5. Only in the approved hardware trial, select the experimental ZIP. The UI shows
-   the planned data policy and asks for physical confirmation. Hold **Volume Up
-   for three seconds**; Volume Down/Power cancels; timeout cancels. Fresh install
-   requires a **second separate hold** explicitly approving userdata destruction.
-   There is no environment-variable or timeout-based authorization.
+   the planned data policy and a **45-second cancel window**. Installation, including
+   userdata erasure in fresh mode, proceeds automatically when it expires. Volume
+   Down/Power cancels; hold Volume Up for three seconds to proceed early. Restore
+   still requires an explicit Volume Up hold and cancels on timeout. Read-only
+   preflight ZIPs never enter the cancel window or write partitions.
 6. Copy `/tmp/jesvi-install.log` and TWRP's log to the host before leaving recovery.
    The installer never requests a reboot. A failed installation is not success;
    preserve the log and use the prepared rescue procedure. Coordinate the shared
    phone and obtain explicit reboot permission before an agent changes its state.
 
-Battery must report at least 50% and temperature within 0–45 °C. Unknown battery,
+Battery must report at least 10% and temperature within 0–45 °C. Unknown battery,
 bootloader or mount evidence is not accepted. The package is about 2.5 GiB; the
 specific TWRP build's ZIP/ZIP64 and sideload handling still need a real test.
 Signature-verification settings and authenticated distribution also need to be
@@ -138,17 +144,19 @@ resolved as part of release qualification; do not label this a signed release.
 
 ## Fresh versus update policy
 
-Default `--mode choose` inspects the existing data header:
+Default `--mode fresh` erases existing userdata, including existing iOS data, after
+the 45-second cancel window. Use `--mode update` for a preserving update.
+
+Optional `--mode choose` inspects the existing data header:
 
 - A valid HFSX header with the exact userdata geometry selects **update**. Userdata
   is held read-only/exclusive; keybags and all existing data remain untouched.
 - A recognizable but damaged HFS/HFSX header **aborts**. Corruption is not permission
   to format, and it must not silently turn an update into a fresh install.
-- A non-HFS data partition selects the **fresh-install confirmation flow**. No data
-  write occurs without both physical confirmations.
+- A non-HFS data partition selects the **fresh-install cancel window**.
 
 `--mode update` refuses missing/damaged data. `--mode fresh` explicitly selects the
-fresh flow and destroys existing data only after both confirmations. Fresh mode
+fresh flow and destroys existing data after the cancel window (or an early Volume Up hold). Fresh mode
 writes and checks the trusted HFS kit's metadata/data/zero extents, including both
 volume headers. It is **not a secure erase of every previous free block**. Normal
 boot never formats data and still halts on an unavailable persistent volume.

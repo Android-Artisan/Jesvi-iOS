@@ -268,7 +268,7 @@ status_name(int status)
 #define OP_SRCCAP_REQUEST       0x32U
 #define VBADC(st1)              (((st1) >> 4) & 0xfU)
 
-enum hv_state { HV_IDLE, HV_ACTIVE, HV_FAILED, HV_FAULT };
+enum hv_state { HV_IDLE, HV_ACTIVE, HV_COOLING, HV_FAILED, HV_FAULT };
 static uint32_t hv_on;
 static unsigned plugged_polls;          /* polls since the cable went in (charger_limits) */
 static enum hv_state hv_state;
@@ -302,12 +302,13 @@ muic_opcode(uint8_t op, const uint8_t *data, unsigned len, uint8_t *answer, unsi
 	return false;
 }
 
-static unsigned
+/* Keep an unreadable status distinct from an ADC reading of zero. */
+static int
 vbus_adc(void)
 {
 	uint8_t st1 = 0;
 
-	return redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_USBC_STATUS1, &st1, 1) ? VBADC(st1) : 0;
+	return redwood_bbi2c_read_reg(&bus, MUIC_ADDR, MUIC_USBC_STATUS1, &st1, 1) ? (int)VBADC(st1) : -1;
 }
 
 static void charger_write_limits(unsigned in_ma, unsigned cc_ma);
@@ -316,7 +317,7 @@ static void charger_write_limits(unsigned in_ma, unsigned cc_ma);
 static bool
 hv_wait_9v(void)
 {
-	unsigned adc = 0;
+	int adc = -1;
 
 	for (unsigned ms = 0; ms < 3000; ms += 100) {
 		adc = vbus_adc();
@@ -328,7 +329,7 @@ hv_wait_9v(void)
 		}
 		delay_for_interval(100, NSEC_PER_MSEC);
 	}
-	m2m_klog('W', "DEV", "bms: hv: VBUS ADC %u after the request, not 9 V", adc);
+	m2m_klog('W', "DEV", "bms: hv: VBUS ADC %d after the request, not 9 V", adc);
 	return false;
 }
 
@@ -340,7 +341,7 @@ hv_back_to_5v(const char *why)
 
 	charger_write_limits(500, 0);
 	(void)muic_opcode(hv_pd ? OP_SRCCAP_REQUEST : OP_AFC, &b, 1, a, hv_pd ? 2 : 11, 1500);
-	m2m_klog('W', "DEV", "bms: hv: back to 5 V (%s): answer %#x %#x, VBUS ADC %u", why, a[0], a[1], vbus_adc());
+	m2m_klog('W', "DEV", "bms: hv: back to 5 V (%s): answer %#x %#x, VBUS ADC %d", why, a[0], a[1], vbus_adc());
 }
 
 /* a try at 9 V: true when VBUS is there */
@@ -478,18 +479,24 @@ charger_limits(bool external, int32_t temp_hundredths)
 		return;
 	}
 	if (hv_on && hv_state == HV_ACTIVE) {
-		unsigned adc = vbus_adc();
+		int adc = vbus_adc();
 
 		if (adc >= 8) {
 			hv_back_to_5v("VBUS over 10.5 V");
 			hv_state = HV_FAULT;
 		} else if (!warm_ok) {
 			hv_back_to_5v("battery temperature outside 10..42 C");
-			hv_state = HV_FAILED;
-		} else if (adc <= 3) {
-			m2m_klog('W', "DEV", "bms: hv: VBUS fell back to 5 V (ADC %u): the charger ended it", adc);
+			hv_state = HV_COOLING;
+		} else if (adc >= 0 && adc <= 3) {
+			m2m_klog('W', "DEV", "bms: hv: VBUS fell back to 5 V (ADC %d): the charger ended it", adc);
 			hv_state = HV_FAILED;
 		}
+	}
+	/* Resume after the battery has moved back inside the fast-charge range. */
+	if (hv_state == HV_COOLING && temp_hundredths >= 1200 && temp_hundredths < 4000) {
+		hv_state = HV_IDLE;
+		hv_tries = 0;
+		m2m_klog('I', "DEV", "bms: hv: battery back in range, checking the charger again");
 	}
 	if (plugged_polls < 1000) {
 		plugged_polls++;
@@ -506,7 +513,7 @@ charger_limits(bool external, int32_t temp_hundredths)
 	if (hv_on && hv_state == HV_IDLE && plugged_polls >= 3 && warm_ok && (type == 3 || type == 0 || type == 2)) {
 		if (hv_try(type)) {
 			hv_state = HV_ACTIVE;
-			m2m_klog('I', "DEV", "bms: hv: 9 V by %s, VBUS ADC %u", hv_pd ? "USB PD" : "AFC", vbus_adc());
+			m2m_klog('I', "DEV", "bms: hv: 9 V by %s, VBUS ADC %d", hv_pd ? "USB PD" : "AFC", vbus_adc());
 		} else if (++hv_tries >= 2) {
 			hv_state = HV_FAILED;
 			m2m_klog('I', "DEV", "bms: hv: no 9 V on this plug-in (%u tries): 5 V charging", hv_tries);

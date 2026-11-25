@@ -29,8 +29,11 @@ class HostedInputsTests(unittest.TestCase):
         jb = self.source / 'jb/root/usr/bin'
         jb.mkdir(parents=True)
         (jb / 'tool').write_bytes(b'program')
+        (jb / 'tool').chmod(0o4755)
         (jb / 'runtime-link').symlink_to('/var/jb/usr/bin/tool')
-        names = hosted.REQUIRED | {'jb'}
+        self.sized_kit = 'userland/hfs-kit-64000000000.bin'
+        (self.source / self.sized_kit).write_bytes(b'reviewed sized kit')
+        names = hosted.REQUIRED | {'jb', self.sized_kit}
         records = {n: fingerprint({n: self.source / n}, {}) for n in names}
         (self.source / 'inputs/private-inputs.lock.json').write_text(json.dumps({'inputs': records}))
         self.archive = self.base / 'board-inputs.tar.gz'
@@ -39,7 +42,10 @@ class HostedInputsTests(unittest.TestCase):
 
     def test_roundtrip_preserves_bootstrap_links_and_modes(self):
         hosted.pack(self.source, self.archive)
+        (self.dest / 'userland').mkdir()
+        (self.dest / self.sized_kit).write_bytes(b'checkout sized kit')
         hosted.unpack(self.archive, self.dest, digest(self.archive))
+        self.assertEqual((self.dest / self.sized_kit).read_bytes(), b'reviewed sized kit')
         self.assertEqual((self.dest / 'jb/root/usr/bin/runtime-link').readlink(), Path('/var/jb/usr/bin/tool'))
         for name in hosted.REQUIRED | {'jb'}:
             self.assertEqual(fingerprint({name: self.source / name}, {}), fingerprint({name: self.dest / name}, {}))

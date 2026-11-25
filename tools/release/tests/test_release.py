@@ -230,6 +230,9 @@ class SafetyTests(unittest.TestCase):
     def test_exact_board_report(self):
         match_report(profile('x1slte'), self.report())
 
+    def test_unlisted_same_model_revision(self):
+        match_report(profile('x1slte'), dict(self.report(), bootloader='G980F-LAB'))
+
     def test_other_models_capacities_bootloaders_and_mounts_fail(self):
         for patch in ({'model': 'SM-G981B'}, {'product': 'y2s'}, {'bootloader': 'newer'},
                       {'partitions': {}}, {'mounted_targets': ['/data']}, {'root': False},
@@ -248,11 +251,21 @@ class SafetyTests(unittest.TestCase):
             profile('../x1slte')
 
     def test_roadmap_targets_are_not_marked_supported(self):
-        for name in ('y2s', 'z3s', 'c1s', 'c2s', 'r8s'):
+        for name in ('z3s', 'c1s', 'c2s', 'r8s'):
             d = profile(name)
             self.assertEqual(d['status'], 'unmaintained')
             self.assertFalse(d['installer_validated'])
             self.assertEqual(d['models'], [])
+
+    def test_y2s_has_measured_first_install_profile(self):
+        d = profile('y2s')
+        self.assertEqual(d['status'], 'development')
+        self.assertEqual(d['models'], ['SM-G986B'])
+        self.assertEqual(d['bootloaders'], ['G986BXXSNHYB1'])
+        self.assertEqual(d['layout']['system_max_bytes'], 0x174200000)
+        self.assertEqual(d['layout']['android_stash_offset'], d['partitions']['super'] - (2 << 20))
+        self.assertEqual(d['android_super']['alignment'], 1048576)
+        self.assertFalse(d['installer_validated'])
 
     def test_manifest_with_protected_target_rejected(self):
         from cache import digest

@@ -22,6 +22,28 @@ func uiText(s string) string {
 
 var batteryTenthsC int // the battery temperature the device check read (platform_linux.go)
 var configSHA string   // Bound by builder to exact metadata; no arbitrary destinations.
+func selectInstallMode(requested string, valid, recognizable bool) (string, error) {
+	switch requested {
+	case "fresh":
+		return "fresh", nil
+	case "update":
+		if !valid {
+			return "", errors.New("this is an update-only package, but matching iOS userdata was not found; for a first install rebuild with --set MODE=fresh (erases userdata after confirmation), or MODE=choose for automatic detection; back up existing data first")
+		}
+		return "update", nil
+	case "choose":
+		if valid {
+			return "update", nil
+		}
+		if recognizable {
+			return "", errors.New("the iOS data here is damaged or a different size than this package (IOS_DATA_GB); refusing to erase it automatically: back it up, then rebuild with --set MODE=fresh")
+		}
+		return "fresh", nil
+	default:
+		return "", errors.New("unsupported install mode")
+	}
+}
+
 func run() error {
 	args := os.Args
 	if len(args) == 3 && args[1] == "--inspect" {
@@ -74,7 +96,6 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	ui.header("iOS 16.5 for the Galaxy S20", releaseVersion(), "SM-G980F")
 	ui.steps = 9
 	ui.begin("Checking the package")
 	log("Verifying every file in the ZIP before anything is written...")
@@ -82,6 +103,13 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	headerName, headerModel := "Galaxy S20", "SM-G980F"
+	if b.Config.Device == "y2s" {
+		headerName, headerModel = "Galaxy S20+ 5G", "SM-G986B"
+	} else if len(b.Config.Models) > 0 {
+		headerModel = b.Config.Models[0]
+	}
+	ui.header("iOS 16.5 for the "+headerName, releaseVersion(), headerModel)
 	if b.Config.Action == "restore" {
 		ui.steps = 6
 		log("Jesvi-iOS-Restore: back to Android.")
@@ -89,7 +117,7 @@ func run() error {
 		log("Package OK. Uses the existing partitions; the partition table is not changed.")
 	}
 	ui.begin("Checking the phone")
-	d, e := openRecovery(b.Config, archive)
+	d, e := openRecovery(b.Config, archive, log)
 	if e != nil {
 		return e
 	}
@@ -124,11 +152,15 @@ func run() error {
 		log("PREFLIGHT ONLY: no partitions opened for writing. No reboot.")
 		return nil
 	}
-	ui.begin("Waiting for your confirmation")
+	if b.Config.Action == "restore" {
+		ui.begin("Waiting for your confirmation")
+	} else {
+		ui.begin("Reviewing installation before the cancel window")
+	}
 	if b.Config.Action == "restore" {
 		log("RESTORE: puts back Android's partition map and clears iOS data headers.")
 		log("ALL iOS DATA WILL BE LOST. BOOT and TWRP stay as they are.")
-		if e = confirm("Erase iOS and prepare the phone for an Android ROM?", true, log); e != nil {
+		if e = confirmKeys("Erase iOS and prepare the phone for an Android ROM?", log, false); e != nil {
 			return e
 		}
 		ui.begin("Freeing the storage")
@@ -146,28 +178,23 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	mode := b.Config.Mode
-	if mode == "choose" {
-		if valid {
-			mode = "update"
-		} else if recognizable {
-			return errors.New("the iOS data here is damaged or a different size than this package (IOS_DATA_GB); refusing to erase it automatically: back it up, then use a fresh-install package")
-		} else {
-			mode = "fresh"
-		}
+	mode, e := selectInstallMode(b.Config.Mode, valid, recognizable)
+	if e != nil {
+		return e
 	}
+	log(fmt.Sprintf("Install mode: package=%s selected=%s", b.Config.Mode, mode))
 	if mode == "update" {
 		if e = d.CheckData(); e != nil {
 			return e
 		}
 		log("UPDATE: your iOS data, apps and settings are kept.")
 		log("TWRP is replaced by Jesvi iOS.")
-		e = confirm("Install the update?", false, log)
+		e = confirm("Install the update?", false, log, true)
 	} else {
 		log("FRESH INSTALL: this ERASES ALL DATA on the phone")
 		log("(Android or iOS) and replaces TWRP.")
 		log("Keep a backup off the phone if you need anything.")
-		e = confirm("Erase the phone and install Jesvi iOS?", true, log) // one confirmation (2026-11-20)
+		e = confirm("Erase the phone and install Jesvi iOS?", true, log, true) // one confirmation (2026-11-20)
 	}
 	if e != nil {
 		return e

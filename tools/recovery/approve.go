@@ -31,7 +31,7 @@ func approval() string {
 func dropApproval() { os.Remove(approvalFile) }
 
 // confirm: the computer's approval when it covers this step (erase covers keep), else the physical keys.
-func confirm(prompt string, erases bool, log func(string)) error {
+func confirm(prompt string, erases bool, log func(string), auto ...bool) error {
 	switch a := approval(); {
 	case a == "erase" || a == "keep" && !erases:
 		log(prompt)
@@ -40,5 +40,5 @@ func confirm(prompt string, erases bool, log func(string)) error {
 	case a == "keep":
 		return errors.New("this would ERASE the phone's data, but the computer approved only an update that keeps it: run twrp-install.sh with --erase if that is what you want")
 	}
-	return confirmKeys(prompt, log)
+	return confirmKeys(prompt, log, len(auto) > 0 && auto[0])
 }

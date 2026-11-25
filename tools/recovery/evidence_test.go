@@ -85,3 +85,36 @@ func TestUnifiedExynos990TWRPProductAcceptedOnlyWithExactIdentity(t *testing.T) 
 		t.Fatal("non-Exynos-990 product accepted")
 	}
 }
+
+func TestRegionalFirmwareIdentity(t *testing.T) {
+	c := Config{AllowWrites: true, Models: []string{"SM-G986B"}, Bootloaders: []string{"G986BXXSNHYB1"}, Products: []string{"y2s"}}
+	for _, tc := range []struct {
+		model, firmware, soc string
+		accepted             bool
+	}{
+		{"SM-G986B", "g986b-lab", "exynos990", true},
+		{"SM-G986B/DS", "G986BXXU1ABCD", "exynos990", true},
+		{"SM-G986N", "G986NKSU1ABCD", "exynos9830", true},
+		{"SM-G986N", "G986BXXU1ABCD", "exynos990", false},
+		{"SM-G985F", "G985FXXU1ABCD", "exynos990", false},
+		{"SM-G986U", "G986USQU1ABCD", "kona", false},
+	} {
+		err := verifyIdentity(c, tc.model, tc.firmware, "y2s", tc.soc, "0", "unlocked")
+		if (err == nil) != tc.accepted {
+			t.Errorf("%v: %v", tc, err)
+		}
+	}
+}
+
+func TestSiblingModelsPreflightOnly(t *testing.T) {
+	for _, pair := range [][3]string{{"SM-G980F", "SM-G981B", "G981BXXU1ABCD"}, {"SM-G986B", "SM-G985F", "G985FXXU1ABCD"}} {
+		c := Config{Models: []string{pair[0]}, Products: []string{"y2s"}}
+		for _, writes := range []bool{false, true} {
+			c.AllowWrites = writes
+			err := verifyIdentity(c, pair[1], pair[2], "y2s", "exynos990", "0", "unlocked")
+			if (err != nil) != writes {
+				t.Fatalf("model=%s writes=%v err=%v", pair[1], writes, err)
+			}
+		}
+	}
+}

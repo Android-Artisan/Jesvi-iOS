@@ -146,6 +146,28 @@ func TestConfigRejectsUnsafeProfiles(t *testing.T) {
 	}
 }
 
+func TestY2SInstallIsFreshOnlyAndUsesMeasuredSystemWindow(t *testing.T) {
+	c := testConfig()
+	c.Device, c.Mode = "y2s", "fresh"
+	c.Models = []string{"SM-G986B"}
+	c.Bootloaders = []string{"G986BXXSNHYB1"}
+	c.Products = []string{"y2s"}
+	c.SystemMaxBytes = y2sSystemMax
+	c.Files = map[string]Image{"a": {}, "b": {}, "c": {}}
+	c.KitBytes = 1
+	if e := checkConfig(c); e != nil {
+		t.Fatal(e)
+	}
+	c.Mode = "update"
+	if checkConfig(c) == nil {
+		t.Fatal("y2s update mode accepted; updates must go through the loader")
+	}
+	c.Mode, c.SystemMaxBytes = "fresh", y2sSystemMax+4096
+	if checkConfig(c) == nil {
+		t.Fatal("system window beyond measured y2s geometry accepted")
+	}
+}
+
 // TWRP's Install needs a system partition in super before it runs a ROM ZIP: the restore leaves 1 MiB placeholders.
 func TestRestorePlaceholders(t *testing.T) {
 	a := AndroidSuper{MetadataMaxSize: 65536, MetadataSlots: 2, LogicalBlockSize: 4096, Alignment: 1048576,

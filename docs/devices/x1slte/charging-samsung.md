@@ -7,7 +7,7 @@ temperatures in 0.1 C). Ours: `xnu/files/bsd/dev/redwood_max77705.c`.
 | Mode | How | Power | Hardware |
 |---|---|---|---|
 | USB (computer) | 5 V, Type-C current | ~2.5-7.5 W | MAX77705 |
-| AFC / USB PD fixed 9 V | `pd_charging_charge_power` 15000 mW, input 1650 mA @ 9 V | **15 W** | MAX77705 (ours: `bms_hv=1`, off by default) |
+| AFC / USB PD fixed 9 V | `pd_charging_charge_power` 15000 mW, input 1650 mA @ 9 V | **15 W** | MAX77705 (enabled by `bms_hv=1` in the S20 boot profile) |
 | PPS "Super Fast" | direct charging, `dc_step_chg_charge_power` 22000 mW | **25 W** | **PCA9468** direct charger (no driver of ours yet) |
 | 45 W | - | not on the S20 (S20 Ultra only) | - |
 
@@ -45,4 +45,17 @@ Thermistors read on the Exynos ADC v3 (0x15C40000; battery ch 4, charger ch 3, U
 battery poll: `bms:` log line, `kern.redwood.batt_temp/chg_temp/usb_temp` (0.1 C), and the battery's to iOS.
 Protection above in charger_limits() (always on; only lowers). First reading while charging from the Mac:
 battery 43.9 C, charger 52-56 C, USB 40.7 C -> 1350 mA (Samsung's swelling step).
-Still open: 15 W by default (bms_hv only with no USB host, now), 25 W PPS (PCA9468), SIOP (screen-on limits).
+The S20 boot profile enables fixed 9 V charging under the wall-adapter conditions above. PPS (PCA9468) and SIOP
+(screen-on limits) remain open.
+
+## 9 V retry after a temperature fallback
+
+If an active 9 V session drops to 5 V because the battery leaves 10–42 C, the driver can negotiate again after the
+battery returns to 12 C or warmer and below 40 C. The same adapter can stay plugged in. A failed read of the
+VBUS ADC preserves the active source limit until a valid sample arrives. A confirmed charger voltage drop or
+a VBUS reading above 10.5 V still ends fast charging for that plug-in. The USB host check and charger current
+limits continue to apply.
+
+For a wall-adapter report, capture the `bms:` lines during the first minute after plugging in with the battery
+below full. The useful fields are measured input voltage/current, battery and charger temperature, and the
+`bms: hv:` negotiation messages. Use network logging over Wi-Fi while the phone charges from the wall.
