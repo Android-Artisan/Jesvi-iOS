@@ -2,6 +2,19 @@ name: Build S20+ 5G board inputs
 on:
   workflow_dispatch:
   workflow_call:
+    # The caller passes these with `secrets: inherit`; declaring them here keeps
+    # the handoff explicit and makes a missing secret a visible configuration
+    # problem instead of an empty password in samloader/age.
+    secrets:
+      Y2S_FUS_IMEI:
+        description: IMEI used with Samsung's firmware service (optional when a stock ZIP URL is set)
+        required: false
+      Y2S_STOCK_FIRMWARE_URL:
+        description: HTTPS URL of the verified SM-G986B XSG stock firmware ZIP
+        required: false
+      HOSTED_BOARD_INPUTS_AGE_KEY:
+        description: age identity used to hand Mu-y2s.img and the stock DTBH to the macOS build
+        required: false
 permissions:
   contents: read
 jobs:
@@ -86,9 +99,15 @@ jobs:
           AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |
           set -euo pipefail
+          test -n "$AGE_IDENTITY" || {
+            echo '::error::Set HOSTED_BOARD_INPUTS_AGE_KEY in the private-images environment to encrypt the y2s board inputs.'
+            exit 1
+          }
           cd "$RUNNER_TEMP/stock"
+          (cd trees && sha256sum Mu-y2s.img stock-boot-dtbh.img > SHA256SUMS)
           recipient=$(printf '%s\n' "$AGE_IDENTITY" | age-keygen -y)
-          tar -C trees -czf - Mu-y2s.img stock-boot-dtbh.img | age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-inputs.tar.gz.age"
+          tar -C trees -czf - Mu-y2s.img stock-boot-dtbh.img SHA256SUMS |
+            age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-inputs.tar.gz.age"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: y2s-board-inputs
