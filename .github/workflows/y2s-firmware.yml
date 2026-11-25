@@ -46,8 +46,14 @@ jobs:
             echo "::error::Set Y2S_FUS_IMEI or Y2S_STOCK_FIRMWARE_URL in private-images."
             exit 1
           fi
+          # Samsung switched FUS to the 2026 "Smart" scheme. The pinned client
+          # returns an empty nonce; carry the reviewed protocol/key patch with
+          # the checkout so the download works on a fresh hosted runner.
+          git clone --filter=blob:none https://github.com/martinetd/samloader.git "$RUNNER_TEMP/samloader-src"
+          git -C "$RUNNER_TEMP/samloader-src" checkout --detach 0d724ce27b88915f61111313ce406a12c5c25a4a
+          git -C "$RUNNER_TEMP/samloader-src" apply "$GITHUB_WORKSPACE/tools/y2s/samloader-2026-fus.patch"
           python3 -m venv "$RUNNER_TEMP/samloader"
-          "$RUNNER_TEMP/samloader/bin/pip" install git+https://github.com/martinetd/samloader.git@0d724ce27b88915f61111313ce406a12c5c25a4a
+          "$RUNNER_TEMP/samloader/bin/pip" install "$RUNNER_TEMP/samloader-src"
           cmd=("$RUNNER_TEMP/samloader/bin/samloader" -m SM-G986B -r XSG -i "$DEVICE_IMEI")
           version=G986BXXSNHYB1/G986BOXBNHYB1/G986BXXSNHYB1/G986BXXSNHYB1
           "${cmd[@]}" download -v "$version" -O stock
