@@ -27,7 +27,21 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Simulate S20+ board inputs
+        if: vars.SIMULATED_BUILD == 'true'
+        env:
+          AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/stock/trees"
+          printf 'SIMULATED Mu-y2s.img for CI plumbing test\n' > "$RUNNER_TEMP/stock/trees/Mu-y2s.img"
+          printf 'SIMULATED stock-boot-dtbh.img for CI plumbing test\n' > "$RUNNER_TEMP/stock/trees/stock-boot-dtbh.img"
+          (cd "$RUNNER_TEMP/stock/trees" && sha256sum Mu-y2s.img stock-boot-dtbh.img > SHA256SUMS)
+          recipient=$(printf '%s\n' "$AGE_IDENTITY" | age-keygen -y)
+          tar -C "$RUNNER_TEMP/stock/trees" -czf - Mu-y2s.img stock-boot-dtbh.img SHA256SUMS |
+            age -r "$recipient" -o "$RUNNER_TEMP/y2s-board-inputs.tar.gz.age"
       - name: Fetch SM-G986B stock firmware
+        if: vars.SIMULATED_BUILD != 'true'
         env:
           DEVICE_IMEI: ${{ secrets.Y2S_FUS_IMEI }}
           STOCK_FIRMWARE_URL: ${{ secrets.Y2S_STOCK_FIRMWARE_URL }}
@@ -64,6 +78,7 @@ jobs:
           "${cmd[@]}" decrypt -v "$version" -V "${file: -1}" -i "$file" -o stock/firmware.zip
           rm -- "$file"
       - name: Extract stock board trees
+        if: vars.SIMULATED_BUILD != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -75,6 +90,7 @@ jobs:
           python3 "$GITHUB_WORKSPACE/tools/y2s/stock-info.py" boot-trees boot.img trees
           rm -- firmware.zip boot.img
       - name: Build Mu-Silicium for y2s
+        if: vars.SIMULATED_BUILD != 'true'
         run: |
           set -euo pipefail
           overlay="$GITHUB_WORKSPACE/devices/exynos990/y2s/legacy/uefi-y2s"
@@ -101,6 +117,7 @@ jobs:
           PYTHON
           cp Mu-y2s.img "$RUNNER_TEMP/stock/trees/"
       - name: Encrypt the board inputs for the macOS build
+        if: vars.SIMULATED_BUILD != 'true'
         env:
           AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |

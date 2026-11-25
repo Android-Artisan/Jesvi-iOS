@@ -185,6 +185,7 @@ jobs:
           OUTPUTS_INPUT: ${{ inputs.outputs }}
           MODE_INPUT: ${{ inputs.mode }}
           TARGET_INPUT: ${{ inputs.target }}
+          SIMULATED_BUILD: ${{ vars.SIMULATED_BUILD }}
         run: |
           test ! -e "$RELEASE_OUT"
           args=(--set "OUT=$RELEASE_OUT" --set "TARGETS=$TARGET_INPUT")
@@ -204,7 +205,11 @@ jobs:
           if [ "$WRITES_INPUT" != from-release.conf ]; then args+=(--set "WRITES=$WRITES_INPUT"); fi
           if [ -n "$OUTPUTS_INPUT" ]; then args+=(--set "OUTPUTS=$OUTPUTS_INPUT"); fi
           ./build.sh release --dry-run "${args[@]}"
-          ./build.sh release "${args[@]}"
+          if [ "$SIMULATED_BUILD" = true ]; then
+            python3 ci/simulate-release.py "$RELEASE_OUT" "${args[@]}"
+          else
+            ./build.sh release "${args[@]}"
+          fi
           (
             cd "$RELEASE_OUT"
             shasum -a 256 -c ./*.sha256
