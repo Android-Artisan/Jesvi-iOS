@@ -33,8 +33,6 @@ jobs:
           AGE_IDENTITY: ${{ secrets.HOSTED_BOARD_INPUTS_AGE_KEY }}
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y age
           mkdir -p "$RUNNER_TEMP/stock/trees"
           printf 'SIMULATED Mu-y2s.img for CI plumbing test\n' > "$RUNNER_TEMP/stock/trees/Mu-y2s.img"
           printf 'SIMULATED stock-boot-dtbh.img for CI plumbing test\n' > "$RUNNER_TEMP/stock/trees/stock-boot-dtbh.img"
